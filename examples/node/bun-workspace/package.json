@@ -1,0 +1,7 @@
+{
+    "name": "bun-workspace",
+    "version": "1.0.0",
+    "workspaces": [
+        "bun-workspace"
+    ]
+}

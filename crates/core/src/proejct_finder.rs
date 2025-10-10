@@ -1,6 +1,11 @@
+use std::path::Path;
+
+use anyhow::Result;
+
 use crate::project::Project;
 
 pub trait ProjectFinder {
-    fn new(root: Option<String>) -> Self;
-    fn find(&self) -> Vec<Project>;
+    fn projects(&self) -> Vec<&Project>;
+    fn project_files(&self) -> &[&str];
+    fn visit(&mut self, path: &Path) -> Result<()>;
 }

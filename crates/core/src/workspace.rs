@@ -1,5 +1,10 @@
-use crate::package::Package;
-
+#[derive(Debug)]
 pub struct Workspace {
-    pub packages: Vec<Package>,
+    path: String,
+}
+
+impl Workspace {
+    pub fn new(path: String) -> Self {
+        Self { path }
+    }
 }
