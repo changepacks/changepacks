@@ -5,3 +5,9 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+utils = { path = "../utils" }
+core = { path = "../core" }
+node = { path = "../node" }
+rust = { path = "../rust" }
+python = { path = "../python" }
+anyhow = "1.0"
