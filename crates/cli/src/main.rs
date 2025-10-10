@@ -5,6 +5,7 @@ use clap::{Parser, Subcommand};
 use crate::changepack::handle_changepack;
 mod changepack;
 mod check;
+mod finders;
 mod init;
 mod update;
 

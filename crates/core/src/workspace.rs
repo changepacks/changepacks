@@ -1,11 +1,10 @@
-#[derive(Debug)]
-pub struct Workspace {
-    path: String,
-    version: Option<String>,
-}
+use crate::update_type::UpdateType;
+use anyhow::Result;
 
-impl Workspace {
-    pub fn new(path: String, version: Option<String>) -> Self {
-        Self { path, version }
-    }
+pub trait Workspace: std::fmt::Debug + Send + Sync {
+    fn name(&self) -> Option<&str>;
+    fn path(&self) -> &str;
+    fn version(&self) -> Option<&str>;
+    fn update_version(&mut self, update_type: UpdateType) -> Result<String>;
+    fn language(&self) -> &str;
 }

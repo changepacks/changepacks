@@ -7,3 +7,4 @@ edition = "2024"
 gix = "0.73"
 anyhow = "1.0"
 core = { path = "../core" }
+colored = "3"

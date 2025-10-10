@@ -2,7 +2,7 @@ use std::fs::{create_dir_all, write};
 
 use anyhow::Result;
 use clap::Args;
-use utils::find_current_git_repo::find_current_git_repo;
+use utils::find_current_git_repo;
 
 #[derive(Args, Debug)]
 #[command(about = "Initialize a new Changepack project")]
