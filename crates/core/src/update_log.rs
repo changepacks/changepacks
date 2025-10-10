@@ -20,4 +20,12 @@ impl UpdateLog {
             date: Utc::now(),
         }
     }
+
+    pub fn changes(&self) -> &HashMap<String, UpdateType> {
+        &self.changes
+    }
+
+    pub fn notes(&self) -> &str {
+        &self.notes
+    }
 }

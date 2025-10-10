@@ -1,9 +1,8 @@
-use std::{
-    cmp::Ordering,
-    fmt::Debug,
-};
+use std::{cmp::Ordering, fmt::Debug};
 
-use crate::{package::Package, workspace::Workspace};
+use anyhow::Result;
+
+use crate::{package::Package, update_type::UpdateType, workspace::Workspace};
 
 #[derive(Debug)]
 pub enum Project {
@@ -30,6 +29,14 @@ impl Project {
             Project::Workspace(workspace) => workspace.path(),
             Project::Package(package) => package.path(),
         }
+    }
+
+    pub fn update_version(&self, update_type: UpdateType) -> Result<()> {
+        match self {
+            Project::Workspace(workspace) => workspace.update_version(update_type.clone())?,
+            Project::Package(package) => package.update_version(update_type.clone())?,
+        }
+        Ok(())
     }
 }
 

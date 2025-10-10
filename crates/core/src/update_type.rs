@@ -2,11 +2,11 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum UpdateType {
-    Major,
-    Minor,
-    Patch,
+    Major = 0,
+    Minor = 1,
+    Patch = 2,
 }
 
 impl Display for UpdateType {

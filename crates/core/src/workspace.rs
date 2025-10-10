@@ -5,6 +5,6 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn name(&self) -> Option<&str>;
     fn path(&self) -> &str;
     fn version(&self) -> Option<&str>;
-    fn update_version(&mut self, update_type: UpdateType) -> Result<String>;
+    fn update_version(&self, update_type: UpdateType) -> Result<()>;
     fn language(&self) -> &str;
 }

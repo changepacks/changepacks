@@ -31,7 +31,7 @@ impl Workspace for PythonWorkspace {
         self.version.as_deref()
     }
 
-    fn update_version(&mut self, update_type: UpdateType) -> Result<String> {
+    fn update_version(&self, update_type: UpdateType) -> Result<()> {
         todo!("Python workspace version update logic")
     }
 

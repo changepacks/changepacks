@@ -31,7 +31,7 @@ impl Package for NodePackage {
         &self.path
     }
 
-    fn update_version(&mut self, update_type: UpdateType) -> Result<String> {
+    fn update_version(&self, update_type: UpdateType) -> Result<()> {
         todo!("Node.js package version update logic")
     }
 
