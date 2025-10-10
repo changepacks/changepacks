@@ -49,9 +49,10 @@ impl ProjectFinder for NodeProjectFinder {
             if package_json.get("workspaces").is_some()
                 || parent.join("pnpm-workspace.yaml").is_file()
             {
+                let version = package_json["version"].as_str().map(|v| v.to_string());
                 self.projects.insert(
                     parent_str.clone(),
-                    Project::Workspace(Workspace::new(parent_str)),
+                    Project::Workspace(Workspace::new(parent_str, version)),
                 );
             } else {
                 let version = package_json["version"]

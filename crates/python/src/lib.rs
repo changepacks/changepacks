@@ -1,11 +1,7 @@
 use core::{
     package::Package, proejct_finder::ProjectFinder, project::Project, workspace::Workspace,
 };
-use std::{
-    collections::HashMap,
-    fs::{canonicalize, read_to_string},
-    path::Path,
-};
+use std::{collections::HashMap, fs::read_to_string, path::Path};
 
 use anyhow::{Context, Result};
 
@@ -27,13 +23,7 @@ impl ProjectFinder for PythonProjectFinder {
     }
 
     fn project_files(&self) -> &[&str] {
-        &[
-            "pyproject.toml",
-            "requirements.txt",
-            "setup.py",
-            "Pipfile",
-            "environment.yml",
-        ]
+        &["pyproject.toml"]
     }
 
     fn visit(&mut self, path: &Path) -> Result<()> {
@@ -51,10 +41,16 @@ impl ProjectFinder for PythonProjectFinder {
             let pyproject_toml = read_to_string(path)?;
             let pyproject_toml: toml::Value = toml::from_str(&pyproject_toml)?;
             // if workspace
-            if let Some(_) = pyproject_toml.get("tool.uv.workspace") {
+            if let Some(_) = pyproject_toml
+                .get("tool")
+                .and_then(|t| t.get("uv").and_then(|u| u.get("workspace")))
+            {
+                let version = pyproject_toml["project"]["version"]
+                    .as_str()
+                    .map(|v| v.to_string());
                 self.projects.insert(
                     parent_str.clone(),
-                    Project::Workspace(Workspace::new(parent_str)),
+                    Project::Workspace(Workspace::new(parent_str, version)),
                 );
             } else {
                 let version = pyproject_toml["project"]["version"]

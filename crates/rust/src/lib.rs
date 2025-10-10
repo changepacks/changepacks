@@ -45,8 +45,15 @@ impl ProjectFinder for RustProjectFinder {
             let cargo_toml: toml::Value = toml::from_str(&cargo_toml)?;
             // if workspace
             if let Some(_) = cargo_toml.get("workspace") {
-                self.projects
-                    .insert(parent.clone(), Project::Workspace(Workspace::new(parent)));
+                let version = cargo_toml
+                    .get("package")
+                    .and_then(|p| p.get("version"))
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string());
+                self.projects.insert(
+                    parent.clone(),
+                    Project::Workspace(Workspace::new(parent, version)),
+                );
             } else {
                 let version = cargo_toml["package"]["version"]
                     .as_str()
