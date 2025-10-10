@@ -3,7 +3,7 @@ use core::{
 };
 use std::{
     collections::HashMap,
-    fs::{canonicalize, read_to_string},
+    fs::read_to_string,
     path::Path,
 };
 
@@ -11,6 +11,12 @@ use anyhow::{Context, Result};
 
 pub struct NodeProjectFinder {
     projects: HashMap<String, Project>,
+}
+
+impl Default for NodeProjectFinder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl NodeProjectFinder {

@@ -9,6 +9,12 @@ pub struct PythonProjectFinder {
     projects: HashMap<String, Project>,
 }
 
+impl Default for PythonProjectFinder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PythonProjectFinder {
     pub fn new() -> Self {
         Self {
@@ -41,9 +47,9 @@ impl ProjectFinder for PythonProjectFinder {
             let pyproject_toml = read_to_string(path)?;
             let pyproject_toml: toml::Value = toml::from_str(&pyproject_toml)?;
             // if workspace
-            if let Some(_) = pyproject_toml
+            if pyproject_toml
                 .get("tool")
-                .and_then(|t| t.get("uv").and_then(|u| u.get("workspace")))
+                .and_then(|t| t.get("uv").and_then(|u| u.get("workspace"))).is_some()
             {
                 let version = pyproject_toml["project"]["version"]
                     .as_str()

@@ -31,7 +31,7 @@ pub fn find_project_dirs(
         };
 
         for project_finder in project_finders.iter_mut() {
-            project_finder.visit(&abs_path);
+            project_finder.visit(&abs_path)?;
         }
     }
 

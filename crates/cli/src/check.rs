@@ -1,4 +1,3 @@
-use std::env::current_dir;
 
 use anyhow::Result;
 use clap::Args;

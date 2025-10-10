@@ -1,12 +1,6 @@
-use core::proejct_finder::ProjectFinder;
-use std::{error::Error, fs};
-use update::UpdateArgs;
+use std::error::Error;
 
 use clap::{Parser, Subcommand};
-use node::NodeProjectFinder;
-use python::PythonProjectFinder;
-use rust::RustProjectFinder;
-use utils::{filter_project_dirs::find_project_dirs, find_current_git_repo::find_current_git_repo};
 
 use crate::changepack::handle_changepack;
 mod changepack;

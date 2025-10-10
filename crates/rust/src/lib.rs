@@ -3,7 +3,7 @@ use core::{
 };
 use std::{
     collections::HashMap,
-    fs::{canonicalize, read_to_string},
+    fs::read_to_string,
     path::Path,
 };
 
@@ -11,6 +11,12 @@ use anyhow::{Context, Result};
 
 pub struct RustProjectFinder {
     projects: HashMap<String, Project>,
+}
+
+impl Default for RustProjectFinder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RustProjectFinder {
@@ -44,7 +50,7 @@ impl ProjectFinder for RustProjectFinder {
             let cargo_toml = read_to_string(path)?;
             let cargo_toml: toml::Value = toml::from_str(&cargo_toml)?;
             // if workspace
-            if let Some(_) = cargo_toml.get("workspace") {
+            if cargo_toml.get("workspace").is_some() {
                 let version = cargo_toml
                     .get("package")
                     .and_then(|p| p.get("version"))
