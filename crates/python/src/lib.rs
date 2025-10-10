@@ -1,7 +1,13 @@
-use core::{package::Package, proejct_finder::ProjectFinder, project::Project};
-use std::{collections::HashMap, fs::canonicalize, path::Path};
+use core::{
+    package::Package, proejct_finder::ProjectFinder, project::Project, workspace::Workspace,
+};
+use std::{
+    collections::HashMap,
+    fs::{canonicalize, read_to_string},
+    path::Path,
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 pub struct PythonProjectFinder {
     projects: HashMap<String, Project>,
@@ -21,7 +27,13 @@ impl ProjectFinder for PythonProjectFinder {
     }
 
     fn project_files(&self) -> &[&str] {
-        &["pyproject.toml"]
+        &[
+            "pyproject.toml",
+            "requirements.txt",
+            "setup.py",
+            "Pipfile",
+            "environment.yml",
+        ]
     }
 
     fn visit(&mut self, path: &Path) -> Result<()> {
@@ -30,21 +42,34 @@ impl ProjectFinder for PythonProjectFinder {
                 .project_files()
                 .contains(&path.file_name().unwrap().to_str().unwrap())
         {
-            let parent = canonicalize(path.parent().unwrap())
-                .unwrap()
-                .to_string_lossy()
-                .to_string();
-            if self.projects.contains_key(&parent) {
+            let parent = path.parent().unwrap();
+            let parent_str = parent.to_string_lossy().to_string();
+            if self.projects.contains_key(&parent_str) {
                 return Ok(());
             }
-            self.projects.insert(
-                parent.clone(),
-                Project::Package(Package::new(
-                    "python".to_string(),
-                    "1.0.0".to_string(),
-                    parent,
-                )),
-            );
+            // read pyproject.toml
+            let pyproject_toml = read_to_string(path)?;
+            let pyproject_toml: toml::Value = toml::from_str(&pyproject_toml)?;
+            // if workspace
+            if let Some(_) = pyproject_toml.get("tool.uv.workspace") {
+                self.projects.insert(
+                    parent_str.clone(),
+                    Project::Workspace(Workspace::new(parent_str)),
+                );
+            } else {
+                let version = pyproject_toml["project"]["version"]
+                    .as_str()
+                    .context("Version not found")?
+                    .to_string();
+                let name = pyproject_toml["project"]["name"]
+                    .as_str()
+                    .context("Name not found")?
+                    .to_string();
+                self.projects.insert(
+                    parent_str.clone(),
+                    Project::Package(Package::new(name, version, parent_str)),
+                );
+            }
         }
         Ok(())
     }

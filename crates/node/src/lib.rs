@@ -1,4 +1,6 @@
-use core::{package::Package, proejct_finder::ProjectFinder, project::Project};
+use core::{
+    package::Package, proejct_finder::ProjectFinder, project::Project, workspace::Workspace,
+};
 use std::{
     collections::HashMap,
     fs::{canonicalize, read_to_string},
@@ -35,29 +37,37 @@ impl ProjectFinder for NodeProjectFinder {
                 .project_files()
                 .contains(&path.file_name().unwrap().to_str().unwrap())
         {
-            let parent = canonicalize(path.parent().unwrap())
-                .unwrap()
-                .to_string_lossy()
-                .to_string();
-            if self.projects.contains_key(&parent) {
+            let parent = path.parent().unwrap();
+            let parent_str = parent.to_string_lossy().to_string();
+            if self.projects.contains_key(&parent_str) {
                 return Ok(());
             }
             // read package.json
             let package_json = read_to_string(path)?;
             let package_json: serde_json::Value = serde_json::from_str(&package_json)?;
-            let version = package_json["version"]
-                .as_str()
-                .context("Version not found")?
-                .to_string();
-            let name = package_json["name"]
-                .as_str()
-                .context("Name not found")?
-                .to_string();
+            // if workspaces
+            if package_json.get("workspaces").is_some()
+                || parent.join("pnpm-workspace.yaml").is_file()
+            {
+                self.projects.insert(
+                    parent_str.clone(),
+                    Project::Workspace(Workspace::new(parent_str)),
+                );
+            } else {
+                let version = package_json["version"]
+                    .as_str()
+                    .context("Version not found")?
+                    .to_string();
+                let name = package_json["name"]
+                    .as_str()
+                    .context("Name not found")?
+                    .to_string();
 
-            self.projects.insert(
-                parent.clone(),
-                Project::Package(Package::new(name, version, parent)),
-            );
+                self.projects.insert(
+                    parent_str.clone(),
+                    Project::Package(Package::new(name, version, parent_str)),
+                );
+            }
         }
         Ok(())
     }
