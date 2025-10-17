@@ -1,9 +1,13 @@
 use anyhow::{Context, Result};
-use core::{ProjectFinder, project::Project};
-use std::{collections::HashMap, fs::read_to_string, path::Path};
+use async_trait::async_trait;
+use changepack_core::ProjectFinder;
+use changepack_core::project::Project;
+use std::{collections::HashMap, path::Path};
+use tokio::fs::read_to_string;
 
 use crate::{package::NodePackage, workspace::NodeWorkspace};
 
+#[derive(Debug)]
 pub struct NodeProjectFinder {
     projects: HashMap<String, Project>,
     project_files: Vec<&'static str>,
@@ -24,6 +28,7 @@ impl NodeProjectFinder {
     }
 }
 
+#[async_trait]
 impl ProjectFinder for NodeProjectFinder {
     fn projects(&self) -> Vec<&Project> {
         self.projects.values().collect::<Vec<_>>()
@@ -33,7 +38,7 @@ impl ProjectFinder for NodeProjectFinder {
         &self.project_files
     }
 
-    fn visit(&mut self, path: &Path) -> Result<()> {
+    async fn visit(&mut self, path: &Path) -> Result<()> {
         // glob all the package.json in the root without .gitignore
         if path.is_file()
             && self
@@ -45,7 +50,7 @@ impl ProjectFinder for NodeProjectFinder {
                 return Ok(());
             }
             // read package.json
-            let package_json = read_to_string(path)?;
+            let package_json = read_to_string(path).await?;
             let package_json: serde_json::Value = serde_json::from_str(&package_json)?;
             // if workspaces
             if package_json.get("workspaces").is_some()

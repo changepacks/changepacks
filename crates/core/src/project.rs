@@ -31,10 +31,10 @@ impl Project {
         }
     }
 
-    pub fn update_version(&self, update_type: UpdateType) -> Result<()> {
+    pub async fn update_version(&self, update_type: UpdateType) -> Result<()> {
         match self {
-            Project::Workspace(workspace) => workspace.update_version(update_type.clone())?,
-            Project::Package(package) => package.update_version(update_type.clone())?,
+            Project::Workspace(workspace) => workspace.update_version(update_type.clone()).await?,
+            Project::Package(package) => package.update_version(update_type.clone()).await?,
         }
         Ok(())
     }

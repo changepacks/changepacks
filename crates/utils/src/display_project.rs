@@ -1,5 +1,5 @@
+use changepack_core::project::Project;
 use colored::*;
-use core::project::Project;
 use std::path::PathBuf;
 
 use crate::find_current_git_repo;

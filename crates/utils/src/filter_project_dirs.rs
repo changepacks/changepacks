@@ -1,10 +1,10 @@
 use anyhow::Result;
-use core::proejct_finder::ProjectFinder;
+use changepack_core::proejct_finder::ProjectFinder;
 use gix::Repository;
 use std::path::Path;
 
 /// Find project directories containing specific files from git tracked files
-pub fn find_project_dirs(
+pub async fn find_project_dirs(
     repo: &Repository,
     project_finders: &mut [Box<dyn ProjectFinder>],
 ) -> Result<()> {
@@ -30,9 +30,12 @@ pub fn find_project_dirs(
             git_root_path.join(path)
         };
 
-        for project_finder in project_finders.iter_mut() {
-            project_finder.visit(&abs_path)?;
-        }
+        futures::future::join_all(
+            project_finders
+                .iter_mut()
+                .map(|finder| finder.visit(&abs_path)),
+        )
+        .await;
     }
 
     Ok(())

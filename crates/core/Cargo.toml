@@ -1,5 +1,5 @@
 [package]
-name = "core"
+name = "changepack-core"
 version = "0.1.0"
 edition = "2024"
 
@@ -7,3 +7,5 @@ edition = "2024"
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.48", features = ["fs"] }
+async-trait = "0.1"

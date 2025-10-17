@@ -2,36 +2,44 @@ use std::error::Error;
 
 use clap::{Parser, Subcommand};
 
-use crate::changepack::handle_changepack;
-mod changepack;
-mod check;
+use crate::{
+    commands::{
+        ChangepackArgs, CheckArgs, InitArgs, UpdateArgs, handle_changepack, handle_check,
+        handle_init, handle_update,
+    },
+    options::FilterOptions,
+};
+mod commands;
 mod finders;
-mod init;
-mod update;
+mod options;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about = "Changepack CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
+
+    #[arg(short, long)]
+    filter: Option<FilterOptions>,
 }
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Init(init::InitArgs),
-    Check(check::CheckArgs),
-    Update(update::UpdateArgs),
+    Init(InitArgs),
+    Check(CheckArgs),
+    Update(UpdateArgs),
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     if let Some(command) = cli.command {
         match command {
-            Commands::Init(args) => init::handle_init(&args)?,
-            Commands::Check(args) => check::handle_check(&args)?,
-            Commands::Update(args) => update::handle_update(&args)?,
+            Commands::Init(args) => handle_init(&args).await?,
+            Commands::Check(args) => handle_check(&args).await?,
+            Commands::Update(args) => handle_update(&args).await?,
         }
     } else {
-        handle_changepack()?;
+        handle_changepack(&ChangepackArgs { filter: cli.filter }).await?;
     }
     Ok(())
 }

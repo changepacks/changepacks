@@ -1,5 +1,8 @@
 use anyhow::Result;
-use core::{Package, update_type::UpdateType};
+use async_trait::async_trait;
+use changepack_core::{Package, update_type::UpdateType};
+use tokio::fs::{read_to_string, write};
+use utils::next_version;
 
 #[derive(Debug)]
 pub struct PythonPackage {
@@ -18,6 +21,7 @@ impl PythonPackage {
     }
 }
 
+#[async_trait]
 impl Package for PythonPackage {
     fn name(&self) -> &str {
         &self.name
@@ -31,8 +35,14 @@ impl Package for PythonPackage {
         &self.path
     }
 
-    fn update_version(&self, update_type: UpdateType) -> Result<()> {
-        todo!("Python package version update logic")
+    async fn update_version(&self, update_type: UpdateType) -> Result<()> {
+        let next_version = next_version(&self.version, update_type)?;
+
+        let pyproject_toml = read_to_string(&self.path).await?;
+        let mut pyproject_toml: toml::Value = toml::from_str(&pyproject_toml)?;
+        pyproject_toml["project"]["version"] = toml::Value::String(next_version);
+        write(&self.path, toml::to_string_pretty(&pyproject_toml)?).await?;
+        Ok(())
     }
 
     fn language(&self) -> &str {

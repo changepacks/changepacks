@@ -1,9 +1,10 @@
-use core::{UpdateLog, update_type::UpdateType};
-use std::{collections::HashMap, fs::read_to_string, path::Path};
+use changepack_core::{UpdateLog, update_type::UpdateType};
+use std::collections::HashMap;
+use tokio::fs::{read_dir, read_to_string};
 
 use anyhow::{Context, Result};
 use clap::Args;
-use utils::{display_project, find_current_git_repo, next_version};
+use utils::{display_project, find_current_git_repo, find_project_dirs, next_version};
 
 use crate::finders::get_finders;
 
@@ -15,7 +16,7 @@ pub struct UpdateArgs {
 }
 
 /// Update project version
-pub fn handle_update(args: &UpdateArgs) -> Result<()> {
+pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     let repo = find_current_git_repo()?;
     let changepack_dir = repo.workdir().unwrap().join(".changepack");
     // check if changepack.json exists
@@ -26,12 +27,12 @@ pub fn handle_update(args: &UpdateArgs) -> Result<()> {
 
     let mut update_map = HashMap::<String, UpdateType>::new();
 
-    for file in changepack_dir.read_dir()? {
-        let file = file?;
+    let mut entries = read_dir(&changepack_dir).await?;
+    while let Some(file) = entries.next_entry().await? {
         if file.file_name().to_string_lossy() == "changepack.json" {
             continue;
         }
-        let file_json = read_to_string(file.path())?;
+        let file_json = read_to_string(file.path()).await?;
         let file_json: UpdateLog = serde_json::from_str(&file_json)?;
         for (project_path, update_type) in file_json.changes().iter() {
             if update_map.contains_key(project_path) {
@@ -49,11 +50,8 @@ pub fn handle_update(args: &UpdateArgs) -> Result<()> {
     }
     println!("Updates found:");
     let mut finders = get_finders();
-    for project_path in update_map.keys() {
-        for finder in finders.iter_mut() {
-            finder.visit(Path::new(project_path))?;
-        }
-    }
+
+    find_project_dirs(&repo, &mut finders).await?;
     let mut update_projects = Vec::new();
 
     for finder in finders.iter_mut() {
@@ -70,7 +68,7 @@ pub fn handle_update(args: &UpdateArgs) -> Result<()> {
             "{}: {} -> {}",
             display_project(project),
             update_type,
-            next_version(project.version().unwrap(), update_type.clone())
+            next_version(project.version().unwrap(), update_type.clone())?
         );
     }
     if args.dry_run {
@@ -84,8 +82,11 @@ pub fn handle_update(args: &UpdateArgs) -> Result<()> {
         println!("Update cancelled");
         return Ok(());
     }
-    for (project, update_type) in update_projects {
-        project.update_version(update_type.clone())?;
-    }
+
+    let futures = update_projects
+        .into_iter()
+        .map(|(project, update_type)| project.update_version(update_type.clone()));
+
+    futures::future::join_all(futures).await;
     Ok(())
 }

@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-core = { path = "../core" }
+changepack-core = { path = "../core" }
 utils = { path = "../utils" }
 anyhow = "1.0"
 toml = "0.9"
+tokio = { version = "1.48", features = ["fs"] }
+async-trait = "0.1"

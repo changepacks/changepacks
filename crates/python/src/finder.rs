@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
-use core::{ProjectFinder, project::Project};
-use std::{collections::HashMap, fs::read_to_string, path::Path};
+use async_trait::async_trait;
+use changepack_core::{ProjectFinder, project::Project};
+use std::{collections::HashMap, path::Path};
+use tokio::fs::read_to_string;
 
 use crate::{package::PythonPackage, workspace::PythonWorkspace};
 
+#[derive(Debug)]
 pub struct PythonProjectFinder {
     projects: HashMap<String, Project>,
     project_files: Vec<&'static str>,
@@ -24,6 +27,7 @@ impl PythonProjectFinder {
     }
 }
 
+#[async_trait]
 impl ProjectFinder for PythonProjectFinder {
     fn projects(&self) -> Vec<&Project> {
         self.projects.values().collect::<Vec<_>>()
@@ -33,7 +37,7 @@ impl ProjectFinder for PythonProjectFinder {
         &self.project_files
     }
 
-    fn visit(&mut self, path: &Path) -> Result<()> {
+    async fn visit(&mut self, path: &Path) -> Result<()> {
         if path.is_file()
             && self
                 .project_files()
@@ -44,7 +48,7 @@ impl ProjectFinder for PythonProjectFinder {
                 return Ok(());
             }
             // read pyproject.toml
-            let pyproject_toml = read_to_string(path)?;
+            let pyproject_toml = read_to_string(path).await?;
             let pyproject_toml: toml::Value = toml::from_str(&pyproject_toml)?;
             // if workspace
             if pyproject_toml

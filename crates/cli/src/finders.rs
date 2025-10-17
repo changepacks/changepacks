@@ -1,4 +1,4 @@
-use core::ProjectFinder;
+use changepack_core::ProjectFinder;
 use node::NodeProjectFinder;
 use python::PythonProjectFinder;
 use rust::RustProjectFinder;

@@ -1,23 +1,36 @@
-use core::{UpdateLog, update_type::UpdateType};
-use std::{collections::HashMap, fs::write};
+use changepack_core::{UpdateLog, project::Project, update_type::UpdateType};
+use std::collections::HashMap;
+use tokio::fs::write;
 
 use utils::{display_project, find_current_git_repo, find_project_dirs};
 
 use anyhow::Result;
 
-use crate::finders::get_finders;
+use crate::{finders::get_finders, options::FilterOptions};
 
-pub fn handle_changepack() -> Result<()> {
+#[derive(Debug)]
+pub struct ChangepackArgs {
+    pub filter: Option<FilterOptions>,
+}
+
+pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     let mut project_finders = get_finders();
 
     // collect all projects
     let repo = find_current_git_repo()?;
-    find_project_dirs(&repo, &mut project_finders)?;
+    find_project_dirs(&repo, &mut project_finders).await?;
 
     let mut projects = project_finders
         .iter()
         .flat_map(|finder| finder.projects())
         .collect::<Vec<_>>();
+
+    if let Some(filter) = &args.filter {
+        projects.retain(|project| match filter {
+            FilterOptions::Workspace => matches!(project, Project::Workspace(_)),
+            FilterOptions::Package => matches!(project, Project::Package(_)),
+        });
+    }
 
     println!("Found {} projects", projects.len());
     // workspace first
@@ -65,7 +78,7 @@ pub fn handle_changepack() -> Result<()> {
         .workdir()
         .unwrap()
         .join(format!(".changepack/update_log_{}.json", update_log_id));
-    write(update_log_file, serde_json::to_string(&update_log)?)?;
+    write(update_log_file, serde_json::to_string(&update_log)?).await?;
 
     Ok(())
 }
