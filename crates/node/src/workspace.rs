@@ -38,7 +38,7 @@ impl Workspace for NodeWorkspace {
 
     async fn update_version(&self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(
-            &self.version.as_ref().unwrap_or(&String::from("0.0.0")),
+            self.version.as_ref().unwrap_or(&String::from("0.0.0")),
             update_type,
         )?;
 
