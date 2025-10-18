@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use changepack_core::{Workspace, update_type::UpdateType};
+use changepack_core::{Language, Workspace, update_type::UpdateType};
 use tokio::fs::{read_to_string, write};
 use utils::next_version;
 
@@ -48,7 +48,7 @@ impl Workspace for RustWorkspace {
         Ok(())
     }
 
-    fn language(&self) -> &str {
-        "Rust"
+    fn language(&self) -> Language {
+        Language::Rust
     }
 }

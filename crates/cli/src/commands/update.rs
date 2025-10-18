@@ -1,10 +1,12 @@
-use changepack_core::{UpdateLog, update_type::UpdateType};
-use std::collections::HashMap;
-use tokio::fs::{read_dir, read_to_string};
+use std::pin::Pin;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Args;
-use utils::{display_project, find_current_git_repo, find_project_dirs, next_version};
+use std::future::Future;
+use utils::{
+    clear_update_logs, display_project, find_current_git_repo, find_project_dirs, gen_update_map,
+    get_changepack_dir, get_relative_path,
+};
 
 use crate::finders::get_finders;
 
@@ -13,37 +15,23 @@ use crate::finders::get_finders;
 pub struct UpdateArgs {
     #[arg(short, long)]
     dry_run: bool,
+
+    #[arg(short, long)]
+    yes: bool,
 }
 
 /// Update project version
 pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     let repo = find_current_git_repo()?;
-    let changepack_dir = repo.workdir().unwrap().join(".changepack");
+    let changepack_dir = get_changepack_dir()?;
     // check if changepack.json exists
     let changepack_file = changepack_dir.join("changepack.json");
     if !changepack_file.exists() {
         return Err(anyhow::anyhow!("Changepack project not initialized"));
     }
 
-    let mut update_map = HashMap::<String, UpdateType>::new();
+    let update_map = gen_update_map().await?;
 
-    let mut entries = read_dir(&changepack_dir).await?;
-    while let Some(file) = entries.next_entry().await? {
-        if file.file_name().to_string_lossy() == "changepack.json" {
-            continue;
-        }
-        let file_json = read_to_string(file.path()).await?;
-        let file_json: UpdateLog = serde_json::from_str(&file_json)?;
-        for (project_path, update_type) in file_json.changes().iter() {
-            if update_map.contains_key(project_path) {
-                if update_map[project_path] < *update_type {
-                    update_map.insert(project_path.clone(), update_type.clone());
-                }
-                continue;
-            }
-            update_map.insert(project_path.clone(), update_type.clone());
-        }
-    }
     if update_map.is_empty() {
         println!("No updates found");
         return Ok(());
@@ -56,37 +44,44 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
 
     for finder in finders.iter_mut() {
         for project in finder.projects() {
-            let update_type = update_map
-                .get(project.path())
-                .context(format!("Project not found: {}", project.path()))?;
-            update_projects.push((project, update_type.clone()));
+            if let Some(update_type) = update_map.get(&get_relative_path(project.path())?) {
+                update_projects.push((project, update_type.clone()));
+                continue;
+            }
         }
     }
     update_projects.sort();
     for (project, update_type) in update_projects.iter() {
-        println!(
-            "{}: {} -> {}",
-            display_project(project),
-            update_type,
-            next_version(project.version().unwrap(), update_type.clone())?
-        );
+        println!("{}", display_project(project, Some(update_type.clone()))?);
     }
     if args.dry_run {
         println!("Dry run, no updates will be made");
         return Ok(());
     }
     // confirm
-    let confirm =
-        inquire::Confirm::new("Are you sure you want to update the projects?").prompt()?;
+    let confirm = if args.yes {
+        true
+    } else {
+        inquire::Confirm::new("Are you sure you want to update the projects?").prompt()?
+    };
     if !confirm {
         println!("Update cancelled");
         return Ok(());
     }
 
-    let futures = update_projects
-        .into_iter()
-        .map(|(project, update_type)| project.update_version(update_type.clone()));
+    let mut all_futures: Vec<Pin<Box<dyn Future<Output = Result<()>>>>> = Vec::new();
 
-    futures::future::join_all(futures).await;
+    // Add remove file futures
+    all_futures.push(Box::pin(async move { clear_update_logs().await }));
+
+    // Add update futures
+    for (project, update_type) in update_projects {
+        all_futures.push(Box::pin(async move {
+            project.update_version(update_type).await
+        }));
+    }
+
+    futures::future::join_all(all_futures).await;
+
     Ok(())
 }

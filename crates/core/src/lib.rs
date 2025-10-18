@@ -1,3 +1,4 @@
+pub mod language;
 pub mod package;
 pub mod proejct_finder;
 pub mod project;
@@ -6,6 +7,7 @@ pub mod update_type;
 pub mod workspace;
 
 // Re-export traits for convenience
+pub use language::Language;
 pub use package::Package;
 pub use proejct_finder::ProjectFinder;
 pub use update_log::UpdateLog;

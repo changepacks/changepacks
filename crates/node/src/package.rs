@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use changepack_core::{Package, update_type::UpdateType};
+use changepack_core::{Language, Package, update_type::UpdateType};
 use tokio::fs::{read_to_string, write};
 use utils::next_version;
 
@@ -45,7 +45,7 @@ impl Package for NodePackage {
         Ok(())
     }
 
-    fn language(&self) -> &str {
-        "Node.js"
+    fn language(&self) -> Language {
+        Language::Node
     }
 }

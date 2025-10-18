@@ -39,9 +39,13 @@ impl ProjectFinder for RustProjectFinder {
 
     async fn visit(&mut self, path: &Path) -> Result<()> {
         if path.is_file()
-            && self
-                .project_files()
-                .contains(&path.file_name().unwrap().to_str().unwrap())
+            && self.project_files().contains(
+                &path
+                    .file_name()
+                    .context("File name not found")?
+                    .to_str()
+                    .context("File name not found")?,
+            )
         {
             let file_path = path.to_string_lossy().to_string();
             if self.projects.contains_key(&file_path) {

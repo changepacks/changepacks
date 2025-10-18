@@ -190,6 +190,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "colored",
  "serde",
  "tokio",
 ]
@@ -2644,6 +2645,7 @@ dependencies = [
  "colored",
  "futures",
  "gix",
+ "serde_json",
  "tokio",
 ]
 

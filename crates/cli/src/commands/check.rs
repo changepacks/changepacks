@@ -1,8 +1,11 @@
 use changepack_core::project::Project;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Args;
-use utils::{display_project, find_current_git_repo, find_project_dirs};
+use utils::{
+    display_project, find_current_git_repo, find_project_dirs, gen_update_map, get_changepack_dir,
+    get_relative_path,
+};
 
 use crate::{finders::get_finders, options::FilterOptions};
 
@@ -17,10 +20,7 @@ pub struct CheckArgs {
 pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     let repo = find_current_git_repo()?;
     // check if changepack.json exists
-    let changepack_file = repo
-        .workdir()
-        .context("Failed to find current git repository")?
-        .join(".changepack/changepack.json");
+    let changepack_file = get_changepack_dir()?.join("changepack.json");
     if !changepack_file.exists() {
         Err(anyhow::anyhow!("Changepack project not initialized"))
     } else {
@@ -40,9 +40,17 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                 FilterOptions::Package => matches!(project, Project::Package(_)),
             });
         }
+        projects.sort();
         println!("Found {} projects", projects.len());
+        let update_map = gen_update_map().await?;
         for project in projects {
-            println!("{}", display_project(project));
+            println!(
+                "{}",
+                display_project(
+                    project,
+                    update_map.get(&get_relative_path(project.path())?).cloned()
+                )?
+            );
         }
         Ok(())
     }

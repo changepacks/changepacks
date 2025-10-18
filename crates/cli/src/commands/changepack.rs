@@ -2,9 +2,12 @@ use changepack_core::{UpdateLog, project::Project, update_type::UpdateType};
 use std::collections::HashMap;
 use tokio::fs::write;
 
-use utils::{display_project, find_current_git_repo, find_project_dirs};
+use utils::{
+    display_project, find_current_git_repo, find_project_dirs, get_changepack_dir,
+    get_relative_path,
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::{finders::get_finders, options::FilterOptions};
 
@@ -41,8 +44,8 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     for update_type in [UpdateType::Major, UpdateType::Minor, UpdateType::Patch] {
         let project_names = projects
             .iter()
-            .map(|project| display_project(project))
-            .collect::<Vec<_>>();
+            .map(|project| display_project(project, None))
+            .collect::<Result<Vec<_>>>()?;
 
         let message = format!("Select projects to update for {}", update_type);
         // select project to update
@@ -54,11 +57,23 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
         for project_name in selected_projects {
             let project = projects
                 .iter()
-                .find(|project| display_project(project) == project_name)
-                .unwrap();
-            update_map.insert(project.path().to_string(), update_type.clone());
+                .find(|project| display_project(project, None).unwrap() == project_name)
+                .context(format!("Project not found: {}", project_name))?;
+            update_map.insert(get_relative_path(project.path())?, update_type.clone());
         }
-        projects.retain(|project| !update_map.contains_key(project.path()));
+
+        let project_with_relpath: Vec<_> = projects
+            .iter()
+            .map(|project| get_relative_path(project.path()).map(|rel| (project, rel)))
+            .collect::<Result<Vec<_>>>()?;
+
+        let keep_projects: Vec<_> = project_with_relpath
+            .into_iter()
+            .filter(|(_, rel_path)| !update_map.contains_key(rel_path))
+            .map(|(project, _)| *project)
+            .collect();
+
+        projects = keep_projects;
     }
 
     if update_map.is_empty() {
@@ -74,10 +89,7 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     let update_log = UpdateLog::new(update_map, notes);
     // random uuid
     let update_log_id = nanoid::nanoid!();
-    let update_log_file = repo
-        .workdir()
-        .unwrap()
-        .join(format!(".changepack/update_log_{}.json", update_log_id));
+    let update_log_file = get_changepack_dir()?.join(format!("update_log_{}.json", update_log_id));
     write(update_log_file, serde_json::to_string(&update_log)?).await?;
 
     Ok(())

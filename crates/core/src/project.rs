@@ -60,7 +60,7 @@ impl Ord for Project {
             (Project::Workspace(_), Project::Package(_)) => Ordering::Less,
             (Project::Package(_), Project::Workspace(_)) => Ordering::Greater,
             (Project::Workspace(w1), Project::Workspace(w2)) => {
-                let lang_ord = w1.language().cmp(w2.language());
+                let lang_ord = w1.language().cmp(&w2.language());
                 if lang_ord != Ordering::Equal {
                     return lang_ord;
                 }
@@ -80,7 +80,7 @@ impl Ord for Project {
                 }
             }
             (Project::Package(p1), Project::Package(p2)) => {
-                let lang_ord = p1.language().cmp(p2.language());
+                let lang_ord = p1.language().cmp(&p2.language());
                 if lang_ord != Ordering::Equal {
                     return lang_ord;
                 }

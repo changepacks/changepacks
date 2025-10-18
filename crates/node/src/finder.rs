@@ -41,9 +41,13 @@ impl ProjectFinder for NodeProjectFinder {
     async fn visit(&mut self, path: &Path) -> Result<()> {
         // glob all the package.json in the root without .gitignore
         if path.is_file()
-            && self
-                .project_files()
-                .contains(&path.file_name().unwrap().to_str().unwrap())
+            && self.project_files().contains(
+                &path
+                    .file_name()
+                    .context("File name not found")?
+                    .to_str()
+                    .context("File name not found")?,
+            )
         {
             let file_path = path.to_string_lossy().to_string();
             if self.projects.contains_key(&file_path) {
@@ -54,7 +58,11 @@ impl ProjectFinder for NodeProjectFinder {
             let package_json: serde_json::Value = serde_json::from_str(&package_json)?;
             // if workspaces
             if package_json.get("workspaces").is_some()
-                || path.parent().unwrap().join("pnpm-workspace.yaml").is_file()
+                || path
+                    .parent()
+                    .context("Parent not found")?
+                    .join("pnpm-workspace.yaml")
+                    .is_file()
             {
                 let version = package_json["version"].as_str().map(|v| v.to_string());
                 let name = package_json["name"].as_str().map(|v| v.to_string());

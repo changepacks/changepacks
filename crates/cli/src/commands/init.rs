@@ -2,7 +2,7 @@ use tokio::fs::{create_dir_all, write};
 
 use anyhow::Result;
 use clap::Args;
-use utils::find_current_git_repo;
+use utils::get_changepack_dir;
 
 #[derive(Args, Debug)]
 #[command(about = "Initialize a new Changepack project")]
@@ -13,9 +13,8 @@ pub struct InitArgs {
 
 /// Initialize a new Changepack project
 pub async fn handle_init(args: &InitArgs) -> Result<()> {
-    let repo = find_current_git_repo()?;
     // create .changepack directory
-    let changepack_dir = repo.workdir().unwrap().join(".changepack");
+    let changepack_dir = get_changepack_dir()?;
     if !args.dry_run {
         create_dir_all(&changepack_dir).await?;
     }
