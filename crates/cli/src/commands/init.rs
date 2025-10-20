@@ -14,7 +14,8 @@ pub struct InitArgs {
 /// Initialize a new Changepack project
 pub async fn handle_init(args: &InitArgs) -> Result<()> {
     // create .changepack directory
-    let changepack_dir = get_changepack_dir()?;
+    let current_dir = std::env::current_dir()?;
+    let changepack_dir = get_changepack_dir(&current_dir)?;
     if !args.dry_run {
         create_dir_all(&changepack_dir).await?;
     }

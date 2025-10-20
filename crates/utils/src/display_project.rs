@@ -7,7 +7,7 @@ use crate::{get_relative_path::get_relative_path, next_version};
 pub fn display_project(project: &Project, update_type: Option<UpdateType>) -> Result<String> {
     Ok(match project {
         Project::Workspace(workspace) => {
-            let relative_path = get_relative_path(workspace.path())?;
+            let relative_path = get_relative_path(&std::env::current_dir()?, workspace.path())?;
             format!(
                 "{} {} {} {} {}",
                 format!("[Workspace - {}]", workspace.language())
@@ -32,7 +32,7 @@ pub fn display_project(project: &Project, update_type: Option<UpdateType>) -> Re
             )
         }
         Project::Package(package) => {
-            let relative_path = get_relative_path(package.path())?;
+            let relative_path = get_relative_path(&std::env::current_dir()?, package.path())?;
             format!(
                 "{} {} {} {} {}",
                 format!("[{}]", package.language()).bright_blue().bold(),

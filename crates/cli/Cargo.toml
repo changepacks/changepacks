@@ -11,6 +11,7 @@ changepack-core = { path = "../core" }
 node = { path = "../node" }
 rust = { path = "../rust" }
 python = { path = "../python" }
+dart = { path = "../dart" }
 anyhow = "1.0"
 inquire = "0.9"
 colored = "3"

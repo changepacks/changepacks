@@ -1,10 +1,10 @@
-use crate::get_changepack_dir;
+use std::path::PathBuf;
+
 use anyhow::Result;
 use tokio::fs::{read_dir, remove_file};
 
 // remove all update logs without confirmation
-pub async fn clear_update_logs() -> Result<()> {
-    let changepack_dir = get_changepack_dir()?;
+pub async fn clear_update_logs(changepack_dir: &PathBuf) -> Result<()> {
     if !changepack_dir.exists() {
         return Ok(());
     }
@@ -30,6 +30,8 @@ pub async fn clear_update_logs() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use crate::get_changepack_dir;
+
     use super::*;
     use std::fs;
     use tempfile::TempDir;
@@ -47,34 +49,13 @@ mod tests {
             .output()
             .unwrap();
 
-        // Change to the temp directory and test
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(temp_path).unwrap();
-
         // Create .changepack directory
-        let changepack_dir = get_changepack_dir().unwrap();
+        let changepack_dir = get_changepack_dir(temp_path).unwrap();
         fs::create_dir_all(&changepack_dir).unwrap();
 
         // Test clearing logs from empty directory
-        let result = clear_update_logs().await;
+        let result = clear_update_logs(&changepack_dir).await;
         assert!(result.is_ok());
-
-        // Restore original directory
-        std::env::set_current_dir(original_dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_clear_update_logs_with_files() {
-        // This test requires a real git repository, so we'll skip it for now
-        // In a real scenario, this would test the actual function
-        assert!(true); // Placeholder test
-    }
-
-    #[tokio::test]
-    async fn test_clear_update_logs_preserves_changepack_json() {
-        // This test requires a real git repository, so we'll skip it for now
-        // In a real scenario, this would test the actual function
-        assert!(true); // Placeholder test
     }
 
     #[tokio::test]
@@ -90,22 +71,9 @@ mod tests {
             .output()
             .unwrap();
 
-        // Change to the temp directory and test
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(temp_path).unwrap();
-
         // Test clearing logs when .changepack directory doesn't exist
-        let result = clear_update_logs().await;
+        let changepack_dir = get_changepack_dir(temp_path).unwrap();
+        let result = clear_update_logs(&changepack_dir).await;
         assert!(result.is_ok());
-
-        // Restore original directory
-        std::env::set_current_dir(original_dir).unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_clear_update_logs_mixed_file_types() {
-        // This test requires a real git repository, so we'll skip it for now
-        // In a real scenario, this would test the actual function
-        assert!(true); // Placeholder test
     }
 }

@@ -18,9 +18,10 @@ pub struct CheckArgs {
 
 /// Check project status
 pub async fn handle_check(args: &CheckArgs) -> Result<()> {
-    let repo = find_current_git_repo()?;
+    let current_dir = std::env::current_dir()?;
+    let repo = find_current_git_repo(&current_dir)?;
     // check if changepack.json exists
-    let changepack_file = get_changepack_dir()?.join("changepack.json");
+    let changepack_file = get_changepack_dir(&current_dir)?.join("changepack.json");
     if !changepack_file.exists() {
         Err(anyhow::anyhow!("Changepack project not initialized"))
     } else {
@@ -42,13 +43,15 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
         }
         projects.sort();
         println!("Found {} projects", projects.len());
-        let update_map = gen_update_map().await?;
+        let update_map = gen_update_map(&current_dir).await?;
         for project in projects {
             println!(
                 "{}",
                 display_project(
                     project,
-                    update_map.get(&get_relative_path(project.path())?).cloned()
+                    update_map
+                        .get(&get_relative_path(&current_dir, project.path())?)
+                        .cloned()
                 )?
             );
         }

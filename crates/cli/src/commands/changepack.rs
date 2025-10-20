@@ -18,9 +18,10 @@ pub struct ChangepackArgs {
 
 pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     let mut project_finders = get_finders();
+    let current_dir = std::env::current_dir()?;
 
     // collect all projects
-    let repo = find_current_git_repo()?;
+    let repo = find_current_git_repo(&current_dir)?;
     find_project_dirs(&repo, &mut project_finders).await?;
 
     let mut projects = project_finders
@@ -59,12 +60,17 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
                 .iter()
                 .find(|project| display_project(project, None).unwrap() == project_name)
                 .context(format!("Project not found: {}", project_name))?;
-            update_map.insert(get_relative_path(project.path())?, update_type.clone());
+            update_map.insert(
+                get_relative_path(&current_dir, project.path())?,
+                update_type.clone(),
+            );
         }
 
         let project_with_relpath: Vec<_> = projects
             .iter()
-            .map(|project| get_relative_path(project.path()).map(|rel| (project, rel)))
+            .map(|project| {
+                get_relative_path(&current_dir, project.path()).map(|rel| (project, rel))
+            })
             .collect::<Result<Vec<_>>>()?;
 
         let keep_projects: Vec<_> = project_with_relpath
@@ -89,7 +95,8 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     let update_log = UpdateLog::new(update_map, notes);
     // random uuid
     let update_log_id = nanoid::nanoid!();
-    let update_log_file = get_changepack_dir()?.join(format!("update_log_{}.json", update_log_id));
+    let update_log_file =
+        get_changepack_dir(&current_dir)?.join(format!("update_log_{}.json", update_log_id));
     write(update_log_file, serde_json::to_string(&update_log)?).await?;
 
     Ok(())

@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::Result;
 use changepack_core::{UpdateLog, update_type::UpdateType};
 use gix::hashtable::hash_map::HashMap;
@@ -5,9 +7,9 @@ use tokio::fs::{read_dir, read_to_string};
 
 use crate::get_changepack_dir;
 
-pub async fn gen_update_map() -> Result<HashMap<String, UpdateType>> {
+pub async fn gen_update_map(current_dir: &Path) -> Result<HashMap<String, UpdateType>> {
     let mut update_map = HashMap::<String, UpdateType>::new();
-    let changepack_dir = get_changepack_dir()?;
+    let changepack_dir = get_changepack_dir(current_dir)?;
 
     let mut entries = read_dir(&changepack_dir).await?;
     while let Some(file) = entries.next_entry().await? {

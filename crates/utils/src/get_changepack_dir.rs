@@ -1,11 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
 use crate::find_current_git_repo;
 
-pub fn get_changepack_dir() -> Result<PathBuf> {
-    let repo = find_current_git_repo()?;
+pub fn get_changepack_dir(current_dir: &Path) -> Result<PathBuf> {
+    let repo = find_current_git_repo(current_dir)?;
     let changepack_dir = repo
         .workdir()
         .context("Failed to find current git repository")?
@@ -32,18 +32,12 @@ mod tests {
             .output()
             .unwrap();
 
-        // Change to the temp directory and test
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(temp_path).unwrap();
-
-        let result = get_changepack_dir();
+        let result = get_changepack_dir(temp_path);
         assert!(result.is_ok());
 
         let changepack_dir = result.unwrap();
         assert!(changepack_dir.ends_with(".changepack"));
 
-        // Restore original directory
-        std::env::set_current_dir(original_dir).unwrap();
         temp_dir.close().unwrap();
     }
 
@@ -60,11 +54,7 @@ mod tests {
             .output()
             .unwrap();
 
-        // Change to the temp directory and test
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(temp_path).unwrap();
-
-        let result = get_changepack_dir();
+        let result = get_changepack_dir(temp_path);
         assert!(result.is_ok());
 
         let changepack_dir = result.unwrap();
@@ -73,9 +63,6 @@ mod tests {
         fs::create_dir_all(&changepack_dir).unwrap();
         assert!(changepack_dir.exists());
         assert!(changepack_dir.is_dir());
-
-        // Restore original directory
-        std::env::set_current_dir(original_dir).unwrap();
         temp_dir.close().unwrap();
     }
 
@@ -85,15 +72,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        // Change to the temp directory and test
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(temp_path).unwrap();
-
-        let result = get_changepack_dir();
+        let result = get_changepack_dir(temp_path);
         assert!(result.is_err());
 
-        // Restore original directory
-        std::env::set_current_dir(original_dir).unwrap();
         temp_dir.close().unwrap();
     }
 
@@ -110,11 +91,7 @@ mod tests {
             .output()
             .unwrap();
 
-        // Change to the temp directory and test
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(temp_path).unwrap();
-
-        let result = get_changepack_dir();
+        let result = get_changepack_dir(temp_path);
         assert!(result.is_ok());
 
         let changepack_dir = result.unwrap();
@@ -123,8 +100,6 @@ mod tests {
         assert!(changepack_dir.to_string_lossy().contains(".changepack"));
         assert!(changepack_dir.parent().unwrap().exists());
 
-        // Restore original directory
-        std::env::set_current_dir(original_dir).unwrap();
         temp_dir.close().unwrap();
     }
 
@@ -145,11 +120,7 @@ mod tests {
         let nested_dir = temp_path.join("src").join("subdir");
         fs::create_dir_all(&nested_dir).unwrap();
 
-        // Change to the nested directory and test
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&nested_dir).unwrap();
-
-        let result = get_changepack_dir();
+        let result = get_changepack_dir(&nested_dir);
         assert!(result.is_ok());
 
         let changepack_dir = result.unwrap();
@@ -158,8 +129,6 @@ mod tests {
         assert!(changepack_dir.to_string_lossy().contains(".changepack"));
         assert!(changepack_dir.parent().unwrap() == temp_path);
 
-        // Restore original directory
-        std::env::set_current_dir(original_dir).unwrap();
         temp_dir.close().unwrap();
     }
 }

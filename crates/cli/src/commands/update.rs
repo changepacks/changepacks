@@ -22,15 +22,16 @@ pub struct UpdateArgs {
 
 /// Update project version
 pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
-    let repo = find_current_git_repo()?;
-    let changepack_dir = get_changepack_dir()?;
+    let current_dir = std::env::current_dir()?;
+    let repo = find_current_git_repo(&current_dir)?;
+    let changepack_dir = get_changepack_dir(&current_dir)?;
     // check if changepack.json exists
     let changepack_file = changepack_dir.join("changepack.json");
     if !changepack_file.exists() {
         return Err(anyhow::anyhow!("Changepack project not initialized"));
     }
 
-    let update_map = gen_update_map().await?;
+    let update_map = gen_update_map(&current_dir).await?;
 
     if update_map.is_empty() {
         println!("No updates found");
@@ -44,7 +45,9 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
 
     for finder in finders.iter_mut() {
         for project in finder.projects() {
-            if let Some(update_type) = update_map.get(&get_relative_path(project.path())?) {
+            if let Some(update_type) =
+                update_map.get(&get_relative_path(&current_dir, project.path())?)
+            {
                 update_projects.push((project, update_type.clone()));
                 continue;
             }
@@ -72,7 +75,9 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     let mut all_futures: Vec<Pin<Box<dyn Future<Output = Result<()>>>>> = Vec::new();
 
     // Add remove file futures
-    all_futures.push(Box::pin(async move { clear_update_logs().await }));
+    all_futures.push(Box::pin(
+        async move { clear_update_logs(&changepack_dir).await },
+    ));
 
     // Add update futures
     for (project, update_type) in update_projects {

@@ -6,6 +6,7 @@ pub enum Language {
     Python,
     Node,
     Rust,
+    Dart,
 }
 
 impl Display for Language {
@@ -17,6 +18,7 @@ impl Display for Language {
                 Language::Python => "Python".yellow().bold(),
                 Language::Node => "Node.js".green().bold(),
                 Language::Rust => "Rust".truecolor(139, 69, 19).bold(),
+                Language::Dart => "Dart".blue().bold(),
             }
         )
     }

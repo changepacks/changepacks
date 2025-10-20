@@ -1,14 +1,16 @@
 use changepack_core::ProjectFinder;
+use dart::DartProjectFinder;
 use node::NodeProjectFinder;
 use python::PythonProjectFinder;
 use rust::RustProjectFinder;
 
 /// Get finder list
-pub fn get_finders() -> [Box<dyn ProjectFinder>; 3] {
+pub fn get_finders() -> [Box<dyn ProjectFinder>; 4] {
     [
         Box::new(NodeProjectFinder::new()),
         Box::new(RustProjectFinder::new()),
         Box::new(PythonProjectFinder::new()),
+        Box::new(DartProjectFinder::new()),
     ]
 }
 
@@ -19,6 +21,6 @@ mod tests {
     #[test]
     fn test_get_finders() {
         let finders = get_finders();
-        assert_eq!(finders.len(), 3);
+        assert_eq!(finders.len(), 4);
     }
 }
