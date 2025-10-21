@@ -274,7 +274,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python 3.x
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: 3.x
         id: python
@@ -373,6 +373,7 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: 3.x
+          architecture: ${{ matrix.platform.target }}
         id: python
       - name: Build wheels
         uses: PyO3/maturin-action@v1
