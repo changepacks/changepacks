@@ -42,7 +42,7 @@ jobs:
         with:
           bun-version: latest
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install uv
@@ -274,14 +274,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python 3.x
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: 3.x
+        id: python
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
+          args: --release --out dist --interpreter ${{ steps.python.outputs.python-version }}
           manylinux: auto
           working-directory: ./bridge/python
       - name: Upload wheels
@@ -307,11 +308,16 @@ jobs:
             target: armv7
     steps:
       - uses: actions/checkout@v4
+      - name: Set up Python 3.x
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.x
+        id: python
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --find-interpreter
+          args: --release --out dist --interpreter ${{ steps.python.outputs.python-version }}
           manylinux: musllinux_1_2
           working-directory: ./bridge/python
       - name: Upload wheels
@@ -334,14 +340,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python 3.x
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: 3.x
+        id: python
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --release --out dist --interpreter ${{ steps.python.outputs.python-version }}
           working-directory: ./bridge/python
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -363,14 +370,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python 3.x
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: 3.x
+        id: python
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --release --out dist --interpreter ${{ steps.python.outputs.python-version }}
           working-directory: ./bridge/python
       - name: Upload wheels
         uses: actions/upload-artifact@v4
