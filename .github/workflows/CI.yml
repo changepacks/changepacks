@@ -219,8 +219,8 @@ jobs:
           bun-version: latest
       - name: Install dependencies
         run: |
-          bun config set --json supportedArchitectures.cpu '["current", "arm64", "x64", "arm"]'
-          bun config set --json supportedArchitectures.libc '["current", "musl", "gnu"]'
+          # bun config set --json supportedArchitectures.cpu '["current", "arm64", "x64", "arm"]'
+          # bun config set --json supportedArchitectures.libc '["current", "musl", "gnu"]'
           bun install
       - name: Download artifacts
         uses: actions/download-artifact@v5
