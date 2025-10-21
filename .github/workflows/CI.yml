@@ -1,11 +1,5 @@
 name: CI
 
-env:
-  DEBUG: napi:*
-  APP_NAME: changepacks
-  MACOSX_DEPLOYMENT_TARGET: '10.13'
-  CARGO_INCREMENTAL: '1'
-
 on:
   push:
     branches:
@@ -85,6 +79,10 @@ jobs:
             build: bun run build --target aarch64-apple-darwin
     name: stable - ${{ matrix.settings.target }} - node@22
     runs-on: ${{ matrix.settings.host }}
+    env:
+      DEBUG: napi:*
+      MACOSX_DEPLOYMENT_TARGET: '10.13'
+      CARGO_INCREMENTAL: '1'
     steps:
       - uses: actions/checkout@v5
       - name: Setup node
@@ -136,13 +134,17 @@ jobs:
         with:
           name: bindings-${{ matrix.settings.target }}
           path: |
-            bridge/node/dist/${{ env.APP_NAME }}.*.node
+            bridge/node/dist/changepacks.*.node
           if-no-files-found: error
   node-test-macOS-windows-binding:
     name: Test bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
     needs:
       - test
       - node-build
+    env:
+      DEBUG: napi:*
+      MACOSX_DEPLOYMENT_TARGET: '10.13'
+      CARGO_INCREMENTAL: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -187,6 +189,10 @@ jobs:
     needs:
       - test
       - node-build
+    env:
+      DEBUG: napi:*
+      MACOSX_DEPLOYMENT_TARGET: '10.13'
+      CARGO_INCREMENTAL: '1'
     strategy:
       fail-fast: false
       matrix:
@@ -274,7 +280,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Set up Python 3.x
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: 3.x
         id: python
@@ -289,7 +295,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.platform.target }}
-          path: dist
+          path: bridge/python/dist
 
   python-build-musllinux:
     runs-on: ${{ matrix.platform.runner }}
@@ -324,7 +330,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-musllinux-${{ matrix.platform.target }}
-          path: dist
+          path: bridge/python/dist
 
   python-build-windows:
     runs-on: ${{ matrix.platform.runner }}
@@ -354,7 +360,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-windows-${{ matrix.platform.target }}
-          path: dist
+          path: bridge/python/dist
 
   python-build-macos:
     runs-on: ${{ matrix.platform.runner }}
@@ -373,7 +379,6 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: 3.x
-          architecture: ${{ matrix.platform.target }}
         id: python
       - name: Build wheels
         uses: PyO3/maturin-action@v1
@@ -385,7 +390,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.platform.target }}
-          path: dist
+          path: bridge/python/dist
 
   python-build-sdist:
     runs-on: ubuntu-latest
@@ -403,7 +408,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: wheels-sdist
-          path: dist
+          path: bridge/python/dist
 
 
   # publish
