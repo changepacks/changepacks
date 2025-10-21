@@ -250,7 +250,7 @@ jobs:
     needs:
       - test
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
@@ -294,7 +294,7 @@ jobs:
           { python-architecture: "x86", target: "i686-pc-windows-msvc" },
         ]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
@@ -336,7 +336,7 @@ jobs:
       env:
         CFLAGS_armv7_unknown_linux_musleabihf: '-mfpu=vfpv3-d16'
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v5
       - name: Build Wheels - manylinux
         uses: PyO3/maturin-action@main
         with:
