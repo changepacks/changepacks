@@ -273,15 +273,15 @@ jobs:
             target: ppc64le
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python 3.11
+      - name: Set up Python 3.x
         uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          python-version: 3.x
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --release --out dist --find-interpreter
           manylinux: auto
           working-directory: ./bridge/python
       - name: Upload wheels
@@ -307,13 +307,11 @@ jobs:
             target: armv7
     steps:
       - uses: actions/checkout@v4
-      - name: Setup QEMU
-        uses: docker/setup-qemu-action@v3
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --release --out dist --find-interpreter
           manylinux: musllinux_1_2
           working-directory: ./bridge/python
       - name: Upload wheels
@@ -335,10 +333,10 @@ jobs:
             target: x86
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python 3.11
+      - name: Set up Python 3.x
         uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          python-version: 3.x
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -364,10 +362,10 @@ jobs:
             target: aarch64
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python 3.11
+      - name: Set up Python 3.x
         uses: actions/setup-python@v5
         with:
-          python-version: 3.11
+          python-version: 3.x
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
