@@ -1,10 +1,10 @@
 use std::pin::Pin;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
 use std::future::Future;
 use utils::{
-    clear_update_logs, display_project, find_current_git_repo, find_project_dirs, gen_update_map,
+    clear_update_logs, display_update, find_current_git_repo, find_project_dirs, gen_update_map,
     get_changepack_dir, get_relative_path,
 };
 
@@ -24,6 +24,7 @@ pub struct UpdateArgs {
 pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     let repo = find_current_git_repo(&current_dir)?;
+    let repo_root_path = repo.workdir().context("Not a working directory")?;
     let changepack_dir = get_changepack_dir(&current_dir)?;
     // check if changepack.json exists
     let changepack_file = changepack_dir.join("changepack.json");
@@ -46,7 +47,7 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     for finder in finders.iter_mut() {
         for project in finder.projects() {
             if let Some(update_type) =
-                update_map.get(&get_relative_path(&current_dir, project.path())?)
+                update_map.get(&get_relative_path(repo_root_path, project.path())?)
             {
                 update_projects.push((project, update_type.clone()));
                 continue;
@@ -55,7 +56,11 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     }
     update_projects.sort();
     for (project, update_type) in update_projects.iter() {
-        println!("{}", display_project(project, Some(update_type.clone()))?);
+        println!(
+            "{} {}",
+            project,
+            display_update(project.version().unwrap_or("0.0.0"), update_type.clone())?
+        );
     }
     if args.dry_run {
         println!("Dry run, no updates will be made");

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -7,13 +7,13 @@ use crate::update_type::UpdateType;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UpdateLog {
-    changes: HashMap<String, UpdateType>,
+    changes: HashMap<PathBuf, UpdateType>,
     notes: String,
     date: DateTime<Utc>,
 }
 
 impl UpdateLog {
-    pub fn new(changes: HashMap<String, UpdateType>, notes: String) -> Self {
+    pub fn new(changes: HashMap<PathBuf, UpdateType>, notes: String) -> Self {
         Self {
             changes,
             notes,
@@ -21,7 +21,7 @@ impl UpdateLog {
         }
     }
 
-    pub fn changes(&self) -> &HashMap<String, UpdateType> {
+    pub fn changes(&self) -> &HashMap<PathBuf, UpdateType> {
         &self.changes
     }
 

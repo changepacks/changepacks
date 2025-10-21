@@ -1,6 +1,11 @@
-use std::{cmp::Ordering, fmt::Debug};
+use std::{
+    cmp::Ordering,
+    fmt::{Debug, Display},
+    path::Path,
+};
 
 use anyhow::Result;
+use colored::Colorize;
 
 use crate::{package::Package, update_type::UpdateType, workspace::Workspace};
 
@@ -24,7 +29,7 @@ impl Project {
             Project::Package(package) => Some(package.version()),
         }
     }
-    pub fn path(&self) -> &str {
+    pub fn path(&self) -> &Path {
         match self {
             Project::Workspace(workspace) => workspace.path(),
             Project::Package(package) => package.path(),
@@ -37,6 +42,21 @@ impl Project {
             Project::Package(package) => package.update_version(update_type.clone()).await?,
         }
         Ok(())
+    }
+
+    pub fn check_changed(&mut self, path: &Path) -> Result<()> {
+        match self {
+            Project::Workspace(workspace) => workspace.check_changed(path)?,
+            Project::Package(package) => package.check_changed(path)?,
+        }
+        Ok(())
+    }
+
+    pub fn is_changed(&self) -> bool {
+        match self {
+            Project::Workspace(workspace) => workspace.is_changed(),
+            Project::Package(package) => package.is_changed(),
+        }
     }
 }
 
@@ -85,6 +105,48 @@ impl Ord for Project {
                     return lang_ord;
                 }
                 p1.name().cmp(p2.name())
+            }
+        }
+    }
+}
+
+impl Display for Project {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Project::Workspace(workspace) => {
+                write!(
+                    f,
+                    "{} {} {} {} {}",
+                    format!("[Workspace - {}]", workspace.language())
+                        .bright_blue()
+                        .bold(),
+                    workspace.name().unwrap_or("unknown").bright_white().bold(),
+                    format!(
+                        "({})",
+                        workspace
+                            .version()
+                            .map(|v| format!("v{}", v))
+                            .unwrap_or("unknown".to_string()),
+                    )
+                    .bright_green(),
+                    "-".bright_cyan(),
+                    workspace
+                        .relative_path()
+                        .display()
+                        .to_string()
+                        .bright_black()
+                )
+            }
+            Project::Package(package) => {
+                write!(
+                    f,
+                    "{} {} {} {} {}",
+                    format!("[{}]", package.language()).bright_blue().bold(),
+                    package.name().bright_white().bold(),
+                    format!("(v{})", package.version()).bright_green(),
+                    "-".bright_cyan(),
+                    package.relative_path().display().to_string().bright_black()
+                )
             }
         }
     }

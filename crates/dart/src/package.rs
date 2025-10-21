@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
 use async_trait::async_trait;
 use changepack_core::{Language, Package, update_type::UpdateType};
@@ -8,15 +10,19 @@ use utils::next_version;
 pub struct DartPackage {
     name: String,
     version: String,
-    path: String,
+    path: PathBuf,
+    relative_path: PathBuf,
+    is_changed: bool,
 }
 
 impl DartPackage {
-    pub fn new(name: String, version: String, path: String) -> Self {
+    pub fn new(name: String, version: String, path: PathBuf, relative_path: PathBuf) -> Self {
         Self {
             name,
             version,
             path,
+            relative_path,
+            is_changed: false,
         }
     }
 }
@@ -31,8 +37,12 @@ impl Package for DartPackage {
         &self.version
     }
 
-    fn path(&self) -> &str {
+    fn path(&self) -> &Path {
         &self.path
+    }
+
+    fn relative_path(&self) -> &Path {
+        &self.relative_path
     }
 
     async fn update_version(&self, update_type: UpdateType) -> Result<()> {
@@ -47,5 +57,12 @@ impl Package for DartPackage {
 
     fn language(&self) -> Language {
         Language::Dart
+    }
+
+    fn is_changed(&self) -> bool {
+        self.is_changed
+    }
+    fn set_changed(&mut self, changed: bool) {
+        self.is_changed = changed;
     }
 }

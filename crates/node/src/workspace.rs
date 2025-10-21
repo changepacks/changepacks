@@ -1,23 +1,32 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepack_core::{Language, Workspace, update_type::UpdateType};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 use utils::next_version;
 
 #[derive(Debug)]
 pub struct NodeWorkspace {
-    path: String,
+    path: PathBuf,
+    relative_path: PathBuf,
     version: Option<String>,
     name: Option<String>,
+    is_changed: bool,
 }
 
 impl NodeWorkspace {
-    pub fn new(path: String, name: Option<String>, version: Option<String>) -> Self {
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
         Self {
             path,
+            relative_path,
             name,
             version,
+            is_changed: false,
         }
     }
 }
@@ -28,7 +37,7 @@ impl Workspace for NodeWorkspace {
         self.name.as_deref()
     }
 
-    fn path(&self) -> &str {
+    fn path(&self) -> &Path {
         &self.path
     }
 
@@ -55,5 +64,17 @@ impl Workspace for NodeWorkspace {
 
     fn language(&self) -> Language {
         Language::Node
+    }
+
+    fn is_changed(&self) -> bool {
+        self.is_changed
+    }
+
+    fn set_changed(&mut self, changed: bool) {
+        self.is_changed = changed;
+    }
+
+    fn relative_path(&self) -> &Path {
+        &self.relative_path
     }
 }

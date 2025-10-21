@@ -1,11 +1,8 @@
 use changepack_core::{UpdateLog, project::Project, update_type::UpdateType};
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::write;
 
-use utils::{
-    display_project, find_current_git_repo, find_project_dirs, get_changepack_dir,
-    get_relative_path,
-};
+use utils::{find_current_git_repo, find_project_dirs, get_changepack_dir, get_relative_path};
 
 use anyhow::{Context, Result};
 
@@ -22,6 +19,7 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
 
     // collect all projects
     let repo = find_current_git_repo(&current_dir)?;
+    let repo_root_path = repo.workdir().context("Not a working directory")?;
     find_project_dirs(&repo, &mut project_finders).await?;
 
     let mut projects = project_finders
@@ -40,28 +38,46 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     // workspace first
     projects.sort();
 
-    let mut update_map = HashMap::<String, UpdateType>::new();
+    let mut update_map = HashMap::<PathBuf, UpdateType>::new();
 
     for update_type in [UpdateType::Major, UpdateType::Minor, UpdateType::Patch] {
-        let project_names = projects
-            .iter()
-            .map(|project| display_project(project, None))
-            .collect::<Result<Vec<_>>>()?;
-
         let message = format!("Select projects to update for {}", update_type);
         // select project to update
-        let mut selector = inquire::MultiSelect::new(&message, project_names);
+        let mut selector = inquire::MultiSelect::new(&message, projects.clone());
         selector.page_size = 15;
+        selector.default = Some(
+            projects
+                .iter()
+                .enumerate()
+                .filter_map(|(index, project)| {
+                    if project.is_changed() {
+                        Some(index)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>(),
+        );
+        selector.scorer = &|_input, option, _string_value, _idx| -> Option<i64> {
+            if option.is_changed() {
+                Some(100)
+            } else {
+                Some(0)
+            }
+        };
+        selector.formatter = &|option| {
+            option
+                .iter()
+                .map(|o| format!("{}", o.value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let selected_projects = selector.prompt()?;
 
         // remove selected projects from projects by index
-        for project_name in selected_projects {
-            let project = projects
-                .iter()
-                .find(|project| display_project(project, None).unwrap() == project_name)
-                .context(format!("Project not found: {}", project_name))?;
+        for project in selected_projects {
             update_map.insert(
-                get_relative_path(&current_dir, project.path())?,
+                get_relative_path(repo_root_path, project.path())?,
                 update_type.clone(),
             );
         }

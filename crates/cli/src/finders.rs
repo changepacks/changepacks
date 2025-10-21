@@ -5,8 +5,9 @@ use python::PythonProjectFinder;
 use rust::RustProjectFinder;
 
 /// Get finder list
-pub fn get_finders() -> [Box<dyn ProjectFinder>; 4] {
-    [
+pub fn get_finders() -> Vec<Box<dyn ProjectFinder>>
+{
+    vec![
         Box::new(NodeProjectFinder::new()),
         Box::new(RustProjectFinder::new()),
         Box::new(PythonProjectFinder::new()),

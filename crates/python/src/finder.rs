@@ -1,14 +1,17 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepack_core::{ProjectFinder, project::Project};
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 use tokio::fs::read_to_string;
 
 use crate::{package::PythonPackage, workspace::PythonWorkspace};
 
 #[derive(Debug)]
 pub struct PythonProjectFinder {
-    projects: HashMap<String, Project>,
+    projects: HashMap<PathBuf, Project>,
     project_files: Vec<&'static str>,
 }
 
@@ -32,12 +35,15 @@ impl ProjectFinder for PythonProjectFinder {
     fn projects(&self) -> Vec<&Project> {
         self.projects.values().collect::<Vec<_>>()
     }
+    fn projects_mut(&mut self) -> Vec<&mut Project> {
+        self.projects.values_mut().collect::<Vec<_>>()
+    }
 
     fn project_files(&self) -> &[&str] {
         &self.project_files
     }
 
-    async fn visit(&mut self, path: &Path) -> Result<()> {
+    async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
         if path.is_file()
             && self.project_files().contains(
                 &path
@@ -47,8 +53,7 @@ impl ProjectFinder for PythonProjectFinder {
                     .context("File name not found")?,
             )
         {
-            let file_path = path.to_string_lossy().to_string();
-            if self.projects.contains_key(&file_path) {
+            if self.projects.contains_key(path) {
                 return Ok(());
             }
             // read pyproject.toml
@@ -67,8 +72,13 @@ impl ProjectFinder for PythonProjectFinder {
                     .as_str()
                     .map(|v| v.to_string());
                 self.projects.insert(
-                    file_path.clone(),
-                    Project::Workspace(Box::new(PythonWorkspace::new(file_path, name, version))),
+                    path.to_path_buf(),
+                    Project::Workspace(Box::new(PythonWorkspace::new(
+                        name,
+                        version,
+                        path.to_path_buf(),
+                        relative_path.to_path_buf(),
+                    ))),
                 );
             } else {
                 let version = pyproject_toml["project"]["version"]
@@ -80,8 +90,13 @@ impl ProjectFinder for PythonProjectFinder {
                     .context("Name not found")?
                     .to_string();
                 self.projects.insert(
-                    file_path.clone(),
-                    Project::Package(Box::new(PythonPackage::new(name, version, file_path))),
+                    path.to_path_buf(),
+                    Project::Package(Box::new(PythonPackage::new(
+                        name,
+                        version,
+                        path.to_path_buf(),
+                        relative_path.to_path_buf(),
+                    ))),
                 );
             }
         }

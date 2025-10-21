@@ -2,14 +2,17 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepack_core::ProjectFinder;
 use changepack_core::project::Project;
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 use tokio::fs::read_to_string;
 
 use crate::{package::NodePackage, workspace::NodeWorkspace};
 
 #[derive(Debug)]
 pub struct NodeProjectFinder {
-    projects: HashMap<String, Project>,
+    projects: HashMap<PathBuf, Project>,
     project_files: Vec<&'static str>,
 }
 
@@ -33,12 +36,15 @@ impl ProjectFinder for NodeProjectFinder {
     fn projects(&self) -> Vec<&Project> {
         self.projects.values().collect::<Vec<_>>()
     }
+    fn projects_mut(&mut self) -> Vec<&mut Project> {
+        self.projects.values_mut().collect::<Vec<_>>()
+    }
 
     fn project_files(&self) -> &[&str] {
         &self.project_files
     }
 
-    async fn visit(&mut self, path: &Path) -> Result<()> {
+    async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
         // glob all the package.json in the root without .gitignore
         if path.is_file()
             && self.project_files().contains(
@@ -49,8 +55,7 @@ impl ProjectFinder for NodeProjectFinder {
                     .context("File name not found")?,
             )
         {
-            let file_path = path.to_string_lossy().to_string();
-            if self.projects.contains_key(&file_path) {
+            if self.projects.contains_key(path) {
                 return Ok(());
             }
             // read package.json
@@ -67,8 +72,13 @@ impl ProjectFinder for NodeProjectFinder {
                 let version = package_json["version"].as_str().map(|v| v.to_string());
                 let name = package_json["name"].as_str().map(|v| v.to_string());
                 self.projects.insert(
-                    file_path.clone(),
-                    Project::Workspace(Box::new(NodeWorkspace::new(file_path, name, version))),
+                    path.to_path_buf(),
+                    Project::Workspace(Box::new(NodeWorkspace::new(
+                        name,
+                        version,
+                        path.to_path_buf(),
+                        relative_path.to_path_buf(),
+                    ))),
                 );
             } else {
                 let version = package_json["version"]
@@ -81,8 +91,13 @@ impl ProjectFinder for NodeProjectFinder {
                     .to_string();
 
                 self.projects.insert(
-                    file_path.clone(),
-                    Project::Package(Box::new(NodePackage::new(name, version, file_path))),
+                    path.to_path_buf(),
+                    Project::Package(Box::new(NodePackage::new(
+                        name,
+                        version,
+                        path.to_path_buf(),
+                        relative_path.to_path_buf(),
+                    ))),
                 );
             }
         }

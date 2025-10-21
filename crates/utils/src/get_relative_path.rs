@@ -1,19 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-use crate::find_current_git_repo;
-
-pub fn get_relative_path(current_dir: &Path, absolute_path: &str) -> Result<String> {
-    let git_repo = find_current_git_repo(current_dir)
-        .context("Git repository not found")?
-        .workdir()
-        .context("Git repository workdir not found")?
-        .to_path_buf();
-    let git_root = git_repo.to_path_buf();
-    let project_path = PathBuf::from(absolute_path);
-    match project_path.strip_prefix(&git_root) {
-        Ok(relative) => Ok(format!("./{}", relative.to_string_lossy())),
+pub fn get_relative_path(git_root_path: &Path, absolute_path: &Path) -> Result<PathBuf> {
+    match absolute_path.strip_prefix(git_root_path) {
+        Ok(relative) => Ok(relative.to_path_buf()),
         Err(_) => Err(anyhow::anyhow!("Failed to get relative path")),
     }
 }
@@ -35,7 +26,7 @@ mod tests {
         fs::write(&test_file, "test content").unwrap();
 
         // Test getting relative path (should fail)
-        let result = get_relative_path(temp_path, test_file.to_str().unwrap());
+        let result = get_relative_path(temp_path, &test_file);
         assert!(result.is_err());
         temp_dir.close().unwrap();
     }
@@ -57,7 +48,7 @@ mod tests {
         fs::write(&inside_path, "inside content").unwrap();
 
         let abs_path = inside_path.canonicalize().unwrap();
-        let result = get_relative_path(temp_path, abs_path.to_str().unwrap());
+        let result = get_relative_path(temp_path, &abs_path);
         assert!(result.is_err());
         // Create another temporary directory outside the git repo
         let outside_dir = TempDir::new().unwrap();
@@ -65,7 +56,7 @@ mod tests {
         fs::write(&outside_file, "outside content").unwrap();
 
         // Test getting relative path (should fail)
-        let result = get_relative_path(outside_dir.path(), outside_file.to_str().unwrap());
+        let result = get_relative_path(outside_dir.path(), &outside_file);
         assert!(result.is_err());
         temp_dir.close().unwrap();
         outside_dir.close().unwrap();
@@ -77,7 +68,7 @@ mod tests {
         let temp_path = temp_dir.path();
         let test_file = temp_path.join("test_file.txt");
         fs::write(&test_file, "test content").unwrap();
-        let result = get_relative_path(temp_path, test_file.to_str().unwrap());
+        let result = get_relative_path(temp_path, &test_file);
         assert!(result.is_err());
         temp_dir.close().unwrap();
     }

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use changepack_core::{UpdateLog, update_type::UpdateType};
@@ -7,8 +7,8 @@ use tokio::fs::{read_dir, read_to_string};
 
 use crate::get_changepack_dir;
 
-pub async fn gen_update_map(current_dir: &Path) -> Result<HashMap<String, UpdateType>> {
-    let mut update_map = HashMap::<String, UpdateType>::new();
+pub async fn gen_update_map(current_dir: &Path) -> Result<HashMap<PathBuf, UpdateType>> {
+    let mut update_map = HashMap::<PathBuf, UpdateType>::new();
     let changepack_dir = get_changepack_dir(current_dir)?;
 
     let mut entries = read_dir(&changepack_dir).await?;
@@ -21,11 +21,11 @@ pub async fn gen_update_map(current_dir: &Path) -> Result<HashMap<String, Update
         for (project_path, update_type) in file_json.changes().iter() {
             if update_map.contains_key(project_path) {
                 if update_map[project_path] < *update_type {
-                    update_map.insert(project_path.to_string(), update_type.clone());
+                    update_map.insert(project_path.clone(), update_type.clone());
                 }
                 continue;
             }
-            update_map.insert(project_path.to_string(), update_type.clone());
+            update_map.insert(project_path.clone(), update_type.clone());
         }
     }
     Ok(update_map)

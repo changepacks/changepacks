@@ -3,7 +3,7 @@ use changepack_core::project::Project;
 use anyhow::Result;
 use clap::Args;
 use utils::{
-    display_project, find_current_git_repo, find_project_dirs, gen_update_map, get_changepack_dir,
+    display_update, find_current_git_repo, find_project_dirs, gen_update_map, get_changepack_dir,
     get_relative_path,
 };
 
@@ -46,13 +46,15 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
         let update_map = gen_update_map(&current_dir).await?;
         for project in projects {
             println!(
-                "{}",
-                display_project(
-                    project,
-                    update_map
-                        .get(&get_relative_path(&current_dir, project.path())?)
-                        .cloned()
-                )?
+                "{} {}",
+                project,
+                if let Some(update_type) =
+                    update_map.get(&get_relative_path(&current_dir, project.path())?)
+                {
+                    display_update(project.version().unwrap_or("0.0.0"), update_type.clone())?
+                } else {
+                    "".to_string()
+                }
             );
         }
         Ok(())

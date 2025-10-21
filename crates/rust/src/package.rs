@@ -1,6 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepack_core::{Language, Package, update_type::UpdateType};
+use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 use utils::next_version;
 
@@ -8,21 +9,28 @@ use utils::next_version;
 pub struct RustPackage {
     name: String,
     version: String,
-    path: String,
+    path: PathBuf,
+    relative_path: PathBuf,
+    is_changed: bool,
 }
 
 impl RustPackage {
-    pub fn new(name: String, version: String, path: String) -> Self {
+    pub fn new(name: String, version: String, path: PathBuf, relative_path: PathBuf) -> Self {
         Self {
             name,
             version,
             path,
+            relative_path,
+            is_changed: false,
         }
     }
 }
 
 #[async_trait]
 impl Package for RustPackage {
+    fn relative_path(&self) -> &Path {
+        &self.relative_path
+    }
     fn name(&self) -> &str {
         &self.name
     }
@@ -31,7 +39,7 @@ impl Package for RustPackage {
         &self.version
     }
 
-    fn path(&self) -> &str {
+    fn path(&self) -> &Path {
         &self.path
     }
 
@@ -47,5 +55,13 @@ impl Package for RustPackage {
 
     fn language(&self) -> Language {
         Language::Rust
+    }
+
+    fn set_changed(&mut self, changed: bool) {
+        self.is_changed = changed;
+    }
+
+    fn is_changed(&self) -> bool {
+        self.is_changed
     }
 }
