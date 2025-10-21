@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use changepack_core::ProjectFinder;
-use changepack_core::project::Project;
+use changepacks_core::ProjectFinder;
+use changepacks_core::project::Project;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

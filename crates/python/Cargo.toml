@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-changepack-core = { path = "../core" }
+changepacks-core = { path = "../core" }
 utils = { path = "../utils" }
 anyhow = "1.0"
 toml = "0.9"

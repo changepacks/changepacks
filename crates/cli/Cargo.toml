@@ -7,7 +7,7 @@ edition = "2024"
 nanoid = "0.4"
 clap = { version = "^4", features = ["derive"] }
 utils = { path = "../utils" }
-changepack-core = { path = "../core" }
+changepacks-core = { path = "../core" }
 node = { path = "../node" }
 rust = { path = "../rust" }
 python = { path = "../python" }

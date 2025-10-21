@@ -1,8 +1,8 @@
-use changepack_core::{UpdateLog, project::Project, update_type::UpdateType};
+use changepacks_core::{ChangePackLog, project::Project, update_type::UpdateType};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::write;
 
-use utils::{find_current_git_repo, find_project_dirs, get_changepack_dir, get_relative_path};
+use utils::{find_current_git_repo, find_project_dirs, get_changepacks_dir, get_relative_path};
 
 use anyhow::{Context, Result};
 
@@ -108,12 +108,12 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
         println!("Notes are empty");
         return Ok(());
     }
-    let update_log = UpdateLog::new(update_map, notes);
+    let changepack_log = ChangePackLog::new(update_map, notes);
     // random uuid
-    let update_log_id = nanoid::nanoid!();
-    let update_log_file =
-        get_changepack_dir(&current_dir)?.join(format!("update_log_{}.json", update_log_id));
-    write(update_log_file, serde_json::to_string(&update_log)?).await?;
+    let changepack_log_id = nanoid::nanoid!();
+    let changepack_log_file = get_changepacks_dir(&current_dir)?
+        .join(format!("changepack_log_{}.json", changepack_log_id));
+    write(changepack_log_file, serde_json::to_string(&changepack_log)?).await?;
 
     Ok(())
 }

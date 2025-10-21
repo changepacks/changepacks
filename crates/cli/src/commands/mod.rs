@@ -1,10 +1,10 @@
-mod changepack;
+mod changepacks;
 mod check;
 mod init;
 mod update;
 
-pub use changepack::ChangepackArgs;
-pub use changepack::handle_changepack;
+pub use changepacks::ChangepackArgs;
+pub use changepacks::handle_changepack;
 pub use check::CheckArgs;
 pub use check::handle_check;
 pub use init::InitArgs;

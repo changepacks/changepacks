@@ -6,7 +6,7 @@ edition = "2024"
 [dependencies]
 gix = "0.73"
 anyhow = "1.0"
-changepack-core = { path = "../core" }
+changepacks-core = { path = "../core" }
 colored = "3"
 tokio = { version = "1.48", features = ["fs"] }
 futures = "0.3"

@@ -5,7 +5,7 @@ use clap::Args;
 use std::future::Future;
 use utils::{
     clear_update_logs, display_update, find_current_git_repo, find_project_dirs, gen_update_map,
-    get_changepack_dir, get_relative_path,
+    get_changepacks_dir, get_relative_path,
 };
 
 use crate::finders::get_finders;
@@ -25,11 +25,11 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     let repo = find_current_git_repo(&current_dir)?;
     let repo_root_path = repo.workdir().context("Not a working directory")?;
-    let changepack_dir = get_changepack_dir(&current_dir)?;
-    // check if changepack.json exists
-    let changepack_file = changepack_dir.join("changepack.json");
-    if !changepack_file.exists() {
-        return Err(anyhow::anyhow!("Changepack project not initialized"));
+    let changepacks_dir = get_changepacks_dir(&current_dir)?;
+    // check if changepacks.json exists
+    let changepacks_file = changepacks_dir.join("changepacks.json");
+    if !changepacks_file.exists() {
+        return Err(anyhow::anyhow!("changepacks project not initialized"));
     }
 
     let update_map = gen_update_map(&current_dir).await?;
@@ -59,7 +59,7 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
         println!(
             "{} {}",
             project,
-            display_update(project.version().unwrap_or("0.0.0"), update_type.clone())?
+            display_update(project.version(), update_type.clone())?
         );
     }
     if args.dry_run {
@@ -80,9 +80,9 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     let mut all_futures: Vec<Pin<Box<dyn Future<Output = Result<()>>>>> = Vec::new();
 
     // Add remove file futures
-    all_futures.push(Box::pin(
-        async move { clear_update_logs(&changepack_dir).await },
-    ));
+    all_futures.push(Box::pin(async move {
+        clear_update_logs(&changepacks_dir).await
+    }));
 
     // Add update futures
     for (project, update_type) in update_projects {

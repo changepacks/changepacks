@@ -120,7 +120,7 @@ impl Display for Project {
                     format!("[Workspace - {}]", workspace.language())
                         .bright_blue()
                         .bold(),
-                    workspace.name().unwrap_or("unknown").bright_white().bold(),
+                    workspace.name().unwrap_or("noname").bright_white().bold(),
                     format!(
                         "({})",
                         workspace

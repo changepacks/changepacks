@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use changepack_core::proejct_finder::ProjectFinder;
+use changepacks_core::proejct_finder::ProjectFinder;
 use gix::{Repository, bstr::ByteSlice, features::progress};
 use std::path::Path;
 

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use changepack_core::{ProjectFinder, project::Project};
+use changepacks_core::{ProjectFinder, project::Project};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},

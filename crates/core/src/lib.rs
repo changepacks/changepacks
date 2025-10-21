@@ -10,5 +10,5 @@ pub mod workspace;
 pub use language::Language;
 pub use package::Package;
 pub use proejct_finder::ProjectFinder;
-pub use update_log::UpdateLog;
+pub use update_log::ChangePackLog;
 pub use workspace::Workspace;

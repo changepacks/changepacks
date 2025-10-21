@@ -4,14 +4,14 @@ use anyhow::Result;
 use tokio::fs::{read_dir, remove_file};
 
 // remove all update logs without confirmation
-pub async fn clear_update_logs(changepack_dir: &PathBuf) -> Result<()> {
-    if !changepack_dir.exists() {
+pub async fn clear_update_logs(changepacks_dir: &PathBuf) -> Result<()> {
+    if !changepacks_dir.exists() {
         return Ok(());
     }
-    let mut entries = read_dir(&changepack_dir).await?;
+    let mut entries = read_dir(&changepacks_dir).await?;
     let mut update_logs = vec![];
     while let Some(file) = entries.next_entry().await? {
-        if file.file_name().to_string_lossy() == "changepack.json" {
+        if file.file_name().to_string_lossy() == "changepacks.json" {
             continue;
         }
         update_logs.push(remove_file(file.path()));
@@ -30,7 +30,7 @@ pub async fn clear_update_logs(changepack_dir: &PathBuf) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::get_changepack_dir;
+    use crate::get_changepacks_dir;
 
     use super::*;
     use std::fs;
@@ -49,18 +49,18 @@ mod tests {
             .output()
             .unwrap();
 
-        // Create .changepack directory
-        let changepack_dir = get_changepack_dir(temp_path).unwrap();
-        fs::create_dir_all(&changepack_dir).unwrap();
+        // Create .changepacks directory
+        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        fs::create_dir_all(&changepacks_dir).unwrap();
 
         // Test clearing logs from empty directory
-        let result = clear_update_logs(&changepack_dir).await;
+        let result = clear_update_logs(&changepacks_dir).await;
         assert!(result.is_ok());
     }
 
     #[tokio::test]
-    async fn test_clear_update_logs_no_changepack_directory() {
-        // Create a temporary directory without .changepack
+    async fn test_clear_update_logs_no_changepacks_directory() {
+        // Create a temporary directory without .changepacks
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
@@ -71,9 +71,9 @@ mod tests {
             .output()
             .unwrap();
 
-        // Test clearing logs when .changepack directory doesn't exist
-        let changepack_dir = get_changepack_dir(temp_path).unwrap();
-        let result = clear_update_logs(&changepack_dir).await;
+        // Test clearing logs when .changepacks directory doesn't exist
+        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let result = clear_update_logs(&changepacks_dir).await;
         assert!(result.is_ok());
     }
 }

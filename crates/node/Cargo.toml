@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-changepack-core = { path = "../core" }
+changepacks-core = { path = "../core" }
 utils = { path = "../utils" }
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }

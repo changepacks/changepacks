@@ -1,12 +1,11 @@
-use changepack_core::ProjectFinder;
+use changepacks_core::ProjectFinder;
 use dart::DartProjectFinder;
 use node::NodeProjectFinder;
 use python::PythonProjectFinder;
 use rust::RustProjectFinder;
 
 /// Get finder list
-pub fn get_finders() -> Vec<Box<dyn ProjectFinder>>
-{
+pub fn get_finders() -> Vec<Box<dyn ProjectFinder>> {
     vec![
         Box::new(NodeProjectFinder::new()),
         Box::new(RustProjectFinder::new()),

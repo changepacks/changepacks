@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 use crate::update_type::UpdateType;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct UpdateLog {
+pub struct ChangePackLog {
     changes: HashMap<PathBuf, UpdateType>,
     notes: String,
     date: DateTime<Utc>,
 }
 
-impl UpdateLog {
+impl ChangePackLog {
     pub fn new(changes: HashMap<PathBuf, UpdateType>, notes: String) -> Self {
         Self {
             changes,

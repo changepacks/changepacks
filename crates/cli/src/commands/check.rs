@@ -1,9 +1,9 @@
-use changepack_core::project::Project;
+use changepacks_core::project::Project;
 
 use anyhow::Result;
 use clap::Args;
 use utils::{
-    display_update, find_current_git_repo, find_project_dirs, gen_update_map, get_changepack_dir,
+    display_update, find_current_git_repo, find_project_dirs, gen_update_map, get_changepacks_dir,
     get_relative_path,
 };
 
@@ -20,13 +20,11 @@ pub struct CheckArgs {
 pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     let repo = find_current_git_repo(&current_dir)?;
-    // check if changepack.json exists
-    let changepack_file = get_changepack_dir(&current_dir)?.join("changepack.json");
-    if !changepack_file.exists() {
-        Err(anyhow::anyhow!("Changepack project not initialized"))
+    // check if changepacks.json exists
+    let changepacks_file = get_changepacks_dir(&current_dir)?.join("changepacks.json");
+    if !changepacks_file.exists() {
+        Err(anyhow::anyhow!("changepacks project not initialized"))
     } else {
-        println!("Changepack project found in {:?}", changepack_file);
-
         let mut project_finders = get_finders();
 
         find_project_dirs(&repo, &mut project_finders).await?;
@@ -46,16 +44,18 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
         let update_map = gen_update_map(&current_dir).await?;
         for project in projects {
             println!(
-                "{} {}",
-                project,
-                if let Some(update_type) =
-                    update_map.get(&get_relative_path(&current_dir, project.path())?)
-                {
-                    display_update(project.version().unwrap_or("0.0.0"), update_type.clone())?
-                } else {
-                    "".to_string()
-                }
-            );
+                "{}",
+                format!("{}", project).replace(
+                    project.version().unwrap_or("unknown"),
+                    &if let Some(update_type) =
+                        update_map.get(&get_relative_path(&current_dir, project.path())?)
+                    {
+                        display_update(project.version(), update_type.clone())?
+                    } else {
+                        project.version().unwrap_or("unknown").to_string()
+                    }
+                ),
+            )
         }
         Ok(())
     }

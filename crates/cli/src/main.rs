@@ -14,7 +14,7 @@ mod finders;
 mod options;
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "Changepack CLI")]
+#[command(author, version, about = "changepacks CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
