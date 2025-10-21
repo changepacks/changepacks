@@ -14,4 +14,4 @@ classifiers = [
 
 [tool.maturin]
 bindings = "bin"
-features = ["auto-initialize"]
+features = ["pyo3/auto-initialize"]
