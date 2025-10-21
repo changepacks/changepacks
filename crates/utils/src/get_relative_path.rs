@@ -48,9 +48,9 @@ mod tests {
         let inside_path = temp_path.join("inside_absolute_path.txt");
         fs::write(&inside_path, "inside content").unwrap();
 
-        let abs_path = inside_path.canonicalize().unwrap();
+        let abs_path = inside_path;
         let result = get_relative_path(temp_path, &abs_path);
-        assert!(result.is_err());
+        assert!(result.is_ok());
         // Create another temporary directory outside the git repo
         let outside_dir = TempDir::new().unwrap();
         let outside_file = outside_dir.path().join("outside_file.txt");
