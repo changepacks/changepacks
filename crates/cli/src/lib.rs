@@ -1,4 +1,4 @@
-use std::error::Error;
+use anyhow::Result;
 
 use clap::{Parser, Subcommand};
 
@@ -29,9 +29,8 @@ enum Commands {
     Update(UpdateArgs),
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let cli = Cli::parse();
+pub async fn main(args: &[String]) -> Result<()> {
+    let cli = Cli::parse_from(args);
     if let Some(command) = cli.command {
         match command {
             Commands::Init(args) => handle_init(&args).await?,

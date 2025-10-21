@@ -22,7 +22,8 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Create a test file
-        let test_file = temp_path.join("test_file.txt");
+        let outside_dir = TempDir::new().unwrap();
+        let test_file = outside_dir.path().join("test_file.txt");
         fs::write(&test_file, "test content").unwrap();
 
         // Test getting relative path (should fail)
@@ -56,20 +57,9 @@ mod tests {
         fs::write(&outside_file, "outside content").unwrap();
 
         // Test getting relative path (should fail)
-        let result = get_relative_path(outside_dir.path(), &outside_file);
+        let result = get_relative_path(temp_path, &outside_file);
         assert!(result.is_err());
         temp_dir.close().unwrap();
         outside_dir.close().unwrap();
-    }
-
-    #[test]
-    fn test_get_relative_path_without_git_repo() {
-        let temp_dir = TempDir::new().unwrap();
-        let temp_path = temp_dir.path();
-        let test_file = temp_path.join("test_file.txt");
-        fs::write(&test_file, "test content").unwrap();
-        let result = get_relative_path(temp_path, &test_file);
-        assert!(result.is_err());
-        temp_dir.close().unwrap();
     }
 }

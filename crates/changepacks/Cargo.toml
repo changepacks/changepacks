@@ -1,0 +1,14 @@
+[package]
+name = "changepacks"
+version = "0.1.0"
+edition = "2024"
+default-run = "changepacks"
+
+[dependencies]
+cli = { path = "../cli" }
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros"] }
+anyhow = "1.0"
+
+[[bin]]
+name = "changepacks"
+path = "src/main.rs"
