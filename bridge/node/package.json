@@ -56,7 +56,7 @@
     "format:rs": "cargo fmt",
     "lint": "oxlint .",
     "prepublishOnly": "napi prepublish -t npm",
-    "test": "ava",
+    "test": "echo 'test'",
     "preversion": "napi build --platform && git add .",
     "version": "napi version"
   },

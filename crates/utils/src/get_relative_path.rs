@@ -55,6 +55,7 @@ mod tests {
         let outside_dir = TempDir::new().unwrap();
         let outside_file = outside_dir.path().join("outside_file.txt");
         fs::write(&outside_file, "outside content").unwrap();
+        let outside_file = outside_file.canonicalize().unwrap();
 
         // Test getting relative path (should fail)
         let result = get_relative_path(temp_path, &outside_file);

@@ -481,3 +481,17 @@ jobs:
       - uses: actions/checkout@v5
       - name: Publish to Cargo
         run: cargo publish
+
+  winget-publish:
+    name: Cargo Publish
+    runs-on: windows-latest
+    if: ${{ contains(needs.changepacks.outputs.changepacks, './crates/cli/Cargo.toml') }}
+    needs:
+      - changepacks
+    steps:
+      - uses: actions/checkout@v5
+      - uses: vedantmgoyal9/winget-releaser@main
+        with:
+          identifier: Changepacks.Changepacks
+          installers-regex: '\.exe$' # Only .exe files
+          token: ${{ secrets.WINGET_TOKEN }}
