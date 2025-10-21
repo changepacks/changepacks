@@ -12,11 +12,7 @@ crate-type = ["cdylib"]
 napi = { version = "3.3", features = ["tokio_rt"] }
 napi-derive = "3.2"
 cli = { path = "../../crates/cli" }
-tokio = { version = "1.48", features = ["full"] }
+tokio = { version = "1.48" }
 
 [build-dependencies]
 napi-build = "2"
-
-[profile.release]
-lto = true
-strip = "symbols"

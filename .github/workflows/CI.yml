@@ -56,6 +56,8 @@ jobs:
 
   # node
   node-build:
+    needs:
+      - test
     strategy:
       fail-fast: false
       matrix:
@@ -119,6 +121,7 @@ jobs:
       - name: Build
         run: ${{ matrix.settings.build }}
         shell: bash
+        working-directory: ./bridge/node
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -130,6 +133,7 @@ jobs:
   node-test-macOS-windows-binding:
     name: Test bindings on ${{ matrix.settings.target }} - node@${{ matrix.node }}
     needs:
+      - test
       - node-build
     strategy:
       fail-fast: false
@@ -173,6 +177,7 @@ jobs:
   node-test-linux-binding:
     name: Test ${{ matrix.target }} - node@${{ matrix.node }}
     needs:
+      - test
       - node-build
     strategy:
       fail-fast: false
@@ -241,6 +246,8 @@ jobs:
   # python
   python-build-linux:
     runs-on: ${{ matrix.platform.runner }}
+    needs:
+      - test
     strategy:
       matrix:
         platform:
@@ -273,6 +280,8 @@ jobs:
 
   python-build-musllinux:
     runs-on: ${{ matrix.platform.runner }}
+    needs:
+      - test
     strategy:
       matrix:
         platform:
@@ -301,6 +310,8 @@ jobs:
 
   python-build-windows:
     runs-on: ${{ matrix.platform.runner }}
+    needs:
+      - test
     strategy:
       matrix:
         platform:
@@ -324,6 +335,8 @@ jobs:
 
   python-build-macos:
     runs-on: ${{ matrix.platform.runner }}
+    needs:
+      - test
     strategy:
       matrix:
         platform:
@@ -347,6 +360,8 @@ jobs:
 
   python-build-sdist:
     runs-on: ubuntu-latest
+    needs:
+      - test
     steps:
       - uses: actions/checkout@v4
       - name: Build sdist
