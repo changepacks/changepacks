@@ -1,0 +1,36 @@
+# Windows targets
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+# Linux targets
+[target.x86_64-unknown-linux-gnu]
+linker = "x86_64-linux-gnu-gcc"
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+
+[target.armv7-unknown-linux-gnueabihf]
+linker = "arm-linux-gnueabihf-gcc"
+
+[target.s390x-unknown-linux-gnu]
+linker = "s390x-linux-gnu-gcc"
+
+[target.powerpc64le-unknown-linux-gnu]
+linker = "powerpc64le-linux-gnu-gcc"
+
+# macOS targets
+[target.x86_64-apple-darwin]
+linker = "x86_64-apple-darwin-gcc"
+
+[target.aarch64-apple-darwin]
+linker = "aarch64-apple-darwin-gcc"
+
+# Musl targets (for static linking)
+[target.x86_64-unknown-linux-musl]
+linker = "x86_64-linux-musl-gcc"
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-musl-gcc"
+
+[target.armv7-unknown-linux-musleabihf]
+linker = "arm-linux-musleabihf-gcc"
