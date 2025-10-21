@@ -16,4 +16,7 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
         }
         Ok(())
     }
+    async fn test(&self) -> Result<()> {
+        Ok(())
+    }
 }

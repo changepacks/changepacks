@@ -48,9 +48,9 @@ impl ProjectFinder for PythonProjectFinder {
             && self.project_files().contains(
                 &path
                     .file_name()
-                    .context("File name not found")?
+                    .context(format!("File name not found - {}", path.display()))?
                     .to_str()
-                    .context("File name not found")?,
+                    .context(format!("File name not found - {}", path.display()))?,
             )
         {
             if self.projects.contains_key(path) {
@@ -59,18 +59,18 @@ impl ProjectFinder for PythonProjectFinder {
             // read pyproject.toml
             let pyproject_toml = read_to_string(path).await?;
             let pyproject_toml: toml::Value = toml::from_str(&pyproject_toml)?;
+            let project = pyproject_toml
+                .get("project")
+                .context(format!("Project not found - {}", path.display()))?;
+
             // if workspace
             if pyproject_toml
                 .get("tool")
                 .and_then(|t| t.get("uv").and_then(|u| u.get("workspace")))
                 .is_some()
             {
-                let version = pyproject_toml["project"]["version"]
-                    .as_str()
-                    .map(|v| v.to_string());
-                let name = pyproject_toml["project"]["name"]
-                    .as_str()
-                    .map(|v| v.to_string());
+                let version = project["version"].as_str().map(|v| v.to_string());
+                let name = project["name"].as_str().map(|v| v.to_string());
                 self.projects.insert(
                     path.to_path_buf(),
                     Project::Workspace(Box::new(PythonWorkspace::new(
@@ -81,13 +81,13 @@ impl ProjectFinder for PythonProjectFinder {
                     ))),
                 );
             } else {
-                let version = pyproject_toml["project"]["version"]
-                    .as_str()
-                    .context("Version not found")?
+                let version = project
+                    .get("version")
+                    .context(format!("Version not found - {}", path.display()))?
                     .to_string();
-                let name = pyproject_toml["project"]["name"]
-                    .as_str()
-                    .context("Name not found")?
+                let name = project
+                    .get("name")
+                    .context(format!("Name not found - {}", path.display()))?
                     .to_string();
                 self.projects.insert(
                     path.to_path_buf(),

@@ -1,10 +1,9 @@
-use napi::Result;
+use napi::{Error, Result};
 use napi_derive::napi;
 
 #[napi]
-pub async fn run(_args: Vec<String>) -> Result<()> {
-  // cli::main(args.as_slice())
-  //   .await
-  //   .map_err(|e| napi::Error::from_reason(e.to_string()))
-  Ok(())
+pub async fn main() -> Result<()> {
+  cli::main(&std::env::args().skip(1).collect::<Vec<String>>())
+    .await
+    .map_err(|e| Error::from_reason(e.to_string()))
 }

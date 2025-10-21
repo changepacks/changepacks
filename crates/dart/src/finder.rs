@@ -50,9 +50,9 @@ impl ProjectFinder for DartProjectFinder {
             && self.project_files().contains(
                 &path
                     .file_name()
-                    .context("File name not found")?
+                    .context(format!("File name not found - {}", path.display()))?
                     .to_str()
-                    .context("File name not found")?,
+                    .context(format!("File name not found - {}", path.display()))?,
             )
         {
             if self.projects.contains_key(path) {
@@ -85,11 +85,11 @@ impl ProjectFinder for DartProjectFinder {
             } else {
                 let version = pubspec["version"]
                     .as_str()
-                    .context("Version not found")?
+                    .context(format!("Version not found - {}", path.display()))?
                     .to_string();
                 let name = pubspec["name"]
                     .as_str()
-                    .context("Name not found")?
+                    .context(format!("Name not found - {}", path.display()))?
                     .to_string();
 
                 self.projects.insert(

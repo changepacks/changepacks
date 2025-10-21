@@ -50,9 +50,9 @@ impl ProjectFinder for NodeProjectFinder {
             && self.project_files().contains(
                 &path
                     .file_name()
-                    .context("File name not found")?
+                    .context(format!("File name not found - {}", path.display()))?
                     .to_str()
-                    .context("File name not found")?,
+                    .context(format!("File name not found - {}", path.display()))?,
             )
         {
             if self.projects.contains_key(path) {
@@ -65,7 +65,7 @@ impl ProjectFinder for NodeProjectFinder {
             if package_json.get("workspaces").is_some()
                 || path
                     .parent()
-                    .context("Parent not found")?
+                    .context(format!("Parent not found - {}", path.display()))?
                     .join("pnpm-workspace.yaml")
                     .is_file()
             {
@@ -83,11 +83,11 @@ impl ProjectFinder for NodeProjectFinder {
             } else {
                 let version = package_json["version"]
                     .as_str()
-                    .context("Version not found")?
+                    .context(format!("Version not found - {}", path.display()))?
                     .to_string();
                 let name = package_json["name"]
                     .as_str()
-                    .context("Name not found")?
+                    .context(format!("Name not found - {}", path.display()))?
                     .to_string();
 
                 self.projects.insert(

@@ -1,23 +1,23 @@
+use crate::get_relative_path;
 use anyhow::{Context, Result};
 use changepacks_core::proejct_finder::ProjectFinder;
-use gix::{Repository, bstr::ByteSlice, features::progress};
+use gix::{ThreadSafeRepository, bstr::ByteSlice, features::progress};
 use std::path::Path;
-
-use crate::get_relative_path;
 
 /// Find project directories containing specific files from git tracked files
 pub async fn find_project_dirs(
-    repo: &Repository,
+    repo: &ThreadSafeRepository,
     project_finders: &mut [Box<dyn ProjectFinder>],
 ) -> Result<()> {
-    let index = repo.index()?;
-    let changed_files = repo.status(progress::Discard)?;
-
     // Get git root for relative path conversion
     let git_root_path = repo
-        .workdir()
+        .work_dir()
         .ok_or_else(|| anyhow::anyhow!("Not a working directory"))?;
 
+    let repo = repo.to_thread_local();
+    let index = repo
+        .index()
+        .context("Failed to get index, Please add files to git")?;
     // Iterate through git tracked files and find matching project files
     for entry in index.entries() {
         let file_path = entry.path(&index);
@@ -42,7 +42,8 @@ pub async fn find_project_dirs(
         .collect::<Result<Vec<_>>>()?;
     }
 
-    let changed_files = changed_files
+    let changed_files = repo
+        .status(progress::Discard)?
         .into_index_worktree_iter(Vec::new())?
         .collect::<Result<Vec<_>, _>>()?;
     for file in changed_files {

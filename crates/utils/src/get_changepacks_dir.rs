@@ -7,7 +7,7 @@ use crate::find_current_git_repo;
 pub fn get_changepacks_dir(current_dir: &Path) -> Result<PathBuf> {
     let repo = find_current_git_repo(current_dir)?;
     let changepacks_dir = repo
-        .workdir()
+        .work_dir()
         .context("Failed to find current git repository")?
         .join(".changepacks");
     Ok(changepacks_dir)

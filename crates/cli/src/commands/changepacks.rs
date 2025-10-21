@@ -19,7 +19,7 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
 
     // collect all projects
     let repo = find_current_git_repo(&current_dir)?;
-    let repo_root_path = repo.workdir().context("Not a working directory")?;
+    let repo_root_path = repo.work_dir().context("Not a working directory")?;
     find_project_dirs(&repo, &mut project_finders).await?;
 
     let mut projects = project_finders
@@ -41,6 +41,9 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     let mut update_map = HashMap::<PathBuf, UpdateType>::new();
 
     for update_type in [UpdateType::Major, UpdateType::Minor, UpdateType::Patch] {
+        if projects.is_empty() {
+            break;
+        }
         let message = format!("Select projects to update for {}", update_type);
         // select project to update
         let mut selector = inquire::MultiSelect::new(&message, projects.clone());

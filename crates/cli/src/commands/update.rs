@@ -1,8 +1,5 @@
-use std::pin::Pin;
-
 use anyhow::{Context, Result};
 use clap::Args;
-use std::future::Future;
 use utils::{
     clear_update_logs, display_update, find_current_git_repo, find_project_dirs, gen_update_map,
     get_changepacks_dir, get_relative_path,
@@ -24,7 +21,7 @@ pub struct UpdateArgs {
 pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     let repo = find_current_git_repo(&current_dir)?;
-    let repo_root_path = repo.workdir().context("Not a working directory")?;
+    let repo_root_path = repo.work_dir().context("Not a working directory")?;
     let changepacks_dir = get_changepacks_dir(&current_dir)?;
     // check if changepacks.json exists
     let changepacks_file = changepacks_dir.join("changepacks.json");
@@ -77,21 +74,17 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
         return Ok(());
     }
 
-    let mut all_futures: Vec<Pin<Box<dyn Future<Output = Result<()>>>>> = Vec::new();
+    // Clear files
+    clear_update_logs(&changepacks_dir).await?;
 
-    // Add remove file futures
-    all_futures.push(Box::pin(async move {
-        clear_update_logs(&changepacks_dir).await
-    }));
-
-    // Add update futures
-    for (project, update_type) in update_projects {
-        all_futures.push(Box::pin(async move {
-            project.update_version(update_type).await
-        }));
-    }
-
-    futures::future::join_all(all_futures).await;
+    futures::future::join_all(
+        update_projects
+            .iter()
+            .map(|(project, update_type)| project.update_version(update_type.clone())),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
 
     Ok(())
 }

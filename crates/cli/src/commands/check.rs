@@ -1,6 +1,6 @@
 use changepacks_core::project::Project;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Args;
 use utils::{
     display_update, find_current_git_repo, find_project_dirs, gen_update_map, get_changepacks_dir,
@@ -20,6 +20,7 @@ pub struct CheckArgs {
 pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     let repo = find_current_git_repo(&current_dir)?;
+    let repo_root_path = repo.work_dir().context("Not a working directory")?;
     // check if changepacks.json exists
     let changepacks_file = get_changepacks_dir(&current_dir)?.join("changepacks.json");
     if !changepacks_file.exists() {
@@ -48,7 +49,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                 format!("{}", project).replace(
                     project.version().unwrap_or("unknown"),
                     &if let Some(update_type) =
-                        update_map.get(&get_relative_path(&current_dir, project.path())?)
+                        update_map.get(&get_relative_path(repo_root_path, project.path())?)
                     {
                         display_update(project.version(), update_type.clone())?
                     } else {
