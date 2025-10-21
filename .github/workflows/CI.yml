@@ -279,6 +279,7 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
           working-directory: bridge/python
+          container: off
         env:
           PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
       - name: Upload wheels
