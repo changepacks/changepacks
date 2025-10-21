@@ -274,6 +274,11 @@ jobs:
         uses: astral-sh/setup-uv@v5
       - name: Install maturin
         run: uv pip install maturin --system
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
       - name: Build wheels
         run: maturin build --release --out dist -f --target ${{ matrix.platform.target }}
         working-directory: bridge/python
