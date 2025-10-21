@@ -266,15 +266,12 @@ jobs:
             target: ppc64le
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python 3.x
-        uses: actions/setup-python@v6
-        with:
-          python-version: 3.x
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -f
+          args: --release --out dist
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
           working-directory: bridge/python
       - name: Upload wheels
@@ -300,16 +297,12 @@ jobs:
             target: armv7
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python 3.x
-        uses: actions/setup-python@v6
-        with:
-          python-version: 3.x
-        id: python
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -f
+          args: --release --out dist
+          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
           working-directory: bridge/python
       - name: Upload wheels
