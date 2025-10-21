@@ -128,7 +128,7 @@ jobs:
       - name: Build
         run: ${{ matrix.settings.build }}
         shell: bash
-        working-directory: ./bridge/node
+        working-directory: bridge/node
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -283,14 +283,13 @@ jobs:
         uses: actions/setup-python@v6
         with:
           python-version: 3.x
-        id: python
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist -f
           manylinux: auto
-          working-directory: ./bridge/python
+          working-directory: bridge/python
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -325,7 +324,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist -f
           manylinux: musllinux_1_2
-          working-directory: ./bridge/python
+          working-directory: bridge/python
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -355,7 +354,7 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist -f
-          working-directory: ./bridge/python
+          working-directory: bridge/python
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -385,7 +384,7 @@ jobs:
         with:
           target: ${{ matrix.platform.target }}
           args: --release --out dist -f
-          working-directory: ./bridge/python
+          working-directory: bridge/python
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -403,7 +402,7 @@ jobs:
         with:
           command: sdist
           args: --out dist
-          working-directory: ./bridge/python
+          working-directory: bridge/python
       - name: Upload sdist
         uses: actions/upload-artifact@v4
         with:
@@ -439,7 +438,7 @@ jobs:
       id-token: write
     needs:
       - changepacks
-    if: ${{ contains(needs.changepacks.outputs.changepacks, './bridge/node/package.json') }}
+    if: ${{ contains(needs.changepacks.outputs.changepacks, 'bridge/node/package.json') }}
     steps:
       - uses: actions/checkout@v5
       - name: Setup node
@@ -480,7 +479,7 @@ jobs:
   python-publish:
     name: Python Publish
     runs-on: ubuntu-latest
-    if: ${{ contains(needs.changepacks.outputs.changepacks, './bridge/python/pyproject.toml') }}
+    if: ${{ contains(needs.changepacks.outputs.changepacks, 'bridge/python/pyproject.toml') }}
     needs:
       - changepacks
     permissions:
@@ -508,7 +507,7 @@ jobs:
   cargo-publish:
     name: Cargo Publish
     runs-on: ubuntu-latest
-    if: ${{ contains(needs.changepacks.outputs.changepacks, './crates/cli/Cargo.toml') }}
+    if: ${{ contains(needs.changepacks.outputs.changepacks, 'crates/cli/Cargo.toml') }}
     needs:
       - changepacks
     steps:
@@ -519,7 +518,7 @@ jobs:
   winget-publish:
     name: Cargo Publish
     runs-on: windows-latest
-    if: ${{ contains(needs.changepacks.outputs.changepacks, './crates/cli/Cargo.toml') }}
+    if: ${{ contains(needs.changepacks.outputs.changepacks, 'crates/cli/Cargo.toml') }}
     needs:
       - changepacks
     steps:
