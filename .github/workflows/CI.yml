@@ -247,9 +247,11 @@ jobs:
   # python
   python-build-macos:
     runs-on: macos-latest
+    needs:
+      - test
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
       - uses: dtolnay/rust-toolchain@stable
@@ -263,7 +265,7 @@ jobs:
           working-directory: bridge/python
       - name: Install built wheel - x86_64
         run: |
-          pip install auditwheel-symbols --no-index --find-links dist --force-reinstall
+          pip install auditwheel-symbols --no-index --find-links bridge/python/dist --force-reinstall
           auditwheel-symbols --help
       - name: Build wheels - universal2
         uses: PyO3/maturin-action@v1
@@ -273,7 +275,7 @@ jobs:
           working-directory: bridge/python
       - name: Install built wheel - universal2
         run: |
-          pip install auditwheel-symbols --no-index --find-links dist --force-reinstall
+          pip install auditwheel-symbols --no-index --find-links bridge/python/dist --force-reinstall
           auditwheel-symbols --help
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -283,6 +285,8 @@ jobs:
 
   python-build-windows:
     runs-on: windows-latest
+    needs:
+      - test
     strategy:
       matrix:
         platform: [
@@ -291,9 +295,9 @@ jobs:
         ]
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v6
         with:
-          python-version: 3.6
+          python-version: '3.10'
           architecture: ${{ matrix.platform.python-architecture }}
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -306,7 +310,7 @@ jobs:
           working-directory: bridge/python
       - name: Install built wheel
         run: |
-          pip install auditwheel-symbols --no-index --find-links dist --force-reinstall
+          pip install auditwheel-symbols --no-index --find-links bridge/python/dist --force-reinstall
           auditwheel-symbols --help
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -316,6 +320,8 @@ jobs:
 
   python-build-linux:
     runs-on: ubuntu-latest
+    needs:
+      - test
     strategy:
       matrix:
         platform: [
@@ -337,7 +343,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           manylinux: auto
           container: off
-          args: --release -o dist
+          args: --release -o dist -f
           working-directory: bridge/python
       - name: Build Wheels - musllinux
         uses: PyO3/maturin-action@main
@@ -345,7 +351,7 @@ jobs:
           target: ${{ matrix.platform.target }}
           manylinux: musllinux_1_1
           container: off
-          args: --release -o dist
+          args: --release -o dist -f
           working-directory: bridge/python
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -361,7 +367,7 @@ jobs:
       - uses: actions/download-artifact@v5
         with:
           name: wheels
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
       - name: Install auditwheel-symbols
@@ -449,7 +455,7 @@ jobs:
       - uses: actions/download-artifact@v5
         with:
           name: wheels
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
 
