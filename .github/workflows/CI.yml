@@ -313,7 +313,7 @@ jobs:
         uses: PyO3/maturin-action@main
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -f -i python3.10
+          args: --release --out dist -i python3.10
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
           working-directory: bridge/python
