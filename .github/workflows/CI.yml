@@ -269,19 +269,39 @@ jobs:
       - name: Set up Python 3.x
         uses: actions/setup-python@v6
         with:
-          python-version: '3.10'
+          python-version: 3.x
         id: python
-      - name: Build wheels
-        uses: PyO3/maturin-action@main
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install maturin
+        run: uv pip install maturin --system
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
         with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist -i python3.10
-          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-          manylinux: auto
-          working-directory: bridge/python
-          container: off
+          components: clippy, rustfmt
+      - name: Build wheels
+        run: maturin build --release --out dist -f
+        working-directory: bridge/python
         env:
           PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
+
+      # - name: Set up Python 3.x
+      #   uses: actions/setup-python@v6
+      #   with:
+      #     python-version: '3.10'
+      #   id: python
+      # - name: Build wheels
+      #   uses: PyO3/maturin-action@main
+      #   with:
+      #     target: ${{ matrix.platform.target }}
+      #     args: --release --out dist -i python3.10
+      #     sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      #     manylinux: auto
+      #     working-directory: bridge/python
+      #     container: off
+      #   env:
+      #     PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -305,20 +325,40 @@ jobs:
             target: armv7
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
+      - name: Set up Python 3.x
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.10'
+          python-version: 3.x
         id: python
-      - name: Build wheels
-        uses: PyO3/maturin-action@main
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Install maturin
+        run: uv pip install maturin --system
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
         with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist -i python3.10
-          sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
-          manylinux: musllinux_1_2
-          working-directory: bridge/python
+          components: clippy, rustfmt
+      - name: Build wheels
+        run: maturin build --release --out dist -f
+        working-directory: bridge/python
         env:
           PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
+
+      # - uses: actions/setup-python@v6
+      #   with:
+      #     python-version: '3.10'
+      #   id: python
+      # - name: Build wheels
+      #   uses: PyO3/maturin-action@main
+      #   with:
+      #     target: ${{ matrix.platform.target }}
+      #     args: --release --out dist -i python3.10
+      #     sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+      #     manylinux: musllinux_1_2
+      #     working-directory: bridge/python
+      #   env:
+      #     PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
