@@ -9,6 +9,9 @@ concurrency:
 
 jobs:
   build:
+    permissions:
+      contents: write
+      id-token: write
     name: Build for ${{ matrix.platform }}
     runs-on: ${{ matrix.platform }}
     needs: []
