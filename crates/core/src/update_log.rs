@@ -8,15 +8,15 @@ use crate::update_type::UpdateType;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChangePackLog {
     changes: HashMap<PathBuf, UpdateType>,
-    notes: String,
+    note: String,
     date: DateTime<Utc>,
 }
 
 impl ChangePackLog {
-    pub fn new(changes: HashMap<PathBuf, UpdateType>, notes: String) -> Self {
+    pub fn new(changes: HashMap<PathBuf, UpdateType>, note: String) -> Self {
         Self {
             changes,
-            notes,
+            note,
             date: Utc::now(),
         }
     }
@@ -25,7 +25,7 @@ impl ChangePackLog {
         &self.changes
     }
 
-    pub fn notes(&self) -> &str {
-        &self.notes
+    pub fn note(&self) -> &str {
+        &self.note
     }
 }

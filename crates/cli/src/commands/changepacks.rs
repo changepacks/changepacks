@@ -1,4 +1,4 @@
-use changepacks_core::{ChangePackLog, project::Project, update_type::UpdateType};
+use changepacks_core::{ChangePackLog, Project, UpdateType};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::write;
 

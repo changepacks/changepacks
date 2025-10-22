@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use changepacks_core::{Language, Package, update_type::UpdateType};
+use changepacks_core::{Language, Package, UpdateType};
 use tokio::fs::{read_to_string, write};
 use utils::next_version;
 

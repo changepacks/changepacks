@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use changepacks_core::update_type::UpdateType;
+use changepacks_core::UpdateType;
 
 pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     let mut version_parts = version.split(".").collect::<Vec<&str>>();

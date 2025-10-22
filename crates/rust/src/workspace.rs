@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use changepacks_core::{Language, Workspace, update_type::UpdateType};
+use changepacks_core::{Language, UpdateType, Workspace};
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 use utils::next_version;

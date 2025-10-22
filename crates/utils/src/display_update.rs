@@ -1,5 +1,5 @@
 use anyhow::Result;
-use changepacks_core::update_type::UpdateType;
+use changepacks_core::UpdateType;
 
 use crate::next_version;
 

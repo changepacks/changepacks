@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use changepacks_core::{ProjectFinder, project::Project};
+use changepacks_core::{Project, ProjectFinder};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -83,12 +83,14 @@ impl ProjectFinder for PythonProjectFinder {
             } else {
                 let version = project
                     .get("version")
-                    .context(format!("Version not found - {}", path.display()))?
-                    .to_string();
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string())
+                    .context(format!("Version not found - {}", path.display()))?;
                 let name = project
                     .get("name")
-                    .context(format!("Name not found - {}", path.display()))?
-                    .to_string();
+                    .and_then(|v| v.as_str())
+                    .map(|v| v.to_string())
+                    .context(format!("Name not found - {}", path.display()))?;
                 self.projects.insert(
                     path.to_path_buf(),
                     Project::Package(Box::new(PythonPackage::new(

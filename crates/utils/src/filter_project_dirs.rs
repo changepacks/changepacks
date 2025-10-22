@@ -1,6 +1,6 @@
 use crate::get_relative_path;
 use anyhow::{Context, Result};
-use changepacks_core::proejct_finder::ProjectFinder;
+use changepacks_core::ProjectFinder;
 use gix::{ThreadSafeRepository, bstr::ByteSlice, features::progress};
 use std::path::Path;
 

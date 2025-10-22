@@ -1,0 +1,40 @@
+use serde::{Deserialize, Serialize};
+
+use crate::update_type::UpdateType;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChangePackResultLog {
+    r#type: UpdateType,
+    note: String,
+}
+
+impl ChangePackResultLog {
+    pub fn new(r#type: UpdateType, note: String) -> Self {
+        Self { r#type, note }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangePackResult {
+    logs: Vec<ChangePackResultLog>,
+    version: Option<String>,
+    next_version: Option<String>,
+    name: Option<String>,
+}
+
+impl ChangePackResult {
+    pub fn new(
+        logs: Vec<ChangePackResultLog>,
+        version: Option<String>,
+        next_version: Option<String>,
+        name: Option<String>,
+    ) -> Self {
+        Self {
+            logs,
+            version,
+            next_version,
+            name,
+        }
+    }
+}

@@ -1,14 +1,16 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use changepacks_core::{ChangePackLog, update_type::UpdateType};
+use changepacks_core::{ChangePackLog, ChangePackResultLog, UpdateType};
 use gix::hashtable::hash_map::HashMap;
 use tokio::fs::{read_dir, read_to_string};
 
 use crate::get_changepacks_dir;
 
-pub async fn gen_update_map(current_dir: &Path) -> Result<HashMap<PathBuf, UpdateType>> {
-    let mut update_map = HashMap::<PathBuf, UpdateType>::new();
+pub async fn gen_update_map(
+    current_dir: &Path,
+) -> Result<HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>> {
+    let mut update_map = HashMap::<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>::new();
     let changepacks_dir = get_changepacks_dir(current_dir)?;
 
     let mut entries = read_dir(&changepacks_dir).await?;
@@ -20,13 +22,16 @@ pub async fn gen_update_map(current_dir: &Path) -> Result<HashMap<PathBuf, Updat
         let file_json = read_to_string(file.path()).await?;
         let file_json: ChangePackLog = serde_json::from_str(&file_json)?;
         for (project_path, update_type) in file_json.changes().iter() {
-            if update_map.contains_key(project_path) {
-                if update_map[project_path] > *update_type {
-                    update_map.insert(project_path.clone(), update_type.clone());
-                }
-                continue;
+            let ret = update_map
+                .entry(project_path.clone())
+                .or_insert((update_type.clone(), vec![]));
+            ret.1.push(ChangePackResultLog::new(
+                update_type.clone(),
+                file_json.note().to_string(),
+            ));
+            if ret.0 > *update_type {
+                ret.0 = update_type.clone();
             }
-            update_map.insert(project_path.clone(), update_type.clone());
         }
     }
     Ok(update_map)
@@ -85,7 +90,7 @@ mod tests {
             let update_map = gen_update_map(&temp_path).await.unwrap();
             assert!(update_map.len() == 1);
             assert!(update_map.contains_key(&temp_path.join("package")));
-            assert!(update_map[&temp_path.join("package")] == UpdateType::Patch);
+            assert!(update_map[&temp_path.join("package")].0 == UpdateType::Patch);
         }
 
         {
@@ -106,7 +111,7 @@ mod tests {
             assert!(update_map.len() == 1);
             assert!(update_map.contains_key(&temp_path.join("package")));
             // overwrite the previous update type
-            assert!(update_map[&temp_path.join("package")] == UpdateType::Minor);
+            assert!(update_map[&temp_path.join("package")].0 == UpdateType::Minor);
         }
         {
             let mut map = HashMap::new();
@@ -122,7 +127,7 @@ mod tests {
             let update_map = gen_update_map(&temp_path).await.unwrap();
             assert!(update_map.len() == 2);
             assert!(update_map.contains_key(&temp_path.join("package2")));
-            assert!(update_map[&temp_path.join("package2")] == UpdateType::Major);
+            assert!(update_map[&temp_path.join("package2")].0 == UpdateType::Major);
         }
         {
             let mut map = HashMap::new();
@@ -139,7 +144,7 @@ mod tests {
             assert!(update_map.len() == 2);
             assert!(update_map.contains_key(&temp_path.join("package2")));
             // remain
-            assert!(update_map[&temp_path.join("package2")] == UpdateType::Major);
+            assert!(update_map[&temp_path.join("package2")].0 == UpdateType::Major);
         }
         temp_dir.close().unwrap();
     }
