@@ -266,11 +266,6 @@ jobs:
             target: ppc64le
     steps:
       - uses: actions/checkout@v4
-      - name: Set up Python 3.x
-        uses: actions/setup-python@v6
-        with:
-          python-version: 3.x
-        id: python
       - name: Build wheels
         uses: PyO3/maturin-action@main
         with:
@@ -279,8 +274,6 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
           working-directory: bridge/python
-        env:
-          PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -304,10 +297,6 @@ jobs:
             target: armv7
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.x'
-        id: python
       - name: Build wheels
         uses: PyO3/maturin-action@main
         with:
@@ -316,8 +305,6 @@ jobs:
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
           working-directory: bridge/python
-        env:
-          PYO3_PYTHON: ${{ steps.python.outputs.python-path }}
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
