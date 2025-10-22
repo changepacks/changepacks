@@ -8,16 +8,30 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
-    name: Build for ${{ matrix.platform }}
-    runs-on: ${{ matrix.platform }}
-    needs: []
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
-
+    steps:
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+  upload-assets:
+    needs: release
+    permissions:
+      contents: write
+      id-token: write
+    name: Upload Assets for ${{ matrix.platform }}
+    runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
@@ -46,103 +60,13 @@ jobs:
           target: ${{ matrix.target }}
           components: clippy, rustfmt
 
-      - name: Setup Python (for Python wheel)
-        if: matrix.platform == 'ubuntu-latest'
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.11'
-
-      - name: Install uv
-        if: matrix.platform == 'ubuntu-latest'
-        uses: astral-sh/setup-uv@v5
-
-      - name: Install maturin
-        if: matrix.platform == 'ubuntu-latest'
-        run: uv pip install maturin --system
-
       - name: Build Rust binary
         run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Build Python wheel
-        if: matrix.platform == 'ubuntu-latest'
-        run: |
-          cd bridge/python
-          maturin build --release --target ${{ matrix.target }}
-
-      - name: Create Release
-        id: create_release
-        if: matrix.platform == 'ubuntu-latest'
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-
-      - name: Upload Rust Binary
+      
+      - name: Upload Asset
         uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          upload_url: ${{ needs.release.outputs.upload_url }}
           asset_path: target/${{ matrix.target }}/release/changepacks${{ matrix.os == 'windows' && '.exe' || '' }}
           asset_name: ${{ matrix.binary_name }}
-          asset_content_type: application/octet-stream
-
-  upload-windows:
-    name: Upload for Windows
-    runs-on: windows-latest
-    needs: build
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-          target: x86_64-pc-windows-msvc
-
-      - name: Build Rust binary
-        run: cargo build --release --target x86_64-pc-windows-msvc
-
-      - name: Upload Rust Binary
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.build.outputs.upload_url }}
-          asset_path: target/x86_64-pc-windows-msvc/release/changepacks.exe
-          asset_name: changepacks-windows-x86_64.exe
-          asset_content_type: application/octet-stream
-
-  upload-macos:
-    name: Upload for macOS
-    runs-on: macos-latest
-    needs: build
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-          target: x86_64-apple-darwin
-
-      - name: Build Rust binary
-        run: cargo build --release --target x86_64-apple-darwin
-
-      - name: Upload Rust Binary
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.build.outputs.upload_url }}
-          asset_path: target/x86_64-apple-darwin/release/changepacks
-          asset_name: changepacks-macos-x86_64
           asset_content_type: application/octet-stream
