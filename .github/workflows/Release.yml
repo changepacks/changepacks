@@ -49,7 +49,7 @@ jobs:
           - platform: macos-latest
             os: macos
             target: x86_64-apple-darwin
-            binary_name: changepacks-macos-x86_64
+            binary_name: changepacks-darwin-x86_64
 
     steps:
       - name: Checkout
