@@ -242,7 +242,8 @@ jobs:
         with:
           image: ${{ steps.docker.outputs.IMAGE }}
           options: '-v ${{ github.workspace }}:${{ github.workspace }} -w ${{ github.workspace }} --platform ${{ steps.docker.outputs.PLATFORM }}'
-          run: bun run test
+          # inside docker
+          run: yarn run test
   
   # python
   python-build:
