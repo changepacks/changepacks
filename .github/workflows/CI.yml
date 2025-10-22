@@ -270,7 +270,7 @@ jobs:
         uses: PyO3/maturin-action@main
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -f
+          args: --release --out dist -f --locked -v
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: auto
           working-directory: bridge/python
@@ -301,7 +301,7 @@ jobs:
         uses: PyO3/maturin-action@main
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -f
+          args: --release --out dist -f --locked -v
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
           manylinux: musllinux_1_2
           working-directory: bridge/python
