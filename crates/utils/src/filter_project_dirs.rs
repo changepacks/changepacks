@@ -10,9 +10,7 @@ pub async fn find_project_dirs(
     project_finders: &mut [Box<dyn ProjectFinder>],
 ) -> Result<()> {
     // Get git root for relative path conversion
-    let git_root_path = repo
-        .work_dir()
-        .ok_or_else(|| anyhow::anyhow!("Not a working directory"))?;
+    let git_root_path = repo.work_dir().context("Not a working directory")?;
 
     let repo = repo.to_thread_local();
     let index = repo
