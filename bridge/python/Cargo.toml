@@ -6,7 +6,6 @@ edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pyo3 = { version = "0.27" }
-pyo3-async-runtimes = { version = "0.27", features = ["attributes", "tokio-runtime"] }
-tokio = { version = "1.48" }
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros"] }
 cli = { path = "../../crates/cli" }
+anyhow = "1.0"
