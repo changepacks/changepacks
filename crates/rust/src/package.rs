@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
+use toml_edit::DocumentMut;
 use utils::next_version;
 
 #[derive(Debug)]
@@ -47,9 +48,9 @@ impl Package for RustPackage {
         let next_version = next_version(&self.version, update_type)?;
 
         let cargo_toml = read_to_string(&self.path).await?;
-        let mut cargo_toml: toml::Value = toml::from_str(&cargo_toml)?;
-        cargo_toml["package"]["version"] = toml::Value::String(next_version);
-        write(&self.path, toml::to_string_pretty(&cargo_toml)?).await?;
+        let mut cargo_toml: DocumentMut = cargo_toml.parse::<DocumentMut>()?;
+        cargo_toml["package"]["version"] = next_version.into();
+        write(&self.path, cargo_toml.to_string()).await?;
         Ok(())
     }
 

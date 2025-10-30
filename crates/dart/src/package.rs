@@ -50,7 +50,10 @@ impl Package for DartPackage {
 
         let pubspec_yaml = read_to_string(&self.path).await?;
         let mut pubspec: serde_yaml::Value = serde_yaml::from_str(&pubspec_yaml)?;
-        pubspec["version"] = serde_yaml::Value::String(next_version);
+        yaml_patch::Patch::patch_from_str(
+            &mut pubspec,
+            &format!("{{'version': '{}'}}", next_version),
+        )?;
         write(&self.path, serde_yaml::to_string(&pubspec)?).await?;
         Ok(())
     }

@@ -11,3 +11,4 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 anyhow = "1.0"
 tokio = { version = "1.48", features = ["fs"] }
+yaml-patch = "0.1.1"

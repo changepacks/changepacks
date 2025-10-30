@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
+use toml_edit::DocumentMut;
 use utils::next_version;
 
 #[derive(Debug)]
@@ -48,9 +49,9 @@ impl Package for PythonPackage {
         let next_version = next_version(&self.version, update_type)?;
 
         let pyproject_toml = read_to_string(&self.path).await?;
-        let mut pyproject_toml: toml::Value = toml::from_str(&pyproject_toml)?;
-        pyproject_toml["project"]["version"] = toml::Value::String(next_version);
-        write(&self.path, toml::to_string_pretty(&pyproject_toml)?).await?;
+        let mut pyproject_toml: DocumentMut = pyproject_toml.parse::<DocumentMut>()?;
+        pyproject_toml["project"]["version"] = next_version.into();
+        write(&self.path, pyproject_toml.to_string()).await?;
         Ok(())
     }
 

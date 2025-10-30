@@ -101,9 +101,6 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
         return Ok(());
     }
 
-    // Clear files
-    clear_update_logs(&changepacks_dir).await?;
-
     futures::future::join_all(
         update_projects
             .iter()
@@ -127,6 +124,9 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
             )?)?
         );
     }
+
+    // Clear files
+    clear_update_logs(&changepacks_dir).await?;
 
     Ok(())
 }

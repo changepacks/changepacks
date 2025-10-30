@@ -8,7 +8,7 @@ import sysconfig
 def find_changepacks_bin() -> str:
     """Return the changepacks binary path. (ruff code)"""
 
-    changepacks_exe = "changepacks" + sysconfig.get_config_var("EXE")
+    changepacks_exe = "changepacks-py" + sysconfig.get_config_var("EXE")
 
     scripts_path = os.path.join(sysconfig.get_path("scripts"), changepacks_exe)
     if os.path.isfile(scripts_path):

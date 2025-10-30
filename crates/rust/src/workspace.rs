@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
+use toml_edit::DocumentMut;
 use utils::next_version;
 
 #[derive(Debug)]
@@ -52,9 +53,12 @@ impl Workspace for RustWorkspace {
         )?;
 
         let cargo_toml = read_to_string(&self.path).await?;
-        let mut cargo_toml: toml::Value = toml::from_str(&cargo_toml)?;
-        cargo_toml["package"]["version"] = toml::Value::String(next_version);
-        write(&self.path, toml::to_string_pretty(&cargo_toml)?).await?;
+        let mut cargo_toml: DocumentMut = cargo_toml.parse::<DocumentMut>()?;
+        if cargo_toml.get("package").is_none() {
+            cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        cargo_toml["package"]["version"] = next_version.into();
+        write(&self.path, cargo_toml.to_string()).await?;
         Ok(())
     }
 
