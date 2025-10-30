@@ -15,7 +15,9 @@ pub trait Package: std::fmt::Debug + Send + Sync {
         if self.is_changed() {
             return Ok(());
         }
-        if path.starts_with(self.path().parent().context("Parent not found")?) {
+        if !path.to_string_lossy().contains(".changepacks")
+            && path.starts_with(self.path().parent().context("Parent not found")?)
+        {
             self.set_changed(true);
         }
         Ok(())
