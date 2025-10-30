@@ -2118,6 +2118,7 @@ dependencies = [
  "changepacks-core",
  "tokio",
  "toml",
+ "toml_edit",
  "utils",
 ]
 
@@ -2257,6 +2258,7 @@ dependencies = [
  "changepacks-core",
  "tokio",
  "toml",
+ "toml_edit",
  "utils",
 ]
 
@@ -2628,6 +2630,7 @@ dependencies = [
  "indexmap",
  "toml_datetime",
  "toml_parser",
+ "toml_writer",
  "winnow",
 ]
 

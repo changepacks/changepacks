@@ -10,3 +10,4 @@ anyhow = "1.0"
 toml = "0.9"
 tokio = { version = "1.48", features = ["fs"] }
 async-trait = "0.1"
+toml_edit = "0.23"
