@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
 use std::path::{Path, PathBuf};
@@ -53,8 +53,23 @@ impl Workspace for RustWorkspace {
 
         let cargo_toml = read_to_string(&self.path).await?;
         let mut cargo_toml: toml::Value = toml::from_str(&cargo_toml)?;
-        cargo_toml["package"]["version"] = toml::Value::String(next_version);
-        write(&self.path, toml::to_string_pretty(&cargo_toml)?).await?;
+        if cargo_toml.get_mut("package").is_none() {
+            cargo_toml.as_table_mut().unwrap().insert(
+                "package".to_string(),
+                toml::Value::Table(toml::map::Map::new()),
+            );
+        }
+        let package = cargo_toml
+            .get_mut("package")
+            .context("Package not found")?
+            .as_table_mut()
+            .context("Package not found")?;
+        if let Some(version) = package.get_mut("version") {
+            *version = toml::Value::String(next_version);
+        } else {
+            package.insert("version".to_string(), toml::Value::String(next_version));
+        }
+        write(&self.path, toml::to_string(&cargo_toml)?).await?;
         Ok(())
     }
 
