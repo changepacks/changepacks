@@ -53,7 +53,10 @@ impl Workspace for DartWorkspace {
 
         let pubspec_yaml = read_to_string(Path::new(&self.path)).await?;
         let mut pubspec: serde_yaml::Value = serde_yaml::from_str(&pubspec_yaml)?;
-        pubspec["version"] = serde_yaml::Value::String(next_version.clone());
+        yaml_patch::Patch::patch_from_str(
+            &mut pubspec,
+            &format!("{{'version': '{}'}}", next_version),
+        )?;
         write(Path::new(&self.path), serde_yaml::to_string(&pubspec)?).await?;
         Ok(())
     }
