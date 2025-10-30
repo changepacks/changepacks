@@ -27,6 +27,7 @@ pub fn gen_changepack_result_map(
                 )?),
                 project.name().map(|n| n.to_string()),
                 project.is_changed(),
+                key.clone(),
             ),
             None => ChangePackResult::new(
                 vec![],
@@ -34,6 +35,7 @@ pub fn gen_changepack_result_map(
                 None,
                 project.name().map(|n| n.to_string()),
                 project.is_changed(),
+                key.clone(),
             ),
         };
         map.insert(key, result);
