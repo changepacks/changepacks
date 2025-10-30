@@ -228,7 +228,10 @@ jobs:
     name: changepacks
     runs-on: ubuntu-latest
     permissions:
+      # create pull request comments
       pull-requests: write
+      # create pull request
+      contents: write
     needs:
       - test
       - python-build
