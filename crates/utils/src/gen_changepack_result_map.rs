@@ -26,12 +26,14 @@ pub fn gen_changepack_result_map(
                     update_type,
                 )?),
                 project.name().map(|n| n.to_string()),
+                project.is_changed(),
             ),
             None => ChangePackResult::new(
                 vec![],
                 project.version().map(|v| v.to_string()),
                 None,
                 project.name().map(|n| n.to_string()),
+                project.is_changed(),
             ),
         };
         map.insert(key, result);
