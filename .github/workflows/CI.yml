@@ -233,7 +233,7 @@ jobs:
       - python-sdist
     steps:
       - uses: actions/checkout@v5
-      - uses: changepacks/action@v1
+      - uses: changepacks/action@main
         id: changepacks
     outputs:
       changepacks: ${{ steps.changepacks.outputs.changepacks }}
