@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::update_type::UpdateType;
@@ -21,6 +23,8 @@ pub struct ChangePackResult {
     version: Option<String>,
     next_version: Option<String>,
     name: Option<String>,
+    changed: bool,
+    path: PathBuf,
 }
 
 impl ChangePackResult {
@@ -29,12 +33,16 @@ impl ChangePackResult {
         version: Option<String>,
         next_version: Option<String>,
         name: Option<String>,
+        changed: bool,
+        path: PathBuf,
     ) -> Self {
         Self {
             logs,
             version,
             next_version,
             name,
+            changed,
+            path,
         }
     }
 }

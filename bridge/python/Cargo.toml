@@ -9,3 +9,7 @@ edition = "2024"
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros"] }
 cli = { path = "../../crates/cli" }
 anyhow = "1.0"
+
+[[bin]]
+name = "changepacks"
+path = "src/main.rs"
