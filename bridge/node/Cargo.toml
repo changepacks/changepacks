@@ -3,7 +3,7 @@
 authors = ["JeongMin Oh <owjs3901@gmail.com>"]
 edition = "2024"
 name = "node-cli"
-version = "0.1.0"
+version = "0.1.1"
 
 [lib]
 crate-type = ["cdylib"]
