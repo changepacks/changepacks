@@ -232,6 +232,8 @@ jobs:
       pull-requests: write
       # create pull request
       issues: write
+      contents: write
+      id-token: write
     needs:
       - test
       - python-build
