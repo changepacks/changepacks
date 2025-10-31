@@ -3,4 +3,5 @@ publish_to: none
 environment:
   sdk: ^3.6.0
 workspace:
-  - packages/foo
+- packages/foo
+version: 0.0.1
