@@ -231,7 +231,7 @@ jobs:
       # create pull request comments
       pull-requests: write
       # create pull request
-      contents: write
+      issues: write
     needs:
       - test
       - python-build
