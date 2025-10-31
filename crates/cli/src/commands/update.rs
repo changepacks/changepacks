@@ -65,12 +65,14 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
         }
     }
     update_projects.sort();
-    for (project, update_type) in update_projects.iter() {
-        println!(
-            "{} {}",
-            project,
-            display_update(project.version(), update_type.clone())?
-        );
+    if let FormatOptions::Stdout = args.format {
+        for (project, update_type) in update_projects.iter() {
+            println!(
+                "{} {}",
+                project,
+                display_update(project.version(), update_type.clone())?
+            );
+        }
     }
     if args.dry_run {
         match args.format {
