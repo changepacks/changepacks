@@ -167,7 +167,7 @@ checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
 
 [[package]]
 name = "changepacks"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cli",
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -242,7 +242,7 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
 name = "cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "changepacks-core",
@@ -393,7 +393,7 @@ checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
 
 [[package]]
 name = "dart"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1982,7 +1982,7 @@ dependencies = [
 
 [[package]]
 name = "node"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1995,7 +1995,7 @@ dependencies = [
 
 [[package]]
 name = "node-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cli",
  "napi",
@@ -2134,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "python"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2147,7 +2147,7 @@ dependencies = [
 
 [[package]]
 name = "python-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "cli",
@@ -2274,7 +2274,7 @@ dependencies = [
 
 [[package]]
 name = "rust"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2776,7 +2776,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "utils"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "changepacks-core",

@@ -58,6 +58,11 @@ impl Workspace for RustWorkspace {
             cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
         cargo_toml["package"]["version"] = next_version.into();
+        if cargo_toml["package"]["name"].is_none() {
+            // insert package.name with version, cargo rules
+            cargo_toml["package"]["name"] = self.name.clone().unwrap_or("_".to_string()).into();
+        }
+
         write(&self.path, cargo_toml.to_string()).await?;
         Ok(())
     }
