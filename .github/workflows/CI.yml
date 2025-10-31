@@ -230,10 +230,7 @@ jobs:
     permissions:
       # create pull request comments
       pull-requests: write
-      # create pull request
-      issues: write
-      contents: write
-      id-token: write
+      # Actions > General > Workflow permissions for creating pull request
     needs:
       - test
       - python-build
