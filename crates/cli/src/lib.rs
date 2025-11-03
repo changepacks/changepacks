@@ -21,6 +21,9 @@ struct Cli {
 
     #[arg(short, long)]
     filter: Option<FilterOptions>,
+
+    #[arg(short, long, default_value = "false")]
+    remote: bool,
 }
 #[derive(Subcommand, Debug)]
 enum Commands {
@@ -40,7 +43,11 @@ pub async fn main(args: &[String]) -> Result<()> {
             Commands::Config(args) => handle_config(&args).await?,
         }
     } else {
-        handle_changepack(&ChangepackArgs { filter: cli.filter }).await?;
+        handle_changepack(&ChangepackArgs {
+            filter: cli.filter,
+            remote: cli.remote,
+        })
+        .await?;
     }
     Ok(())
 }
