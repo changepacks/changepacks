@@ -1,16 +1,29 @@
 use crate::get_relative_path;
 use anyhow::{Context, Result};
-use changepacks_core::ProjectFinder;
+use changepacks_core::{Config, ProjectFinder};
 use gix::{ThreadSafeRepository, bstr::ByteSlice, features::progress};
+use ignore::gitignore::GitignoreBuilder;
 use std::path::Path;
 
 /// Find project directories containing specific files from git tracked files
 pub async fn find_project_dirs(
     repo: &ThreadSafeRepository,
     project_finders: &mut [Box<dyn ProjectFinder>],
+    config: &Config,
 ) -> Result<()> {
     // Get git root for relative path conversion
     let git_root_path = repo.work_dir().context("Not a working directory")?;
+
+    // Build gitignore from config patterns (supports ! negation patterns)
+    let gitignore = if config.ignore.is_empty() {
+        None
+    } else {
+        let mut builder = GitignoreBuilder::new(git_root_path);
+        for pattern in &config.ignore {
+            builder.add_line(None, pattern)?;
+        }
+        Some(builder.build()?)
+    };
 
     let repo = repo.to_thread_local();
     let index = repo
@@ -29,12 +42,20 @@ pub async fn find_project_dirs(
         } else {
             git_root_path.join(path)
         };
+        let rel_path = get_relative_path(git_root_path, &abs_path)?;
 
-        futures::future::join_all(project_finders.iter_mut().map(async |finder| {
-            finder
-                .visit(&abs_path, &get_relative_path(git_root_path, &abs_path)?)
-                .await
-        }))
+        // Skip if path matches ignore patterns (gitignore supports ! negation)
+        if let Some(ref gitignore) = gitignore
+            && gitignore.matched(&rel_path, false).is_ignore()
+        {
+            continue;
+        }
+
+        futures::future::join_all(
+            project_finders
+                .iter_mut()
+                .map(async |finder| finder.visit(&abs_path, &rel_path).await),
+        )
         .await
         .into_iter()
         .collect::<Result<Vec<_>>>()?;
@@ -55,7 +76,7 @@ pub async fn find_project_dirs(
         .collect::<Vec<_>>();
     // diff from main branch
     let main_tree = repo
-        .find_reference("refs/heads/main")?
+        .find_reference(&format!("refs/heads/{}", config.base_branch))?
         .id()
         .object()?
         .try_into_commit()?

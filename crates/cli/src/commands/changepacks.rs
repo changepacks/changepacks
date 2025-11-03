@@ -2,7 +2,10 @@ use changepacks_core::{ChangePackLog, Project, UpdateType};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::write;
 
-use utils::{find_current_git_repo, find_project_dirs, get_changepacks_dir, get_relative_path};
+use utils::{
+    find_current_git_repo, find_project_dirs, get_changepacks_config, get_changepacks_dir,
+    get_relative_path,
+};
 
 use anyhow::{Context, Result};
 
@@ -20,7 +23,8 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     // collect all projects
     let repo = find_current_git_repo(&current_dir)?;
     let repo_root_path = repo.work_dir().context("Not a working directory")?;
-    find_project_dirs(&repo, &mut project_finders).await?;
+    let config = get_changepacks_config(&current_dir).await?;
+    find_project_dirs(&repo, &mut project_finders, &config).await?;
 
     let mut projects = project_finders
         .iter()

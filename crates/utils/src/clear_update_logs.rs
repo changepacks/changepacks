@@ -11,7 +11,7 @@ pub async fn clear_update_logs(changepacks_dir: &PathBuf) -> Result<()> {
     let mut entries = read_dir(&changepacks_dir).await?;
     let mut update_logs = vec![];
     while let Some(file) = entries.next_entry().await? {
-        if file.file_name().to_string_lossy() == "changepacks.json" {
+        if file.file_name().to_string_lossy() == "config.json" {
             continue;
         }
         update_logs.push(remove_file(file.path()));

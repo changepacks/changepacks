@@ -20,13 +20,13 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
     if !args.dry_run {
         create_dir_all(&changepacks_dir).await?;
     }
-    // create changepacks.json file
-    let changepacks_file = changepacks_dir.join("changepacks.json");
-    if changepacks_file.exists() {
+    // create config.json file
+    let config_file = changepacks_dir.join("config.json");
+    if config_file.exists() {
         Err(anyhow::anyhow!("changepacks project already initialized"))
     } else {
         if !args.dry_run {
-            write(changepacks_file, "{}").await?;
+            write(config_file, "{}").await?;
         }
 
         println!(

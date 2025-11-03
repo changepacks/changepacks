@@ -1,0 +1,8 @@
+{
+    "ignore": [
+        "**/*",
+        "!crates/changepacks/Cargo.toml",
+        "!bridge/node/package.json",
+        "!bridge/python/pyproject.toml"
+    ]
+}

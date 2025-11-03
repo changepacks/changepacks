@@ -16,7 +16,7 @@ pub async fn gen_update_map(
     let mut entries = read_dir(&changepacks_dir).await?;
     while let Some(file) = entries.next_entry().await? {
         let file_name = file.file_name().to_string_lossy().to_string();
-        if file_name == "changepacks.json" || !file_name.ends_with(".json") {
+        if file_name == "config.json" || !file_name.ends_with(".json") {
             continue;
         }
         let file_json = read_to_string(file.path()).await?;
@@ -41,6 +41,7 @@ pub async fn gen_update_map(
 mod tests {
     use std::collections::HashMap;
 
+    use changepacks_core::Config;
     use tempfile::TempDir;
     use tokio::fs;
 
@@ -65,9 +66,12 @@ mod tests {
             assert!(gen_update_map(&temp_path).await.unwrap().is_empty());
         }
         {
-            fs::write(changepacks_dir.join("changepacks.json"), "{}")
-                .await
-                .unwrap();
+            fs::write(
+                changepacks_dir.join("config.json"),
+                serde_json::to_string(&Config::default()).unwrap(),
+            )
+            .await
+            .unwrap();
             assert!(gen_update_map(&temp_path).await.unwrap().is_empty());
         }
         {
