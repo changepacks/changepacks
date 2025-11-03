@@ -43,14 +43,45 @@ pub async fn find_project_dirs(
     let changed_files = repo
         .status(progress::Discard)?
         .into_index_worktree_iter(Vec::new())?
-        .collect::<Result<Vec<_>, _>>()?;
-    for file in changed_files {
-        let path = file
-            .rela_path()
-            .to_path()
-            .context("Failed to convert path to std path")?;
+        .filter_map(|entry| {
+            entry.ok().and_then(|entry| {
+                entry
+                    .rela_path()
+                    .to_path()
+                    .ok()
+                    .map(|path| path.to_path_buf())
+            })
+        })
+        .collect::<Vec<_>>();
+    // diff from main branch
+    let main_tree = repo
+        .find_reference("refs/heads/main")?
+        .id()
+        .object()?
+        .try_into_commit()?
+        .tree_id()?
+        .object()?
+        .try_into_tree()?;
+    let head_tree = repo.head_tree()?;
+    let diff = repo
+        .diff_tree_to_tree(
+            Some(&head_tree),
+            Some(&main_tree),
+            gix::diff::Options::default(),
+        )?
+        .into_iter()
+        .filter_map(|change| {
+            change
+                .location()
+                .to_path()
+                .ok()
+                .map(|path| path.to_path_buf())
+        })
+        .collect::<Vec<_>>();
+
+    for file in changed_files.iter().chain(diff.iter()) {
         for finder in project_finders.iter_mut() {
-            finder.check_changed(&git_root_path.join(path))?;
+            finder.check_changed(&git_root_path.join(file))?;
         }
     }
 
