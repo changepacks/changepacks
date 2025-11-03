@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
 use tokio::fs::{read_to_string, write};
@@ -49,12 +49,18 @@ impl Package for DartPackage {
         let next_version = next_version(&self.version, update_type)?;
 
         let pubspec_yaml = read_to_string(&self.path).await?;
-        let mut pubspec: serde_yaml::Value = serde_yaml::from_str(&pubspec_yaml)?;
-        yaml_patch::Patch::patch_from_str(
-            &mut pubspec,
-            &format!("{{'version': '{}'}}", next_version),
-        )?;
-        write(&self.path, serde_yaml::to_string(&pubspec)?).await?;
+        write(
+            &self.path,
+            yamlpatch::apply_yaml_patches(
+                &yamlpath::Document::new(&pubspec_yaml).context("Failed to parse YAML")?,
+                &[yamlpatch::Patch {
+                    operation: yamlpatch::Op::Replace(serde_yaml::Value::String(next_version)),
+                    route: yamlpath::route!("version"),
+                }],
+            )?
+            .source(),
+        )
+        .await?;
         Ok(())
     }
 
