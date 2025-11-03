@@ -16,7 +16,7 @@
 #  undef be16toh
 #endif
 
-static inline uint16_t le16toh(uint16_t x) {
+uint16_t le16toh(uint16_t x) {
 #if defined(__BYTE_ORDER) && defined(__LITTLE_ENDIAN) && (__BYTE_ORDER == __LITTLE_ENDIAN)
     return x;
 #else
@@ -24,7 +24,7 @@ static inline uint16_t le16toh(uint16_t x) {
 #endif
 }
 
-static inline uint16_t be16toh(uint16_t x) {
+uint16_t be16toh(uint16_t x) {
 #if defined(__BYTE_ORDER) && defined(__BIG_ENDIAN) && (__BYTE_ORDER == __BIG_ENDIAN)
     return x;
 #else
