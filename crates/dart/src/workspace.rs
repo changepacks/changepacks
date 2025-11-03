@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
 use std::path::{Path, PathBuf};
@@ -51,13 +51,20 @@ impl Workspace for DartWorkspace {
             update_type,
         )?;
 
-        let pubspec_yaml = read_to_string(Path::new(&self.path)).await?;
-        let mut pubspec: serde_yaml::Value = serde_yaml::from_str(&pubspec_yaml)?;
-        yaml_patch::Patch::patch_from_str(
-            &mut pubspec,
-            &format!("{{'version': '{}'}}", next_version),
-        )?;
-        write(Path::new(&self.path), serde_yaml::to_string(&pubspec)?).await?;
+        let pubspec_yaml = read_to_string(&self.path).await?;
+
+        write(
+            &self.path,
+            yamlpatch::apply_yaml_patches(
+                &yamlpath::Document::new(&pubspec_yaml).context("Failed to parse YAML")?,
+                &[yamlpatch::Patch {
+                    operation: yamlpatch::Op::Replace(serde_yaml::Value::String(next_version)),
+                    route: yamlpath::route!("version"),
+                }],
+            )?
+            .source(),
+        )
+        .await?;
         Ok(())
     }
 
