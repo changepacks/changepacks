@@ -12,9 +12,6 @@ fn main() {
         println!("cargo:rustc-link-arg-bins=-Wl,--whole-archive");
         println!("cargo:rustc-link-arg-bins=-Wl,--no-whole-archive");
 
-        // On glibc-based Linux, le16toh/be16toh may be provided by libbsd at link time
-        // when referenced as functions by third-party C code (like tree-sitter's lib.c).
-        // Link libbsd to satisfy those symbols.
-        println!("cargo:rustc-link-lib=bsd");
+        // Don't link external libbsd; provide symbols ourselves in endian_helper.c
     }
 }
