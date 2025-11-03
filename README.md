@@ -28,7 +28,7 @@ changepacks is a CLI tool that helps you efficiently manage versioning and chang
 
 ### Requirements
 
-- Rust 1.70+ (for development)
+- Rust 1.91+ (for development)
 - Cargo
 - Git repository (for project detection)
 
