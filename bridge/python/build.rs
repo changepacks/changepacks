@@ -3,10 +3,13 @@ fn main() {
     println!("cargo:rerun-if-changed=src/endian_helper.c");
     let target = std::env::var("TARGET").unwrap_or_default();
 
-    // Build endian_helper for all Linux targets (including ARM with gnueabihf)
+    // Build endian_helper for all Linux targets (needed for manylinux2014 and older)
     if target.contains("linux") {
         let mut build = cc::Build::new();
         build.file("src/endian_helper.c");
+
+        // Enable position-independent code for shared libraries
+        build.flag("-fPIC");
 
         // Set target if cross-compiling
         if let Ok(target) = std::env::var("TARGET") {
@@ -15,9 +18,22 @@ fn main() {
 
         build.compile("endian_helper");
 
-        // Ensure the static library is not dropped due to --as-needed and link order.
+        // Get the output directory for the library
+        let out_dir = std::env::var("OUT_DIR").unwrap();
+
+        // For older linkers (manylinux2014), we need to be more explicit
+        // Tell Cargo where to find the library
+        println!("cargo:rustc-link-search=native={}", out_dir);
+
+        // Link the static library - Cargo will find libendian_helper.a in OUT_DIR
         println!("cargo:rustc-link-lib=static=endian_helper");
+
+        // For manylinux2014's older linker, disable --as-needed to ensure symbols are included
+        println!("cargo:rustc-link-arg-bins=-Wl,--no-as-needed");
+
+        // Try to force include all symbols from the static library
         println!("cargo:rustc-link-arg-bins=-Wl,--whole-archive");
+        println!("cargo:rustc-link-arg-bins=-Wl,-lendian_helper");
         println!("cargo:rustc-link-arg-bins=-Wl,--no-whole-archive");
     }
 }
