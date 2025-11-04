@@ -18,24 +18,24 @@ fn main() {
 
         build.compile("endian_helper");
 
-        // // Get the output directory for the library
-        // let out_dir = std::env::var("OUT_DIR").unwrap();
+        // Get the output directory for the library
+        let out_dir = std::env::var("OUT_DIR").unwrap();
 
-        // // Tell Cargo where to find the library
-        // println!("cargo:rustc-link-search=native={}", out_dir);
+        // Tell Cargo where to find the library
+        println!("cargo:rustc-link-search=native={}", out_dir);
 
-        // // For newer linkers (ubuntu-22.04, x86_64-unknown-linux-gnu), use simple linking
-        // // to avoid duplicate symbols
+        // For newer linkers (ubuntu-22.04, x86_64-unknown-linux-gnu), use simple linking
+        // to avoid duplicate symbols
         // if target == "x86_64-unknown-linux-gnu" {
         //     println!("cargo:rustc-link-lib=static=endian_helper");
         // } else {
-        //     // For older linkers (manylinux2014, ARM, etc.), we need to be more explicit
-        //     println!("cargo:rustc-link-lib=static=endian_helper");
-        //     println!("cargo:rustc-link-arg-bins=-Wl,--no-as-needed");
-        //     // Force include all symbols from the static library
-        //     println!("cargo:rustc-link-arg-bins=-Wl,--whole-archive");
-        //     println!("cargo:rustc-link-arg-bins=-Wl,-lendian_helper");
-        //     println!("cargo:rustc-link-arg-bins=-Wl,--no-whole-archive");
+        // For older linkers (manylinux2014, ARM, etc.), we need to be more explicit
+        println!("cargo:rustc-link-lib=static=endian_helper");
+        println!("cargo:rustc-link-arg-bins=-Wl,--no-as-needed");
+        // Force include all symbols from the static library
+        println!("cargo:rustc-link-arg-bins=-Wl,--whole-archive");
+        println!("cargo:rustc-link-arg-bins=-Wl,-lendian_helper");
+        println!("cargo:rustc-link-arg-bins=-Wl,--no-whole-archive");
         // }
     }
 }
