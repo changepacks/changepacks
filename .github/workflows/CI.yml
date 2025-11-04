@@ -312,7 +312,6 @@ jobs:
         with:
           subject-path: 'wheels-*/*'
       - name: Publish to PyPI
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: PyO3/maturin-action@main
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
@@ -388,6 +387,15 @@ jobs:
       - changepacks
     steps:
       - uses: actions/checkout@v5
+      - name: Setup Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: x86_64-pc-windows-msvc
+          components: clippy, rustfmt
+
+      - name: Build Rust binary
+        run: cargo build --release --target x86_64-pc-windows-msvc
       - uses: vedantmgoyal9/winget-releaser@main
         with:
           identifier: Changepacks.Changepacks
