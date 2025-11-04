@@ -258,10 +258,9 @@ jobs:
     if: ${{ contains(needs.changepacks.outputs.changepacks, 'bridge/node/package.json') }}
     steps:
       - uses: actions/checkout@v5
-      - name: Setup node
-        uses: actions/setup-node@v5
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: 22
+          bun-version: latest
       - name: Install dependencies
         run: bun install
       - name: create npm dirs
@@ -369,6 +368,7 @@ jobs:
           asset_path: target/${{ matrix.target }}/release/changepacks${{ matrix.os == 'windows' && '.exe' || '' }}
           asset_name: ${{ matrix.binary_name }}
           asset_content_type: application/octet-stream
+
   cargo-publish:
     name: Cargo Publish
     runs-on: ubuntu-latest
