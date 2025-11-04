@@ -8,15 +8,15 @@ fn main() {
         let mut build = cc::Build::new();
         build.file("src/endian_helper.c");
 
-        // // Enable position-independent code for shared libraries
-        // build.flag("-fPIC");
+        // Enable position-independent code for shared libraries
+        build.flag("-fPIC");
 
-        // // Set target if cross-compiling
-        // if let Ok(target) = std::env::var("TARGET") {
-        //     build.target(&target);
-        // }
+        // Set target if cross-compiling
+        if let Ok(target) = std::env::var("TARGET") {
+            build.target(&target);
+        }
 
-        // build.compile("endian_helper");
+        build.compile("endian_helper");
 
         // // Get the output directory for the library
         // let out_dir = std::env::var("OUT_DIR").unwrap();
