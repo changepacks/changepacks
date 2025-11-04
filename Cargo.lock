@@ -167,10 +167,30 @@ checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
 
 [[package]]
 name = "changepacks"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "anyhow",
- "cli",
+ "changepacks-cli",
+ "tokio",
+]
+
+[[package]]
+name = "changepacks-cli"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "changepacks-core",
+ "changepacks-dart",
+ "changepacks-node",
+ "changepacks-python",
+ "changepacks-rust",
+ "changepacks-utils",
+ "clap",
+ "colored",
+ "futures",
+ "inquire",
+ "nanoid",
+ "serde_json",
  "tokio",
 ]
 
@@ -183,6 +203,76 @@ dependencies = [
  "chrono",
  "colored",
  "serde",
+ "tokio",
+]
+
+[[package]]
+name = "changepacks-dart"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "changepacks-core",
+ "changepacks-utils",
+ "serde",
+ "serde_yaml",
+ "tokio",
+ "yamlpatch",
+ "yamlpath",
+]
+
+[[package]]
+name = "changepacks-node"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "changepacks-core",
+ "changepacks-utils",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "changepacks-python"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "changepacks-core",
+ "changepacks-utils",
+ "tokio",
+ "toml",
+ "toml_edit",
+]
+
+[[package]]
+name = "changepacks-rust"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "changepacks-core",
+ "changepacks-utils",
+ "tokio",
+ "toml",
+ "toml_edit",
+]
+
+[[package]]
+name = "changepacks-utils"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "changepacks-core",
+ "colored",
+ "futures",
+ "gix",
+ "ignore",
+ "rstest",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 
@@ -239,26 +329,6 @@ name = "clap_lex"
 version = "0.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
-
-[[package]]
-name = "cli"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "changepacks-core",
- "clap",
- "colored",
- "dart",
- "futures",
- "inquire",
- "nanoid",
- "node",
- "python",
- "rust",
- "serde_json",
- "tokio",
- "utils",
-]
 
 [[package]]
 name = "clru"
@@ -409,21 +479,6 @@ name = "ctor-proc-macro"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
-
-[[package]]
-name = "dart"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "changepacks-core",
- "serde",
- "serde_yaml",
- "tokio",
- "utils",
- "yamlpatch",
- "yamlpath",
-]
 
 [[package]]
 name = "dashmap"
@@ -2020,23 +2075,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "node"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "changepacks-core",
- "serde",
- "serde_json",
- "tokio",
- "utils",
-]
-
-[[package]]
 name = "node-cli"
 version = "0.1.1"
 dependencies = [
- "cli",
+ "changepacks-cli",
  "napi",
  "napi-build",
  "napi-derive",
@@ -2172,25 +2214,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "python"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "changepacks-core",
- "tokio",
- "toml",
- "toml_edit",
- "utils",
-]
-
-[[package]]
 name = "python-cli"
 version = "0.1.1"
 dependencies = [
  "anyhow",
  "cc",
- "cli",
+ "changepacks-cli",
  "tokio",
 ]
 
@@ -2310,19 +2339,6 @@ dependencies = [
  "rustc_version",
  "syn",
  "unicode-ident",
-]
-
-[[package]]
-name = "rust"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "changepacks-core",
- "tokio",
- "toml",
- "toml_edit",
- "utils",
 ]
 
 [[package]]
@@ -2849,22 +2865,6 @@ name = "utf8parse"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
-
-[[package]]
-name = "utils"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "changepacks-core",
- "colored",
- "futures",
- "gix",
- "ignore",
- "rstest",
- "serde_json",
- "tempfile",
- "tokio",
-]
 
 [[package]]
 name = "version_check"

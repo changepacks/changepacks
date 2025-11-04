@@ -1,11 +1,11 @@
 use changepacks_core::Project;
 
 use anyhow::{Context, Result};
-use clap::Args;
-use utils::{
+use changepacks_utils::{
     display_update, find_current_git_repo, find_project_dirs, gen_changepack_result_map,
     gen_update_map, get_changepacks_config, get_relative_path,
 };
+use clap::Args;
 
 use crate::{
     finders::get_finders,

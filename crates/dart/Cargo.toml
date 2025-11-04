@@ -1,11 +1,11 @@
 [package]
-name = "dart"
+name = "changepacks-dart"
 version = "0.1.1"
 edition = "2024"
 
 [dependencies]
-changepacks-core = { path = "../core" }
-utils = { path = "../utils" }
+changepacks-core.workspace = true
+changepacks-utils.workspace = true
 async-trait = "0.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"

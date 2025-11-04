@@ -2,7 +2,7 @@ use changepacks_core::{ChangePackLog, Project, UpdateType};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::write;
 
-use utils::{
+use changepacks_utils::{
     find_current_git_repo, find_project_dirs, get_changepacks_config, get_changepacks_dir,
     get_relative_path,
 };

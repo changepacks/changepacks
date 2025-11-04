@@ -2,12 +2,13 @@
 name = "python-cli"
 version = "0.1.1"
 edition = "2024"
+publish = false
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros"] }
-cli.workspace = true
+changepacks-cli.workspace = true
 anyhow = "1.0"
 
 [build-dependencies]

@@ -3,8 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
+use changepacks_utils::next_version;
 use tokio::fs::{read_to_string, write};
-use utils::next_version;
 
 #[derive(Debug)]
 pub struct DartPackage {

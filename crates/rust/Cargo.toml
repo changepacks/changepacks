@@ -1,12 +1,12 @@
 [package]
-name = "rust"
+name = "changepacks-rust"
 version = "0.1.1"
 edition = "2024"
 
 [dependencies]
 toml = "0.9"
-changepacks-core = { path = "../core" }
-utils = { path = "../utils" }
+changepacks-core.workspace = true
+changepacks-utils.workspace = true
 anyhow = "1.0"
 tokio = { version = "1.48", features = ["fs"] }
 async-trait = "0.1"

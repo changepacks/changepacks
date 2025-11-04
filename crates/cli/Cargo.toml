@@ -1,17 +1,17 @@
 [package]
-name = "cli"
+name = "changepacks-cli"
 version = "0.1.1"
 edition = "2024"
 
 [dependencies]
 nanoid = "0.4"
 clap = { version = "^4", features = ["derive"] }
-utils.workspace = true
+changepacks-utils.workspace = true
 changepacks-core.workspace = true
-node.workspace = true
-rust.workspace = true
-python.workspace = true
-dart.workspace = true
+changepacks-node.workspace = true
+changepacks-rust.workspace = true
+changepacks-python.workspace = true
+changepacks-dart.workspace = true
 anyhow = "1.0"
 inquire = "0.9"
 colored = "3"

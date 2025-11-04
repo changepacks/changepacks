@@ -1,9 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
+use changepacks_utils::next_version;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
-use utils::next_version;
 
 #[derive(Debug)]
 pub struct NodeWorkspace {

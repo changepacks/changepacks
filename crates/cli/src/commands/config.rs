@@ -1,6 +1,6 @@
 use anyhow::Result;
+use changepacks_utils::get_changepacks_config;
 use clap::Args;
-use utils::get_changepacks_config;
 
 #[derive(Args, Debug)]
 #[command(about = "Change changepacks configuration")]

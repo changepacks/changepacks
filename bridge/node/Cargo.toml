@@ -4,6 +4,7 @@ authors = ["JeongMin Oh <owjs3901@gmail.com>"]
 edition = "2024"
 name = "node-cli"
 version = "0.1.1"
+publish = false
 
 [lib]
 crate-type = ["cdylib"]
@@ -11,7 +12,7 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "3.3", features = ["tokio_rt"] }
 napi-derive = "3.2"
-cli.workspace = true
+changepacks-cli.workspace = true
 tokio = { version = "1.48" }
 
 [build-dependencies]

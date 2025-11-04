@@ -5,7 +5,7 @@ edition = "2024"
 default-run = "changepacks"
 
 [dependencies]
-cli.workspace = true
+changepacks-cli.workspace = true
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros"] }
 anyhow = "1.0"
 

@@ -3,7 +3,7 @@ use napi_derive::napi;
 
 #[napi]
 pub async fn main() -> Result<()> {
-  cli::main(&std::env::args().skip(1).collect::<Vec<String>>())
+  changepacks_cli::main(&std::env::args().skip(1).collect::<Vec<String>>())
     .await
     .map_err(|e| Error::from_reason(e.to_string()))
 }

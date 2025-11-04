@@ -1,0 +1,1 @@
+{"changes":{"bridge/node/package.json":"Patch","crates/changepacks/Cargo.toml":"Patch","bridge/python/pyproject.toml":"Patch"},"note":"Update script","date":"2025-11-04T16:39:28.786106Z"}

@@ -1,12 +1,12 @@
 [package]
-name = "utils"
+name = "changepacks-utils"
 version = "0.1.1"
 edition = "2024"
 
 [dependencies]
 gix = { version = "0.73", default-features = false, features = ["index", "status", "parallel"] }
 anyhow = "1.0"
-changepacks-core = { path = "../core" }
+changepacks-core.workspace = true
 colored = "3"
 tokio = { version = "1.48", features = ["fs"] }
 futures = "0.3"

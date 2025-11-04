@@ -2,8 +2,8 @@ use changepacks_core::Config;
 use tokio::fs::{create_dir_all, write};
 
 use anyhow::Result;
+use changepacks_utils::get_changepacks_dir;
 use clap::Args;
-use utils::get_changepacks_dir;
 
 #[derive(Args, Debug)]
 #[command(about = "Initialize a new changepacks project")]

@@ -1,11 +1,11 @@
 [package]
-name = "python"
+name = "changepacks-python"
 version = "0.1.1"
 edition = "2024"
 
 [dependencies]
-changepacks-core = { path = "../core" }
-utils = { path = "../utils" }
+changepacks-core.workspace = true
+changepacks-utils.workspace = true
 anyhow = "1.0"
 toml = "0.9"
 tokio = { version = "1.48", features = ["fs"] }
