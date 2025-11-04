@@ -22,6 +22,8 @@ jobs:
 
     strategy:
       fail-fast: false
+
+
       matrix:
         python-version:
           - '3.11'
@@ -261,6 +263,7 @@ jobs:
         working-directory: bridge/node
       - name: Publish
         run: |
+            bun install -g @napi-rs/cli
             echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
             bun publish --access public
         env:
@@ -339,7 +342,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.changepacks.outputs.release_assets_urls['crates/changepacks/Cargo.toml'] }}
+          upload_url: ${{ fromJson(needs.changepacks.outputs.release_assets_urls)['crates/changepacks/Cargo.toml'] }}
           asset_path: target/${{ matrix.target }}/release/changepacks${{ matrix.os == 'windows' && '.exe' || '' }}
           asset_name: ${{ matrix.binary_name }}
           asset_content_type: application/octet-stream
