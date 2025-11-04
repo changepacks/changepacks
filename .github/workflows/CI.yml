@@ -323,7 +323,7 @@ jobs:
 
   upload-assets:
     needs: changepacks
-    if: ${{ contains(needs.changepacks.outputs.changepacks, 'crates/cli/Cargo.toml') }}
+    if: ${{ contains(needs.changepacks.outputs.changepacks, 'crates/changepacks/Cargo.toml') }}
     permissions:
       contents: write
       id-token: write
@@ -365,14 +365,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          upload_url: ${{ needs.changepacks.outputs.release_assets_url['crates/cli/Cargo.toml'] }}
+          upload_url: ${{ needs.changepacks.outputs.release_assets_url['crates/changepacks/Cargo.toml'] }}
           asset_path: target/${{ matrix.target }}/release/changepacks${{ matrix.os == 'windows' && '.exe' || '' }}
           asset_name: ${{ matrix.binary_name }}
           asset_content_type: application/octet-stream
   cargo-publish:
     name: Cargo Publish
     runs-on: ubuntu-latest
-    if: ${{ contains(needs.changepacks.outputs.changepacks, 'crates/cli/Cargo.toml') }}
+    if: ${{ contains(needs.changepacks.outputs.changepacks, 'crates/changepacks/Cargo.toml') }}
     needs:
       - changepacks
     steps:
@@ -381,9 +381,9 @@ jobs:
         run: cargo publish
 
   winget-publish:
-    name: Cargo Publish
+    name: Winget Publish
     runs-on: windows-latest
-    if: ${{ contains(needs.changepacks.outputs.changepacks, 'crates/cli/Cargo.toml') }}
+    if: ${{ contains(needs.changepacks.outputs.changepacks, 'crates/changepacks/Cargo.toml') }}
     needs:
       - changepacks
     steps:
