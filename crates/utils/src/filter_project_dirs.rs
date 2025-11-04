@@ -10,6 +10,7 @@ pub async fn find_project_dirs(
     repo: &ThreadSafeRepository,
     project_finders: &mut [Box<dyn ProjectFinder>],
     config: &Config,
+    remote: bool,
 ) -> Result<()> {
     // Get git root for relative path conversion
     let git_root_path = repo.work_dir().context("Not a working directory")?;
@@ -75,14 +76,25 @@ pub async fn find_project_dirs(
         })
         .collect::<Vec<_>>();
     // diff from main branch
-    let main_tree = repo
-        .find_reference(&format!("refs/heads/{}", config.base_branch))?
-        .id()
-        .object()?
-        .try_into_commit()?
-        .tree_id()?
-        .object()?
-        .try_into_tree()?;
+    let main_tree = if !remote {
+        repo.find_reference(&format!("refs/heads/{}", config.base_branch))?
+            .id()
+            .object()?
+            .try_into_commit()?
+            .tree_id()?
+            .object()?
+            .try_into_tree()?
+    } else {
+        repo.find_remote("origin")?
+            .repo
+            .find_reference(&format!("refs/remotes/origin/{}", config.base_branch))?
+            .id()
+            .object()?
+            .try_into_commit()?
+            .tree_id()?
+            .object()?
+            .try_into_tree()?
+    };
     let head_tree = repo.head_tree()?;
     let diff = repo
         .diff_tree_to_tree(

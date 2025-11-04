@@ -1,3 +1,4 @@
+use changepacks_core::Config;
 use tokio::fs::{create_dir_all, write};
 
 use anyhow::Result;
@@ -26,7 +27,11 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
         Err(anyhow::anyhow!("changepacks project already initialized"))
     } else {
         if !args.dry_run {
-            write(config_file, "{}").await?;
+            write(
+                config_file,
+                serde_json::to_string_pretty(&Config::default())?,
+            )
+            .await?;
         }
 
         println!(

@@ -1,8 +1,9 @@
 {
-    "ignore": [
-        "**/*",
-        "!crates/changepacks/Cargo.toml",
-        "!bridge/node/package.json",
-        "!bridge/python/pyproject.toml"
-    ]
+  "ignore": [
+    "**/*",
+    "!crates/changepacks/Cargo.toml",
+    "!bridge/node/package.json",
+    "!bridge/python/pyproject.toml"
+  ],
+  "latestPackage": "crates/changepacks/Cargo.toml"
 }

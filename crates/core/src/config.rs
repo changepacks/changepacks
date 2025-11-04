@@ -8,6 +8,9 @@ pub struct Config {
 
     #[serde(default = "default_base_branch")]
     pub base_branch: String,
+
+    #[serde(default)]
+    pub latest_package: Option<String>,
 }
 
 fn default_base_branch() -> String {
@@ -19,6 +22,7 @@ impl Default for Config {
         Self {
             ignore: Vec::new(),
             base_branch: default_base_branch(),
+            latest_package: None,
         }
     }
 }

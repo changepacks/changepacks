@@ -20,6 +20,9 @@ pub struct CheckArgs {
 
     #[arg(long, default_value = "stdout")]
     format: FormatOptions,
+
+    #[arg(short, long, default_value = "false")]
+    remote: bool,
 }
 
 /// Check project status
@@ -31,7 +34,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     let config = get_changepacks_config(&current_dir).await?;
     let mut project_finders = get_finders();
 
-    find_project_dirs(&repo, &mut project_finders, &config).await?;
+    find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
 
     let mut projects = project_finders
         .iter()
@@ -53,7 +56,16 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
             for project in projects {
                 println!(
                     "{}",
-                    format!("{}", project).replace(
+                    format!(
+                        "{}{}",
+                        project,
+                        if project.is_changed() {
+                            " (changed)"
+                        } else {
+                            ""
+                        },
+                    )
+                    .replace(
                         project.version().unwrap_or("unknown"),
                         &if let Some(update_type) =
                             update_map.get(&get_relative_path(repo_root_path, project.path())?)
@@ -61,7 +73,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                             display_update(project.version(), update_type.0.clone())?
                         } else {
                             project.version().unwrap_or("unknown").to_string()
-                        }
+                        },
                     ),
                 )
             }

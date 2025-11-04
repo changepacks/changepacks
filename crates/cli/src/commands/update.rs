@@ -19,6 +19,9 @@ pub struct UpdateArgs {
 
     #[arg(long, default_value = "stdout")]
     format: FormatOptions,
+
+    #[arg(short, long, default_value = "false")]
+    remote: bool,
 }
 
 /// Update project version
@@ -48,7 +51,7 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     }
     let mut project_finders = get_finders();
 
-    find_project_dirs(&repo, &mut project_finders, &config).await?;
+    find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
 
     let mut update_projects = Vec::new();
 

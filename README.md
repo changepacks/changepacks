@@ -28,7 +28,7 @@ changepacks is a CLI tool that helps you efficiently manage versioning and chang
 
 ### Requirements
 
-- Rust 1.70+ (for development)
+- Rust 1.91+ (for development)
 - Cargo
 - Git repository (for project detection)
 
@@ -84,9 +84,39 @@ changepacks update --dry-run    # Preview changes without applying
 changepacks update --yes        # Skip confirmation prompts
 ```
 
+### Check Config
+
+View the loaded changepacks config (from `.changepacks/config.json`):
+
+```bash
+changepacks config
+```
+
+This prints the merged and defaulted configuration, for example:
+
+```json
+{
+  "ignore": [
+    "**/*",
+    "!crates/changepacks/Cargo.toml",
+    "!bridge/node/package.json",
+    "!bridge/python/pyproject.toml"
+  ],
+  "baseBranch": "main",
+  "latestPackage": "crates/changepacks/Cargo.toml"
+}
+```
+
+You can edit `.changepacks/config.json` to customize:
+- Files/projects to ignore (`ignore`) using glob patterns (default: empty).
+- The base branch to compare against for changes (`baseBranch`, default: `"main"`).
+- The default main package for versioning (`latestPackage`, optional).
+
+If the config file is missing or empty, sensible defaults are used.
+
 ### Default Command
 
-Running `changepacks` without arguments shows all projects (same as `changepacks check`).
+Running `changepacks` without arguments starts an interactive session to select projects and create a changepack log.
 
 ## Project Structure
 

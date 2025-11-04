@@ -14,6 +14,7 @@ use crate::{finders::get_finders, options::FilterOptions};
 #[derive(Debug)]
 pub struct ChangepackArgs {
     pub filter: Option<FilterOptions>,
+    pub remote: bool,
 }
 
 pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
@@ -24,7 +25,7 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     let repo = find_current_git_repo(&current_dir)?;
     let repo_root_path = repo.work_dir().context("Not a working directory")?;
     let config = get_changepacks_config(&current_dir).await?;
-    find_project_dirs(&repo, &mut project_finders, &config).await?;
+    find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
 
     let mut projects = project_finders
         .iter()
