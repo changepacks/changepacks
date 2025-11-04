@@ -198,7 +198,7 @@ This project is distributed under the MIT License. See the [LICENSE](LICENSE) fi
 - [x] Python package management support  
 - [x] Rust package management support
 - [x] Dart package management support
-- [ ] CI/CD integration support
+- [X] CI/CD integration support
 - [ ] Plugin system for additional languages
 
 ## Support
