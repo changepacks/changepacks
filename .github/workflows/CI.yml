@@ -270,6 +270,14 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         working-directory: bridge/node
+      - name: Upload Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ fromJson(needs.changepacks.outputs.release_assets_urls)['bridge/node/package.json'] }}
+          asset_path: bridge/node/dist/changepacks.*.node
+
 
   python-publish:
     name: Python Publish
@@ -297,6 +305,13 @@ jobs:
         with:
           command: upload
           args: --non-interactive --skip-existing wheels-*/*
+      - name: Upload Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ fromJson(needs.changepacks.outputs.release_assets_urls)['bridge/python/dist/*.whl'] }}
+          asset_path: bridge/python/dist/*.whl
 
   upload-assets:
     needs: changepacks
