@@ -6,12 +6,12 @@ edition = "2024"
 [dependencies]
 nanoid = "0.4"
 clap = { version = "^4", features = ["derive"] }
-utils = { path = "../utils" }
-changepacks-core = { path = "../core" }
-node = { path = "../node" }
-rust = { path = "../rust" }
-python = { path = "../python" }
-dart = { path = "../dart" }
+utils.workspace = true
+changepacks-core.workspace = true
+node.workspace = true
+rust.workspace = true
+python.workspace = true
+dart.workspace = true
 anyhow = "1.0"
 inquire = "0.9"
 colored = "3"

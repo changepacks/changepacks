@@ -1,3 +1,12 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "bridge/*"]
+
+[workspace.dependencies]
+cli = { path = "crates/cli" }
+changepacks-core = { path = "crates/core" }
+node = { path = "crates/node" }
+rust = { path = "crates/rust" }
+python = { path = "crates/python" }
+dart = { path = "crates/dart" }
+utils = { path = "crates/utils" }

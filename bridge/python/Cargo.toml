@@ -7,7 +7,7 @@ edition = "2024"
 
 [dependencies]
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros"] }
-cli = { path = "../../crates/cli" }
+cli.workspace = true
 anyhow = "1.0"
 
 [build-dependencies]
