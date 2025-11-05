@@ -2,6 +2,7 @@
 name = "changepacks"
 version = "0.1.11"
 edition = "2024"
+license = "Apache-2.0"
 default-run = "changepacks"
 
 [dependencies]

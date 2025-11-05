@@ -2,6 +2,7 @@
 name = "changepacks-core"
 version = "0.1.1"
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 anyhow = "1.0"

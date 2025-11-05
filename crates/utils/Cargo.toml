@@ -2,6 +2,7 @@
 name = "changepacks-utils"
 version = "0.1.1"
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 gix = { version = "0.73", default-features = false, features = ["index", "status", "parallel"] }

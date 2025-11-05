@@ -271,7 +271,7 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         working-directory: bridge/node
       - name: Upload Asset
-        uses: actions/upload-release-asset@v1
+        uses: owjs3901/upload-github-release-asset@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -306,7 +306,7 @@ jobs:
           command: upload
           args: --non-interactive --skip-existing wheels-*/*
       - name: Upload Asset
-        uses: actions/upload-release-asset@v1
+        uses: owjs3901/upload-github-release-asset@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -353,14 +353,12 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
       
       - name: Upload Asset
-        uses: actions/upload-release-asset@v1
+        uses: owjs3901/upload-github-release-asset@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ fromJson(needs.changepacks.outputs.release_assets_urls)['crates/changepacks/Cargo.toml'] }}
           asset_path: target/${{ matrix.target }}/release/changepacks${{ matrix.os == 'windows' && '.exe' || '' }}
-          asset_name: ${{ matrix.binary_name }}
-          asset_content_type: application/octet-stream
 
   cargo-publish:
     name: Cargo Publish

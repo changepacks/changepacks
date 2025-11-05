@@ -2,6 +2,7 @@
 name = "changepacks-node"
 version = "0.1.1"
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 changepacks-core.workspace = true
