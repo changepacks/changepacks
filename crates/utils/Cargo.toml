@@ -3,6 +3,8 @@ name = "changepacks-utils"
 version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
+description = "Shared utilities for changepacks (path handling, version calculation, git operations)"
+readme = "../../README.md"
 
 [dependencies]
 gix = { version = "0.73", default-features = false, features = ["index", "status", "parallel"] }

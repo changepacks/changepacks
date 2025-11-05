@@ -3,6 +3,8 @@ name = "changepacks-python"
 version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
+description = "Python project support for changepacks (pip, uv)"
+readme = "../../README.md"
 
 [dependencies]
 changepacks-core.workspace = true

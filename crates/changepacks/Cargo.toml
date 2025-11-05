@@ -3,6 +3,8 @@ name = "changepacks"
 version = "0.1.15"
 edition = "2024"
 license = "Apache-2.0"
+description = "A unified version management and changelog tool for multi-language projects"
+readme = "../../README.md"
 default-run = "changepacks"
 
 [dependencies]

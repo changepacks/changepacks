@@ -188,6 +188,63 @@ The project is built with a modular architecture:
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
+## Sponsors
+
+We're grateful to our sponsors for supporting changepacks development! If you're interested in sponsoring this project, please get in touch.
+
+<div align="center">
+
+<!-- Add your sponsors here -->
+<!-- 
+<a href="https://example.com">
+  <img src="https://example.com/logo.png" width="150" alt="Sponsor Name" />
+  <p><strong>Sponsor Name</strong></p>
+</a>
+
+<a href="https://example.com">
+  <img src="https://example.com/logo2.png" width="150" alt="Another Sponsor" />
+  <p><strong>Another Sponsor</strong></p>
+</a>
+-->
+
+</div>
+
+## Used By
+
+The following open-source projects and companies are using changepacks:
+
+<div align="center">
+
+<a href="https://devup-ui.com">
+  <img src="https://raw.githubusercontent.com/dev-five-git/devup-ui/main/media/logo.svg" width="150" alt="Devup UI" />
+  <p><strong>Devup UI</strong></p>
+</a>
+<a href="https://braillify.kr">
+  <img src="https://raw.githubusercontent.com/dev-five-git/braillify/main/media/logo.svg" width="150" alt="Braillify" />
+  <p><strong>Braillify</strong></p>
+</a>
+<a href="https://devfive.kr">
+  <img src="https://avatars.githubusercontent.com/u/85065616?s=200&v=4" width="150" alt="Braillify" />
+  <p><strong>Devfive</strong></p>
+</a>
+
+<!-- Add your projects here -->
+<!-- 
+<a href="https://github.com/user/project">
+  <img src="https://example.com/logo.png" width="150" alt="Project Name" />
+  <p><strong>Project Name</strong></p>
+</a>
+
+<a href="https://example.com">
+  <img src="https://example.com/company-logo.png" width="150" alt="Company Name" />
+  <p><strong>Company Name</strong></p>
+</a>
+-->
+
+</div>
+
+If you're using changepacks in your project, we'd love to feature you here! Please open a [Pull Request](https://github.com/changepacks/changepacks/pulls) to add your project or company.
+
 ## License
 
 This project is distributed under the MIT License. See the [LICENSE](LICENSE) file for more details.

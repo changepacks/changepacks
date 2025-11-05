@@ -5,6 +5,8 @@ edition = "2024"
 name = "node-cli"
 version = "0.1.1"
 license = "Apache-2.0"
+description = "Node.js bridge for changepacks (N-API bindings)"
+readme = "../../README.md"
 publish = false
 
 [lib]

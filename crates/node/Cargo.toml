@@ -3,6 +3,8 @@ name = "changepacks-node"
 version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
+description = "Node.js project support for changepacks (npm, pnpm, yarn)"
+readme = "../../README.md"
 
 [dependencies]
 changepacks-core.workspace = true
