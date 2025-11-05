@@ -26,6 +26,26 @@ changepacks is a CLI tool that helps you efficiently manage versioning and chang
 
 ## Installation
 
+### Using Cargo
+
+```bash
+cargo install changepacks
+
+pip install changepacks
+uv add changepacks
+# run
+uvx changepacks
+
+npm install @changepacks/cli
+bun install @changepacks/cli
+pnpm install @changepacks/cli
+yarn install @changepacks/cli
+# run
+npx @changepacks/cli
+bunx @changepacks/cli
+pnpm dlx @changepacks/cli
+```
+
 ### Requirements
 
 - Rust 1.91+ (for development)
