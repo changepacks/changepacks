@@ -61,10 +61,31 @@ jobs:
       - name: Test
         run: bun run test
 
+  # publish
+  changepacks:
+    name: changepacks
+    runs-on: ubuntu-latest
+    permissions:
+      # create pull request comments
+      pull-requests: write
+
+      # Actions > General > Workflow permissions for creating pull request
+      # Create brench to create pull request
+      contents: write
+    needs:
+      - test
+    steps:
+      - uses: actions/checkout@v5
+      - uses: changepacks/action@main
+        id: changepacks
+    outputs:
+      changepacks: ${{ steps.changepacks.outputs.changepacks }}
+      release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}
   # node
   node-build:
     needs:
       - test
+      - changepacks
     strategy:
       fail-fast: false
       matrix:
@@ -135,6 +156,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     needs:
       - test
+      - changepacks
     strategy:
       fail-fast: false
       matrix:
@@ -209,28 +231,6 @@ jobs:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}
           path: bridge/python/dist
 
-  # publish
-  changepacks:
-    name: changepacks
-    runs-on: ubuntu-latest
-    permissions:
-      # create pull request comments
-      pull-requests: write
-
-      # Actions > General > Workflow permissions for creating pull request
-      # Create brench to create pull request
-      contents: write
-    needs:
-      - test
-      - python-build
-      - node-build
-    steps:
-      - uses: actions/checkout@v5
-      - uses: changepacks/action@main
-        id: changepacks
-    outputs:
-      changepacks: ${{ steps.changepacks.outputs.changepacks }}
-      release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}
 
   node-publish:
     name: Node Publish
@@ -240,6 +240,7 @@ jobs:
       id-token: write
     needs:
       - changepacks
+      - node-build
     if: ${{ contains(needs.changepacks.outputs.changepacks, 'bridge/node/package.json') }}
     steps:
       - uses: actions/checkout@v5
@@ -283,6 +284,7 @@ jobs:
     if: ${{ contains(needs.changepacks.outputs.changepacks, 'bridge/python/pyproject.toml') }}
     needs:
       - changepacks
+      - python-build
     permissions:
       # Use to sign the release artifacts
       id-token: write
