@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "changepacks"
 requires-python = ">=3.9"
-version = "0.1.19"
+version = "0.1.20"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
