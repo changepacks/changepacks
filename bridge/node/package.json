@@ -23,8 +23,9 @@
     "version control system"
   ],
   "files": [
-    "dist",
-    "main.js"
+    "main.js",
+    "index.d.ts",
+    "index.js"
   ],
   "napi": {
     "binaryName": "changepacks",
