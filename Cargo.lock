@@ -167,16 +167,17 @@ checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
 
 [[package]]
 name = "changepacks"
-version = "0.1.18"
+version = "0.1.19"
 dependencies = [
  "anyhow",
  "changepacks-cli",
+ "embed-manifest",
  "tokio",
 ]
 
 [[package]]
 name = "changepacks-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "changepacks-core",
@@ -196,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -208,7 +209,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-dart"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -223,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-node"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -236,7 +237,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-python"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -249,7 +250,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-rust"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -262,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-utils"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "changepacks-core",
@@ -571,6 +572,12 @@ name = "dyn-clone"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
+
+[[package]]
+name = "embed-manifest"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41cd446c890d6bed1d8b53acef5f240069ebef91d6fae7c5f52efe61fe8b5eae"
 
 [[package]]
 name = "encoding_rs"

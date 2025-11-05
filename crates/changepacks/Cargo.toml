@@ -12,6 +12,9 @@ changepacks-cli.workspace = true
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros"] }
 anyhow = "1.0"
 
+[target.'cfg(windows)'.build-dependencies]
+embed-manifest = "1.0"
+
 [[bin]]
 name = "changepacks"
 path = "src/main.rs"
