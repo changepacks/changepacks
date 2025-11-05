@@ -305,12 +305,11 @@ jobs:
           args: --non-interactive --skip-existing wheels-*/*
       - name: List wheels
         run: ls -R .
-        working-directory: bridge/python
       - name: Upload Asset
         uses: owjs3901/upload-github-release-asset@main
         with:
           upload_url: ${{ fromJson(needs.changepacks.outputs.release_assets_urls)['bridge/python/dist/*.whl'] }}
-          asset_path: bridge/python/dist/*.whl
+          asset_path: dist/*.whl
 
   upload-assets:
     needs: changepacks
