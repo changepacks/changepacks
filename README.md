@@ -26,8 +26,6 @@ changepacks is a CLI tool that helps you efficiently manage versioning and chang
 
 ## Installation
 
-### Using Cargo
-
 ```bash
 winget install Changepacks.Changepacks
 
