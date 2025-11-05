@@ -127,7 +127,7 @@ jobs:
         with:
           name: bindings-${{ matrix.settings.target }}
           path: |
-            bridge/node/dist/changepacks.*.node
+            bridge/node/changepacks.*.node
           if-no-files-found: error
   
   # python
