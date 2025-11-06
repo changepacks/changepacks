@@ -1,4 +1,4 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    changepacks_cli::main(&std::env::args().skip(1).collect::<Vec<String>>()).await
+    changepacks_cli::main(&std::env::args().collect::<Vec<String>>()).await
 }
