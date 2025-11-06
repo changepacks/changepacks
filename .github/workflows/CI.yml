@@ -355,7 +355,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Build Rust binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} -p changepacks
       - name: Rename binary
         run: mv target/${{ matrix.target }}/release/changepacks${{ matrix.os == 'windows' && '.exe' || '' }} ${{ matrix.binary_name }}
       
@@ -380,7 +380,7 @@ jobs:
 
   winget-publish:
     name: Winget Publish
-    runs-on: windows-latest
+    runs-on: windows-2022
     if: ${{ contains(needs.changepacks.outputs.changepacks, 'crates/changepacks/Cargo.toml') }}
     needs:
       - changepacks
@@ -394,7 +394,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Build Rust binary
-        run: cargo build --release --target x86_64-pc-windows-msvc
+        run: cargo build --release --target x86_64-pc-windows-msvc -p changepacks
       - uses: vedantmgoyal9/winget-releaser@main
         with:
           identifier: Changepacks.Changepacks

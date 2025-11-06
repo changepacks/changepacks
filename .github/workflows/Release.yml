@@ -63,7 +63,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Build Rust binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} -p changepacks
       
       - name: Upload Asset
         uses: actions/upload-release-asset@v1
