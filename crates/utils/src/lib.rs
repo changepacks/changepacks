@@ -1,4 +1,5 @@
 mod clear_update_logs;
+mod detect_indent;
 mod display_update;
 mod filter_project_dirs;
 mod find_current_git_repo;
@@ -10,6 +11,7 @@ mod get_relative_path;
 mod next_version;
 
 pub use clear_update_logs::clear_update_logs;
+pub use detect_indent::detect_indent;
 pub use display_update::display_update;
 pub use filter_project_dirs::find_project_dirs;
 pub use find_current_git_repo::find_current_git_repo;

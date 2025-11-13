@@ -1,0 +1,33 @@
+pub fn detect_indent(content: &str) -> usize {
+    let mut indent = 0;
+    for line in content.lines() {
+        if line.trim().is_empty() || line.trim() == line.trim_end() {
+            continue;
+        }
+        indent = line.len() - line.trim_start().len();
+        break;
+    }
+    indent
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use rstest::rstest;
+
+    #[rstest]
+    #[case("    print('Hello, world!');", 4)]
+    #[case("{\n  \"foo\": \"bar\"}", 2)]
+    #[case("{\n    \"foo\": \"bar\"}", 4)]
+    #[case("\tconsole.log('test');", 1)]
+    #[case("noindent", 0)]
+    #[case("  foo\n    bar", 2)]
+    #[case("", 0)]
+    #[case("           ", 0)]
+    #[case("\n    indented\n   less\n", 4)] // First non-empty, non-blank line counts
+    fn test_detect_indent(#[case] content: &str, #[case] expected: usize) {
+        let indent = detect_indent(content);
+        assert_eq!(indent, expected);
+    }
+}
