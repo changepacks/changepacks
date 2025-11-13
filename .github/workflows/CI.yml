@@ -342,7 +342,10 @@ jobs:
             os: macos
             target: x86_64-apple-darwin
             binary_name: changepacks-darwin-x86_64
-
+          - platform: macos-14
+            os: macos
+            target: aarch64-apple-darwin
+            binary_name: changepacks-darwin-arm64
     steps:
       - name: Checkout
         uses: actions/checkout@v5
