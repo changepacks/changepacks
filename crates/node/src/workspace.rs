@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
 use changepacks_utils::{detect_indent, next_version};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 
@@ -62,9 +63,14 @@ impl Workspace for NodeWorkspace {
         package_json["version"] = serde_json::Value::String(next_version.clone());
         let ind = &b" ".repeat(indent);
         let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);
-        let mut writer = Vec::new();
-        serde_json::Serializer::with_formatter(&mut writer, formatter);
-        write(&self.path, String::from_utf8(writer)? + postfix).await?;
+        let writer = Vec::new();
+        let mut ser = serde_json::Serializer::with_formatter(writer, formatter);
+        package_json.serialize(&mut ser)?;
+        write(
+            &self.path,
+            String::from_utf8(ser.into_inner())?.to_string() + postfix,
+        )
+        .await?;
         Ok(())
     }
 

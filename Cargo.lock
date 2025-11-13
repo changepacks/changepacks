@@ -167,7 +167,7 @@ checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
 
 [[package]]
 name = "changepacks"
-version = "0.1.23"
+version = "0.1.24"
 dependencies = [
  "anyhow",
  "changepacks-cli",
@@ -224,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-node"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -263,7 +263,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-utils"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "changepacks-core",
