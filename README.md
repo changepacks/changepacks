@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="media/logo.svg" alt="changepacks logo" width="200"/>
+</p>
+
 # changepacks 📦
 
 A unified version management and changelog tool for multi-language projects.
