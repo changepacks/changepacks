@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::next_version;
+use changepacks_utils::{detect_indent, next_version};
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 
@@ -47,10 +47,20 @@ impl Package for NodePackage {
     async fn update_version(&self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(&self.version, update_type)?;
 
-        let package_json = read_to_string(&self.path).await?;
-        let mut package_json: serde_json::Value = serde_json::from_str(&package_json)?;
+        let package_json_raw = read_to_string(&self.path).await?;
+        let postfix = if package_json_raw.ends_with("\n") {
+            "\n"
+        } else {
+            ""
+        };
+        let indent = detect_indent(&package_json_raw);
+        let mut package_json: serde_json::Value = serde_json::from_str(&package_json_raw)?;
         package_json["version"] = serde_json::Value::String(next_version);
-        write(&self.path, serde_json::to_string_pretty(&package_json)?).await?;
+        let ind = &b" ".repeat(indent);
+        let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);
+        let mut writer = Vec::new();
+        serde_json::Serializer::with_formatter(&mut writer, formatter);
+        write(&self.path, String::from_utf8(writer)? + postfix).await?;
         Ok(())
     }
 
