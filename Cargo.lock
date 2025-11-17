@@ -223,6 +223,7 @@ dependencies = [
  "changepacks-utils",
  "serde",
  "serde_yaml",
+ "tempfile",
  "tokio",
  "yamlpatch",
  "yamlpath",
@@ -238,6 +239,7 @@ dependencies = [
  "changepacks-utils",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
 ]
 

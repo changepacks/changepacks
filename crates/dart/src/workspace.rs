@@ -58,8 +58,19 @@ impl Workspace for DartWorkspace {
             yamlpatch::apply_yaml_patches(
                 &yamlpath::Document::new(&pubspec_yaml).context("Failed to parse YAML")?,
                 &[yamlpatch::Patch {
-                    operation: yamlpatch::Op::Replace(serde_yaml::Value::String(next_version)),
-                    route: yamlpath::route!("version"),
+                    operation: if self.version.is_some() {
+                        yamlpatch::Op::Replace(serde_yaml::Value::String(next_version))
+                    } else {
+                        yamlpatch::Op::Add {
+                            key: "version".to_string(),
+                            value: serde_yaml::Value::String(next_version),
+                        }
+                    },
+                    route: if self.version.is_some() {
+                        yamlpath::route!("version")
+                    } else {
+                        yamlpath::route!()
+                    },
                 }],
             )?
             .source(),
@@ -85,5 +96,223 @@ impl Workspace for DartWorkspace {
 
     fn default_publish_command(&self) -> &'static str {
         "dart pub publish"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_new_with_name_and_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_workspace
+version: 1.0.0
+workspace:
+  packages:
+    - packages/*
+"#,
+        )
+        .unwrap();
+
+        let workspace = DartWorkspace::new(
+            Some("test_workspace".to_string()),
+            Some("1.0.0".to_string()),
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        assert_eq!(workspace.name(), Some("test_workspace"));
+        assert_eq!(workspace.version(), Some("1.0.0"));
+        assert_eq!(workspace.path(), pubspec_path);
+        assert_eq!(workspace.relative_path(), PathBuf::from("pubspec.yaml"));
+        assert_eq!(workspace.is_changed(), false);
+        assert_eq!(workspace.language(), Language::Dart);
+        assert_eq!(workspace.default_publish_command(), "dart pub publish");
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_new_without_name_and_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"workspace:
+  packages:
+    - packages/*
+"#,
+        )
+        .unwrap();
+
+        let workspace = DartWorkspace::new(
+            None,
+            None,
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        assert_eq!(workspace.name(), None);
+        assert_eq!(workspace.version(), None);
+        assert_eq!(workspace.path(), pubspec_path);
+        assert_eq!(workspace.is_changed(), false);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_set_changed() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_workspace
+version: 1.0.0
+workspace:
+  packages:
+    - packages/*
+"#,
+        )
+        .unwrap();
+
+        let mut workspace = DartWorkspace::new(
+            Some("test_workspace".to_string()),
+            Some("1.0.0".to_string()),
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        assert_eq!(workspace.is_changed(), false);
+        workspace.set_changed(true);
+        assert_eq!(workspace.is_changed(), true);
+        workspace.set_changed(false);
+        assert_eq!(workspace.is_changed(), false);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_version_with_existing_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_workspace
+version: 1.0.0
+workspace:
+  packages:
+    - packages/*
+"#,
+        )
+        .unwrap();
+
+        let workspace = DartWorkspace::new(
+            Some("test_workspace".to_string()),
+            Some("1.0.0".to_string()),
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = fs::read_to_string(&pubspec_path).unwrap();
+        assert!(content.contains("version: 1.0.1"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_version_without_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_workspace
+workspace:
+  packages:
+    - packages/*
+"#,
+        )
+        .unwrap();
+
+        let workspace = DartWorkspace::new(
+            Some("test_workspace".to_string()),
+            None,
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = fs::read_to_string(&pubspec_path).unwrap();
+        assert!(content.contains("version: 0.0.1"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_version_minor() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_workspace
+version: 1.0.0
+workspace:
+  packages:
+    - packages/*
+"#,
+        )
+        .unwrap();
+
+        let workspace = DartWorkspace::new(
+            Some("test_workspace".to_string()),
+            Some("1.0.0".to_string()),
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        workspace.update_version(UpdateType::Minor).await.unwrap();
+
+        let content = fs::read_to_string(&pubspec_path).unwrap();
+        assert!(content.contains("version: 1.1.0"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_update_version_major() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_workspace
+version: 1.0.0
+workspace:
+  packages:
+    - packages/*
+"#,
+        )
+        .unwrap();
+
+        let workspace = DartWorkspace::new(
+            Some("test_workspace".to_string()),
+            Some("1.0.0".to_string()),
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        workspace.update_version(UpdateType::Major).await.unwrap();
+
+        let content = fs::read_to_string(&pubspec_path).unwrap();
+        assert!(content.contains("version: 2.0.0"));
+
+        temp_dir.close().unwrap();
     }
 }

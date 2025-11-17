@@ -94,3 +94,217 @@ impl Workspace for NodeWorkspace {
         "npm publish"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use changepacks_core::UpdateType;
+    use std::fs;
+    use tempfile::TempDir;
+    use tokio::fs::read_to_string;
+
+    #[tokio::test]
+    async fn test_node_workspace_new() {
+        let workspace = NodeWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/package.json"),
+            PathBuf::from("test/package.json"),
+        );
+
+        assert_eq!(workspace.name(), Some("test-workspace"));
+        assert_eq!(workspace.version(), Some("1.0.0"));
+        assert_eq!(workspace.path(), PathBuf::from("/test/package.json"));
+        assert_eq!(
+            workspace.relative_path(),
+            PathBuf::from("test/package.json")
+        );
+        assert_eq!(workspace.language(), Language::Node);
+        assert_eq!(workspace.is_changed(), false);
+        assert_eq!(workspace.default_publish_command(), "npm publish");
+    }
+
+    #[tokio::test]
+    async fn test_node_workspace_new_without_name_and_version() {
+        let workspace = NodeWorkspace::new(
+            None,
+            None,
+            PathBuf::from("/test/package.json"),
+            PathBuf::from("test/package.json"),
+        );
+
+        assert_eq!(workspace.name(), None);
+        assert_eq!(workspace.version(), None);
+    }
+
+    #[tokio::test]
+    async fn test_node_workspace_set_changed() {
+        let mut workspace = NodeWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/package.json"),
+            PathBuf::from("test/package.json"),
+        );
+
+        assert_eq!(workspace.is_changed(), false);
+        workspace.set_changed(true);
+        assert_eq!(workspace.is_changed(), true);
+        workspace.set_changed(false);
+        assert_eq!(workspace.is_changed(), false);
+    }
+
+    #[tokio::test]
+    async fn test_node_workspace_update_version_with_existing_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-workspace",
+  "version": "1.0.0",
+  "workspaces": ["packages/*"]
+}
+"#,
+        )
+        .unwrap();
+
+        let workspace = NodeWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&package_json).await.unwrap();
+        assert!(content.contains(r#""version": "1.0.1""#));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_workspace_update_version_without_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-workspace",
+  "workspaces": ["packages/*"]
+}
+"#,
+        )
+        .unwrap();
+
+        let workspace = NodeWorkspace::new(
+            Some("test-workspace".to_string()),
+            None,
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&package_json).await.unwrap();
+        assert!(content.contains(r#""version": "0.0.1""#));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_workspace_update_version_minor() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-workspace",
+  "version": "1.0.0",
+  "workspaces": ["packages/*"]
+}
+"#,
+        )
+        .unwrap();
+
+        let workspace = NodeWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        workspace.update_version(UpdateType::Minor).await.unwrap();
+
+        let content = read_to_string(&package_json).await.unwrap();
+        assert!(content.contains(r#""version": "1.1.0""#));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_workspace_update_version_major() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-workspace",
+  "version": "1.0.0",
+  "workspaces": ["packages/*"]
+}
+"#,
+        )
+        .unwrap();
+
+        let workspace = NodeWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        workspace.update_version(UpdateType::Major).await.unwrap();
+
+        let content = read_to_string(&package_json).await.unwrap();
+        assert!(content.contains(r#""version": "2.0.0""#));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_workspace_update_version_preserves_formatting() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-workspace",
+  "version": "1.0.0",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "test": "jest"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let workspace = NodeWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&package_json).await.unwrap();
+        assert!(content.contains(r#""version": "1.0.1""#));
+        assert!(content.contains(r#""name": "test-workspace""#));
+        assert!(content.contains(r#""workspaces""#));
+        assert!(content.contains(r#""scripts""#));
+
+        temp_dir.close().unwrap();
+    }
+}
