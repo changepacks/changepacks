@@ -14,3 +14,7 @@ anyhow = "1.0"
 tokio = { version = "1.48", features = ["fs"] }
 async-trait = "0.1"
 toml_edit = "0.23"
+
+[dev-dependencies]
+tempfile = "3.23"
+tokio = { version = "1.48", features = ["test-util", "macros"] }

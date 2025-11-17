@@ -16,3 +16,7 @@ anyhow = "1.0"
 tokio = { version = "1.48", features = ["fs"] }
 yamlpatch = "0.5"
 yamlpath = "0.28"
+
+[dev-dependencies]
+tempfile = "3.23"
+tokio = { version = "1.48", features = ["test-util", "macros"] }

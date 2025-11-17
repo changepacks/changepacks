@@ -105,3 +105,330 @@ impl ProjectFinder for DartProjectFinder {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_new() {
+        let finder = DartProjectFinder::new();
+        assert_eq!(finder.project_files(), &["pubspec.yaml"]);
+        assert_eq!(finder.projects().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_default() {
+        let finder = DartProjectFinder::default();
+        assert_eq!(finder.project_files(), &["pubspec.yaml"]);
+        assert_eq!(finder.projects().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_visit_package() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_package
+version: 1.0.0
+"#,
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 1);
+        match finder.projects()[0] {
+            Project::Package(pkg) => {
+                assert_eq!(pkg.name(), "test_package");
+                assert_eq!(pkg.version(), "1.0.0");
+            }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_workspace_with_workspace_field() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_workspace
+version: 1.0.0
+workspace:
+  packages:
+    - packages/*
+"#,
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 1);
+        match finder.projects()[0] {
+            Project::Workspace(ws) => {
+                assert_eq!(ws.name(), Some("test_workspace"));
+                assert_eq!(ws.version(), Some("1.0.0"));
+            }
+            _ => panic!("Expected Workspace"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_workspace_with_melos_yaml() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        let melos_path = temp_dir.path().join("melos.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_workspace
+version: 1.0.0
+"#,
+        )
+        .unwrap();
+        fs::write(&melos_path, r#"name: test_workspace"#).unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 1);
+        match finder.projects()[0] {
+            Project::Workspace(ws) => {
+                assert_eq!(ws.name(), Some("test_workspace"));
+                assert_eq!(ws.version(), Some("1.0.0"));
+            }
+            _ => panic!("Expected Workspace"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_workspace_without_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_workspace
+workspace:
+  packages:
+    - packages/*
+"#,
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 1);
+        match finder.projects()[0] {
+            Project::Workspace(ws) => {
+                assert_eq!(ws.name(), Some("test_workspace"));
+                assert_eq!(ws.version(), None);
+            }
+            _ => panic!("Expected Workspace"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_non_pubspec_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let other_file = temp_dir.path().join("other.yaml");
+        fs::write(&other_file, r#"some: content"#).unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&other_file, &PathBuf::from("other.yaml"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 0);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir_path = temp_dir.path().join("some_dir");
+        fs::create_dir_all(&dir_path).unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&dir_path, &PathBuf::from("some_dir"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 0);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_duplicate() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_package
+version: 1.0.0
+"#,
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 1);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_package_without_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_package
+"#,
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        let result = finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await;
+
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Version not found")
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_package_without_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"version: 1.0.0
+"#,
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        let result = finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Name not found"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_multiple_packages() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec1 = temp_dir.path().join("package1").join("pubspec.yaml");
+        let pubspec2 = temp_dir.path().join("package2").join("pubspec.yaml");
+        fs::create_dir_all(pubspec1.parent().unwrap()).unwrap();
+        fs::create_dir_all(pubspec2.parent().unwrap()).unwrap();
+        fs::write(
+            &pubspec1,
+            r#"name: package1
+version: 1.0.0
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &pubspec2,
+            r#"name: package2
+version: 2.0.0
+"#,
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec1, &PathBuf::from("package1/pubspec.yaml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&pubspec2, &PathBuf::from("package2/pubspec.yaml"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 2);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_projects_mut() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_package
+version: 1.0.0
+"#,
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+
+        let mut projects = finder.projects_mut();
+        assert_eq!(projects.len(), 1);
+        match &mut projects[0] {
+            Project::Package(pkg) => {
+                assert_eq!(pkg.is_changed(), false);
+                pkg.set_changed(true);
+                assert_eq!(pkg.is_changed(), true);
+            }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+}

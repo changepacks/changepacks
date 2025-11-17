@@ -108,6 +108,34 @@ changepacks update --dry-run    # Preview changes without applying
 changepacks update --yes        # Skip confirmation prompts
 ```
 
+### Publish Packages
+
+Publish packages to their respective registries:
+
+```bash
+changepacks publish
+```
+
+Options:
+
+```bash
+changepacks publish --dry-run           # Preview what would be published without actually publishing
+changepacks publish --yes               # Skip confirmation prompts
+changepacks publish --format json       # Output results in JSON format
+changepacks publish --remote            # Use remote branch for change detection
+```
+
+The publish command will:
+1. Discover all projects in your workspace
+2. Show which projects will be published
+3. Execute the publish command for each project (using language-specific defaults or custom commands from config)
+
+Default publish commands by language:
+- **Node.js**: `npm publish`
+- **Python**: `uv publish`
+- **Rust**: `cargo publish`
+- **Dart**: `dart pub publish`
+
 ### Check Config
 
 View the loaded changepacks config (from `.changepacks/config.json`):
@@ -127,7 +155,14 @@ This prints the merged and defaulted configuration, for example:
     "!bridge/python/pyproject.toml"
   ],
   "baseBranch": "main",
-  "latestPackage": "crates/changepacks/Cargo.toml"
+  "latestPackage": "crates/changepacks/Cargo.toml",
+  "publish": {
+    "node": "npm publish",
+    "python": "uv publish",
+    "rust": "cargo publish",
+    "dart": "dart pub publish",
+    "bridge/node/package.json": "npm publish --access public"
+  }
 }
 ```
 
@@ -135,6 +170,10 @@ You can edit `.changepacks/config.json` to customize:
 - Files/projects to ignore (`ignore`) using glob patterns (default: empty).
 - The base branch to compare against for changes (`baseBranch`, default: `"main"`).
 - The default main package for versioning (`latestPackage`, optional).
+- Custom publish commands (`publish`):
+  - Set language-specific commands using language keys: `"node"`, `"python"`, `"rust"`, `"dart"`.
+  - Set project-specific commands using relative paths (e.g., `"bridge/node/package.json"`).
+  - If not specified, default commands are used (see Publish Packages section).
 
 If the config file is missing or empty, sensible defaults are used.
 

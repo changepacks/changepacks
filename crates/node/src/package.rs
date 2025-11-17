@@ -80,4 +80,201 @@ impl Package for NodePackage {
     fn is_changed(&self) -> bool {
         self.is_changed
     }
+
+    fn default_publish_command(&self) -> &'static str {
+        "npm publish"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use changepacks_core::UpdateType;
+    use std::fs;
+    use tempfile::TempDir;
+    use tokio::fs::read_to_string;
+
+    #[tokio::test]
+    async fn test_node_package_new() {
+        let package = NodePackage::new(
+            "test-package".to_string(),
+            "1.0.0".to_string(),
+            PathBuf::from("/test/package.json"),
+            PathBuf::from("test/package.json"),
+        );
+
+        assert_eq!(package.name(), "test-package");
+        assert_eq!(package.version(), "1.0.0");
+        assert_eq!(package.path(), PathBuf::from("/test/package.json"));
+        assert_eq!(package.relative_path(), PathBuf::from("test/package.json"));
+        assert_eq!(package.language(), Language::Node);
+        assert_eq!(package.is_changed(), false);
+        assert_eq!(package.default_publish_command(), "npm publish");
+    }
+
+    #[tokio::test]
+    async fn test_node_package_set_changed() {
+        let mut package = NodePackage::new(
+            "test-package".to_string(),
+            "1.0.0".to_string(),
+            PathBuf::from("/test/package.json"),
+            PathBuf::from("test/package.json"),
+        );
+
+        assert_eq!(package.is_changed(), false);
+        package.set_changed(true);
+        assert_eq!(package.is_changed(), true);
+        package.set_changed(false);
+        assert_eq!(package.is_changed(), false);
+    }
+
+    #[tokio::test]
+    async fn test_node_package_update_version_patch() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-package",
+  "version": "1.0.0"
+}
+"#,
+        )
+        .unwrap();
+
+        let package = NodePackage::new(
+            "test-package".to_string(),
+            "1.0.0".to_string(),
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&package_json).await.unwrap();
+        assert!(content.contains(r#""version": "1.0.1""#));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_package_update_version_minor() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-package",
+  "version": "1.0.0"
+}
+"#,
+        )
+        .unwrap();
+
+        let package = NodePackage::new(
+            "test-package".to_string(),
+            "1.0.0".to_string(),
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        package.update_version(UpdateType::Minor).await.unwrap();
+
+        let content = read_to_string(&package_json).await.unwrap();
+        assert!(content.contains(r#""version": "1.1.0""#));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_package_update_version_major() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-package",
+  "version": "1.0.0"
+}
+"#,
+        )
+        .unwrap();
+
+        let package = NodePackage::new(
+            "test-package".to_string(),
+            "1.0.0".to_string(),
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        package.update_version(UpdateType::Major).await.unwrap();
+
+        let content = read_to_string(&package_json).await.unwrap();
+        assert!(content.contains(r#""version": "2.0.0""#));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_package_update_version_preserves_formatting() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-package",
+  "version": "1.2.3",
+  "description": "A test package",
+  "dependencies": {
+    "express": "^4.18.0"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let package = NodePackage::new(
+            "test-package".to_string(),
+            "1.2.3".to_string(),
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&package_json).await.unwrap();
+        assert!(content.contains(r#""version": "1.2.4""#));
+        assert!(content.contains(r#""name": "test-package""#));
+        assert!(content.contains(r#""description": "A test package""#));
+        assert!(content.contains(r#""dependencies""#));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_package_update_version_preserves_newline() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{"name":"test-package","version":"1.0.0"}
+"#,
+        )
+        .unwrap();
+
+        let package = NodePackage::new(
+            "test-package".to_string(),
+            "1.0.0".to_string(),
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&package_json).await.unwrap();
+        assert!(content.ends_with('\n'));
+        assert!(content.contains(r#""version": "1.0.1""#));
+
+        temp_dir.close().unwrap();
+    }
 }

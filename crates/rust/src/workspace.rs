@@ -58,7 +58,11 @@ impl Workspace for RustWorkspace {
             cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
         cargo_toml["package"]["version"] = next_version.into();
-        if cargo_toml["package"]["name"].is_none() {
+        if cargo_toml
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .is_none()
+        {
             // insert package.name with version, cargo rules
             cargo_toml["package"]["name"] = self.name.clone().unwrap_or("_".to_string()).into();
         }
@@ -81,5 +85,244 @@ impl Workspace for RustWorkspace {
 
     fn relative_path(&self) -> &Path {
         &self.relative_path
+    }
+
+    fn default_publish_command(&self) -> &'static str {
+        "cargo publish"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use changepacks_core::UpdateType;
+    use std::fs;
+    use tempfile::TempDir;
+    use tokio::fs::read_to_string;
+
+    #[tokio::test]
+    async fn test_rust_workspace_new() {
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/Cargo.toml"),
+            PathBuf::from("test/Cargo.toml"),
+        );
+
+        assert_eq!(workspace.name(), Some("test-workspace"));
+        assert_eq!(workspace.version(), Some("1.0.0"));
+        assert_eq!(workspace.path(), PathBuf::from("/test/Cargo.toml"));
+        assert_eq!(workspace.relative_path(), PathBuf::from("test/Cargo.toml"));
+        assert_eq!(workspace.language(), Language::Rust);
+        assert_eq!(workspace.is_changed(), false);
+        assert_eq!(workspace.default_publish_command(), "cargo publish");
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_new_without_name_and_version() {
+        let workspace = RustWorkspace::new(
+            None,
+            None,
+            PathBuf::from("/test/Cargo.toml"),
+            PathBuf::from("test/Cargo.toml"),
+        );
+
+        assert_eq!(workspace.name(), None);
+        assert_eq!(workspace.version(), None);
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_set_changed() {
+        let mut workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/Cargo.toml"),
+            PathBuf::from("test/Cargo.toml"),
+        );
+
+        assert_eq!(workspace.is_changed(), false);
+        workspace.set_changed(true);
+        assert_eq!(workspace.is_changed(), true);
+        workspace.set_changed(false);
+        assert_eq!(workspace.is_changed(), false);
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_with_existing_package() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[package]
+name = "test-workspace"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains("version = \"1.0.1\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_without_package_section() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            None,
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains("[package]"));
+        assert!(content.contains("version = \"0.0.1\""));
+        assert!(content.contains("name = \"test-workspace\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_without_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+"#,
+        )
+        .unwrap();
+
+        let workspace =
+            RustWorkspace::new(None, None, cargo_toml.clone(), PathBuf::from("Cargo.toml"));
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains("[package]"));
+        assert!(content.contains("version = \"0.0.1\""));
+        assert!(content.contains("name = \"_\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_minor() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[package]
+name = "test-workspace"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Minor).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains("version = \"1.1.0\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_major() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[package]
+name = "test-workspace"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Major).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains("version = \"2.0.0\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_preserves_existing_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[package]
+name = "existing-name"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains("name = \"existing-name\""));
+        assert!(content.contains("version = \"1.0.1\""));
+
+        temp_dir.close().unwrap();
     }
 }

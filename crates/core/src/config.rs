@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -11,6 +12,9 @@ pub struct Config {
 
     #[serde(default)]
     pub latest_package: Option<String>,
+
+    #[serde(default)]
+    pub publish: HashMap<String, String>,
 }
 
 fn default_base_branch() -> String {
@@ -23,6 +27,7 @@ impl Default for Config {
             ignore: Vec::new(),
             base_branch: default_base_branch(),
             latest_package: None,
+            publish: HashMap::new(),
         }
     }
 }
