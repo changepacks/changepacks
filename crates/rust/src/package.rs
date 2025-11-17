@@ -47,10 +47,22 @@ impl Package for RustPackage {
     async fn update_version(&self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(&self.version, update_type)?;
 
-        let cargo_toml = read_to_string(&self.path).await?;
-        let mut cargo_toml: DocumentMut = cargo_toml.parse::<DocumentMut>()?;
+        let cargo_toml_raw = read_to_string(&self.path).await?;
+        let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
         cargo_toml["package"]["version"] = next_version.into();
-        write(&self.path, cargo_toml.to_string()).await?;
+        write(
+            &self.path,
+            format!(
+                "{}{}",
+                cargo_toml.to_string().trim_end(),
+                if cargo_toml_raw.ends_with("\n") {
+                    "\n"
+                } else {
+                    ""
+                }
+            ),
+        )
+        .await?;
         Ok(())
     }
 

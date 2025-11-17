@@ -48,17 +48,26 @@ impl Package for DartPackage {
     async fn update_version(&self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(&self.version, update_type)?;
 
-        let pubspec_yaml = read_to_string(&self.path).await?;
+        let pubspec_yaml_raw = read_to_string(&self.path).await?;
         write(
             &self.path,
-            yamlpatch::apply_yaml_patches(
-                &yamlpath::Document::new(&pubspec_yaml).context("Failed to parse YAML")?,
-                &[yamlpatch::Patch {
-                    operation: yamlpatch::Op::Replace(serde_yaml::Value::String(next_version)),
-                    route: yamlpath::route!("version"),
-                }],
-            )?
-            .source(),
+            format!(
+                "{}{}",
+                yamlpatch::apply_yaml_patches(
+                    &yamlpath::Document::new(&pubspec_yaml_raw).context("Failed to parse YAML")?,
+                    &[yamlpatch::Patch {
+                        operation: yamlpatch::Op::Replace(serde_yaml::Value::String(next_version)),
+                        route: yamlpath::route!("version"),
+                    }],
+                )?
+                .source()
+                .trim_end(),
+                if pubspec_yaml_raw.ends_with("\n") {
+                    "\n"
+                } else {
+                    ""
+                }
+            ),
         )
         .await?;
         Ok(())

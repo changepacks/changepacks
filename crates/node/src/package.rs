@@ -49,11 +49,6 @@ impl Package for NodePackage {
         let next_version = next_version(&self.version, update_type)?;
 
         let package_json_raw = read_to_string(&self.path).await?;
-        let postfix = if package_json_raw.ends_with("\n") {
-            "\n"
-        } else {
-            ""
-        };
         let indent = detect_indent(&package_json_raw);
         let mut package_json: serde_json::Value = serde_json::from_str(&package_json_raw)?;
         package_json["version"] = serde_json::Value::String(next_version);
@@ -64,7 +59,15 @@ impl Package for NodePackage {
         package_json.serialize(&mut ser)?;
         write(
             &self.path,
-            String::from_utf8(ser.into_inner())?.to_string() + postfix,
+            format!(
+                "{}{}",
+                String::from_utf8(ser.into_inner())?.to_string().trim_end(),
+                if package_json_raw.ends_with("\n") {
+                    "\n"
+                } else {
+                    ""
+                }
+            ),
         )
         .await?;
         Ok(())

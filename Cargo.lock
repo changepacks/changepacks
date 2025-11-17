@@ -173,7 +173,7 @@ checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
 
 [[package]]
 name = "changepacks"
-version = "0.1.25"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "changepacks-cli",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-cli"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "changepacks-core",
@@ -203,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-core"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -215,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-dart"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -231,7 +231,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-node"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-python"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-rust"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -273,7 +273,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-utils"
-version = "0.1.8"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "changepacks-core",

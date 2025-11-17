@@ -52,13 +52,25 @@ impl Workspace for PythonWorkspace {
             update_type,
         )?;
 
-        let pyproject_toml = read_to_string(&self.path).await?;
-        let mut pyproject_toml: DocumentMut = pyproject_toml.parse::<DocumentMut>()?;
+        let pyproject_toml_raw = read_to_string(&self.path).await?;
+        let mut pyproject_toml: DocumentMut = pyproject_toml_raw.parse::<DocumentMut>()?;
         if pyproject_toml.get("project").is_none() {
             pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
         pyproject_toml["project"]["version"] = next_version.into();
-        write(&self.path, pyproject_toml.to_string()).await?;
+        write(
+            &self.path,
+            format!(
+                "{}{}",
+                pyproject_toml.to_string().trim_end(),
+                if pyproject_toml_raw.ends_with("\n") {
+                    "\n"
+                } else {
+                    ""
+                }
+            ),
+        )
+        .await?;
         Ok(())
     }
 
