@@ -134,4 +134,27 @@ mod tests {
 
         temp_dir.close().unwrap();
     }
+
+    #[tokio::test]
+    async fn test_get_changepacks_config_empty_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(temp_path)
+            .output()
+            .unwrap();
+
+        let changepacks_dir = temp_path.join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+        let config_file = changepacks_dir.join("config.json");
+
+        write(&config_file, "").await.unwrap();
+
+        let config = get_changepacks_config(temp_path).await.unwrap();
+        assert_eq!(config, Config::default());
+
+        temp_dir.close().unwrap();
+    }
 }

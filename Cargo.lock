@@ -273,6 +273,7 @@ version = "0.1.8"
 dependencies = [
  "anyhow",
  "changepacks-core",
+ "changepacks-node",
  "colored",
  "futures",
  "gix",
