@@ -70,3 +70,165 @@ impl Package for RustPackage {
         "cargo publish"
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use changepacks_core::UpdateType;
+    use std::fs;
+    use tempfile::TempDir;
+    use tokio::fs::read_to_string;
+
+    #[tokio::test]
+    async fn test_rust_package_new() {
+        let package = RustPackage::new(
+            "test-package".to_string(),
+            "1.0.0".to_string(),
+            PathBuf::from("/test/Cargo.toml"),
+            PathBuf::from("test/Cargo.toml"),
+        );
+
+        assert_eq!(package.name(), "test-package");
+        assert_eq!(package.version(), "1.0.0");
+        assert_eq!(package.path(), PathBuf::from("/test/Cargo.toml"));
+        assert_eq!(package.relative_path(), PathBuf::from("test/Cargo.toml"));
+        assert_eq!(package.language(), Language::Rust);
+        assert_eq!(package.is_changed(), false);
+        assert_eq!(package.default_publish_command(), "cargo publish");
+    }
+
+    #[tokio::test]
+    async fn test_rust_package_set_changed() {
+        let mut package = RustPackage::new(
+            "test-package".to_string(),
+            "1.0.0".to_string(),
+            PathBuf::from("/test/Cargo.toml"),
+            PathBuf::from("test/Cargo.toml"),
+        );
+
+        assert_eq!(package.is_changed(), false);
+        package.set_changed(true);
+        assert_eq!(package.is_changed(), true);
+        package.set_changed(false);
+        assert_eq!(package.is_changed(), false);
+    }
+
+    #[tokio::test]
+    async fn test_rust_package_update_version_patch() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let package = RustPackage::new(
+            "test-package".to_string(),
+            "1.0.0".to_string(),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains("version = \"1.0.1\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_package_update_version_minor() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let package = RustPackage::new(
+            "test-package".to_string(),
+            "1.0.0".to_string(),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        package.update_version(UpdateType::Minor).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains("version = \"1.1.0\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_package_update_version_major() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let package = RustPackage::new(
+            "test-package".to_string(),
+            "1.0.0".to_string(),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        package.update_version(UpdateType::Major).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains("version = \"2.0.0\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_package_update_version_preserves_formatting() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "test-package"
+version = "1.2.3"
+edition = "2021"
+
+[dependencies]
+tokio = "1.0"
+"#,
+        )
+        .unwrap();
+
+        let package = RustPackage::new(
+            "test-package".to_string(),
+            "1.2.3".to_string(),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains("version = \"1.2.4\""));
+        assert!(content.contains("name = \"test-package\""));
+        assert!(content.contains("edition = \"2021\""));
+        assert!(content.contains("[dependencies]"));
+
+        temp_dir.close().unwrap();
+    }
+}

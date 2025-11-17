@@ -262,6 +262,7 @@ dependencies = [
  "async-trait",
  "changepacks-core",
  "changepacks-utils",
+ "tempfile",
  "tokio",
  "toml",
  "toml_edit",

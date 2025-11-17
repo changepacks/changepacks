@@ -103,3 +103,263 @@ impl ProjectFinder for RustProjectFinder {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use changepacks_core::Project;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_rust_project_finder_new() {
+        let finder = RustProjectFinder::new();
+        assert_eq!(finder.project_files(), &["Cargo.toml"]);
+        assert_eq!(finder.projects().len(), 0);
+    }
+
+    #[test]
+    fn test_rust_project_finder_default() {
+        let finder = RustProjectFinder::default();
+        assert_eq!(finder.project_files(), &["Cargo.toml"]);
+        assert_eq!(finder.projects().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_package() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Package(pkg) => {
+                assert_eq!(pkg.name(), "test-package");
+                assert_eq!(pkg.version(), "1.0.0");
+            }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_workspace() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[package]
+name = "test-workspace"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Workspace(ws) => {
+                assert_eq!(ws.name(), Some("test-workspace"));
+                assert_eq!(ws.version(), Some("1.0.0"));
+            }
+            _ => panic!("Expected Workspace"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_workspace_without_package() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Workspace(ws) => {
+                assert_eq!(ws.name(), None);
+                assert_eq!(ws.version(), None);
+            }
+            _ => panic!("Expected Workspace"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_non_cargo_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let other_file = temp_dir.path().join("other.txt");
+        fs::write(&other_file, "some content").unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&other_file, &PathBuf::from("other.txt"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 0);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        // Pass directory instead of file
+        finder
+            .visit(temp_dir.path(), &PathBuf::from("."))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 0);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_duplicate() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 1);
+
+        // Visit again - should not add duplicate
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 1);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_multiple_packages() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml1 = temp_dir.path().join("package1").join("Cargo.toml");
+        fs::create_dir_all(cargo_toml1.parent().unwrap()).unwrap();
+        fs::write(
+            &cargo_toml1,
+            r#"[package]
+name = "package1"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let cargo_toml2 = temp_dir.path().join("package2").join("Cargo.toml");
+        fs::create_dir_all(cargo_toml2.parent().unwrap()).unwrap();
+        fs::write(
+            &cargo_toml2,
+            r#"[package]
+name = "package2"
+version = "2.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml1, &PathBuf::from("package1/Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&cargo_toml2, &PathBuf::from("package2/Cargo.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 2);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_projects_mut() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+
+        let mut_projects = finder.projects_mut();
+        assert_eq!(mut_projects.len(), 1);
+
+        temp_dir.close().unwrap();
+    }
+}
