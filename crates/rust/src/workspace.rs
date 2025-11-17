@@ -52,8 +52,8 @@ impl Workspace for RustWorkspace {
             update_type,
         )?;
 
-        let cargo_toml = read_to_string(&self.path).await?;
-        let mut cargo_toml: DocumentMut = cargo_toml.parse::<DocumentMut>()?;
+        let cargo_toml_raw = read_to_string(&self.path).await?;
+        let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
         if cargo_toml.get("package").is_none() {
             cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
@@ -67,7 +67,19 @@ impl Workspace for RustWorkspace {
             cargo_toml["package"]["name"] = self.name.clone().unwrap_or("_".to_string()).into();
         }
 
-        write(&self.path, cargo_toml.to_string()).await?;
+        write(
+            &self.path,
+            format!(
+                "{}{}",
+                cargo_toml.to_string().trim_end(),
+                if cargo_toml_raw.ends_with("\n") {
+                    "\n"
+                } else {
+                    ""
+                }
+            ),
+        )
+        .await?;
         Ok(())
     }
 
