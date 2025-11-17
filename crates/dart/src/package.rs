@@ -74,4 +74,8 @@ impl Package for DartPackage {
     fn set_changed(&mut self, changed: bool) {
         self.is_changed = changed;
     }
+
+    fn default_publish_command(&self) -> &'static str {
+        "dart pub publish"
+    }
 }

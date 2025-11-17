@@ -80,4 +80,8 @@ impl Package for NodePackage {
     fn is_changed(&self) -> bool {
         self.is_changed
     }
+
+    fn default_publish_command(&self) -> &'static str {
+        "npm publish"
+    }
 }

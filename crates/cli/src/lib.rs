@@ -4,8 +4,8 @@ use clap::{Parser, Subcommand};
 
 use crate::{
     commands::{
-        ChangepackArgs, CheckArgs, ConfigArgs, InitArgs, UpdateArgs, handle_changepack,
-        handle_check, handle_config, handle_init, handle_update,
+        ChangepackArgs, CheckArgs, ConfigArgs, InitArgs, PublishArgs, UpdateArgs,
+        handle_changepack, handle_check, handle_config, handle_init, handle_publish, handle_update,
     },
     options::FilterOptions,
 };
@@ -31,6 +31,7 @@ enum Commands {
     Check(CheckArgs),
     Update(UpdateArgs),
     Config(ConfigArgs),
+    Publish(PublishArgs),
 }
 
 pub async fn main(args: &[String]) -> Result<()> {
@@ -41,6 +42,7 @@ pub async fn main(args: &[String]) -> Result<()> {
             Commands::Check(args) => handle_check(&args).await?,
             Commands::Update(args) => handle_update(&args).await?,
             Commands::Config(args) => handle_config(&args).await?,
+            Commands::Publish(args) => handle_publish(&args).await?,
         }
     } else {
         handle_changepack(&ChangepackArgs {

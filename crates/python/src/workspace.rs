@@ -77,4 +77,8 @@ impl Workspace for PythonWorkspace {
     fn relative_path(&self) -> &Path {
         &self.relative_path
     }
+
+    fn default_publish_command(&self) -> &'static str {
+        "uv publish"
+    }
 }

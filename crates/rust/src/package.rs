@@ -65,4 +65,8 @@ impl Package for RustPackage {
     fn is_changed(&self) -> bool {
         self.is_changed
     }
+
+    fn default_publish_command(&self) -> &'static str {
+        "cargo publish"
+    }
 }

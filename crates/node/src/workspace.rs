@@ -89,4 +89,8 @@ impl Workspace for NodeWorkspace {
     fn relative_path(&self) -> &Path {
         &self.relative_path
     }
+
+    fn default_publish_command(&self) -> &'static str {
+        "npm publish"
+    }
 }

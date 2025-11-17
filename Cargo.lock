@@ -150,6 +150,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "bytes"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
+
+[[package]]
 name = "cc"
 version = "1.2.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -167,7 +173,7 @@ checksum = "2fd1289c04a9ea8cb22300a459a72a385d7c73d3259e2ed7dcb2af674838cfa9"
 
 [[package]]
 name = "changepacks"
-version = "0.1.24"
+version = "0.1.25"
 dependencies = [
  "anyhow",
  "changepacks-cli",
@@ -177,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-cli"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "changepacks-core",
@@ -197,7 +203,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-core"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -209,7 +215,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-dart"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -224,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-node"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -237,7 +243,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-python"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -250,7 +256,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-rust"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -263,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-utils"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "anyhow",
  "changepacks-core",
@@ -2698,8 +2704,13 @@ version = "1.48.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff360e02eab121e0bc37a2d3b4d4dc622e6eda3a8e5253d5435ecf5bd4c68408"
 dependencies = [
+ "bytes",
+ "libc",
+ "mio",
  "pin-project-lite",
+ "signal-hook-registry",
  "tokio-macros",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

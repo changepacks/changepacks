@@ -7,7 +7,7 @@ use std::{
 use anyhow::Result;
 use colored::Colorize;
 
-use crate::{package::Package, update_type::UpdateType, workspace::Workspace};
+use crate::{config::Config, package::Package, update_type::UpdateType, workspace::Workspace};
 
 #[derive(Debug)]
 pub enum Project {
@@ -56,6 +56,13 @@ impl Project {
         match self {
             Project::Workspace(workspace) => workspace.is_changed(),
             Project::Package(package) => package.is_changed(),
+        }
+    }
+
+    pub async fn publish(&self, config: &Config) -> Result<()> {
+        match self {
+            Project::Workspace(workspace) => workspace.publish(config).await,
+            Project::Package(package) => package.publish(config).await,
         }
     }
 }
