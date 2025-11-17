@@ -54,7 +54,7 @@ impl Workspace for PythonWorkspace {
 
         let pyproject_toml = read_to_string(&self.path).await?;
         let mut pyproject_toml: DocumentMut = pyproject_toml.parse::<DocumentMut>()?;
-        if pyproject_toml["project"].is_none() {
+        if pyproject_toml.get("project").is_none() {
             pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
         pyproject_toml["project"]["version"] = next_version.into();
@@ -80,5 +80,185 @@ impl Workspace for PythonWorkspace {
 
     fn default_publish_command(&self) -> &'static str {
         "uv publish"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use changepacks_core::UpdateType;
+    use std::fs;
+    use tempfile::TempDir;
+    use tokio::fs::read_to_string;
+
+    #[tokio::test]
+    async fn test_python_workspace_new() {
+        let workspace = PythonWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("test/pyproject.toml"),
+        );
+
+        assert_eq!(workspace.name(), Some("test-workspace"));
+        assert_eq!(workspace.version(), Some("1.0.0"));
+        assert_eq!(workspace.path(), PathBuf::from("/test/pyproject.toml"));
+        assert_eq!(
+            workspace.relative_path(),
+            PathBuf::from("test/pyproject.toml")
+        );
+        assert_eq!(workspace.language(), Language::Python);
+        assert_eq!(workspace.is_changed(), false);
+        assert_eq!(workspace.default_publish_command(), "uv publish");
+    }
+
+    #[tokio::test]
+    async fn test_python_workspace_new_without_name_and_version() {
+        let workspace = PythonWorkspace::new(
+            None,
+            None,
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("test/pyproject.toml"),
+        );
+
+        assert_eq!(workspace.name(), None);
+        assert_eq!(workspace.version(), None);
+    }
+
+    #[tokio::test]
+    async fn test_python_workspace_set_changed() {
+        let mut workspace = PythonWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("test/pyproject.toml"),
+        );
+
+        assert_eq!(workspace.is_changed(), false);
+        workspace.set_changed(true);
+        assert_eq!(workspace.is_changed(), true);
+        workspace.set_changed(false);
+        assert_eq!(workspace.is_changed(), false);
+    }
+
+    #[tokio::test]
+    async fn test_python_workspace_update_version_with_existing_project() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv.workspace]
+members = ["packages/*"]
+
+[project]
+name = "test-workspace"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let workspace = PythonWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&pyproject_toml).await.unwrap();
+        assert!(content.contains("version = \"1.0.1\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_workspace_update_version_without_project_section() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+        )
+        .unwrap();
+
+        let workspace = PythonWorkspace::new(
+            Some("test-workspace".to_string()),
+            None,
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&pyproject_toml).await.unwrap();
+        assert!(content.contains("[project]"));
+        assert!(content.contains("version = \"0.0.1\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_workspace_update_version_minor() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv.workspace]
+members = ["packages/*"]
+
+[project]
+name = "test-workspace"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let workspace = PythonWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
+        );
+
+        workspace.update_version(UpdateType::Minor).await.unwrap();
+
+        let content = read_to_string(&pyproject_toml).await.unwrap();
+        assert!(content.contains("version = \"1.1.0\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_workspace_update_version_major() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv.workspace]
+members = ["packages/*"]
+
+[project]
+name = "test-workspace"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let workspace = PythonWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
+        );
+
+        workspace.update_version(UpdateType::Major).await.unwrap();
+
+        let content = read_to_string(&pyproject_toml).await.unwrap();
+        assert!(content.contains("version = \"2.0.0\""));
+
+        temp_dir.close().unwrap();
     }
 }
