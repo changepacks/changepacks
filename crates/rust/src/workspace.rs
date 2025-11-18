@@ -126,8 +126,6 @@ impl Workspace for RustWorkspace {
             if dependencies.get(package.name()).is_none() {
                 continue;
             }
-            println!("package: {:?}", package.name());
-            println!("dependencies: {:?}", dependencies);
 
             let dep = dependencies[package.name()].as_inline_table_mut();
             if let Some(dep) = dep {
