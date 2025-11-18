@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use changepacks_core::{Package, Project};
 use changepacks_utils::{
     clear_update_logs, display_update, find_current_git_repo, find_project_dirs,
     gen_changepack_result_map, gen_update_map, get_changepacks_config, get_changepacks_dir,
@@ -50,18 +51,28 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
         println!("Updates found:");
     }
     let mut project_finders = get_finders();
+    let mut all_finders = get_finders();
 
     find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
+    find_project_dirs(&repo, &mut all_finders, &Default::default(), args.remote).await?;
 
     let mut update_projects = Vec::new();
+    let mut workspace_projects = Vec::new();
 
     for finder in project_finders.iter_mut() {
-        for project in finder.projects() {
+        for project in finder.projects_mut() {
             if let Some((update_type, _)) =
                 update_map.get(&get_relative_path(repo_root_path, project.path())?)
             {
                 update_projects.push((project, update_type.clone()));
                 continue;
+            }
+        }
+    }
+    for finder in all_finders.iter_mut() {
+        for project in finder.projects() {
+            if let Project::Workspace(workspace) = project {
+                workspace_projects.push(workspace);
             }
         }
     }
@@ -106,8 +117,28 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
 
     futures::future::join_all(
         update_projects
-            .iter()
+            .iter_mut()
             .map(|(project, update_type)| project.update_version(update_type.clone())),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
+
+    let projects: Vec<&dyn Package> = update_projects
+        .iter()
+        .filter_map(|(project, _)| {
+            if let Project::Package(package) = project {
+                Some(package.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+    // update workspace dependencies
+    futures::future::join_all(
+        workspace_projects
+            .iter()
+            .map(|workspace| workspace.update_workspace_dependencies(&projects)),
     )
     .await
     .into_iter()

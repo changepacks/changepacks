@@ -45,7 +45,7 @@ impl Workspace for DartWorkspace {
         self.version.as_deref()
     }
 
-    async fn update_version(&self, update_type: UpdateType) -> Result<()> {
+    async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(
             self.version.as_ref().unwrap_or(&String::from("0.0.0")),
             update_type,
@@ -61,11 +61,11 @@ impl Workspace for DartWorkspace {
                     &yamlpath::Document::new(&pubspec_yaml_raw).context("Failed to parse YAML")?,
                     &[yamlpatch::Patch {
                         operation: if self.version.is_some() {
-                            yamlpatch::Op::Replace(serde_yaml::Value::String(next_version))
+                            yamlpatch::Op::Replace(serde_yaml::Value::String(next_version.clone()))
                         } else {
                             yamlpatch::Op::Add {
                                 key: "version".to_string(),
-                                value: serde_yaml::Value::String(next_version),
+                                value: serde_yaml::Value::String(next_version.clone()),
                             }
                         },
                         route: if self.version.is_some() {
@@ -85,6 +85,7 @@ impl Workspace for DartWorkspace {
             ),
         )
         .await?;
+        self.version = Some(next_version);
         Ok(())
     }
 
@@ -221,7 +222,7 @@ workspace:
         )
         .unwrap();
 
-        let workspace = DartWorkspace::new(
+        let mut workspace = DartWorkspace::new(
             Some("test_workspace".to_string()),
             Some("1.0.0".to_string()),
             pubspec_path.clone(),
@@ -250,7 +251,7 @@ workspace:
         )
         .unwrap();
 
-        let workspace = DartWorkspace::new(
+        let mut workspace = DartWorkspace::new(
             Some("test_workspace".to_string()),
             None,
             pubspec_path.clone(),
@@ -280,7 +281,7 @@ workspace:
         )
         .unwrap();
 
-        let workspace = DartWorkspace::new(
+        let mut workspace = DartWorkspace::new(
             Some("test_workspace".to_string()),
             Some("1.0.0".to_string()),
             pubspec_path.clone(),
@@ -310,7 +311,7 @@ workspace:
         )
         .unwrap();
 
-        let workspace = DartWorkspace::new(
+        let mut workspace = DartWorkspace::new(
             Some("test_workspace".to_string()),
             Some("1.0.0".to_string()),
             pubspec_path.clone(),

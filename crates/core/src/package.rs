@@ -10,7 +10,7 @@ pub trait Package: std::fmt::Debug + Send + Sync {
     fn version(&self) -> &str;
     fn path(&self) -> &Path;
     fn relative_path(&self) -> &Path;
-    async fn update_version(&self, update_type: UpdateType) -> Result<()>;
+    async fn update_version(&mut self, update_type: UpdateType) -> Result<()>;
     fn check_changed(&mut self, path: &Path) -> Result<()> {
         if self.is_changed() {
             return Ok(());

@@ -45,13 +45,13 @@ impl Package for NodePackage {
         &self.relative_path
     }
 
-    async fn update_version(&self, update_type: UpdateType) -> Result<()> {
+    async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(&self.version, update_type)?;
 
         let package_json_raw = read_to_string(&self.path).await?;
         let indent = detect_indent(&package_json_raw);
         let mut package_json: serde_json::Value = serde_json::from_str(&package_json_raw)?;
-        package_json["version"] = serde_json::Value::String(next_version);
+        package_json["version"] = serde_json::Value::String(next_version.clone());
         let ind = &b" ".repeat(indent);
         let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);
         let writer = Vec::new();
@@ -70,6 +70,7 @@ impl Package for NodePackage {
             ),
         )
         .await?;
+        self.version = next_version;
         Ok(())
     }
 
@@ -145,7 +146,7 @@ mod tests {
         )
         .unwrap();
 
-        let package = NodePackage::new(
+        let mut package = NodePackage::new(
             "test-package".to_string(),
             "1.0.0".to_string(),
             package_json.clone(),
@@ -174,7 +175,7 @@ mod tests {
         )
         .unwrap();
 
-        let package = NodePackage::new(
+        let mut package = NodePackage::new(
             "test-package".to_string(),
             "1.0.0".to_string(),
             package_json.clone(),
@@ -203,7 +204,7 @@ mod tests {
         )
         .unwrap();
 
-        let package = NodePackage::new(
+        let mut package = NodePackage::new(
             "test-package".to_string(),
             "1.0.0".to_string(),
             package_json.clone(),
@@ -236,7 +237,7 @@ mod tests {
         )
         .unwrap();
 
-        let package = NodePackage::new(
+        let mut package = NodePackage::new(
             "test-package".to_string(),
             "1.2.3".to_string(),
             package_json.clone(),
@@ -265,7 +266,7 @@ mod tests {
         )
         .unwrap();
 
-        let package = NodePackage::new(
+        let mut package = NodePackage::new(
             "test-package".to_string(),
             "1.0.0".to_string(),
             package_json.clone(),

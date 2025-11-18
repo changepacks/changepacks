@@ -1,7 +1,7 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use changepacks_core::{Language, UpdateType, Workspace};
-use changepacks_utils::next_version;
+use changepacks_core::{Language, Package, UpdateType, Workspace};
+use changepacks_utils::{next_version, split_version};
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 use toml_edit::DocumentMut;
@@ -46,7 +46,7 @@ impl Workspace for RustWorkspace {
         self.version.as_deref()
     }
 
-    async fn update_version(&self, update_type: UpdateType) -> Result<()> {
+    async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(
             self.version.as_ref().unwrap_or(&String::from("0.0.0")),
             update_type,
@@ -57,7 +57,7 @@ impl Workspace for RustWorkspace {
         if cargo_toml.get("package").is_none() {
             cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
-        cargo_toml["package"]["version"] = next_version.into();
+        cargo_toml["package"]["version"] = next_version.clone().into();
         if cargo_toml
             .get("package")
             .and_then(|p| p.get("name"))
@@ -80,6 +80,7 @@ impl Workspace for RustWorkspace {
             ),
         )
         .await?;
+        self.version = Some(next_version);
         Ok(())
     }
 
@@ -101,6 +102,55 @@ impl Workspace for RustWorkspace {
 
     fn default_publish_command(&self) -> &'static str {
         "cargo publish"
+    }
+
+    async fn update_workspace_dependencies(&self, packages: &[&dyn Package]) -> Result<()> {
+        let cargo_toml_raw = read_to_string(&self.path).await?;
+        let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
+
+        // check has workspace.dependencies section
+        if cargo_toml.get("workspace").is_none()
+            || cargo_toml["workspace"].get("dependencies").is_none()
+        {
+            return Ok(());
+        }
+        let dependencies = cargo_toml
+            .get_mut("workspace")
+            .and_then(|w| w.get_mut("dependencies"))
+            .and_then(|d| d.as_table_mut())
+            .context("Dependencies section not found")?;
+
+        for package in packages {
+            if package.language() != Language::Rust {
+                continue;
+            }
+            if dependencies.get(package.name()).is_none() {
+                continue;
+            }
+
+            let dep = dependencies[package.name()].as_inline_table_mut();
+            if let Some(dep) = dep {
+                let (prefix, _) = split_version(dep["version"].as_str().unwrap_or(""))?;
+                dep["version"] =
+                    format!("{}{}", prefix.unwrap_or("".to_string()), package.version()).into();
+            }
+        }
+
+        write(
+            &self.path,
+            format!(
+                "{}{}",
+                cargo_toml.to_string().trim_end(),
+                if cargo_toml_raw.ends_with("\n") {
+                    "\n"
+                } else {
+                    ""
+                }
+            ),
+        )
+        .await?;
+
+        Ok(())
     }
 }
 
@@ -175,7 +225,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let workspace = RustWorkspace::new(
+        let mut workspace = RustWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             cargo_toml.clone(),
@@ -202,7 +252,7 @@ members = ["crates/*"]
         )
         .unwrap();
 
-        let workspace = RustWorkspace::new(
+        let mut workspace = RustWorkspace::new(
             Some("test-workspace".to_string()),
             None,
             cargo_toml.clone(),
@@ -231,7 +281,7 @@ members = ["crates/*"]
         )
         .unwrap();
 
-        let workspace =
+        let mut workspace =
             RustWorkspace::new(None, None, cargo_toml.clone(), PathBuf::from("Cargo.toml"));
 
         workspace.update_version(UpdateType::Patch).await.unwrap();
@@ -260,7 +310,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let workspace = RustWorkspace::new(
+        let mut workspace = RustWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             cargo_toml.clone(),
@@ -291,7 +341,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let workspace = RustWorkspace::new(
+        let mut workspace = RustWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             cargo_toml.clone(),
@@ -322,7 +372,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let workspace = RustWorkspace::new(
+        let mut workspace = RustWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             cargo_toml.clone(),

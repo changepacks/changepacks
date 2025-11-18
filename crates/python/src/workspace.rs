@@ -46,7 +46,7 @@ impl Workspace for PythonWorkspace {
         self.version.as_deref()
     }
 
-    async fn update_version(&self, update_type: UpdateType) -> Result<()> {
+    async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(
             self.version.as_ref().unwrap_or(&String::from("0.0.0")),
             update_type,
@@ -57,7 +57,7 @@ impl Workspace for PythonWorkspace {
         if pyproject_toml.get("project").is_none() {
             pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
-        pyproject_toml["project"]["version"] = next_version.into();
+        pyproject_toml["project"]["version"] = next_version.clone().into();
         write(
             &self.path,
             format!(
@@ -71,6 +71,7 @@ impl Workspace for PythonWorkspace {
             ),
         )
         .await?;
+        self.version = Some(next_version);
         Ok(())
     }
 
@@ -169,7 +170,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let workspace = PythonWorkspace::new(
+        let mut workspace = PythonWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             pyproject_toml.clone(),
@@ -196,7 +197,7 @@ members = ["packages/*"]
         )
         .unwrap();
 
-        let workspace = PythonWorkspace::new(
+        let mut workspace = PythonWorkspace::new(
             Some("test-workspace".to_string()),
             None,
             pyproject_toml.clone(),
@@ -228,7 +229,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let workspace = PythonWorkspace::new(
+        let mut workspace = PythonWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             pyproject_toml.clone(),
@@ -259,7 +260,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let workspace = PythonWorkspace::new(
+        let mut workspace = PythonWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             pyproject_toml.clone(),
