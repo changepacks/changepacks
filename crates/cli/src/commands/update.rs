@@ -51,22 +51,28 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
         println!("Updates found:");
     }
     let mut project_finders = get_finders();
+    let mut all_finders = get_finders();
 
     find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
+    find_project_dirs(&repo, &mut all_finders, &Default::default(), args.remote).await?;
 
     let mut update_projects = Vec::new();
     let mut workspace_projects = Vec::new();
 
     for finder in project_finders.iter_mut() {
         for project in finder.projects() {
-            if let Project::Workspace(workspace) = project {
-                workspace_projects.push(workspace);
-            }
             if let Some((update_type, _)) =
                 update_map.get(&get_relative_path(repo_root_path, project.path())?)
             {
                 update_projects.push((project, update_type.clone()));
                 continue;
+            }
+        }
+    }
+    for finder in all_finders.iter_mut() {
+        for project in finder.projects() {
+            if let Project::Workspace(workspace) = project {
+                workspace_projects.push(workspace);
             }
         }
     }

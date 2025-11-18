@@ -113,8 +113,10 @@ impl Workspace for RustWorkspace {
         {
             return Ok(());
         }
-        let dependencies = cargo_toml["workspace"]["dependencies"]
-            .as_table_mut()
+        let dependencies = cargo_toml
+            .get_mut("workspace")
+            .and_then(|w| w.get_mut("dependencies"))
+            .and_then(|d| d.as_table_mut())
             .context("Dependencies section not found")?;
 
         for package in packages {
@@ -124,10 +126,13 @@ impl Workspace for RustWorkspace {
             if dependencies.get(package.name()).is_none() {
                 continue;
             }
-            let dep = dependencies[package.name()]
-                .as_table_mut()
-                .context("Dependency not found")?;
-            dep["version"] = package.version().into();
+            println!("package: {:?}", package.name());
+            println!("dependencies: {:?}", dependencies);
+
+            let dep = dependencies[package.name()].as_inline_table_mut();
+            if let Some(dep) = dep {
+                dep["version"] = package.version().into();
+            }
         }
 
         write(
