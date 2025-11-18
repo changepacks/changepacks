@@ -55,9 +55,13 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
 
     let mut update_projects = Vec::new();
+    let mut workspace_projects = Vec::new();
 
     for finder in project_finders.iter_mut() {
         for project in finder.projects() {
+            if let Project::Workspace(workspace) = project {
+                workspace_projects.push(workspace);
+            }
             if let Some((update_type, _)) =
                 update_map.get(&get_relative_path(repo_root_path, project.path())?)
             {
@@ -126,11 +130,14 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     .collect::<Result<Vec<_>>>()?;
 
     // update workspace dependencies
-    for (project, _) in update_projects.into_iter() {
-        if let Project::Workspace(workspace) = project {
-            workspace.update_workspace_dependencies(&projects).await?;
-        }
-    }
+    futures::future::join_all(
+        workspace_projects
+            .iter()
+            .map(|workspace| workspace.update_workspace_dependencies(&projects)),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
 
     if let FormatOptions::Json = args.format {
         println!(
