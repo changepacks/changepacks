@@ -129,7 +129,7 @@ impl Workspace for RustWorkspace {
 
             let dep = dependencies[package.name()].as_inline_table_mut();
             if let Some(dep) = dep {
-                let (prefix, _) = split_version(package.version())?;
+                let (prefix, _) = split_version(dep["version"].as_str().unwrap_or(""))?;
                 dep["version"] =
                     format!("{}{}", prefix.unwrap_or("".to_string()), package.version()).into();
             }
