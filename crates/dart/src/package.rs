@@ -45,7 +45,7 @@ impl Package for DartPackage {
         &self.relative_path
     }
 
-    async fn update_version(&self, update_type: UpdateType) -> Result<()> {
+    async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(&self.version, update_type)?;
 
         let pubspec_yaml_raw = read_to_string(&self.path).await?;
@@ -56,7 +56,9 @@ impl Package for DartPackage {
                 yamlpatch::apply_yaml_patches(
                     &yamlpath::Document::new(&pubspec_yaml_raw).context("Failed to parse YAML")?,
                     &[yamlpatch::Patch {
-                        operation: yamlpatch::Op::Replace(serde_yaml::Value::String(next_version)),
+                        operation: yamlpatch::Op::Replace(serde_yaml::Value::String(
+                            next_version.clone()
+                        )),
                         route: yamlpath::route!("version"),
                     }],
                 )?
@@ -70,6 +72,7 @@ impl Package for DartPackage {
             ),
         )
         .await?;
+        self.version = next_version;
         Ok(())
     }
 
@@ -165,7 +168,7 @@ version: 1.0.0
         )
         .unwrap();
 
-        let package = DartPackage::new(
+        let mut package = DartPackage::new(
             "test_package".to_string(),
             "1.0.0".to_string(),
             pubspec_path.clone(),
@@ -192,7 +195,7 @@ version: 1.0.0
         )
         .unwrap();
 
-        let package = DartPackage::new(
+        let mut package = DartPackage::new(
             "test_package".to_string(),
             "1.0.0".to_string(),
             pubspec_path.clone(),
@@ -219,7 +222,7 @@ version: 1.0.0
         )
         .unwrap();
 
-        let package = DartPackage::new(
+        let mut package = DartPackage::new(
             "test_package".to_string(),
             "1.0.0".to_string(),
             pubspec_path.clone(),
@@ -246,7 +249,7 @@ dependencies:
 "#;
         fs::write(&pubspec_path, original_content).unwrap();
 
-        let package = DartPackage::new(
+        let mut package = DartPackage::new(
             "test_package".to_string(),
             "1.0.0".to_string(),
             pubspec_path.clone(),

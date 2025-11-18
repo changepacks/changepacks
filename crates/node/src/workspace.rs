@@ -46,7 +46,7 @@ impl Workspace for NodeWorkspace {
         self.version.as_deref()
     }
 
-    async fn update_version(&self, update_type: UpdateType) -> Result<()> {
+    async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(
             self.version.as_ref().unwrap_or(&String::from("0.0.0")),
             update_type,
@@ -74,6 +74,7 @@ impl Workspace for NodeWorkspace {
             ),
         )
         .await?;
+        self.version = Some(next_version);
         Ok(())
     }
 
@@ -171,7 +172,7 @@ mod tests {
         )
         .unwrap();
 
-        let workspace = NodeWorkspace::new(
+        let mut workspace = NodeWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             package_json.clone(),
@@ -200,7 +201,7 @@ mod tests {
         )
         .unwrap();
 
-        let workspace = NodeWorkspace::new(
+        let mut workspace = NodeWorkspace::new(
             Some("test-workspace".to_string()),
             None,
             package_json.clone(),
@@ -230,7 +231,7 @@ mod tests {
         )
         .unwrap();
 
-        let workspace = NodeWorkspace::new(
+        let mut workspace = NodeWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             package_json.clone(),
@@ -260,7 +261,7 @@ mod tests {
         )
         .unwrap();
 
-        let workspace = NodeWorkspace::new(
+        let mut workspace = NodeWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             package_json.clone(),
@@ -293,7 +294,7 @@ mod tests {
         )
         .unwrap();
 
-        let workspace = NodeWorkspace::new(
+        let mut workspace = NodeWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             package_json.clone(),

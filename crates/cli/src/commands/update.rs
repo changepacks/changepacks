@@ -60,7 +60,7 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     let mut workspace_projects = Vec::new();
 
     for finder in project_finders.iter_mut() {
-        for project in finder.projects() {
+        for project in finder.projects_mut() {
             if let Some((update_type, _)) =
                 update_map.get(&get_relative_path(repo_root_path, project.path())?)
             {
@@ -115,6 +115,15 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
         return Ok(());
     }
 
+    futures::future::join_all(
+        update_projects
+            .iter_mut()
+            .map(|(project, update_type)| project.update_version(update_type.clone())),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<Vec<_>>>()?;
+
     let projects: Vec<&dyn Package> = update_projects
         .iter()
         .filter_map(|(project, _)| {
@@ -125,16 +134,6 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
             }
         })
         .collect();
-
-    futures::future::join_all(
-        update_projects
-            .iter()
-            .map(|(project, update_type)| project.update_version(update_type.clone())),
-    )
-    .await
-    .into_iter()
-    .collect::<Result<Vec<_>>>()?;
-
     // update workspace dependencies
     futures::future::join_all(
         workspace_projects

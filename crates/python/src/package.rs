@@ -45,12 +45,12 @@ impl Package for PythonPackage {
         &self.relative_path
     }
 
-    async fn update_version(&self, update_type: UpdateType) -> Result<()> {
+    async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(&self.version, update_type)?;
 
         let pyproject_toml_raw = read_to_string(&self.path).await?;
         let mut pyproject_toml: DocumentMut = pyproject_toml_raw.parse::<DocumentMut>()?;
-        pyproject_toml["project"]["version"] = next_version.into();
+        pyproject_toml["project"]["version"] = next_version.clone().into();
         write(
             &self.path,
             format!(
@@ -64,6 +64,7 @@ impl Package for PythonPackage {
             ),
         )
         .await?;
+        self.version = next_version;
         Ok(())
     }
 
@@ -142,7 +143,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let package = PythonPackage::new(
+        let mut package = PythonPackage::new(
             "test-package".to_string(),
             "1.0.0".to_string(),
             pyproject_toml.clone(),
@@ -170,7 +171,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let package = PythonPackage::new(
+        let mut package = PythonPackage::new(
             "test-package".to_string(),
             "1.0.0".to_string(),
             pyproject_toml.clone(),
@@ -198,7 +199,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let package = PythonPackage::new(
+        let mut package = PythonPackage::new(
             "test-package".to_string(),
             "1.0.0".to_string(),
             pyproject_toml.clone(),
@@ -231,7 +232,7 @@ requests = "2.31.0"
         )
         .unwrap();
 
-        let package = PythonPackage::new(
+        let mut package = PythonPackage::new(
             "test-package".to_string(),
             "1.2.3".to_string(),
             pyproject_toml.clone(),

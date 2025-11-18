@@ -10,7 +10,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn path(&self) -> &Path;
     fn relative_path(&self) -> &Path;
     fn version(&self) -> Option<&str>;
-    async fn update_version(&self, update_type: UpdateType) -> Result<()>;
+    async fn update_version(&mut self, update_type: UpdateType) -> Result<()>;
     fn language(&self) -> Language;
 
     // Default implementation for check_changed

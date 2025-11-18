@@ -44,12 +44,12 @@ impl Package for RustPackage {
         &self.path
     }
 
-    async fn update_version(&self, update_type: UpdateType) -> Result<()> {
+    async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let next_version = next_version(&self.version, update_type)?;
 
         let cargo_toml_raw = read_to_string(&self.path).await?;
         let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
-        cargo_toml["package"]["version"] = next_version.into();
+        cargo_toml["package"]["version"] = next_version.clone().into();
         write(
             &self.path,
             format!(
@@ -63,6 +63,7 @@ impl Package for RustPackage {
             ),
         )
         .await?;
+        self.version = next_version;
         Ok(())
     }
 
@@ -138,7 +139,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let package = RustPackage::new(
+        let mut package = RustPackage::new(
             "test-package".to_string(),
             "1.0.0".to_string(),
             cargo_toml.clone(),
@@ -166,7 +167,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let package = RustPackage::new(
+        let mut package = RustPackage::new(
             "test-package".to_string(),
             "1.0.0".to_string(),
             cargo_toml.clone(),
@@ -194,7 +195,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        let package = RustPackage::new(
+        let mut package = RustPackage::new(
             "test-package".to_string(),
             "1.0.0".to_string(),
             cargo_toml.clone(),
@@ -226,7 +227,7 @@ tokio = "1.0"
         )
         .unwrap();
 
-        let package = RustPackage::new(
+        let mut package = RustPackage::new(
             "test-package".to_string(),
             "1.2.3".to_string(),
             cargo_toml.clone(),
