@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
-use changepacks_utils::next_version;
+use changepacks_utils::{next_version, split_version};
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 use toml_edit::DocumentMut;
@@ -131,7 +131,9 @@ impl Workspace for RustWorkspace {
 
             let dep = dependencies[package.name()].as_inline_table_mut();
             if let Some(dep) = dep {
-                dep["version"] = package.version().into();
+                let (prefix, _) = split_version(package.version())?;
+                dep["version"] =
+                    format!("{}{}", prefix.unwrap_or("".to_string()), package.version()).into();
             }
         }
 
