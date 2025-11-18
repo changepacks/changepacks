@@ -3,10 +3,10 @@ resolver = "3"
 members = ["crates/*", "bridge/*"]
 
 [workspace.dependencies]
-changepacks-cli = { path = "crates/cli", version = "^0.2.0" }
-changepacks-core = { path = "crates/core", version = "^0.2.0" }
-changepacks-node = { path = "crates/node", version = "^0.2.0" }
-changepacks-rust = { path = "crates/rust", version = "^0.2.0" }
-changepacks-python = { path = "crates/python", version = "^0.2.0" }
-changepacks-dart = { path = "crates/dart", version = "^0.2.0" }
-changepacks-utils = { path = "crates/utils", version = "^0.2.0" }
+changepacks-cli = { path = "crates/cli", version = "^0.2.1" }
+changepacks-core = { path = "crates/core", version = "^0.2.1" }
+changepacks-node = { path = "crates/node", version = "^0.2.1" }
+changepacks-rust = { path = "crates/rust", version = "^0.2.1" }
+changepacks-python = { path = "crates/python", version = "^0.2.1" }
+changepacks-dart = { path = "crates/dart", version = "^0.2.1" }
+changepacks-utils = { path = "crates/utils", version = "^0.2.1" }

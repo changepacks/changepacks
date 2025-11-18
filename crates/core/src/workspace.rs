@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::{Config, Language, update_type::UpdateType};
+use crate::{Config, Language, Package, update_type::UpdateType};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
@@ -89,5 +89,9 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
 
         // Use default command
         self.default_publish_command().to_string()
+    }
+
+    async fn update_workspace_dependencies(&self, _packages: &[&dyn Package]) -> Result<()> {
+        Ok(())
     }
 }

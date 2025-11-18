@@ -1,6 +1,6 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use changepacks_core::{Language, UpdateType, Workspace};
+use changepacks_core::{Language, Package, UpdateType, Workspace};
 use changepacks_utils::next_version;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
@@ -101,6 +101,50 @@ impl Workspace for RustWorkspace {
 
     fn default_publish_command(&self) -> &'static str {
         "cargo publish"
+    }
+
+    async fn update_workspace_dependencies(&self, packages: &[&dyn Package]) -> Result<()> {
+        let cargo_toml_raw = read_to_string(&self.path).await?;
+        let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
+
+        // check has workspace.dependencies section
+        if cargo_toml.get("workspace").is_none()
+            || cargo_toml["workspace"].get("dependencies").is_none()
+        {
+            return Ok(());
+        }
+        let dependencies = cargo_toml["workspace"]["dependencies"]
+            .as_table_mut()
+            .context("Dependencies section not found")?;
+
+        for package in packages {
+            if package.language() != Language::Rust {
+                continue;
+            }
+            if dependencies.get(package.name()).is_none() {
+                continue;
+            }
+            let dep = dependencies[package.name()]
+                .as_table_mut()
+                .context("Dependency not found")?;
+            dep["version"] = package.version().into();
+        }
+
+        write(
+            &self.path,
+            format!(
+                "{}{}",
+                cargo_toml.to_string().trim_end(),
+                if cargo_toml_raw.ends_with("\n") {
+                    "\n"
+                } else {
+                    ""
+                }
+            ),
+        )
+        .await?;
+
+        Ok(())
     }
 }
 

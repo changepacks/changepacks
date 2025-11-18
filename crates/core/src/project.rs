@@ -38,8 +38,8 @@ impl Project {
 
     pub async fn update_version(&self, update_type: UpdateType) -> Result<()> {
         match self {
-            Project::Workspace(workspace) => workspace.update_version(update_type.clone()).await?,
-            Project::Package(package) => package.update_version(update_type.clone()).await?,
+            Project::Workspace(workspace) => workspace.update_version(update_type).await?,
+            Project::Package(package) => package.update_version(update_type).await?,
         }
         Ok(())
     }

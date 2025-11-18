@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use changepacks_core::{Package, Project};
 use changepacks_utils::{
     clear_update_logs, display_update, find_current_git_repo, find_project_dirs,
     gen_changepack_result_map, gen_update_map, get_changepacks_config, get_changepacks_dir,
@@ -104,6 +105,17 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
         return Ok(());
     }
 
+    let projects: Vec<&dyn Package> = update_projects
+        .iter()
+        .filter_map(|(project, _)| {
+            if let Project::Package(package) = project {
+                Some(package.as_ref())
+            } else {
+                None
+            }
+        })
+        .collect();
+
     futures::future::join_all(
         update_projects
             .iter()
@@ -112,6 +124,13 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     .await
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
+
+    // update workspace dependencies
+    for (project, _) in update_projects.into_iter() {
+        if let Project::Workspace(workspace) = project {
+            workspace.update_workspace_dependencies(&projects).await?;
+        }
+    }
 
     if let FormatOptions::Json = args.format {
         println!(
