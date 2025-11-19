@@ -1,6 +1,6 @@
 [package]
 name = "changepacks-core"
-version = "0.2.4"
+version = "0.2.5"
 edition = "2024"
 license = "Apache-2.0"
 description = "Core types and traits for changepacks workspace and package management"
