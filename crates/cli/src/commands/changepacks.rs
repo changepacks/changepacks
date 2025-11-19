@@ -15,6 +15,9 @@ use crate::{finders::get_finders, options::FilterOptions};
 pub struct ChangepackArgs {
     pub filter: Option<FilterOptions>,
     pub remote: bool,
+    pub yes: bool,
+    pub message: Option<String>,
+    pub update_type: Option<UpdateType>,
 }
 
 pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
@@ -45,42 +48,55 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
 
     let mut update_map = HashMap::<PathBuf, UpdateType>::new();
 
-    for update_type in [UpdateType::Major, UpdateType::Minor, UpdateType::Patch] {
+    for update_type in if let Some(update_type) = &args.update_type {
+        vec![update_type.clone()]
+    } else {
+        vec![UpdateType::Major, UpdateType::Minor, UpdateType::Patch]
+    } {
         if projects.is_empty() {
             break;
         }
-        let message = format!("Select projects to update for {}", update_type);
-        // select project to update
-        let mut selector = inquire::MultiSelect::new(&message, projects.clone());
-        selector.page_size = 15;
-        selector.default = Some(
-            projects
-                .iter()
-                .enumerate()
-                .filter_map(|(index, project)| {
-                    if project.is_changed() {
-                        Some(index)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>(),
-        );
-        selector.scorer = &|_input, option, _string_value, _idx| -> Option<i64> {
-            if option.is_changed() {
-                Some(100)
+
+        let selected_projects = if !args.yes {
+            if update_type == UpdateType::Patch && projects.len() == 1 {
+                vec![projects[0]]
             } else {
-                Some(0)
+                let message = format!("Select projects to update for {}", update_type);
+                // select project to update
+                let mut selector = inquire::MultiSelect::new(&message, projects.clone());
+                selector.page_size = 15;
+                selector.default = Some(
+                    projects
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, project)| {
+                            if project.is_changed() {
+                                Some(index)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>(),
+                );
+                selector.scorer = &|_input, option, _string_value, _idx| -> Option<i64> {
+                    if option.is_changed() {
+                        Some(100)
+                    } else {
+                        Some(0)
+                    }
+                };
+                selector.formatter = &|option| {
+                    option
+                        .iter()
+                        .map(|o| format!("{}", o.value))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                selector.prompt()?
             }
+        } else {
+            projects.clone()
         };
-        selector.formatter = &|option| {
-            option
-                .iter()
-                .map(|o| format!("{}", o.value))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let selected_projects = selector.prompt()?;
 
         // remove selected projects from projects by index
         for project in selected_projects {
@@ -111,7 +127,12 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
         return Ok(());
     }
 
-    let notes = inquire::Text::new("write notes here").prompt()?;
+    let notes = if let Some(message) = &args.message {
+        message.clone()
+    } else {
+        inquire::Text::new("write notes here").prompt()?
+    };
+
     if notes.is_empty() {
         println!("Notes are empty");
         return Ok(());

@@ -1,6 +1,7 @@
 use anyhow::Result;
 
-use clap::{Parser, Subcommand};
+use changepacks_core::UpdateType;
+use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
     commands::{
@@ -13,6 +14,23 @@ mod commands;
 mod finders;
 mod options;
 
+#[derive(ValueEnum, Debug, Clone)]
+enum CliUpdateType {
+    Major,
+    Minor,
+    Patch,
+}
+
+impl From<CliUpdateType> for UpdateType {
+    fn from(value: CliUpdateType) -> Self {
+        match value {
+            CliUpdateType::Major => UpdateType::Major,
+            CliUpdateType::Minor => UpdateType::Minor,
+            CliUpdateType::Patch => UpdateType::Patch,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(author, version, about = "changepacks CLI")]
 struct Cli {
@@ -24,7 +42,17 @@ struct Cli {
 
     #[arg(short, long, default_value = "false")]
     remote: bool,
+
+    #[arg(short, long, default_value = "false")]
+    yes: bool,
+
+    #[arg(short, long)]
+    message: Option<String>,
+
+    #[arg(short, long)]
+    update_type: Option<CliUpdateType>,
 }
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     Init(InitArgs),
@@ -48,6 +76,9 @@ pub async fn main(args: &[String]) -> Result<()> {
         handle_changepack(&ChangepackArgs {
             filter: cli.filter,
             remote: cli.remote,
+            yes: cli.yes,
+            message: cli.message,
+            update_type: cli.update_type.map(Into::into),
         })
         .await?;
     }
