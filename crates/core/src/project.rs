@@ -19,14 +19,14 @@ impl Project {
     pub fn name(&self) -> Option<&str> {
         match self {
             Project::Workspace(workspace) => workspace.name(),
-            Project::Package(package) => Some(package.name()),
+            Project::Package(package) => package.name(),
         }
     }
 
     pub fn version(&self) -> Option<&str> {
         match self {
             Project::Workspace(workspace) => workspace.version(),
-            Project::Package(package) => Some(package.version()),
+            Project::Package(package) => package.version(),
         }
     }
     pub fn path(&self) -> &Path {
@@ -111,7 +111,12 @@ impl Ord for Project {
                 if lang_ord != Ordering::Equal {
                     return lang_ord;
                 }
-                p1.name().cmp(p2.name())
+                match (p1.name(), p2.name()) {
+                    (Some(n1), Some(n2)) => n1.cmp(n2),
+                    (Some(_), None) => Ordering::Less,
+                    (None, Some(_)) => Ordering::Greater,
+                    (None, None) => Ordering::Equal,
+                }
             }
         }
     }
@@ -149,8 +154,15 @@ impl Display for Project {
                     f,
                     "{} {} {} {} {}",
                     format!("[{}]", package.language()).bright_blue().bold(),
-                    package.name().bright_white().bold(),
-                    format!("(v{})", package.version()).bright_green(),
+                    package.name().unwrap_or("noname").bright_white().bold(),
+                    format!(
+                        "({})",
+                        package
+                            .version()
+                            .map(|v| format!("v{}", v))
+                            .unwrap_or("unknown".to_string())
+                    )
+                    .bright_green(),
                     "-".bright_cyan(),
                     package.relative_path().display().to_string().bright_black()
                 )

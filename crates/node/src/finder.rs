@@ -80,14 +80,8 @@ impl ProjectFinder for NodeProjectFinder {
                     ))),
                 );
             } else {
-                let version = package_json["version"]
-                    .as_str()
-                    .context(format!("Version not found - {}", path.display()))?
-                    .to_string();
-                let name = package_json["name"]
-                    .as_str()
-                    .context(format!("Name not found - {}", path.display()))?
-                    .to_string();
+                let version = package_json["version"].as_str().map(|v| v.to_string());
+                let name = package_json["name"].as_str().map(|v| v.to_string());
 
                 self.projects.insert(
                     path.to_path_buf(),
@@ -149,8 +143,8 @@ mod tests {
         assert_eq!(projects.len(), 1);
         match projects[0] {
             Project::Package(pkg) => {
-                assert_eq!(pkg.name(), "test-package");
-                assert_eq!(pkg.version(), "1.0.0");
+                assert_eq!(pkg.name(), Some("test-package"));
+                assert_eq!(pkg.version(), Some("1.0.0"));
             }
             _ => panic!("Expected Package"),
         }
@@ -403,54 +397,6 @@ mod tests {
 
         let mut_projects = finder.projects_mut();
         assert_eq!(mut_projects.len(), 1);
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_node_project_finder_visit_package_without_version() {
-        let temp_dir = TempDir::new().unwrap();
-        let package_json = temp_dir.path().join("package.json");
-        fs::write(
-            &package_json,
-            r#"{
-  "name": "test-package"
-}
-"#,
-        )
-        .unwrap();
-
-        let mut finder = NodeProjectFinder::new();
-        let result = finder
-            .visit(&package_json, &PathBuf::from("package.json"))
-            .await;
-
-        assert!(result.is_err());
-        assert_eq!(finder.projects().len(), 0);
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_node_project_finder_visit_package_without_name() {
-        let temp_dir = TempDir::new().unwrap();
-        let package_json = temp_dir.path().join("package.json");
-        fs::write(
-            &package_json,
-            r#"{
-  "version": "1.0.0"
-}
-"#,
-        )
-        .unwrap();
-
-        let mut finder = NodeProjectFinder::new();
-        let result = finder
-            .visit(&package_json, &PathBuf::from("package.json"))
-            .await;
-
-        assert!(result.is_err());
-        assert_eq!(finder.projects().len(), 0);
 
         temp_dir.close().unwrap();
     }

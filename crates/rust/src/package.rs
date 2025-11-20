@@ -8,15 +8,20 @@ use toml_edit::DocumentMut;
 
 #[derive(Debug)]
 pub struct RustPackage {
-    name: String,
-    version: String,
+    name: Option<String>,
+    version: Option<String>,
     path: PathBuf,
     relative_path: PathBuf,
     is_changed: bool,
 }
 
 impl RustPackage {
-    pub fn new(name: String, version: String, path: PathBuf, relative_path: PathBuf) -> Self {
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
         Self {
             name,
             version,
@@ -32,12 +37,12 @@ impl Package for RustPackage {
     fn relative_path(&self) -> &Path {
         &self.relative_path
     }
-    fn name(&self) -> &str {
-        &self.name
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
-    fn version(&self) -> &str {
-        &self.version
+    fn version(&self) -> Option<&str> {
+        self.version.as_deref()
     }
 
     fn path(&self) -> &Path {
@@ -45,11 +50,12 @@ impl Package for RustPackage {
     }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(&self.version, update_type)?;
+        let current_version = self.version.as_deref().unwrap_or("0.0.0");
+        let new_version = next_version(current_version, update_type)?;
 
         let cargo_toml_raw = read_to_string(&self.path).await?;
         let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
-        cargo_toml["package"]["version"] = next_version.clone().into();
+        cargo_toml["package"]["version"] = new_version.clone().into();
         write(
             &self.path,
             format!(
@@ -63,7 +69,7 @@ impl Package for RustPackage {
             ),
         )
         .await?;
-        self.version = next_version;
+        self.version = Some(new_version);
         Ok(())
     }
 
@@ -95,14 +101,14 @@ mod tests {
     #[tokio::test]
     async fn test_rust_package_new() {
         let package = RustPackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             PathBuf::from("/test/Cargo.toml"),
             PathBuf::from("test/Cargo.toml"),
         );
 
-        assert_eq!(package.name(), "test-package");
-        assert_eq!(package.version(), "1.0.0");
+        assert_eq!(package.name(), Some("test-package"));
+        assert_eq!(package.version(), Some("1.0.0"));
         assert_eq!(package.path(), PathBuf::from("/test/Cargo.toml"));
         assert_eq!(package.relative_path(), PathBuf::from("test/Cargo.toml"));
         assert_eq!(package.language(), Language::Rust);
@@ -113,8 +119,8 @@ mod tests {
     #[tokio::test]
     async fn test_rust_package_set_changed() {
         let mut package = RustPackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             PathBuf::from("/test/Cargo.toml"),
             PathBuf::from("test/Cargo.toml"),
         );
@@ -140,8 +146,8 @@ version = "1.0.0"
         .unwrap();
 
         let mut package = RustPackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             cargo_toml.clone(),
             PathBuf::from("Cargo.toml"),
         );
@@ -168,8 +174,8 @@ version = "1.0.0"
         .unwrap();
 
         let mut package = RustPackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             cargo_toml.clone(),
             PathBuf::from("Cargo.toml"),
         );
@@ -196,8 +202,8 @@ version = "1.0.0"
         .unwrap();
 
         let mut package = RustPackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             cargo_toml.clone(),
             PathBuf::from("Cargo.toml"),
         );
@@ -228,8 +234,8 @@ tokio = "1.0"
         .unwrap();
 
         let mut package = RustPackage::new(
-            "test-package".to_string(),
-            "1.2.3".to_string(),
+            Some("test-package".to_string()),
+            Some("1.2.3".to_string()),
             cargo_toml.clone(),
             PathBuf::from("Cargo.toml"),
         );

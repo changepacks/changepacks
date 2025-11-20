@@ -90,13 +90,11 @@ impl ProjectFinder for PythonProjectFinder {
                 let version = project
                     .get("version")
                     .and_then(|v| v.as_str())
-                    .map(|v| v.to_string())
-                    .context(format!("Version not found - {}", path.display()))?;
+                    .map(|v| v.to_string());
                 let name = project
                     .get("name")
                     .and_then(|v| v.as_str())
-                    .map(|v| v.to_string())
-                    .context(format!("Name not found - {}", path.display()))?;
+                    .map(|v| v.to_string());
                 self.projects.insert(
                     path.to_path_buf(),
                     Project::Package(Box::new(PythonPackage::new(
@@ -156,8 +154,8 @@ version = "1.0.0"
         assert_eq!(projects.len(), 1);
         match projects[0] {
             Project::Package(pkg) => {
-                assert_eq!(pkg.name(), "test-package");
-                assert_eq!(pkg.version(), "1.0.0");
+                assert_eq!(pkg.name(), Some("test-package"));
+                assert_eq!(pkg.version(), Some("1.0.0"));
             }
             _ => panic!("Expected Package"),
         }

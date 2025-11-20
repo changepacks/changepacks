@@ -83,12 +83,10 @@ impl ProjectFinder for RustProjectFinder {
             } else {
                 let version = cargo_toml["package"]["version"]
                     .as_str()
-                    .context(format!("Version not found - {}", path.display()))?
-                    .to_string();
+                    .map(|v| v.to_string());
                 let name = cargo_toml["package"]["name"]
                     .as_str()
-                    .context(format!("Name not found - {}", path.display()))?
-                    .to_string();
+                    .map(|v| v.to_string());
                 self.projects.insert(
                     path.to_path_buf(),
                     Project::Package(Box::new(RustPackage::new(
@@ -148,8 +146,8 @@ version = "1.0.0"
         assert_eq!(projects.len(), 1);
         match projects[0] {
             Project::Package(pkg) => {
-                assert_eq!(pkg.name(), "test-package");
-                assert_eq!(pkg.version(), "1.0.0");
+                assert_eq!(pkg.name(), Some("test-package"));
+                assert_eq!(pkg.version(), Some("1.0.0"));
             }
             _ => panic!("Expected Package"),
         }

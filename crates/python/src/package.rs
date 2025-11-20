@@ -8,15 +8,20 @@ use toml_edit::DocumentMut;
 
 #[derive(Debug)]
 pub struct PythonPackage {
-    name: String,
-    version: String,
+    name: Option<String>,
+    version: Option<String>,
     path: PathBuf,
     relative_path: PathBuf,
     is_changed: bool,
 }
 
 impl PythonPackage {
-    pub fn new(name: String, version: String, path: PathBuf, relative_path: PathBuf) -> Self {
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
         Self {
             name,
             version,
@@ -29,12 +34,12 @@ impl PythonPackage {
 
 #[async_trait]
 impl Package for PythonPackage {
-    fn name(&self) -> &str {
-        &self.name
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
-    fn version(&self) -> &str {
-        &self.version
+    fn version(&self) -> Option<&str> {
+        self.version.as_deref()
     }
 
     fn path(&self) -> &Path {
@@ -46,11 +51,12 @@ impl Package for PythonPackage {
     }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(&self.version, update_type)?;
+        let current_version = self.version.as_deref().unwrap_or("0.0.0");
+        let new_version = next_version(current_version, update_type)?;
 
         let pyproject_toml_raw = read_to_string(&self.path).await?;
         let mut pyproject_toml: DocumentMut = pyproject_toml_raw.parse::<DocumentMut>()?;
-        pyproject_toml["project"]["version"] = next_version.clone().into();
+        pyproject_toml["project"]["version"] = new_version.clone().into();
         write(
             &self.path,
             format!(
@@ -64,7 +70,7 @@ impl Package for PythonPackage {
             ),
         )
         .await?;
-        self.version = next_version;
+        self.version = Some(new_version);
         Ok(())
     }
 
@@ -96,14 +102,14 @@ mod tests {
     #[tokio::test]
     async fn test_python_package_new() {
         let package = PythonPackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             PathBuf::from("/test/pyproject.toml"),
             PathBuf::from("test/pyproject.toml"),
         );
 
-        assert_eq!(package.name(), "test-package");
-        assert_eq!(package.version(), "1.0.0");
+        assert_eq!(package.name(), Some("test-package"));
+        assert_eq!(package.version(), Some("1.0.0"));
         assert_eq!(package.path(), PathBuf::from("/test/pyproject.toml"));
         assert_eq!(
             package.relative_path(),
@@ -117,8 +123,8 @@ mod tests {
     #[tokio::test]
     async fn test_python_package_set_changed() {
         let mut package = PythonPackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             PathBuf::from("/test/pyproject.toml"),
             PathBuf::from("test/pyproject.toml"),
         );
@@ -144,8 +150,8 @@ version = "1.0.0"
         .unwrap();
 
         let mut package = PythonPackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             pyproject_toml.clone(),
             PathBuf::from("pyproject.toml"),
         );
@@ -172,8 +178,8 @@ version = "1.0.0"
         .unwrap();
 
         let mut package = PythonPackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             pyproject_toml.clone(),
             PathBuf::from("pyproject.toml"),
         );
@@ -200,8 +206,8 @@ version = "1.0.0"
         .unwrap();
 
         let mut package = PythonPackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             pyproject_toml.clone(),
             PathBuf::from("pyproject.toml"),
         );
@@ -233,8 +239,8 @@ requests = "2.31.0"
         .unwrap();
 
         let mut package = PythonPackage::new(
-            "test-package".to_string(),
-            "1.2.3".to_string(),
+            Some("test-package".to_string()),
+            Some("1.2.3".to_string()),
             pyproject_toml.clone(),
             PathBuf::from("pyproject.toml"),
         );

@@ -60,8 +60,12 @@ mod tests {
         relative_path: PathBuf,
         is_changed: bool,
     ) -> Project {
-        let mut package =
-            NodePackage::new(name.to_string(), version.to_string(), path, relative_path);
+        let mut package = NodePackage::new(
+            Some(name.to_string()),
+            Some(version.to_string()),
+            path,
+            relative_path,
+        );
         package.set_changed(is_changed);
         Project::Package(Box::new(package))
     }
@@ -392,8 +396,8 @@ mod tests {
         // Create a project without version - use "0.0.0" as default
         // The function uses "0.0.0" as default when version is None
         let mut package = NodePackage::new(
-            "test-package".to_string(),
-            "0.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("0.0.0".to_string()),
             package_json.clone(),
             PathBuf::from("project4/package.json"),
         );

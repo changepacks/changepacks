@@ -82,14 +82,8 @@ impl ProjectFinder for DartProjectFinder {
                     ))),
                 );
             } else {
-                let version = pubspec["version"]
-                    .as_str()
-                    .context(format!("Version not found - {}", path.display()))?
-                    .to_string();
-                let name = pubspec["name"]
-                    .as_str()
-                    .context(format!("Name not found - {}", path.display()))?
-                    .to_string();
+                let version = pubspec["version"].as_str().map(|v| v.to_string());
+                let name = pubspec["name"].as_str().map(|v| v.to_string());
 
                 self.projects.insert(
                     path.to_path_buf(),
@@ -147,8 +141,8 @@ version: 1.0.0
         assert_eq!(finder.projects().len(), 1);
         match finder.projects()[0] {
             Project::Package(pkg) => {
-                assert_eq!(pkg.name(), "test_package");
-                assert_eq!(pkg.version(), "1.0.0");
+                assert_eq!(pkg.name(), Some("test_package"));
+                assert_eq!(pkg.version(), Some("1.0.0"));
             }
             _ => panic!("Expected Package"),
         }
@@ -310,55 +304,6 @@ version: 1.0.0
             .unwrap();
 
         assert_eq!(finder.projects().len(), 1);
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_visit_package_without_version() {
-        let temp_dir = TempDir::new().unwrap();
-        let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
-            &pubspec_path,
-            r#"name: test_package
-"#,
-        )
-        .unwrap();
-
-        let mut finder = DartProjectFinder::new();
-        let result = finder
-            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
-            .await;
-
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Version not found")
-        );
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_visit_package_without_name() {
-        let temp_dir = TempDir::new().unwrap();
-        let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
-            &pubspec_path,
-            r#"version: 1.0.0
-"#,
-        )
-        .unwrap();
-
-        let mut finder = DartProjectFinder::new();
-        let result = finder
-            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
-            .await;
-
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Name not found"));
 
         temp_dir.close().unwrap();
     }

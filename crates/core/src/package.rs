@@ -6,8 +6,8 @@ use async_trait::async_trait;
 
 #[async_trait]
 pub trait Package: std::fmt::Debug + Send + Sync {
-    fn name(&self) -> &str;
-    fn version(&self) -> &str;
+    fn name(&self) -> Option<&str>;
+    fn version(&self) -> Option<&str>;
     fn path(&self) -> &Path;
     fn relative_path(&self) -> &Path;
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()>;

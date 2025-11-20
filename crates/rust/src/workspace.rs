@@ -124,15 +124,22 @@ impl Workspace for RustWorkspace {
             if package.language() != Language::Rust {
                 continue;
             }
-            if dependencies.get(package.name()).is_none() {
+            let Some(package_name) = package.name() else {
+                continue;
+            };
+            if dependencies.get(package_name).is_none() {
                 continue;
             }
 
-            let dep = dependencies[package.name()].as_inline_table_mut();
+            let dep = dependencies[package_name].as_inline_table_mut();
             if let Some(dep) = dep {
                 let (prefix, _) = split_version(dep["version"].as_str().unwrap_or(""))?;
-                dep["version"] =
-                    format!("{}{}", prefix.unwrap_or("".to_string()), package.version()).into();
+                dep["version"] = format!(
+                    "{}{}",
+                    prefix.unwrap_or("".to_string()),
+                    package.version().unwrap_or("0.0.0")
+                )
+                .into();
             }
         }
 

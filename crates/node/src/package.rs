@@ -8,15 +8,20 @@ use tokio::fs::{read_to_string, write};
 
 #[derive(Debug)]
 pub struct NodePackage {
-    name: String,
-    version: String,
+    name: Option<String>,
+    version: Option<String>,
     path: PathBuf,
     relative_path: PathBuf,
     is_changed: bool,
 }
 
 impl NodePackage {
-    pub fn new(name: String, version: String, path: PathBuf, relative_path: PathBuf) -> Self {
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
         Self {
             name,
             version,
@@ -29,12 +34,12 @@ impl NodePackage {
 
 #[async_trait]
 impl Package for NodePackage {
-    fn name(&self) -> &str {
-        &self.name
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
-    fn version(&self) -> &str {
-        &self.version
+    fn version(&self) -> Option<&str> {
+        self.version.as_deref()
     }
 
     fn path(&self) -> &Path {
@@ -46,12 +51,13 @@ impl Package for NodePackage {
     }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(&self.version, update_type)?;
+        let current_version = self.version.as_deref().unwrap_or("0.0.0");
+        let new_version = next_version(current_version, update_type)?;
 
         let package_json_raw = read_to_string(&self.path).await?;
         let indent = detect_indent(&package_json_raw);
         let mut package_json: serde_json::Value = serde_json::from_str(&package_json_raw)?;
-        package_json["version"] = serde_json::Value::String(next_version.clone());
+        package_json["version"] = serde_json::Value::String(new_version.clone());
         let ind = &b" ".repeat(indent);
         let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);
         let writer = Vec::new();
@@ -70,7 +76,7 @@ impl Package for NodePackage {
             ),
         )
         .await?;
-        self.version = next_version;
+        self.version = Some(new_version);
         Ok(())
     }
 
@@ -101,14 +107,14 @@ mod tests {
     #[tokio::test]
     async fn test_node_package_new() {
         let package = NodePackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             PathBuf::from("/test/package.json"),
             PathBuf::from("test/package.json"),
         );
 
-        assert_eq!(package.name(), "test-package");
-        assert_eq!(package.version(), "1.0.0");
+        assert_eq!(package.name(), Some("test-package"));
+        assert_eq!(package.version(), Some("1.0.0"));
         assert_eq!(package.path(), PathBuf::from("/test/package.json"));
         assert_eq!(package.relative_path(), PathBuf::from("test/package.json"));
         assert_eq!(package.language(), Language::Node);
@@ -119,8 +125,8 @@ mod tests {
     #[tokio::test]
     async fn test_node_package_set_changed() {
         let mut package = NodePackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             PathBuf::from("/test/package.json"),
             PathBuf::from("test/package.json"),
         );
@@ -147,8 +153,8 @@ mod tests {
         .unwrap();
 
         let mut package = NodePackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             package_json.clone(),
             PathBuf::from("package.json"),
         );
@@ -176,8 +182,8 @@ mod tests {
         .unwrap();
 
         let mut package = NodePackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             package_json.clone(),
             PathBuf::from("package.json"),
         );
@@ -205,8 +211,8 @@ mod tests {
         .unwrap();
 
         let mut package = NodePackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             package_json.clone(),
             PathBuf::from("package.json"),
         );
@@ -238,8 +244,8 @@ mod tests {
         .unwrap();
 
         let mut package = NodePackage::new(
-            "test-package".to_string(),
-            "1.2.3".to_string(),
+            Some("test-package".to_string()),
+            Some("1.2.3".to_string()),
             package_json.clone(),
             PathBuf::from("package.json"),
         );
@@ -267,8 +273,8 @@ mod tests {
         .unwrap();
 
         let mut package = NodePackage::new(
-            "test-package".to_string(),
-            "1.0.0".to_string(),
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
             package_json.clone(),
             PathBuf::from("package.json"),
         );

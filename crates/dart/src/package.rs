@@ -8,15 +8,20 @@ use tokio::fs::{read_to_string, write};
 
 #[derive(Debug)]
 pub struct DartPackage {
-    name: String,
-    version: String,
+    name: Option<String>,
+    version: Option<String>,
     path: PathBuf,
     relative_path: PathBuf,
     is_changed: bool,
 }
 
 impl DartPackage {
-    pub fn new(name: String, version: String, path: PathBuf, relative_path: PathBuf) -> Self {
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
         Self {
             name,
             version,
@@ -29,12 +34,12 @@ impl DartPackage {
 
 #[async_trait]
 impl Package for DartPackage {
-    fn name(&self) -> &str {
-        &self.name
+    fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
-    fn version(&self) -> &str {
-        &self.version
+    fn version(&self) -> Option<&str> {
+        self.version.as_deref()
     }
 
     fn path(&self) -> &Path {
@@ -46,7 +51,8 @@ impl Package for DartPackage {
     }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(&self.version, update_type)?;
+        let current_version = self.version.as_deref().unwrap_or("0.0.0");
+        let new_version = next_version(current_version, update_type)?;
 
         let pubspec_yaml_raw = read_to_string(&self.path).await?;
         write(
@@ -57,7 +63,7 @@ impl Package for DartPackage {
                     &yamlpath::Document::new(&pubspec_yaml_raw).context("Failed to parse YAML")?,
                     &[yamlpatch::Patch {
                         operation: yamlpatch::Op::Replace(serde_yaml::Value::String(
-                            next_version.clone()
+                            new_version.clone()
                         )),
                         route: yamlpath::route!("version"),
                     }],
@@ -72,7 +78,7 @@ impl Package for DartPackage {
             ),
         )
         .await?;
-        self.version = next_version;
+        self.version = Some(new_version);
         Ok(())
     }
 
@@ -111,14 +117,14 @@ version: 1.0.0
         .unwrap();
 
         let package = DartPackage::new(
-            "test_package".to_string(),
-            "1.0.0".to_string(),
+            Some("test_package".to_string()),
+            Some("1.0.0".to_string()),
             pubspec_path.clone(),
             PathBuf::from("pubspec.yaml"),
         );
 
-        assert_eq!(package.name(), "test_package");
-        assert_eq!(package.version(), "1.0.0");
+        assert_eq!(package.name(), Some("test_package"));
+        assert_eq!(package.version(), Some("1.0.0"));
         assert_eq!(package.path(), pubspec_path);
         assert_eq!(package.relative_path(), PathBuf::from("pubspec.yaml"));
         assert_eq!(package.is_changed(), false);
@@ -141,8 +147,8 @@ version: 1.0.0
         .unwrap();
 
         let mut package = DartPackage::new(
-            "test_package".to_string(),
-            "1.0.0".to_string(),
+            Some("test_package".to_string()),
+            Some("1.0.0".to_string()),
             pubspec_path.clone(),
             PathBuf::from("pubspec.yaml"),
         );
@@ -169,8 +175,8 @@ version: 1.0.0
         .unwrap();
 
         let mut package = DartPackage::new(
-            "test_package".to_string(),
-            "1.0.0".to_string(),
+            Some("test_package".to_string()),
+            Some("1.0.0".to_string()),
             pubspec_path.clone(),
             PathBuf::from("pubspec.yaml"),
         );
@@ -196,8 +202,8 @@ version: 1.0.0
         .unwrap();
 
         let mut package = DartPackage::new(
-            "test_package".to_string(),
-            "1.0.0".to_string(),
+            Some("test_package".to_string()),
+            Some("1.0.0".to_string()),
             pubspec_path.clone(),
             PathBuf::from("pubspec.yaml"),
         );
@@ -223,8 +229,8 @@ version: 1.0.0
         .unwrap();
 
         let mut package = DartPackage::new(
-            "test_package".to_string(),
-            "1.0.0".to_string(),
+            Some("test_package".to_string()),
+            Some("1.0.0".to_string()),
             pubspec_path.clone(),
             PathBuf::from("pubspec.yaml"),
         );
@@ -250,8 +256,8 @@ dependencies:
         fs::write(&pubspec_path, original_content).unwrap();
 
         let mut package = DartPackage::new(
-            "test_package".to_string(),
-            "1.0.0".to_string(),
+            Some("test_package".to_string()),
+            Some("1.0.0".to_string()),
             pubspec_path.clone(),
             PathBuf::from("pubspec.yaml"),
         );
