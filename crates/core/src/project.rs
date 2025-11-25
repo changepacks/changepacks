@@ -36,6 +36,13 @@ impl Project {
         }
     }
 
+    pub fn relative_path(&self) -> &Path {
+        match self {
+            Project::Workspace(workspace) => workspace.relative_path(),
+            Project::Package(package) => package.relative_path(),
+        }
+    }
+
     pub async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         match self {
             Project::Workspace(workspace) => workspace.update_version(update_type).await?,

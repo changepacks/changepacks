@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use anyhow::Result;
+use changepacks_core::PublishResult;
 use changepacks_utils::{find_current_git_repo, find_project_dirs, get_changepacks_config};
 use clap::Args;
 
@@ -100,7 +101,10 @@ pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
                     println!("Successfully published {}", project);
                 }
                 if let FormatOptions::Json = args.format {
-                    result_map.insert(project.path().to_path_buf(), true);
+                    result_map.insert(
+                        project.relative_path().to_path_buf(),
+                        PublishResult::new(true, None),
+                    );
                 }
             }
             Err(e) => {
@@ -108,7 +112,10 @@ pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
                     eprintln!("Failed to publish {}: {}", project, e);
                 }
                 if let FormatOptions::Json = args.format {
-                    result_map.insert(project.path().to_path_buf(), false);
+                    result_map.insert(
+                        project.relative_path().to_path_buf(),
+                        PublishResult::new(false, Some(e.to_string())),
+                    );
                 }
             }
         }
