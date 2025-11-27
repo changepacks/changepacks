@@ -109,7 +109,7 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
         let project_with_relpath: Vec<_> = projects
             .iter()
             .map(|project| {
-                get_relative_path(&current_dir, project.path()).map(|rel| (project, rel))
+                get_relative_path(repo_root_path, project.path()).map(|rel| (project, rel))
             })
             .collect::<Result<Vec<_>>>()?;
 
