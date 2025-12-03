@@ -81,6 +81,13 @@ impl Project {
         }
     }
 
+    pub fn language(&self) -> crate::Language {
+        match self {
+            Project::Workspace(workspace) => workspace.language(),
+            Project::Package(package) => package.language(),
+        }
+    }
+
     pub async fn publish(&self, config: &Config) -> Result<()> {
         match self {
             Project::Workspace(workspace) => workspace.publish(config).await,

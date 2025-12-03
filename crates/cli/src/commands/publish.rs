@@ -8,6 +8,7 @@ use changepacks_utils::{
 use clap::Args;
 
 use crate::{finders::get_finders, options::FormatOptions};
+use changepacks_core::Language;
 
 #[derive(Args, Debug)]
 #[command(about = "Publish packages")]
@@ -23,6 +24,10 @@ pub struct PublishArgs {
 
     #[arg(short, long, default_value = "false")]
     remote: bool,
+
+    /// Filter projects by language. Can be specified multiple times to include multiple languages.
+    #[arg(short, long, value_enum)]
+    language: Vec<crate::options::CliLanguage>,
 }
 
 /// Publish packages
@@ -35,10 +40,20 @@ pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
 
     find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
 
-    let projects: Vec<_> = project_finders
+    let mut projects: Vec<_> = project_finders
         .iter()
         .flat_map(|finder| finder.projects())
         .collect();
+
+    // Filter by language if specified
+    if !args.language.is_empty() {
+        let allowed_languages: Vec<Language> = args
+            .language
+            .iter()
+            .map(|&lang| Language::from(lang))
+            .collect();
+        projects.retain(|project| allowed_languages.contains(&project.language()));
+    }
 
     // Sort projects by dependencies (no cloning, just reordering references)
     let projects = sort_by_dependencies(projects);
