@@ -64,7 +64,7 @@ impl ProjectFinder for PythonProjectFinder {
                 .context(format!("Project not found - {}", path.display()))?;
 
             // if workspace
-            if pyproject_toml
+            let (path, mut project) = if pyproject_toml
                 .get("tool")
                 .and_then(|t| t.get("uv").and_then(|u| u.get("workspace")))
                 .is_some()
@@ -77,7 +77,7 @@ impl ProjectFinder for PythonProjectFinder {
                     .get("name")
                     .and_then(|v| v.as_str())
                     .map(|v| v.to_string());
-                self.projects.insert(
+                (
                     path.to_path_buf(),
                     Project::Workspace(Box::new(PythonWorkspace::new(
                         name,
@@ -85,7 +85,7 @@ impl ProjectFinder for PythonProjectFinder {
                         path.to_path_buf(),
                         relative_path.to_path_buf(),
                     ))),
-                );
+                )
             } else {
                 let version = project
                     .get("version")
@@ -95,7 +95,8 @@ impl ProjectFinder for PythonProjectFinder {
                     .get("name")
                     .and_then(|v| v.as_str())
                     .map(|v| v.to_string());
-                self.projects.insert(
+
+                (
                     path.to_path_buf(),
                     Project::Package(Box::new(PythonPackage::new(
                         name,
@@ -103,8 +104,23 @@ impl ProjectFinder for PythonProjectFinder {
                         path.to_path_buf(),
                         relative_path.to_path_buf(),
                     ))),
-                );
+                )
+            };
+
+            // read tool.uv.sources section
+            if let Some(sources) = pyproject_toml
+                .get("tool")
+                .and_then(|t| t.get("uv").and_then(|u| u.get("sources")))
+                && let Some(sources) = sources.as_array()
+            {
+                for source in sources {
+                    if let Some(source_str) = source.as_str() {
+                        project.add_dependency(source_str);
+                    }
+                }
             }
+
+            self.projects.insert(path, project);
         }
         Ok(())
     }

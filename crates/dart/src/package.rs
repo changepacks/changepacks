@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -13,6 +14,7 @@ pub struct DartPackage {
     path: PathBuf,
     relative_path: PathBuf,
     is_changed: bool,
+    dependencies: HashSet<String>,
 }
 
 impl DartPackage {
@@ -28,6 +30,7 @@ impl DartPackage {
             path,
             relative_path,
             is_changed: false,
+            dependencies: HashSet::new(),
         }
     }
 }
@@ -95,6 +98,14 @@ impl Package for DartPackage {
 
     fn default_publish_command(&self) -> &'static str {
         "dart pub publish"
+    }
+
+    fn dependencies(&self) -> &HashSet<String> {
+        &self.dependencies
+    }
+
+    fn add_dependency(&mut self, dependency: &str) {
+        self.dependencies.insert(dependency.to_string());
     }
 }
 

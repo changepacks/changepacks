@@ -1,18 +1,17 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     path::{Path, PathBuf},
 };
 
 use anyhow::Result;
 use changepacks_core::{ChangePackResult, ChangePackResultLog, Project, UpdateType};
-use gix::hashtable::hash_map::HashMap;
 
 use crate::{get_relative_path, next_version};
 
 pub fn gen_changepack_result_map(
     projects: &[&Project],
     repo_root_path: &Path,
-    mut update_result: HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    update_result: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
 ) -> Result<BTreeMap<PathBuf, ChangePackResult>> {
     let mut map = BTreeMap::<PathBuf, ChangePackResult>::new();
     for project in projects {
@@ -118,7 +117,7 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
 
         assert_eq!(result.len(), 1);
         let change_result = result.get(&PathBuf::from("project1/package.json")).unwrap();
@@ -180,9 +179,9 @@ mod tests {
             false,
         );
 
-        let update_result = HashMap::new();
+        let mut update_result = HashMap::new();
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
 
         assert_eq!(result.len(), 1);
         let change_result = result.get(&PathBuf::from("project2/package.json")).unwrap();
@@ -277,7 +276,7 @@ mod tests {
         // project2 has no update result
 
         let projects = vec![&project1, &project2];
-        let result = gen_changepack_result_map(&projects, repo_root, update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
 
         assert_eq!(result.len(), 2);
 
@@ -360,7 +359,7 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
 
         let change_result = result.get(&PathBuf::from("project3/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
@@ -417,7 +416,7 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
 
         let change_result = result.get(&PathBuf::from("project4/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
@@ -477,7 +476,7 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
 
         let change_result = result.get(&PathBuf::from("project5/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();

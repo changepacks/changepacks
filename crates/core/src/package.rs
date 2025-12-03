@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use crate::{Config, Language, update_type::UpdateType};
 use anyhow::{Context, Result};
@@ -24,6 +24,10 @@ pub trait Package: std::fmt::Debug + Send + Sync {
     }
     fn is_changed(&self) -> bool;
     fn language(&self) -> Language;
+
+    fn dependencies(&self) -> &HashSet<String>;
+    fn add_dependency(&mut self, dependency: &str);
+
     fn set_changed(&mut self, changed: bool);
 
     /// Get the default publish command for this package type

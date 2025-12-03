@@ -69,10 +69,10 @@ impl ProjectFinder for DartProjectFinder {
                     .join("melos.yaml")
                     .is_file();
 
-            if is_workspace {
+            let (path, mut project) = if is_workspace {
                 let version = pubspec["version"].as_str().map(|v| v.to_string());
                 let name = pubspec["name"].as_str().map(|v| v.to_string());
-                self.projects.insert(
+                (
                     path.to_path_buf(),
                     Project::Workspace(Box::new(DartWorkspace::new(
                         name,
@@ -80,12 +80,12 @@ impl ProjectFinder for DartProjectFinder {
                         path.to_path_buf(),
                         relative_path.to_path_buf(),
                     ))),
-                );
+                )
             } else {
                 let version = pubspec["version"].as_str().map(|v| v.to_string());
                 let name = pubspec["name"].as_str().map(|v| v.to_string());
 
-                self.projects.insert(
+                (
                     path.to_path_buf(),
                     Project::Package(Box::new(DartPackage::new(
                         name,
@@ -93,8 +93,18 @@ impl ProjectFinder for DartProjectFinder {
                         path.to_path_buf(),
                         relative_path.to_path_buf(),
                     ))),
-                );
+                )
+            };
+
+            // read dependencies section
+            if let Some(dependencies) = pubspec.get("dependencies").and_then(|d| d.as_mapping()) {
+                for (dep_name, _) in dependencies {
+                    if let Some(dep_str) = dep_name.as_str() {
+                        project.add_dependency(dep_str);
+                    }
+                }
             }
+            self.projects.insert(path, project);
         }
         Ok(())
     }

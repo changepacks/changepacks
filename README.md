@@ -2,6 +2,24 @@
   <img src="media/logo.svg" alt="changepacks logo" width="200"/>
 </p>
 
+[![Crates.io](https://img.shields.io/crates/v/changepacks)](https://crates.io/crates/changepacks)
+[![PyPI](https://img.shields.io/pypi/v/changepacks)](https://pypi.org/project/changepacks)
+[![npm bundle size](https://img.shields.io/bundlephobia/minzip/@changepacks/cli)](https://bundlephobia.com/package/@changepacks/cli)
+[![npm version](https://img.shields.io/npm/v/@changepacks/cli)](https://www.npmjs.com/package/@changepacks/cli)
+[![npm downloads](https://img.shields.io/npm/dm/@changepacks/cli)](https://www.npmjs.com/package/@changepacks/cli)
+[![license](https://img.shields.io/github/license/changepacks/changepacks)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/changepacks/changepacks/CI.yml?branch=main)](https://github.com/changepacks/changepacks/actions)
+[![codecov](https://img.shields.io/codecov/c/github/changepacks/changepacks?logo=codecov)](https://codecov.io/gh/changepacks/changepacks)
+[![GitHub stars](https://img.shields.io/github/stars/changepacks/changepacks?style=social&label=Star)](https://github.com/changepacks/changepacks)
+[![GitHub forks](https://img.shields.io/github/forks/changepacks/changepacks?style=social&label=Fork)](https://github.com/changepacks/changepacks/fork)
+[![GitHub issues](https://img.shields.io/github/issues/changepacks/changepacks)](https://github.com/changepacks/changepacks/issues)
+[![GitHub pull requests](https://img.shields.io/github/issues-pr/changepacks/changepacks)](https://github.com/changepacks/changepacks/pulls)
+[![GitHub last commit](https://img.shields.io/github/last-commit/changepacks/changepacks)](https://github.com/changepacks/changepacks/commits/main)
+[![Rust](https://img.shields.io/badge/Rust-1.72%2B-orange.svg)](https://rust-lang.org/)
+[![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org/)
+[![Bun](https://img.shields.io/badge/Bun-latest-000000.svg)](https://bun.sh)
+
 # changepacks 📦
 
 A unified version management and changelog tool for multi-language projects.

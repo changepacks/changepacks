@@ -61,7 +61,7 @@ impl ProjectFinder for NodeProjectFinder {
             let package_json = read_to_string(path).await?;
             let package_json: serde_json::Value = serde_json::from_str(&package_json)?;
             // if workspaces
-            if package_json.get("workspaces").is_some()
+            let (path, mut project) = if package_json.get("workspaces").is_some()
                 || path
                     .parent()
                     .context(format!("Parent not found - {}", path.display()))?
@@ -70,7 +70,7 @@ impl ProjectFinder for NodeProjectFinder {
             {
                 let version = package_json["version"].as_str().map(|v| v.to_string());
                 let name = package_json["name"].as_str().map(|v| v.to_string());
-                self.projects.insert(
+                (
                     path.to_path_buf(),
                     Project::Workspace(Box::new(NodeWorkspace::new(
                         name,
@@ -78,12 +78,11 @@ impl ProjectFinder for NodeProjectFinder {
                         path.to_path_buf(),
                         relative_path.to_path_buf(),
                     ))),
-                );
+                )
             } else {
                 let version = package_json["version"].as_str().map(|v| v.to_string());
                 let name = package_json["name"].as_str().map(|v| v.to_string());
-
-                self.projects.insert(
+                (
                     path.to_path_buf(),
                     Project::Package(Box::new(NodePackage::new(
                         name,
@@ -91,8 +90,22 @@ impl ProjectFinder for NodeProjectFinder {
                         path.to_path_buf(),
                         relative_path.to_path_buf(),
                     ))),
-                );
+                )
+            };
+
+            if let Some(deps) = package_json.get("dependencies").and_then(|d| d.as_object()) {
+                for (dep_name, value) in deps {
+                    if value
+                        .as_str()
+                        .map(|v| v.starts_with("workspace:"))
+                        .unwrap_or(false)
+                    {
+                        project.add_dependency(dep_name);
+                    }
+                }
             }
+
+            self.projects.insert(path, project);
         }
         Ok(())
     }

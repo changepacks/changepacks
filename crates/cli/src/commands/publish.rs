@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 
 use anyhow::Result;
 use changepacks_core::PublishResult;
-use changepacks_utils::{find_current_git_repo, find_project_dirs, get_changepacks_config};
+use changepacks_utils::{
+    find_current_git_repo, find_project_dirs, get_changepacks_config, sort_by_dependencies,
+};
 use clap::Args;
 
 use crate::{finders::get_finders, options::FormatOptions};
@@ -37,6 +39,9 @@ pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
         .iter()
         .flat_map(|finder| finder.projects())
         .collect();
+
+    // Sort projects by dependencies (no cloning, just reordering references)
+    let projects = sort_by_dependencies(projects);
 
     if projects.is_empty() {
         match args.format {

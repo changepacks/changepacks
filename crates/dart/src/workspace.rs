@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
 use changepacks_utils::next_version;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 
@@ -12,6 +13,7 @@ pub struct DartWorkspace {
     version: Option<String>,
     name: Option<String>,
     is_changed: bool,
+    dependencies: HashSet<String>,
 }
 
 impl DartWorkspace {
@@ -27,6 +29,7 @@ impl DartWorkspace {
             name,
             version,
             is_changed: false,
+            dependencies: HashSet::new(),
         }
     }
 }
@@ -106,6 +109,14 @@ impl Workspace for DartWorkspace {
 
     fn default_publish_command(&self) -> &'static str {
         "dart pub publish"
+    }
+
+    fn dependencies(&self) -> &HashSet<String> {
+        &self.dependencies
+    }
+
+    fn add_dependency(&mut self, dependency: &str) {
+        self.dependencies.insert(dependency.to_string());
     }
 }
 

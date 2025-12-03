@@ -1,5 +1,6 @@
 use std::{
     cmp::Ordering,
+    collections::HashSet,
     fmt::{Debug, Display},
     path::Path,
 };
@@ -63,6 +64,20 @@ impl Project {
         match self {
             Project::Workspace(workspace) => workspace.is_changed(),
             Project::Package(package) => package.is_changed(),
+        }
+    }
+
+    pub fn dependencies(&self) -> &HashSet<String> {
+        match self {
+            Project::Workspace(workspace) => workspace.dependencies(),
+            Project::Package(package) => package.dependencies(),
+        }
+    }
+
+    pub fn add_dependency(&mut self, dependency: &str) {
+        match self {
+            Project::Workspace(workspace) => workspace.add_dependency(dependency),
+            Project::Package(package) => package.add_dependency(dependency),
         }
     }
 
