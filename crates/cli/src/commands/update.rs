@@ -34,7 +34,7 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     // check if config.json exists
 
     let config = get_changepacks_config(&current_dir).await?;
-    let update_map = gen_update_map(&current_dir).await?;
+    let mut update_map = gen_update_map(&current_dir).await?;
 
     if update_map.is_empty() {
         match args.format {
@@ -154,7 +154,7 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
                     .collect::<Vec<_>>()
                     .as_slice(),
                 repo_root_path,
-                update_map,
+                &mut update_map,
             )?)?
         );
     }

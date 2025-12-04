@@ -60,7 +60,7 @@ impl ProjectFinder for RustProjectFinder {
             let cargo_toml = read_to_string(path).await?;
             let cargo_toml: toml::Value = toml::from_str(&cargo_toml)?;
             // if workspace
-            if cargo_toml.get("workspace").is_some() {
+            let (path, mut project) = if cargo_toml.get("workspace").is_some() {
                 let version = cargo_toml
                     .get("package")
                     .and_then(|p| p.get("version"))
@@ -71,7 +71,7 @@ impl ProjectFinder for RustProjectFinder {
                     .and_then(|p| p.get("name"))
                     .and_then(|v| v.as_str())
                     .map(|v| v.to_string());
-                self.projects.insert(
+                (
                     path.to_path_buf(),
                     Project::Workspace(Box::new(RustWorkspace::new(
                         name,
@@ -79,7 +79,7 @@ impl ProjectFinder for RustProjectFinder {
                         path.to_path_buf(),
                         relative_path.to_path_buf(),
                     ))),
-                );
+                )
             } else {
                 let version = cargo_toml["package"]["version"]
                     .as_str()
@@ -87,7 +87,7 @@ impl ProjectFinder for RustProjectFinder {
                 let name = cargo_toml["package"]["name"]
                     .as_str()
                     .map(|v| v.to_string());
-                self.projects.insert(
+                (
                     path.to_path_buf(),
                     Project::Package(Box::new(RustPackage::new(
                         name,
@@ -95,8 +95,21 @@ impl ProjectFinder for RustProjectFinder {
                         path.to_path_buf(),
                         relative_path.to_path_buf(),
                     ))),
-                );
+                )
+            };
+
+            if let Some(deps) = cargo_toml.get("dependencies").and_then(|d| d.as_table()) {
+                for (dep_name, value) in deps {
+                    if let Some(dep) = value.as_table()
+                        && let Some(workspace) = dep.get("workspace")
+                        && workspace.as_bool().unwrap_or(false)
+                    {
+                        project.add_dependency(dep_name);
+                    }
+                }
             }
+
+            self.projects.insert(path, project);
         }
         Ok(())
     }

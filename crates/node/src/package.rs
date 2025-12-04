@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
 use changepacks_utils::{detect_indent, next_version};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 
@@ -13,6 +14,7 @@ pub struct NodePackage {
     path: PathBuf,
     relative_path: PathBuf,
     is_changed: bool,
+    dependencies: HashSet<String>,
 }
 
 impl NodePackage {
@@ -28,6 +30,7 @@ impl NodePackage {
             path,
             relative_path,
             is_changed: false,
+            dependencies: HashSet::new(),
         }
     }
 }
@@ -93,6 +96,14 @@ impl Package for NodePackage {
 
     fn default_publish_command(&self) -> &'static str {
         "npm publish"
+    }
+
+    fn dependencies(&self) -> &HashSet<String> {
+        &self.dependencies
+    }
+
+    fn add_dependency(&mut self, dependency: &str) {
+        self.dependencies.insert(dependency.to_string());
     }
 }
 

@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
 use changepacks_utils::next_version;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 use toml_edit::DocumentMut;
@@ -13,6 +14,7 @@ pub struct PythonPackage {
     path: PathBuf,
     relative_path: PathBuf,
     is_changed: bool,
+    dependencies: HashSet<String>,
 }
 
 impl PythonPackage {
@@ -28,6 +30,7 @@ impl PythonPackage {
             path,
             relative_path,
             is_changed: false,
+            dependencies: HashSet::new(),
         }
     }
 }
@@ -88,6 +91,14 @@ impl Package for PythonPackage {
 
     fn default_publish_command(&self) -> &'static str {
         "uv publish"
+    }
+
+    fn dependencies(&self) -> &HashSet<String> {
+        &self.dependencies
+    }
+
+    fn add_dependency(&mut self, dependency: &str) {
+        self.dependencies.insert(dependency.to_string());
     }
 }
 

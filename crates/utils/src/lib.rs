@@ -9,6 +9,7 @@ mod get_changepacks_config;
 mod get_changepacks_dir;
 mod get_relative_path;
 mod next_version;
+mod sort_by_dep;
 mod split_version;
 
 pub use clear_update_logs::clear_update_logs;
@@ -22,4 +23,5 @@ pub use get_changepacks_config::get_changepacks_config;
 pub use get_changepacks_dir::get_changepacks_dir;
 pub use get_relative_path::get_relative_path;
 pub use next_version::next_version;
+pub use sort_by_dep::sort_by_dependencies;
 pub use split_version::split_version;

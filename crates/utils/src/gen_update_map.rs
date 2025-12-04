@@ -1,8 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 use changepacks_core::{ChangePackLog, ChangePackResultLog, UpdateType};
-use gix::hashtable::hash_map::HashMap;
 use tokio::fs::{read_dir, read_to_string};
 
 use crate::get_changepacks_dir;

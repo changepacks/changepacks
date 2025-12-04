@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
 use changepacks_utils::{detect_indent, next_version};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 
@@ -13,6 +14,7 @@ pub struct NodeWorkspace {
     version: Option<String>,
     name: Option<String>,
     is_changed: bool,
+    dependencies: HashSet<String>,
 }
 
 impl NodeWorkspace {
@@ -28,6 +30,7 @@ impl NodeWorkspace {
             name,
             version,
             is_changed: false,
+            dependencies: HashSet::new(),
         }
     }
 }
@@ -96,6 +99,14 @@ impl Workspace for NodeWorkspace {
 
     fn default_publish_command(&self) -> &'static str {
         "npm publish"
+    }
+
+    fn dependencies(&self) -> &HashSet<String> {
+        &self.dependencies
+    }
+
+    fn add_dependency(&mut self, dependency: &str) {
+        self.dependencies.insert(dependency.to_string());
     }
 }
 

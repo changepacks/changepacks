@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use crate::{Config, Language, Package, update_type::UpdateType};
 use anyhow::{Context, Result};
@@ -12,6 +12,9 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn version(&self) -> Option<&str>;
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()>;
     fn language(&self) -> Language;
+
+    fn dependencies(&self) -> &HashSet<String>;
+    fn add_dependency(&mut self, dependency: &str);
 
     // Default implementation for check_changed
     fn check_changed(&mut self, path: &Path) -> Result<()> {

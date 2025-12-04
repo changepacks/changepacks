@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
 use changepacks_utils::{next_version, split_version};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 use toml_edit::DocumentMut;
@@ -13,6 +14,7 @@ pub struct RustWorkspace {
     version: Option<String>,
     name: Option<String>,
     is_changed: bool,
+    dependencies: HashSet<String>,
 }
 
 impl RustWorkspace {
@@ -28,6 +30,7 @@ impl RustWorkspace {
             name,
             version,
             is_changed: false,
+            dependencies: HashSet::new(),
         }
     }
 }
@@ -102,6 +105,14 @@ impl Workspace for RustWorkspace {
 
     fn default_publish_command(&self) -> &'static str {
         "cargo publish"
+    }
+
+    fn dependencies(&self) -> &HashSet<String> {
+        &self.dependencies
+    }
+
+    fn add_dependency(&mut self, dependency: &str) {
+        self.dependencies.insert(dependency.to_string());
     }
 
     async fn update_workspace_dependencies(&self, packages: &[&dyn Package]) -> Result<()> {
