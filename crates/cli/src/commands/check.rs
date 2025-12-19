@@ -290,7 +290,7 @@ fn format_project_line(
         .collect();
 
     let deps_info = if !monorepo_deps.is_empty() {
-        format!(" [deps: {}]", monorepo_deps.join(", ")).bright_black()
+        format!(" [deps:\n        {}]", monorepo_deps.join("\n        ")).bright_black()
     } else {
         "".normal()
     };
