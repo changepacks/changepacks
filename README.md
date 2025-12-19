@@ -22,20 +22,40 @@
 
 # changepacks 📦
 
-A unified version management and changelog tool for multi-language projects.
+A unified version management and changelog tool for multi-language monorepos.
 
 ## Overview
 
-changepacks is a CLI tool that helps you efficiently manage versioning and changelogs across different programming languages and package managers. It provides a unified interface for managing versions in Node.js, Python, Rust, and Dart projects.
+**changepacks** is a Rust-powered CLI tool that brings consistent version management and changelog generation to polyglot projects. Inspired by [changesets](https://github.com/changesets/changesets), it extends beyond JavaScript to natively support Node.js, Python, Rust, and Dart ecosystems with a single, fast, and reliable tool.
+
+### Why changepacks?
+
+- 🌍 **True Multi-Language Support** - Manage versions across Node.js, Python, Rust, and Dart with unified workflow
+- 🚀 **Rust Performance** - Fast, parallel operations with single binary distribution
+- 🔗 **Smart Dependencies** - Automatic dependency resolution with topological sorting for publishing
+- 💾 **Format Preservation** - Respects language conventions (JSON indentation, TOML formatting, YAML structure)
+- 🌳 **Git-Native** - Uses git history for intelligent change detection
+- 🎯 **Developer-Friendly** - Interactive CLI with colored output, tree views, and clear error messages
+
+## Recent Improvements
+
+- ✨ **Enhanced Readability** - Patch lists now display with newlines instead of commas for better visibility
+- 📦 **Dependency Sorting** - Topological sort ensures packages publish in correct order
+- 🎨 **Improved Output** - Tree view with colorized status and dependency visualization
+- 🔧 **Format Preservation** - Maintains your file formatting (indentation, newlines) across all updates
 
 ## Features
 
-- 🚀 **Multi-language Support**: Native support for Node.js, Python, Rust, and Dart
-- 📝 **Unified Version Management**: Consistent versioning across different package managers
-- 🔄 **Automated Updates**: Smart version bumping based on project changes
-- ⚡ **CLI Interface**: Simple and intuitive command-line interface
-- 🎯 **Project Detection**: Automatic detection of projects in your workspace
-- 📊 **Status Tracking**: Track which projects need version updates
+- 🚀 **Multi-language Support** - Native support for Node.js, Python, Rust, and Dart with workspace detection
+- 📝 **Changepack Logs** - Track version updates with timestamped logs and detailed notes
+- 🔄 **Automated Updates** - Smart version bumping with workspace dependency updates
+- 🔗 **Dependency Resolution** - Topological sorting ensures dependencies publish before dependents
+- ⚡ **Fast CLI** - Async Rust implementation with parallel operations
+- 🎯 **Project Detection** - Automatic discovery of packages and workspaces via git
+- 📊 **Status & Visualization** - Tree view of dependencies with change markers
+- 💾 **Format Preservation** - Maintains indentation, newlines, and file formatting
+- 🧪 **Testing Support** - Dry-run mode for updates and publishing
+- 🔧 **Configurable** - Custom publish commands, ignore patterns, and base branch
 
 ## Supported Languages & Package Managers
 
@@ -48,31 +68,50 @@ changepacks is a CLI tool that helps you efficiently manage versioning and chang
 
 ## Installation
 
+Choose your preferred package manager:
+
+### Windows
 ```bash
 winget install Changepacks.Changepacks
+```
 
+### Rust (Cargo)
+```bash
 cargo install changepacks
+```
 
+### Python
+```bash
+# pip
 pip install changepacks
-uv add changepacks
-# run
-uvx changepacks
 
+# uv (recommended)
+uv add changepacks
+uvx changepacks
+```
+
+### Node.js
+```bash
+# npm
 npm install @changepacks/cli
-bun install @changepacks/cli
-pnpm install @changepacks/cli
-yarn install @changepacks/cli
-# run
 npx @changepacks/cli
-bunx @changepacks/cli
+
+# pnpm
+pnpm install @changepacks/cli
 pnpm dlx @changepacks/cli
+
+# yarn
+yarn install @changepacks/cli
+
+# bun
+bun install @changepacks/cli
+bunx @changepacks/cli
 ```
 
 ### Requirements
 
-- Rust 1.91+ (for development)
-- Cargo
 - Git repository (for project detection)
+- Rust 1.91+ (for building from source)
 
 ### Build from Source
 
@@ -86,44 +125,73 @@ The binary will be available at `target/release/changepacks` (or `target/release
 
 ## Usage
 
-### Initialize Project
+### Quick Start
 
-Initialize changepacks in your repository:
-
+1. **Initialize** changepacks in your repository:
 ```bash
 changepacks init
 ```
 
-This creates a `.changepacks/` directory with configuration files.
-
-### Check Project Status
-
-Discover and display all projects in your workspace:
-
+2. **Create a changepack** when you make changes:
 ```bash
-changepacks check
+changepacks
 ```
+This opens an interactive session to select changed projects and write release notes.
 
-Filter by project type:
-
-```bash
-changepacks check --filter workspace  # Show only workspaces
-changepacks check --filter package    # Show only packages
-```
-
-### Update Versions
-
-Update project versions based on changes:
-
+3. **Update versions** from changepack logs:
 ```bash
 changepacks update
 ```
 
-Options:
+4. **Publish** packages in dependency order:
+```bash
+changepacks publish
+```
+
+### Typical Workflow
 
 ```bash
-changepacks update --dry-run    # Preview changes without applying
-changepacks update --yes        # Skip confirmation prompts
+# 1. Check which projects have changed
+changepacks check --tree
+
+# 2. Create a changepack log for your changes
+changepacks
+# → Select projects (Major/Minor/Patch)
+# → Write changelog notes
+
+# 3. Preview version updates
+changepacks update --dry-run
+
+# 4. Apply version updates
+changepacks update
+
+# 5. Test publishing
+changepacks publish --dry-run
+
+# 6. Publish to registries
+changepacks publish
+```
+
+### Check Project Status
+
+View all projects with change detection:
+
+```bash
+changepacks check              # List all projects
+changepacks check --tree       # Show dependency tree
+changepacks check --filter workspace  # Only workspaces
+changepacks check --filter package    # Only packages
+changepacks check --remote     # Compare with remote branch
+```
+
+### Update Versions
+
+Apply version bumps from changepack logs:
+
+```bash
+changepacks update              # Interactive confirmation
+changepacks update --dry-run    # Preview without applying
+changepacks update --yes        # Skip confirmation
 ```
 
 ### Publish Packages
@@ -218,10 +286,25 @@ changepacks/
 
 ## How It Works
 
-1. **Project Detection**: Scans your repository for supported project files
-2. **Change Tracking**: Monitors file changes to determine which projects need updates
-3. **Version Management**: Provides unified version bumping across different package managers
-4. **Update Coordination**: Ensures consistent versioning across related projects
+1. **Project Detection**: Walks git tree to discover `package.json`, `Cargo.toml`, `pyproject.toml`, `pubspec.yaml` files
+2. **Change Tracking**: Uses git diff to detect changed files, marking projects with modifications
+3. **Changepack Logs**: Stores version bump intentions in `.changepacks/changepack_log_*.json` with notes and timestamps
+4. **Version Updates**: Reads changepack logs, calculates new versions (semver), updates files while preserving formatting
+5. **Dependency Resolution**: Topologically sorts projects by dependencies for correct publish order
+6. **Publishing**: Executes language-specific or custom publish commands in dependency order
+
+### Changepack Log Format
+
+```json
+{
+  "changes": {
+    "packages/foo/package.json": "Minor",
+    "crates/bar/Cargo.toml": "Patch"
+  },
+  "note": "Add new feature X and fix bug Y",
+  "date": "2025-12-19T10:27:00.000Z"
+}
+```
 
 ## Development
 
@@ -254,12 +337,20 @@ changepacks check
 
 ## Architecture
 
-The project is built with a modular architecture:
+The project follows a trait-based, modular architecture:
 
-- **Core**: Defines common traits and types for workspaces and packages
-- **Language Crates**: Implement language-specific project detection and management
-- **CLI**: Provides the user interface and command orchestration
-- **Utils**: Shared utilities for path handling, version calculation, and more
+- **Core** (`crates/core`) - Defines common traits (`Package`, `Workspace`, `ProjectFinder`) and types
+- **Language Crates** (`crates/{node,python,rust,dart}`) - Implement language-specific project detection and version management
+- **CLI** (`crates/cli`) - Command-line interface with clap, colored output, and interactive prompts
+- **Utils** (`crates/utils`) - Shared utilities: git operations, version calculation, dependency sorting, config management
+- **Bridges** (`bridge/{node,python}`) - N-API and PyO3 bindings for package manager distribution
+
+### Key Design Patterns
+
+- **Async-First**: All I/O operations use tokio for parallel execution
+- **Format Preservation**: Language-specific parsers (toml_edit, yamlpatch, serde_json) maintain file formatting
+- **Git-Native**: Uses git2 library for change detection and repository operations
+- **Topological Sorting**: Kahn's algorithm ensures correct publish order based on dependencies
 
 ## Contributing
 
@@ -333,11 +424,19 @@ This project is distributed under the MIT License. See the [LICENSE](LICENSE) fi
 ## Roadmap
 
 - [x] Node.js package management support
-- [x] Python package management support  
+- [x] Python package management support
 - [x] Rust package management support
 - [x] Dart package management support
-- [X] CI/CD integration support
+- [x] CI/CD integration support (JSON output, dry-run mode)
+- [x] Dependency-aware publishing with topological sorting
+- [x] Format preservation across all languages
+- [x] Interactive CLI with tree view and colored output
+- [x] Cross-platform distribution (Windows, macOS, Linux)
+- [x] N-API and PyO3 bindings for npm/PyPI
 - [ ] Plugin system for additional languages
+- [ ] CHANGELOG.md generation from changepack logs
+- [ ] GitHub Actions integration
+- [ ] Pre-release version support
 
 ## Support
 
