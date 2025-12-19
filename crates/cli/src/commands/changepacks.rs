@@ -90,7 +90,7 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
                         .iter()
                         .map(|o| format!("{}", o.value))
                         .collect::<Vec<_>>()
-                        .join(", ")
+                        .join("\n")
                 };
                 selector.prompt()?
             }
