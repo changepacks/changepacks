@@ -1,7 +1,0 @@
-{
-  "changes": {
-    "crates/cli/Cargo.toml": "Patch"
-  },
-  "note": "Format patch lists with newlines instead of commas\n\nImproved readability by displaying patch target lists with newline separators instead of comma separators which were too long on a single line.\n\nChanges:\n- check.rs: Format dependency lists with newlines and indentation\n- changepacks.rs: Format selected project lists with newlines",
-  "date": "2025-12-19T10:27:00.000Z"
-}
