@@ -39,6 +39,8 @@ A unified version management and changelog tool for multi-language monorepos.
 
 ## Recent Improvements
 
+- 🔗 **Workspace Dependency Updates** - Automatically updates `workspace:*` dependencies in package.json when referenced packages are updated
+- ⚙️ **Update On Rules** - Configure `updateOn` in config to automatically trigger updates for dependent packages (e.g., bridge packages)
 - ✨ **Enhanced Readability** - Patch lists now display with newlines instead of commas for better visibility
 - 📦 **Dependency Sorting** - Topological sort ensures packages publish in correct order
 - 🎨 **Improved Output** - Tree view with colorized status and dependency visualization
@@ -248,6 +250,9 @@ This prints the merged and defaulted configuration, for example:
     "rust": "cargo publish",
     "dart": "dart pub publish",
     "bridge/node/package.json": "npm publish --access public"
+  },
+  "updateOn": {
+    "crates/changepacks/Cargo.toml": ["bridge/node/package.json", "bridge/python/pyproject.toml"]
   }
 }
 ```
@@ -260,6 +265,11 @@ You can edit `.changepacks/config.json` to customize:
   - Set language-specific commands using language keys: `"node"`, `"python"`, `"rust"`, `"dart"`.
   - Set project-specific commands using relative paths (e.g., `"bridge/node/package.json"`).
   - If not specified, default commands are used (see Publish Packages section).
+- Dependency rules for forced updates (`updateOn`):
+  - Key: glob pattern for trigger packages (e.g., `"crates/*/Cargo.toml"`).
+  - Value: list of package file paths that must be updated when trigger matches.
+  - When a package matching the trigger pattern is updated, all dependent packages will also be marked for update.
+  - Useful for bridge packages that wrap core libraries (e.g., when core Rust crate updates, automatically update Node.js and Python bindings).
 
 If the config file is missing or empty, sensible defaults are used.
 

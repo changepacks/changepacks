@@ -177,7 +177,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-cli"
-version = "0.2.11"
+version = "0.2.12"
 dependencies = [
  "anyhow",
  "changepacks-core",
@@ -198,7 +198,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-core"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -227,7 +227,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-node"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -269,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-utils"
-version = "0.2.9"
+version = "0.2.10"
 dependencies = [
  "anyhow",
  "changepacks-core",
