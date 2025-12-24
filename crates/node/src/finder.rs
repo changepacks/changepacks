@@ -411,4 +411,44 @@ mod tests {
 
         temp_dir.close().unwrap();
     }
+
+    #[tokio::test]
+    async fn test_node_project_finder_visit_package_with_workspace_dependencies() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-package",
+  "version": "1.0.0",
+  "dependencies": {
+    "core": "workspace:*",
+    "utils": "workspace:^",
+    "external": "^1.0.0"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+
+        let project = projects.first().unwrap();
+        let deps = project.dependencies();
+        // Only workspace:* dependencies should be tracked
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains("core"));
+        // workspace:^ and external deps should not be tracked
+        assert!(!deps.contains("utils"));
+        assert!(!deps.contains("external"));
+
+        temp_dir.close().unwrap();
+    }
 }
