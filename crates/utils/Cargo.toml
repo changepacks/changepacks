@@ -1,6 +1,6 @@
 [package]
 name = "changepacks-utils"
-version = "0.2.9"
+version = "0.2.10"
 edition = "2024"
 license = "Apache-2.0"
 description = "Shared utilities for changepacks (path handling, version calculation, git operations)"
