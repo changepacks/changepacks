@@ -84,3 +84,21 @@ pub async fn main(args: &[String]) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case(CliUpdateType::Major, UpdateType::Major)]
+    #[case(CliUpdateType::Minor, UpdateType::Minor)]
+    #[case(CliUpdateType::Patch, UpdateType::Patch)]
+    fn test_cli_update_type_to_update_type(
+        #[case] cli_type: CliUpdateType,
+        #[case] expected: UpdateType,
+    ) {
+        let result: UpdateType = cli_type.into();
+        assert_eq!(result, expected);
+    }
+}

@@ -373,4 +373,46 @@ version = "1.0.0"
 
         temp_dir.close().unwrap();
     }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_package_with_workspace_dependencies() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+
+[dependencies]
+core = { workspace = true }
+utils = { workspace = true }
+external = "1.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Package(pkg) => {
+                assert_eq!(pkg.name(), Some("test-package"));
+                let deps = pkg.dependencies();
+                assert_eq!(deps.len(), 2);
+                assert!(deps.contains("core"));
+                assert!(deps.contains("utils"));
+                // external is not a workspace dependency
+                assert!(!deps.contains("external"));
+            }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
 }

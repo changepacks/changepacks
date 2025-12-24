@@ -13,8 +13,8 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "3.5", features = ["tokio_rt"] }
-napi-derive = "3.3"
+napi = { version = "3.7", features = ["tokio_rt"] }
+napi-derive = "3.4"
 changepacks-cli.workspace = true
 tokio = { version = "1.48" }
 

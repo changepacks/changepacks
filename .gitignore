@@ -11,3 +11,4 @@ node_modules
 .env.test.local
 .env.production.local
 build_rs_cov.profraw
+.claude

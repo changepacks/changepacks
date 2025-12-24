@@ -95,11 +95,9 @@ impl ProjectFinder for NodeProjectFinder {
 
             if let Some(deps) = package_json.get("dependencies").and_then(|d| d.as_object()) {
                 for (dep_name, value) in deps {
-                    if value
-                        .as_str()
-                        .map(|v| v.starts_with("workspace:"))
-                        .unwrap_or(false)
-                    {
+                    // Only track workspace:* dependencies (exact version sync)
+                    // workspace:^ uses semver ranges so doesn't need forced updates
+                    if value.as_str() == Some("workspace:*") {
                         project.add_dependency(dep_name);
                     }
                 }
@@ -410,6 +408,46 @@ mod tests {
 
         let mut_projects = finder.projects_mut();
         assert_eq!(mut_projects.len(), 1);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_project_finder_visit_package_with_workspace_dependencies() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-package",
+  "version": "1.0.0",
+  "dependencies": {
+    "core": "workspace:*",
+    "utils": "workspace:^",
+    "external": "^1.0.0"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+
+        let project = projects.first().unwrap();
+        let deps = project.dependencies();
+        // Only workspace:* dependencies should be tracked
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains("core"));
+        // workspace:^ and external deps should not be tracked
+        assert!(!deps.contains("utils"));
+        assert!(!deps.contains("external"));
 
         temp_dir.close().unwrap();
     }

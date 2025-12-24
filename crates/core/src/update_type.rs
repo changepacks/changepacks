@@ -22,3 +22,18 @@ impl Display for UpdateType {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case(UpdateType::Major, "Major")]
+    #[case(UpdateType::Minor, "Minor")]
+    #[case(UpdateType::Patch, "Patch")]
+    fn test_update_type_display(#[case] update_type: UpdateType, #[case] expected: &str) {
+        let display = format!("{}", update_type);
+        assert!(display.contains(expected));
+    }
+}

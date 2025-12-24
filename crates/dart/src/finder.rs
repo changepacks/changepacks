@@ -386,4 +386,45 @@ version: 1.0.0
 
         temp_dir.close().unwrap();
     }
+
+    #[tokio::test]
+    async fn test_visit_package_with_dependencies() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_package
+version: 1.0.0
+dependencies:
+  http: ^1.0.0
+  core:
+    path: ../core
+  utils:
+    path: ../utils
+"#,
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Package(pkg) => {
+                assert_eq!(pkg.name(), Some("test_package"));
+                let deps = pkg.dependencies();
+                assert_eq!(deps.len(), 3);
+                assert!(deps.contains("http"));
+                assert!(deps.contains("core"));
+                assert!(deps.contains("utils"));
+            }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
 }

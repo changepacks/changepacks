@@ -23,3 +23,19 @@ impl Display for Language {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    #[rstest]
+    #[case(Language::Python, "Python")]
+    #[case(Language::Node, "Node")]
+    #[case(Language::Rust, "Rust")]
+    #[case(Language::Dart, "Dart")]
+    fn test_language_display(#[case] language: Language, #[case] expected: &str) {
+        let display = format!("{}", language);
+        assert!(display.contains(expected));
+    }
+}
