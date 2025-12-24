@@ -454,6 +454,18 @@ mod tests {
             .output()
             .unwrap();
 
+        // Configure git user for the local clone
+        std::process::Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(local_path)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(local_path)
+            .output()
+            .unwrap();
+
         // Create a feature branch with changes
         std::process::Command::new("git")
             .args(["checkout", "-b", "feature"])
