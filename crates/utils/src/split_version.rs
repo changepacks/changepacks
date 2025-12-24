@@ -31,6 +31,8 @@ mod tests {
     #[case("1.0.0-alpha.1+build1", (None, "1.0.0-alpha.1+build1"))]
     #[case(">=1.0.0+build1", (Some(">="), "1.0.0+build1"))]
     #[case("helloworld-1.0.2", (Some("helloworld-"), "1.0.2"))]
+    #[case("latest", (None, "latest"))]
+    #[case("*", (None, "*"))]
     fn test_split_version(#[case] input: &str, #[case] expected: (Option<&str>, &str)) {
         let (prefix, version) = split_version(input).unwrap();
         assert_eq!(prefix.as_deref(), expected.0);

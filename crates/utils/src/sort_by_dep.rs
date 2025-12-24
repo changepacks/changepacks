@@ -58,17 +58,16 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     let mut visited = HashSet::new();
 
     while let Some(idx) = queue.pop_front() {
-        if visited.contains(&idx) {
-            continue;
-        }
-        visited.insert(idx);
-        sorted_indices.push(idx);
+        if !visited.contains(&idx) {
+            visited.insert(idx);
+            sorted_indices.push(idx);
 
-        // Decrease in-degree of dependent projects
-        for &dependent_idx in &graph[idx] {
-            in_degree[dependent_idx] -= 1;
-            if in_degree[dependent_idx] == 0 && !visited.contains(&dependent_idx) {
-                queue.push_back(dependent_idx);
+            // Decrease in-degree of dependent projects
+            for &dependent_idx in &graph[idx] {
+                in_degree[dependent_idx] -= 1;
+                if in_degree[dependent_idx] == 0 && !visited.contains(&dependent_idx) {
+                    queue.push_back(dependent_idx);
+                }
             }
         }
     }
@@ -266,5 +265,54 @@ mod tests {
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
         assert!(names.contains(&Some("p1")));
         assert!(names.contains(&Some("p2")));
+    }
+
+    #[test]
+    fn test_sort_cyclic_dependency() {
+        // p1 -> p2 -> p3 -> p1 (circular dependency)
+        let p1 = create_project("p1", vec!["p3"]);
+        let p2 = create_project("p2", vec!["p1"]);
+        let p3 = create_project("p3", vec!["p2"]);
+
+        let projects = vec![&p1, &p2, &p3];
+        let sorted = sort_by_dependencies(projects);
+
+        // All projects should still be in the result even with cyclic deps
+        assert_eq!(sorted.len(), 3);
+        let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
+        assert!(names.contains(&Some("p1")));
+        assert!(names.contains(&Some("p2")));
+        assert!(names.contains(&Some("p3")));
+    }
+
+    #[test]
+    fn test_sort_diamond_dependency_with_multiple_queue_entries() {
+        // Diamond pattern where a project might be added to queue multiple times
+        // p1 -> p2, p3
+        // p2 -> p4
+        // p3 -> p4
+        // p4 -> p5
+        // p5 -> (no deps)
+        // When p4's in_degree becomes 0, it might be added from both p2 and p3 processing
+        let p5 = create_project("p5", vec![]);
+        let p4 = create_project("p4", vec!["p5"]);
+        let p3 = create_project("p3", vec!["p4"]);
+        let p2 = create_project("p2", vec!["p4"]);
+        let p1 = create_project("p1", vec!["p2", "p3"]);
+
+        let projects = vec![&p1, &p2, &p3, &p4, &p5];
+        let sorted = sort_by_dependencies(projects);
+
+        assert_eq!(sorted.len(), 5);
+        let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
+
+        // p5 should come first
+        assert_eq!(names[0], Some("p5"));
+        // p4 should come after p5
+        let p4_idx = names.iter().position(|&n| n == Some("p4")).unwrap();
+        let p5_idx = names.iter().position(|&n| n == Some("p5")).unwrap();
+        assert!(p4_idx > p5_idx);
+        // p1 should come last
+        assert_eq!(names[4], Some("p1"));
     }
 }
