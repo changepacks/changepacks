@@ -261,4 +261,30 @@ tokio = "1.0"
 
         temp_dir.close().unwrap();
     }
+
+    #[test]
+    fn test_rust_package_dependencies() {
+        let mut package = RustPackage::new(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/Cargo.toml"),
+            PathBuf::from("test/Cargo.toml"),
+        );
+
+        // Initially empty
+        assert!(package.dependencies().is_empty());
+
+        // Add dependencies
+        package.add_dependency("core");
+        package.add_dependency("utils");
+
+        let deps = package.dependencies();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains("core"));
+        assert!(deps.contains("utils"));
+
+        // Adding duplicate should not increase count
+        package.add_dependency("core");
+        assert_eq!(package.dependencies().len(), 2);
+    }
 }
