@@ -191,6 +191,7 @@ dependencies = [
  "futures",
  "inquire",
  "nanoid",
+ "rstest",
  "serde_json",
  "tokio",
 ]
