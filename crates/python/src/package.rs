@@ -266,4 +266,30 @@ requests = "2.31.0"
 
         temp_dir.close().unwrap();
     }
+
+    #[test]
+    fn test_python_package_dependencies() {
+        let mut package = PythonPackage::new(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("test/pyproject.toml"),
+        );
+
+        // Initially empty
+        assert!(package.dependencies().is_empty());
+
+        // Add dependencies
+        package.add_dependency("requests");
+        package.add_dependency("core");
+
+        let deps = package.dependencies();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains("requests"));
+        assert!(deps.contains("core"));
+
+        // Adding duplicate should not increase count
+        package.add_dependency("requests");
+        assert_eq!(package.dependencies().len(), 2);
+    }
 }
