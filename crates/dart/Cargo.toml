@@ -14,9 +14,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 anyhow = "1.0"
 tokio = { version = "1.48", features = ["fs"] }
-yamlpatch = "0.5"
-yamlpath = "0.28"
+yamlpatch = "0.8"
+yamlpath = "0.31"
 
 [dev-dependencies]
-tempfile = "3.23"
+tempfile = "3.24"
 tokio = { version = "1.48", features = ["test-util", "macros"] }

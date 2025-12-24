@@ -7,7 +7,7 @@ description = "Shared utilities for changepacks (path handling, version calculat
 readme = "../../README.md"
 
 [dependencies]
-gix = { version = "0.73", default-features = false, features = ["index", "status", "parallel"] }
+gix = { version = "0.76", default-features = false, features = ["index", "status", "parallel"] }
 anyhow = "1.0"
 changepacks-core.workspace = true
 colored = "3"
@@ -19,6 +19,6 @@ glob = "0.3"
 
 [dev-dependencies]
 rstest = "0.26"
-tempfile = "3.23"
+tempfile = "3.24"
 tokio = { version = "1.48", features = ["test-util", "macros"] }
 changepacks-node = { path = "../node" }
