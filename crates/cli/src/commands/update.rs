@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use changepacks_core::{Package, Project};
 use changepacks_utils::{
-    clear_update_logs, display_update, find_current_git_repo, find_project_dirs,
-    gen_changepack_result_map, gen_update_map, get_changepacks_config, get_changepacks_dir,
-    get_relative_path,
+    apply_reverse_dependencies, clear_update_logs, display_update, find_current_git_repo,
+    find_project_dirs, gen_changepack_result_map, gen_update_map, get_changepacks_config,
+    get_changepacks_dir, get_relative_path,
 };
 use clap::Args;
 
@@ -36,6 +36,19 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     let config = get_changepacks_config(&current_dir).await?;
     let mut update_map = gen_update_map(&current_dir, &config).await?;
 
+    let mut project_finders = get_finders();
+    let mut all_finders = get_finders();
+
+    find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
+    find_project_dirs(&repo, &mut all_finders, &Default::default(), args.remote).await?;
+
+    // Apply reverse dependency updates (workspace:* dependencies)
+    let all_projects: Vec<&Project> = all_finders
+        .iter()
+        .flat_map(|finder| finder.projects())
+        .collect();
+    apply_reverse_dependencies(&mut update_map, &all_projects, repo_root_path);
+
     if update_map.is_empty() {
         match args.format {
             FormatOptions::Stdout => {
@@ -50,11 +63,6 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     if let FormatOptions::Stdout = args.format {
         println!("Updates found:");
     }
-    let mut project_finders = get_finders();
-    let mut all_finders = get_finders();
-
-    find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
-    find_project_dirs(&repo, &mut all_finders, &Default::default(), args.remote).await?;
 
     let mut update_projects = Vec::new();
     let mut workspace_projects = Vec::new();

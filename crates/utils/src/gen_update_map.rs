@@ -1,10 +1,10 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
 use anyhow::Result;
-use changepacks_core::{ChangePackLog, ChangePackResultLog, Config, UpdateType};
+use changepacks_core::{ChangePackLog, ChangePackResultLog, Config, Project, UpdateType};
 use glob::Pattern;
 use tokio::fs::{read_dir, read_to_string};
 
@@ -82,6 +82,95 @@ fn apply_update_on_rules(
                 });
             }
         }
+    }
+}
+
+/// Apply reverse dependency updates: if package A depends on package B (via workspace:*),
+/// and B is being updated, then A should also be updated as PATCH.
+pub fn apply_reverse_dependencies(
+    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    projects: &[&Project],
+    repo_root_path: &Path,
+) {
+    // Build a map from package name to its relative file path (e.g., "crates/core/Cargo.toml")
+    let mut name_to_path: HashMap<String, PathBuf> = HashMap::new();
+    for project in projects {
+        if let Some(name) = project.name()
+            && let Ok(rel_path) = project.path().strip_prefix(repo_root_path)
+        {
+            name_to_path.insert(name.to_string(), rel_path.to_path_buf());
+        }
+    }
+
+    // Build reverse dependency map: updated_package_name -> [packages that depend on it]
+    let mut reverse_deps: HashMap<String, Vec<(PathBuf, String)>> = HashMap::new();
+    for project in projects {
+        let dependencies = project.dependencies();
+        if dependencies.is_empty() {
+            continue;
+        }
+
+        let project_path = if let Ok(rel_path) = project.path().strip_prefix(repo_root_path) {
+            rel_path.to_path_buf()
+        } else {
+            continue;
+        };
+
+        let project_name = project.name().unwrap_or("unknown").to_string();
+
+        for dep_name in dependencies {
+            reverse_deps
+                .entry(dep_name.clone())
+                .or_default()
+                .push((project_path.clone(), project_name.clone()));
+        }
+    }
+
+    // Find all packages that need to be updated due to dependencies
+    let mut packages_to_add: Vec<(PathBuf, String)> = Vec::new();
+    let mut processed: HashSet<PathBuf> = HashSet::new();
+
+    // Initial set of updated package names
+    let updated_names: HashSet<String> = update_map
+        .keys()
+        .filter_map(|path| {
+            // Find the package name for this path
+            name_to_path.iter().find_map(
+                |(name, p)| {
+                    if p == path { Some(name.clone()) } else { None }
+                },
+            )
+        })
+        .collect();
+
+    // Process reverse dependencies transitively
+    let mut to_process: Vec<String> = updated_names.into_iter().collect();
+    while let Some(pkg_name) = to_process.pop() {
+        if let Some(dependents) = reverse_deps.get(&pkg_name) {
+            for (dep_path, dep_name) in dependents {
+                if !processed.contains(dep_path) && !update_map.contains_key(dep_path) {
+                    processed.insert(dep_path.clone());
+                    packages_to_add.push((dep_path.clone(), pkg_name.clone()));
+                    to_process.push(dep_name.clone());
+                }
+            }
+        }
+    }
+
+    // Add the dependent packages to update_map
+    for (path, dependency_name) in packages_to_add {
+        update_map.entry(path).or_insert_with(|| {
+            (
+                UpdateType::Patch,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Patch,
+                    format!(
+                        "Auto-update: depends on '{}' via workspace:*",
+                        dependency_name
+                    ),
+                )],
+            )
+        });
     }
 }
 

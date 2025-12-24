@@ -2,8 +2,8 @@ use changepacks_core::{ChangePackResultLog, Project, UpdateType};
 
 use anyhow::{Context, Result};
 use changepacks_utils::{
-    display_update, find_current_git_repo, find_project_dirs, gen_changepack_result_map,
-    gen_update_map, get_changepacks_config, get_relative_path,
+    apply_reverse_dependencies, display_update, find_current_git_repo, find_project_dirs,
+    gen_changepack_result_map, gen_update_map, get_changepacks_config, get_relative_path,
 };
 use clap::Args;
 use std::collections::{HashMap, HashSet};
@@ -56,6 +56,9 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
         println!("Found {} projects", projects.len());
     }
     let mut update_map = gen_update_map(&current_dir, &config).await?;
+
+    // Apply reverse dependency updates (workspace:* dependencies)
+    apply_reverse_dependencies(&mut update_map, &projects, repo_root_path);
 
     if args.tree {
         // Tree mode: show dependencies as a tree

@@ -95,11 +95,9 @@ impl ProjectFinder for NodeProjectFinder {
 
             if let Some(deps) = package_json.get("dependencies").and_then(|d| d.as_object()) {
                 for (dep_name, value) in deps {
-                    if value
-                        .as_str()
-                        .map(|v| v.starts_with("workspace:"))
-                        .unwrap_or(false)
-                    {
+                    // Only track workspace:* dependencies (exact version sync)
+                    // workspace:^ uses semver ranges so doesn't need forced updates
+                    if value.as_str() == Some("workspace:*") {
                         project.add_dependency(dep_name);
                     }
                 }
