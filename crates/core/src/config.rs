@@ -15,6 +15,12 @@ pub struct Config {
 
     #[serde(default)]
     pub publish: HashMap<String, String>,
+
+    /// Dependency rules for forced updates.
+    /// Key: glob pattern for trigger packages (e.g., "crates/*")
+    /// Value: list of package paths that must be updated when trigger matches
+    #[serde(default)]
+    pub update_on: HashMap<String, Vec<String>>,
 }
 
 fn default_base_branch() -> String {
@@ -28,6 +34,7 @@ impl Default for Config {
             base_branch: default_base_branch(),
             latest_package: None,
             publish: HashMap::new(),
+            update_on: HashMap::new(),
         }
     }
 }

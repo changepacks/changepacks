@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-cli"
-version = "0.2.10"
+version = "0.2.11"
 dependencies = [
  "anyhow",
  "changepacks-core",
@@ -281,6 +281,7 @@ dependencies = [
  "colored",
  "futures",
  "gix",
+ "glob",
  "ignore",
  "rstest",
  "serde_json",

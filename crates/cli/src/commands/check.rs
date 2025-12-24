@@ -55,7 +55,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     if let FormatOptions::Stdout = args.format {
         println!("Found {} projects", projects.len());
     }
-    let mut update_map = gen_update_map(&current_dir).await?;
+    let mut update_map = gen_update_map(&current_dir, &config).await?;
 
     if args.tree {
         // Tree mode: show dependencies as a tree

@@ -5,5 +5,8 @@
     "!bridge/node/package.json",
     "!bridge/python/pyproject.toml"
   ],
-  "latestPackage": "crates/changepacks/Cargo.toml"
+  "latestPackage": "crates/changepacks/Cargo.toml",
+  "updateOn": {
+    "crates/*": ["bridge/node", "bridge/python"]
+  }
 }
