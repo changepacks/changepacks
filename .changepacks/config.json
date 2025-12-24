@@ -7,6 +7,6 @@
   ],
   "latestPackage": "crates/changepacks/Cargo.toml",
   "updateOn": {
-    "crates/*": ["bridge/node", "bridge/python"]
+    "crates/*": ["bridge/node/package.json", "bridge/python/pyproject.toml", "crates/cli/Cargo.toml"]
   }
 }
