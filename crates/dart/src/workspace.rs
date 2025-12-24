@@ -336,4 +336,30 @@ workspace:
 
         temp_dir.close().unwrap();
     }
+
+    #[test]
+    fn test_dependencies() {
+        let mut workspace = DartWorkspace::new(
+            Some("test_workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pubspec.yaml"),
+            PathBuf::from("test/pubspec.yaml"),
+        );
+
+        // Initially empty
+        assert!(workspace.dependencies().is_empty());
+
+        // Add dependencies
+        workspace.add_dependency("http");
+        workspace.add_dependency("core");
+
+        let deps = workspace.dependencies();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains("http"));
+        assert!(deps.contains("core"));
+
+        // Adding duplicate should not increase count
+        workspace.add_dependency("http");
+        assert_eq!(workspace.dependencies().len(), 2);
+    }
 }
