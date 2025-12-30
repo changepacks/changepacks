@@ -94,8 +94,8 @@ impl Workspace for PythonWorkspace {
         &self.relative_path
     }
 
-    fn default_publish_command(&self) -> &'static str {
-        "uv publish"
+    fn default_publish_command(&self) -> String {
+        "uv publish".to_string()
     }
 
     fn dependencies(&self) -> &HashSet<String> {

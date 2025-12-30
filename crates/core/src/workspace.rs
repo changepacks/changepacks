@@ -33,7 +33,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn set_changed(&mut self, changed: bool);
 
     /// Get the default publish command for this workspace type
-    fn default_publish_command(&self) -> &'static str;
+    fn default_publish_command(&self) -> String;
 
     /// Publish the workspace using the configured command or default
     async fn publish(&self, config: &Config) -> Result<()> {
@@ -91,7 +91,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
         }
 
         // Use default command
-        self.default_publish_command().to_string()
+        self.default_publish_command()
     }
 
     async fn update_workspace_dependencies(&self, _packages: &[&dyn Package]) -> Result<()> {
@@ -167,8 +167,8 @@ mod tests {
         fn set_changed(&mut self, changed: bool) {
             self.changed = changed;
         }
-        fn default_publish_command(&self) -> &'static str {
-            "echo publish"
+        fn default_publish_command(&self) -> String {
+            "echo publish".to_string()
         }
     }
 

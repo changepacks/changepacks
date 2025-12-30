@@ -88,8 +88,8 @@ impl Package for RustPackage {
         self.is_changed
     }
 
-    fn default_publish_command(&self) -> &'static str {
-        "cargo publish"
+    fn default_publish_command(&self) -> String {
+        "cargo publish".to_string()
     }
 
     fn dependencies(&self) -> &HashSet<String> {

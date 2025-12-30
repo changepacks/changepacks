@@ -264,8 +264,8 @@ mod tests {
         fn set_changed(&mut self, changed: bool) {
             self.changed = changed;
         }
-        fn default_publish_command(&self) -> &'static str {
-            "echo publish"
+        fn default_publish_command(&self) -> String {
+            "echo publish".to_string()
         }
     }
 
@@ -326,8 +326,8 @@ mod tests {
         fn set_changed(&mut self, changed: bool) {
             self.changed = changed;
         }
-        fn default_publish_command(&self) -> &'static str {
-            "echo publish"
+        fn default_publish_command(&self) -> String {
+            "echo publish".to_string()
         }
     }
 
