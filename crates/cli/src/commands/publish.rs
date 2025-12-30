@@ -28,6 +28,10 @@ pub struct PublishArgs {
     /// Filter projects by language. Can be specified multiple times to include multiple languages.
     #[arg(short, long, value_enum)]
     language: Vec<crate::options::CliLanguage>,
+
+    /// Filter projects by relative path (e.g., packages/foo/package.json). Can be specified multiple times.
+    #[arg(short, long)]
+    project: Vec<String>,
 }
 
 /// Publish packages
@@ -53,6 +57,19 @@ pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
             .map(|&lang| Language::from(lang))
             .collect();
         projects.retain(|project| allowed_languages.contains(&project.language()));
+    }
+
+    // Filter by project relative path if specified
+    if !args.project.is_empty() {
+        projects.retain(|project| {
+            let relative_path = project.relative_path().to_string_lossy();
+            let normalized_path = relative_path.replace('\\', "/");
+            args.project.iter().any(|p| {
+                // Normalize path separators for comparison
+                let normalized_p = p.replace('\\', "/");
+                normalized_path == normalized_p
+            })
+        });
     }
 
     // Sort projects by dependencies (no cloning, just reordering references)

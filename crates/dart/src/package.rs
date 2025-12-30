@@ -96,8 +96,8 @@ impl Package for DartPackage {
         self.is_changed = changed;
     }
 
-    fn default_publish_command(&self) -> &'static str {
-        "dart pub publish"
+    fn default_publish_command(&self) -> String {
+        "dart pub publish".to_string()
     }
 
     fn dependencies(&self) -> &HashSet<String> {

@@ -7,6 +7,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 
+use crate::detect_package_manager_recursive;
+
 #[derive(Debug)]
 pub struct NodeWorkspace {
     path: PathBuf,
@@ -97,8 +99,10 @@ impl Workspace for NodeWorkspace {
         &self.relative_path
     }
 
-    fn default_publish_command(&self) -> &'static str {
-        "npm publish"
+    fn default_publish_command(&self) -> String {
+        detect_package_manager_recursive(&self.path)
+            .publish_command()
+            .to_string()
     }
 
     fn dependencies(&self) -> &HashSet<String> {

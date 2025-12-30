@@ -7,6 +7,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 
+use crate::detect_package_manager_recursive;
+
 #[derive(Debug)]
 pub struct NodePackage {
     name: Option<String>,
@@ -94,8 +96,10 @@ impl Package for NodePackage {
         self.is_changed
     }
 
-    fn default_publish_command(&self) -> &'static str {
-        "npm publish"
+    fn default_publish_command(&self) -> String {
+        detect_package_manager_recursive(&self.path)
+            .publish_command()
+            .to_string()
     }
 
     fn dependencies(&self) -> &HashSet<String> {

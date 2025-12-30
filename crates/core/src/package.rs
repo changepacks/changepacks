@@ -31,7 +31,7 @@ pub trait Package: std::fmt::Debug + Send + Sync {
     fn set_changed(&mut self, changed: bool);
 
     /// Get the default publish command for this package type
-    fn default_publish_command(&self) -> &'static str;
+    fn default_publish_command(&self) -> String;
 
     /// Publish the package using the configured command or default
     async fn publish(&self, config: &Config) -> Result<()> {
@@ -89,6 +89,6 @@ pub trait Package: std::fmt::Debug + Send + Sync {
         }
 
         // Use default command
-        self.default_publish_command().to_string()
+        self.default_publish_command()
     }
 }
