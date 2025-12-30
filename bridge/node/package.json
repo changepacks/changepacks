@@ -1,6 +1,6 @@
 {
   "name": "@changepacks/cli",
-  "version": "0.2.11",
+  "version": "0.2.12",
   "description": "changepacks is a CLI tool that helps you efficiently manage versioning and changelogs in multi-language projects. It provides unified support for various package management systems including Node.js, Python, Rust, and more.",
   "main": "main.js",
   "license": "Apache License 2.0",
