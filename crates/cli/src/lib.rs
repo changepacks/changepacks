@@ -101,4 +101,72 @@ mod tests {
         let result: UpdateType = cli_type.into();
         assert_eq!(result, expected);
     }
+
+    // Test that Cli struct parses correctly
+    #[test]
+    fn test_cli_parsing_init() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["changepacks", "init"]);
+        assert!(matches!(cli.command, Some(Commands::Init(_))));
+    }
+
+    #[test]
+    fn test_cli_parsing_check() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["changepacks", "check"]);
+        assert!(matches!(cli.command, Some(Commands::Check(_))));
+    }
+
+    #[test]
+    fn test_cli_parsing_update() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["changepacks", "update", "--dry-run"]);
+        assert!(matches!(cli.command, Some(Commands::Update(_))));
+    }
+
+    #[test]
+    fn test_cli_parsing_config() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["changepacks", "config"]);
+        assert!(matches!(cli.command, Some(Commands::Config(_))));
+    }
+
+    #[test]
+    fn test_cli_parsing_publish() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["changepacks", "publish", "--dry-run"]);
+        assert!(matches!(cli.command, Some(Commands::Publish(_))));
+    }
+
+    #[test]
+    fn test_cli_parsing_default_with_options() {
+        use clap::Parser;
+        let cli = Cli::parse_from([
+            "changepacks",
+            "--yes",
+            "--message",
+            "test",
+            "--update-type",
+            "patch",
+        ]);
+        assert!(cli.command.is_none());
+        assert!(cli.yes);
+        assert_eq!(cli.message, Some("test".to_string()));
+        assert!(matches!(cli.update_type, Some(CliUpdateType::Patch)));
+    }
+
+    #[test]
+    fn test_cli_parsing_with_filter() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["changepacks", "--filter", "package"]);
+        assert!(cli.command.is_none());
+        assert!(matches!(cli.filter, Some(FilterOptions::Package)));
+    }
+
+    #[test]
+    fn test_cli_parsing_with_remote() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["changepacks", "--remote"]);
+        assert!(cli.remote);
+    }
 }

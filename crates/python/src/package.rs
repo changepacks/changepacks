@@ -127,7 +127,7 @@ mod tests {
             PathBuf::from("test/pyproject.toml")
         );
         assert_eq!(package.language(), Language::Python);
-        assert_eq!(package.is_changed(), false);
+        assert!(!package.is_changed());
         assert_eq!(package.default_publish_command(), "uv publish");
     }
 
@@ -140,11 +140,11 @@ mod tests {
             PathBuf::from("test/pyproject.toml"),
         );
 
-        assert_eq!(package.is_changed(), false);
+        assert!(!package.is_changed());
         package.set_changed(true);
-        assert_eq!(package.is_changed(), true);
+        assert!(package.is_changed());
         package.set_changed(false);
-        assert_eq!(package.is_changed(), false);
+        assert!(!package.is_changed());
     }
 
     #[tokio::test]

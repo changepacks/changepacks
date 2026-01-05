@@ -138,7 +138,7 @@ version: 1.0.0
         assert_eq!(package.version(), Some("1.0.0"));
         assert_eq!(package.path(), pubspec_path);
         assert_eq!(package.relative_path(), PathBuf::from("pubspec.yaml"));
-        assert_eq!(package.is_changed(), false);
+        assert!(!package.is_changed());
         assert_eq!(package.language(), Language::Dart);
         assert_eq!(package.default_publish_command(), "dart pub publish");
 
@@ -164,11 +164,11 @@ version: 1.0.0
             PathBuf::from("pubspec.yaml"),
         );
 
-        assert_eq!(package.is_changed(), false);
+        assert!(!package.is_changed());
         package.set_changed(true);
-        assert_eq!(package.is_changed(), true);
+        assert!(package.is_changed());
         package.set_changed(false);
-        assert_eq!(package.is_changed(), false);
+        assert!(!package.is_changed());
 
         temp_dir.close().unwrap();
     }

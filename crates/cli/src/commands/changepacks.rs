@@ -146,3 +146,67 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_changepack_args_debug() {
+        let args = ChangepackArgs {
+            filter: None,
+            remote: false,
+            yes: true,
+            message: Some("Test".to_string()),
+            update_type: Some(UpdateType::Patch),
+        };
+
+        // Test Debug trait
+        let debug_str = format!("{:?}", args);
+        assert!(debug_str.contains("ChangepackArgs"));
+    }
+
+    #[test]
+    fn test_changepack_args_with_filter() {
+        let args = ChangepackArgs {
+            filter: Some(FilterOptions::Package),
+            remote: true,
+            yes: false,
+            message: None,
+            update_type: None,
+        };
+
+        assert!(args.filter.is_some());
+        assert!(args.remote);
+        assert!(!args.yes);
+        assert!(args.message.is_none());
+        assert!(args.update_type.is_none());
+    }
+
+    #[test]
+    fn test_changepack_args_workspace_filter() {
+        let args = ChangepackArgs {
+            filter: Some(FilterOptions::Workspace),
+            remote: false,
+            yes: true,
+            message: Some("msg".to_string()),
+            update_type: Some(UpdateType::Major),
+        };
+
+        assert!(matches!(args.filter, Some(FilterOptions::Workspace)));
+        assert!(matches!(args.update_type, Some(UpdateType::Major)));
+    }
+
+    #[test]
+    fn test_changepack_args_minor_update() {
+        let args = ChangepackArgs {
+            filter: None,
+            remote: false,
+            yes: true,
+            message: Some("feature".to_string()),
+            update_type: Some(UpdateType::Minor),
+        };
+
+        assert!(matches!(args.update_type, Some(UpdateType::Minor)));
+    }
+}

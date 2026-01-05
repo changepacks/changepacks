@@ -172,3 +172,58 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        update: UpdateArgs,
+    }
+
+    #[test]
+    fn test_update_args_default() {
+        let cli = TestCli::parse_from(["test"]);
+        assert!(!cli.update.dry_run);
+        assert!(!cli.update.yes);
+        assert!(matches!(cli.update.format, FormatOptions::Stdout));
+        assert!(!cli.update.remote);
+    }
+
+    #[test]
+    fn test_update_args_with_dry_run() {
+        let cli = TestCli::parse_from(["test", "--dry-run"]);
+        assert!(cli.update.dry_run);
+    }
+
+    #[test]
+    fn test_update_args_with_yes() {
+        let cli = TestCli::parse_from(["test", "--yes"]);
+        assert!(cli.update.yes);
+    }
+
+    #[test]
+    fn test_update_args_with_format_json() {
+        let cli = TestCli::parse_from(["test", "--format", "json"]);
+        assert!(matches!(cli.update.format, FormatOptions::Json));
+    }
+
+    #[test]
+    fn test_update_args_with_remote() {
+        let cli = TestCli::parse_from(["test", "--remote"]);
+        assert!(cli.update.remote);
+    }
+
+    #[test]
+    fn test_update_args_combined() {
+        let cli =
+            TestCli::parse_from(["test", "--dry-run", "--yes", "--format", "json", "--remote"]);
+        assert!(cli.update.dry_run);
+        assert!(cli.update.yes);
+        assert!(matches!(cli.update.format, FormatOptions::Json));
+        assert!(cli.update.remote);
+    }
+}

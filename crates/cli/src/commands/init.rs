@@ -42,3 +42,33 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        init: InitArgs,
+    }
+
+    #[test]
+    fn test_init_args_default() {
+        let cli = TestCli::parse_from(["test"]);
+        assert!(!cli.init.dry_run);
+    }
+
+    #[test]
+    fn test_init_args_with_dry_run() {
+        let cli = TestCli::parse_from(["test", "--dry-run"]);
+        assert!(cli.init.dry_run);
+    }
+
+    #[test]
+    fn test_init_args_with_short_dry_run() {
+        let cli = TestCli::parse_from(["test", "-d"]);
+        assert!(cli.init.dry_run);
+    }
+}

@@ -152,7 +152,7 @@ workspace:
         assert_eq!(workspace.version(), Some("1.0.0"));
         assert_eq!(workspace.path(), pubspec_path);
         assert_eq!(workspace.relative_path(), PathBuf::from("pubspec.yaml"));
-        assert_eq!(workspace.is_changed(), false);
+        assert!(!workspace.is_changed());
         assert_eq!(workspace.language(), Language::Dart);
         assert_eq!(workspace.default_publish_command(), "dart pub publish");
 
@@ -182,7 +182,7 @@ workspace:
         assert_eq!(workspace.name(), None);
         assert_eq!(workspace.version(), None);
         assert_eq!(workspace.path(), pubspec_path);
-        assert_eq!(workspace.is_changed(), false);
+        assert!(!workspace.is_changed());
 
         temp_dir.close().unwrap();
     }
@@ -209,11 +209,11 @@ workspace:
             PathBuf::from("pubspec.yaml"),
         );
 
-        assert_eq!(workspace.is_changed(), false);
+        assert!(!workspace.is_changed());
         workspace.set_changed(true);
-        assert_eq!(workspace.is_changed(), true);
+        assert!(workspace.is_changed());
         workspace.set_changed(false);
-        assert_eq!(workspace.is_changed(), false);
+        assert!(!workspace.is_changed());
 
         temp_dir.close().unwrap();
     }

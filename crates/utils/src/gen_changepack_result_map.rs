@@ -47,7 +47,6 @@ mod tests {
     use super::*;
     use changepacks_core::Package;
     use changepacks_node::package::NodePackage;
-    use serde_json;
     use std::fs;
     use tempfile::TempDir;
 

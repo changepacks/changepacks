@@ -194,7 +194,7 @@ mod tests {
         assert_eq!(workspace.path(), PathBuf::from("/test/Cargo.toml"));
         assert_eq!(workspace.relative_path(), PathBuf::from("test/Cargo.toml"));
         assert_eq!(workspace.language(), Language::Rust);
-        assert_eq!(workspace.is_changed(), false);
+        assert!(!workspace.is_changed());
         assert_eq!(workspace.default_publish_command(), "cargo publish");
     }
 
@@ -220,11 +220,11 @@ mod tests {
             PathBuf::from("test/Cargo.toml"),
         );
 
-        assert_eq!(workspace.is_changed(), false);
+        assert!(!workspace.is_changed());
         workspace.set_changed(true);
-        assert_eq!(workspace.is_changed(), true);
+        assert!(workspace.is_changed());
         workspace.set_changed(false);
-        assert_eq!(workspace.is_changed(), false);
+        assert!(!workspace.is_changed());
     }
 
     #[tokio::test]
