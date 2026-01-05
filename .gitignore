@@ -12,3 +12,5 @@ node_modules
 .env.production.local
 build_rs_cov.profraw
 .claude
+tarpaulin-report.html
+

@@ -7,35 +7,46 @@ use changepacks_utils::{
 };
 use clap::Args;
 
-use crate::{finders::get_finders, options::FormatOptions};
+use crate::{
+    finders::get_finders,
+    options::FormatOptions,
+    prompter::{InquirePrompter, Prompter},
+};
 use changepacks_core::Language;
 
 #[derive(Args, Debug)]
 #[command(about = "Publish packages")]
 pub struct PublishArgs {
     #[arg(short, long)]
-    dry_run: bool,
+    pub dry_run: bool,
 
     #[arg(short, long)]
-    yes: bool,
+    pub yes: bool,
 
     #[arg(long, default_value = "stdout")]
-    format: FormatOptions,
+    pub format: FormatOptions,
 
     #[arg(short, long, default_value = "false")]
-    remote: bool,
+    pub remote: bool,
 
     /// Filter projects by language. Can be specified multiple times to include multiple languages.
     #[arg(short, long, value_enum)]
-    language: Vec<crate::options::CliLanguage>,
+    pub language: Vec<crate::options::CliLanguage>,
 
     /// Filter projects by relative path (e.g., packages/foo/package.json). Can be specified multiple times.
     #[arg(short, long)]
-    project: Vec<String>,
+    pub project: Vec<String>,
 }
 
 /// Publish packages
 pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
+    handle_publish_with_prompter(args, &InquirePrompter).await
+}
+
+pub async fn handle_publish_with_prompter(
+    args: &PublishArgs,
+    prompter: &dyn Prompter,
+) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     let repo = find_current_git_repo(&current_dir)?;
 
@@ -110,7 +121,7 @@ pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
     let confirm = if args.yes {
         true
     } else {
-        inquire::Confirm::new("Are you sure you want to publish the packages?").prompt()?
+        prompter.confirm("Are you sure you want to publish the packages?")?
     };
     if !confirm {
         match args.format {

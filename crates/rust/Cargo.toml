@@ -11,10 +11,10 @@ toml = "0.9"
 changepacks-core.workspace = true
 changepacks-utils.workspace = true
 anyhow = "1.0"
-tokio = { version = "1.48", features = ["fs"] }
+tokio = { version = "1.49", features = ["fs"] }
 async-trait = "0.1"
 toml_edit = "0.24"
 
 [dev-dependencies]
 tempfile = "3.24"
-tokio = { version = "1.48", features = ["test-util", "macros"] }
+tokio = { version = "1.49", features = ["test-util", "macros"] }

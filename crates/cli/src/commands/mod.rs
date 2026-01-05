@@ -7,6 +7,7 @@ mod update;
 
 pub use changepacks::ChangepackArgs;
 pub use changepacks::handle_changepack;
+pub use changepacks::handle_changepack_with_prompter;
 pub use check::CheckArgs;
 pub use check::handle_check;
 pub use config::ConfigArgs;
@@ -15,5 +16,7 @@ pub use init::InitArgs;
 pub use init::handle_init;
 pub use publish::PublishArgs;
 pub use publish::handle_publish;
+pub use publish::handle_publish_with_prompter;
 pub use update::UpdateArgs;
 pub use update::handle_update;
+pub use update::handle_update_with_prompter;

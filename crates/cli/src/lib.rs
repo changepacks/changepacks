@@ -10,9 +10,10 @@ use crate::{
     },
     options::FilterOptions,
 };
-mod commands;
+pub mod commands;
 mod finders;
-mod options;
+pub mod options;
+pub mod prompter;
 
 #[derive(ValueEnum, Debug, Clone)]
 enum CliUpdateType {
