@@ -322,3 +322,66 @@ fn format_project_line(
 
     Ok(format!("{}{}{}", base_format, changed_marker, deps_info))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    // Test CheckArgs parsing via clap
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        check: CheckArgs,
+    }
+
+    #[test]
+    fn test_check_args_default() {
+        let cli = TestCli::parse_from(["test"]);
+        assert!(cli.check.filter.is_none());
+        assert!(matches!(cli.check.format, FormatOptions::Stdout));
+        assert!(!cli.check.remote);
+        assert!(!cli.check.tree);
+    }
+
+    #[test]
+    fn test_check_args_with_json_format() {
+        let cli = TestCli::parse_from(["test", "--format", "json"]);
+        assert!(matches!(cli.check.format, FormatOptions::Json));
+    }
+
+    #[test]
+    fn test_check_args_with_tree() {
+        let cli = TestCli::parse_from(["test", "--tree"]);
+        assert!(cli.check.tree);
+    }
+
+    #[test]
+    fn test_check_args_with_remote() {
+        let cli = TestCli::parse_from(["test", "--remote"]);
+        assert!(cli.check.remote);
+    }
+
+    #[test]
+    fn test_check_args_with_filter_workspace() {
+        let cli = TestCli::parse_from(["test", "--filter", "workspace"]);
+        assert!(matches!(cli.check.filter, Some(FilterOptions::Workspace)));
+    }
+
+    #[test]
+    fn test_check_args_with_filter_package() {
+        let cli = TestCli::parse_from(["test", "--filter", "package"]);
+        assert!(matches!(cli.check.filter, Some(FilterOptions::Package)));
+    }
+
+    #[test]
+    fn test_check_args_combined() {
+        let cli = TestCli::parse_from([
+            "test", "--filter", "package", "--format", "json", "--tree", "--remote",
+        ]);
+        assert!(matches!(cli.check.filter, Some(FilterOptions::Package)));
+        assert!(matches!(cli.check.format, FormatOptions::Json));
+        assert!(cli.check.tree);
+        assert!(cli.check.remote);
+    }
+}

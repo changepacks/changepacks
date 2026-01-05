@@ -133,7 +133,7 @@ mod tests {
         assert_eq!(package.path(), PathBuf::from("/test/package.json"));
         assert_eq!(package.relative_path(), PathBuf::from("test/package.json"));
         assert_eq!(package.language(), Language::Node);
-        assert_eq!(package.is_changed(), false);
+        assert!(!package.is_changed());
         assert_eq!(package.default_publish_command(), "npm publish");
     }
 
@@ -146,11 +146,11 @@ mod tests {
             PathBuf::from("test/package.json"),
         );
 
-        assert_eq!(package.is_changed(), false);
+        assert!(!package.is_changed());
         package.set_changed(true);
-        assert_eq!(package.is_changed(), true);
+        assert!(package.is_changed());
         package.set_changed(false);
-        assert_eq!(package.is_changed(), false);
+        assert!(!package.is_changed());
     }
 
     #[tokio::test]

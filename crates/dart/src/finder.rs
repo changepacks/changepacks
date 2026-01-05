@@ -377,9 +377,9 @@ version: 1.0.0
         assert_eq!(projects.len(), 1);
         match &mut projects[0] {
             Project::Package(pkg) => {
-                assert_eq!(pkg.is_changed(), false);
+                assert!(!pkg.is_changed());
                 pkg.set_changed(true);
-                assert_eq!(pkg.is_changed(), true);
+                assert!(pkg.is_changed());
             }
             _ => panic!("Expected Package"),
         }

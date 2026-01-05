@@ -139,7 +139,7 @@ mod tests {
             PathBuf::from("test/package.json")
         );
         assert_eq!(workspace.language(), Language::Node);
-        assert_eq!(workspace.is_changed(), false);
+        assert!(!workspace.is_changed());
         assert_eq!(workspace.default_publish_command(), "npm publish");
     }
 
@@ -165,11 +165,11 @@ mod tests {
             PathBuf::from("test/package.json"),
         );
 
-        assert_eq!(workspace.is_changed(), false);
+        assert!(!workspace.is_changed());
         workspace.set_changed(true);
-        assert_eq!(workspace.is_changed(), true);
+        assert!(workspace.is_changed());
         workspace.set_changed(false);
-        assert_eq!(workspace.is_changed(), false);
+        assert!(!workspace.is_changed());
     }
 
     #[tokio::test]

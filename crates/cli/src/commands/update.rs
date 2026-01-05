@@ -7,26 +7,34 @@ use changepacks_utils::{
 };
 use clap::Args;
 
-use crate::{finders::get_finders, options::FormatOptions};
+use crate::{
+    finders::get_finders,
+    options::FormatOptions,
+    prompter::{InquirePrompter, Prompter},
+};
 
 #[derive(Args, Debug)]
 #[command(about = "Check project status")]
 pub struct UpdateArgs {
     #[arg(short, long)]
-    dry_run: bool,
+    pub dry_run: bool,
 
     #[arg(short, long)]
-    yes: bool,
+    pub yes: bool,
 
     #[arg(long, default_value = "stdout")]
-    format: FormatOptions,
+    pub format: FormatOptions,
 
     #[arg(short, long, default_value = "false")]
-    remote: bool,
+    pub remote: bool,
 }
 
 /// Update project version
 pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
+    handle_update_with_prompter(args, &InquirePrompter).await
+}
+
+pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Prompter) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     let repo = find_current_git_repo(&current_dir)?;
     let repo_root_path = repo.work_dir().context("Not a working directory")?;
@@ -109,7 +117,7 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     let confirm = if args.yes {
         true
     } else {
-        inquire::Confirm::new("Are you sure you want to update the projects?").prompt()?
+        prompter.confirm("Are you sure you want to update the projects?")?
     };
     if !confirm {
         match args.format {
@@ -171,4 +179,59 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     clear_update_logs(&changepacks_dir).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        update: UpdateArgs,
+    }
+
+    #[test]
+    fn test_update_args_default() {
+        let cli = TestCli::parse_from(["test"]);
+        assert!(!cli.update.dry_run);
+        assert!(!cli.update.yes);
+        assert!(matches!(cli.update.format, FormatOptions::Stdout));
+        assert!(!cli.update.remote);
+    }
+
+    #[test]
+    fn test_update_args_with_dry_run() {
+        let cli = TestCli::parse_from(["test", "--dry-run"]);
+        assert!(cli.update.dry_run);
+    }
+
+    #[test]
+    fn test_update_args_with_yes() {
+        let cli = TestCli::parse_from(["test", "--yes"]);
+        assert!(cli.update.yes);
+    }
+
+    #[test]
+    fn test_update_args_with_format_json() {
+        let cli = TestCli::parse_from(["test", "--format", "json"]);
+        assert!(matches!(cli.update.format, FormatOptions::Json));
+    }
+
+    #[test]
+    fn test_update_args_with_remote() {
+        let cli = TestCli::parse_from(["test", "--remote"]);
+        assert!(cli.update.remote);
+    }
+
+    #[test]
+    fn test_update_args_combined() {
+        let cli =
+            TestCli::parse_from(["test", "--dry-run", "--yes", "--format", "json", "--remote"]);
+        assert!(cli.update.dry_run);
+        assert!(cli.update.yes);
+        assert!(matches!(cli.update.format, FormatOptions::Json));
+        assert!(cli.update.remote);
+    }
 }

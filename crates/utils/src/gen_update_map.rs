@@ -211,12 +211,7 @@ mod tests {
         fs::create_dir_all(&changepacks_dir).await.unwrap();
 
         {
-            assert!(
-                gen_update_map(&temp_path, &config)
-                    .await
-                    .unwrap()
-                    .is_empty()
-            );
+            assert!(gen_update_map(temp_path, &config).await.unwrap().is_empty());
         }
         {
             fs::write(
@@ -225,23 +220,13 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(
-                gen_update_map(&temp_path, &config)
-                    .await
-                    .unwrap()
-                    .is_empty()
-            );
+            assert!(gen_update_map(temp_path, &config).await.unwrap().is_empty());
         }
         {
             fs::write(changepacks_dir.join("wrong.file"), "{}")
                 .await
                 .unwrap();
-            assert!(
-                gen_update_map(&temp_path, &config)
-                    .await
-                    .unwrap()
-                    .is_empty()
-            );
+            assert!(gen_update_map(temp_path, &config).await.unwrap().is_empty());
         }
         {
             let mut map = HashMap::new();
@@ -254,14 +239,14 @@ mod tests {
             )
             .await
             .unwrap();
-            let update_map = gen_update_map(&temp_path, &config).await.unwrap();
+            let update_map = gen_update_map(temp_path, &config).await.unwrap();
             assert!(update_map.len() == 1);
             assert!(update_map.contains_key(&temp_path.join("package")));
             assert!(update_map[&temp_path.join("package")].0 == UpdateType::Patch);
         }
 
         {
-            let update_map = gen_update_map(&temp_path, &config).await.unwrap();
+            let update_map = gen_update_map(temp_path, &config).await.unwrap();
             assert!(update_map.len() == 1);
 
             let mut map = HashMap::new();
@@ -274,7 +259,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let update_map = gen_update_map(&temp_path, &config).await.unwrap();
+            let update_map = gen_update_map(temp_path, &config).await.unwrap();
             assert!(update_map.len() == 1);
             assert!(update_map.contains_key(&temp_path.join("package")));
             // overwrite the previous update type
@@ -291,7 +276,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let update_map = gen_update_map(&temp_path, &config).await.unwrap();
+            let update_map = gen_update_map(temp_path, &config).await.unwrap();
             assert!(update_map.len() == 2);
             assert!(update_map.contains_key(&temp_path.join("package2")));
             assert!(update_map[&temp_path.join("package2")].0 == UpdateType::Major);
@@ -307,7 +292,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let update_map = gen_update_map(&temp_path, &config).await.unwrap();
+            let update_map = gen_update_map(temp_path, &config).await.unwrap();
             assert!(update_map.len() == 2);
             assert!(update_map.contains_key(&temp_path.join("package2")));
             // remain
@@ -355,7 +340,7 @@ mod tests {
         .await
         .unwrap();
 
-        let update_map = gen_update_map(&temp_path, &config).await.unwrap();
+        let update_map = gen_update_map(temp_path, &config).await.unwrap();
 
         // Should have 3 entries: crates/core (Minor), bridge/node (Patch), bridge/python (Patch)
         assert_eq!(update_map.len(), 3);

@@ -9,7 +9,11 @@ use changepacks_utils::{
 
 use anyhow::{Context, Result};
 
-use crate::{finders::get_finders, options::FilterOptions};
+use crate::{
+    finders::get_finders,
+    options::FilterOptions,
+    prompter::{InquirePrompter, Prompter},
+};
 
 #[derive(Debug)]
 pub struct ChangepackArgs {
@@ -21,6 +25,13 @@ pub struct ChangepackArgs {
 }
 
 pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
+    handle_changepack_with_prompter(args, &InquirePrompter).await
+}
+
+pub async fn handle_changepack_with_prompter(
+    args: &ChangepackArgs,
+    prompter: &dyn Prompter,
+) -> Result<()> {
     let mut project_finders = get_finders();
     let current_dir = std::env::current_dir()?;
 
@@ -62,37 +73,18 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
                 vec![projects[0]]
             } else {
                 let message = format!("Select projects to update for {}", update_type);
-                // select project to update
-                let mut selector = inquire::MultiSelect::new(&message, projects.clone());
-                selector.page_size = 15;
-                selector.default = Some(
-                    projects
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, project)| {
-                            if project.is_changed() {
-                                Some(index)
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>(),
-                );
-                selector.scorer = &|_input, option, _string_value, _idx| -> Option<i64> {
-                    if option.is_changed() {
-                        Some(100)
-                    } else {
-                        Some(0)
-                    }
-                };
-                selector.formatter = &|option| {
-                    option
-                        .iter()
-                        .map(|o| format!("{}", o.value))
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                };
-                selector.prompt()?
+                let defaults = projects
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, project)| {
+                        if project.is_changed() {
+                            Some(index)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                prompter.multi_select(&message, projects.clone(), defaults)?
             }
         } else {
             projects.clone()
@@ -130,7 +122,7 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     let notes = if let Some(message) = &args.message {
         message.clone()
     } else {
-        inquire::Text::new("write notes here").prompt()?
+        prompter.text("write notes here")?
     };
 
     if notes.is_empty() {
@@ -145,4 +137,68 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     write(changepack_log_file, serde_json::to_string(&changepack_log)?).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_changepack_args_debug() {
+        let args = ChangepackArgs {
+            filter: None,
+            remote: false,
+            yes: true,
+            message: Some("Test".to_string()),
+            update_type: Some(UpdateType::Patch),
+        };
+
+        // Test Debug trait
+        let debug_str = format!("{:?}", args);
+        assert!(debug_str.contains("ChangepackArgs"));
+    }
+
+    #[test]
+    fn test_changepack_args_with_filter() {
+        let args = ChangepackArgs {
+            filter: Some(FilterOptions::Package),
+            remote: true,
+            yes: false,
+            message: None,
+            update_type: None,
+        };
+
+        assert!(args.filter.is_some());
+        assert!(args.remote);
+        assert!(!args.yes);
+        assert!(args.message.is_none());
+        assert!(args.update_type.is_none());
+    }
+
+    #[test]
+    fn test_changepack_args_workspace_filter() {
+        let args = ChangepackArgs {
+            filter: Some(FilterOptions::Workspace),
+            remote: false,
+            yes: true,
+            message: Some("msg".to_string()),
+            update_type: Some(UpdateType::Major),
+        };
+
+        assert!(matches!(args.filter, Some(FilterOptions::Workspace)));
+        assert!(matches!(args.update_type, Some(UpdateType::Major)));
+    }
+
+    #[test]
+    fn test_changepack_args_minor_update() {
+        let args = ChangepackArgs {
+            filter: None,
+            remote: false,
+            yes: true,
+            message: Some("feature".to_string()),
+            update_type: Some(UpdateType::Minor),
+        };
+
+        assert!(matches!(args.update_type, Some(UpdateType::Minor)));
+    }
 }

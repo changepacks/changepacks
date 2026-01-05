@@ -7,35 +7,46 @@ use changepacks_utils::{
 };
 use clap::Args;
 
-use crate::{finders::get_finders, options::FormatOptions};
+use crate::{
+    finders::get_finders,
+    options::FormatOptions,
+    prompter::{InquirePrompter, Prompter},
+};
 use changepacks_core::Language;
 
 #[derive(Args, Debug)]
 #[command(about = "Publish packages")]
 pub struct PublishArgs {
     #[arg(short, long)]
-    dry_run: bool,
+    pub dry_run: bool,
 
     #[arg(short, long)]
-    yes: bool,
+    pub yes: bool,
 
     #[arg(long, default_value = "stdout")]
-    format: FormatOptions,
+    pub format: FormatOptions,
 
     #[arg(short, long, default_value = "false")]
-    remote: bool,
+    pub remote: bool,
 
     /// Filter projects by language. Can be specified multiple times to include multiple languages.
     #[arg(short, long, value_enum)]
-    language: Vec<crate::options::CliLanguage>,
+    pub language: Vec<crate::options::CliLanguage>,
 
     /// Filter projects by relative path (e.g., packages/foo/package.json). Can be specified multiple times.
     #[arg(short, long)]
-    project: Vec<String>,
+    pub project: Vec<String>,
 }
 
 /// Publish packages
 pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
+    handle_publish_with_prompter(args, &InquirePrompter).await
+}
+
+pub async fn handle_publish_with_prompter(
+    args: &PublishArgs,
+    prompter: &dyn Prompter,
+) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     let repo = find_current_git_repo(&current_dir)?;
 
@@ -110,7 +121,7 @@ pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
     let confirm = if args.yes {
         true
     } else {
-        inquire::Confirm::new("Are you sure you want to publish the packages?").prompt()?
+        prompter.confirm("Are you sure you want to publish the packages?")?
     };
     if !confirm {
         match args.format {
@@ -162,4 +173,92 @@ pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&result_map)?);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        publish: PublishArgs,
+    }
+
+    #[test]
+    fn test_publish_args_default() {
+        let cli = TestCli::parse_from(["test"]);
+        assert!(!cli.publish.dry_run);
+        assert!(!cli.publish.yes);
+        assert!(matches!(cli.publish.format, FormatOptions::Stdout));
+        assert!(!cli.publish.remote);
+        assert!(cli.publish.language.is_empty());
+        assert!(cli.publish.project.is_empty());
+    }
+
+    #[test]
+    fn test_publish_args_with_dry_run() {
+        let cli = TestCli::parse_from(["test", "--dry-run"]);
+        assert!(cli.publish.dry_run);
+    }
+
+    #[test]
+    fn test_publish_args_with_yes() {
+        let cli = TestCli::parse_from(["test", "--yes"]);
+        assert!(cli.publish.yes);
+    }
+
+    #[test]
+    fn test_publish_args_with_format_json() {
+        let cli = TestCli::parse_from(["test", "--format", "json"]);
+        assert!(matches!(cli.publish.format, FormatOptions::Json));
+    }
+
+    #[test]
+    fn test_publish_args_with_remote() {
+        let cli = TestCli::parse_from(["test", "--remote"]);
+        assert!(cli.publish.remote);
+    }
+
+    #[test]
+    fn test_publish_args_with_language_filter() {
+        let cli = TestCli::parse_from(["test", "--language", "node"]);
+        assert_eq!(cli.publish.language.len(), 1);
+    }
+
+    #[test]
+    fn test_publish_args_with_multiple_languages() {
+        let cli = TestCli::parse_from(["test", "--language", "node", "--language", "python"]);
+        assert_eq!(cli.publish.language.len(), 2);
+    }
+
+    #[test]
+    fn test_publish_args_with_project_filter() {
+        let cli = TestCli::parse_from(["test", "--project", "packages/core/package.json"]);
+        assert_eq!(cli.publish.project.len(), 1);
+        assert_eq!(cli.publish.project[0], "packages/core/package.json");
+    }
+
+    #[test]
+    fn test_publish_args_combined() {
+        let cli = TestCli::parse_from([
+            "test",
+            "--dry-run",
+            "--yes",
+            "--format",
+            "json",
+            "--remote",
+            "--language",
+            "rust",
+            "--project",
+            "Cargo.toml",
+        ]);
+        assert!(cli.publish.dry_run);
+        assert!(cli.publish.yes);
+        assert!(matches!(cli.publish.format, FormatOptions::Json));
+        assert!(cli.publish.remote);
+        assert_eq!(cli.publish.language.len(), 1);
+        assert_eq!(cli.publish.project.len(), 1);
+    }
 }
