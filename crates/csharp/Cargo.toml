@@ -1,0 +1,19 @@
+[package]
+name = "changepacks-csharp"
+version = "0.2.12"
+edition = "2024"
+license = "Apache-2.0"
+description = "C# (.NET) project support for changepacks (NuGet)"
+readme = "../../README.md"
+
+[dependencies]
+changepacks-core.workspace = true
+changepacks-utils.workspace = true
+async-trait = "0.1"
+anyhow = "1.0"
+tokio = { version = "1.49", features = ["fs"] }
+quick-xml = "0.37"
+
+[dev-dependencies]
+tempfile = "3.24"
+tokio = { version = "1.49", features = ["test-util", "macros"] }

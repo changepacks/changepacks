@@ -9,4 +9,5 @@ changepacks-node = { path = "crates/node", version = "^0.2.13" }
 changepacks-rust = { path = "crates/rust", version = "^0.2.12" }
 changepacks-python = { path = "crates/python", version = "^0.2.12" }
 changepacks-dart = { path = "crates/dart", version = "^0.2.12" }
+changepacks-csharp = { path = "crates/csharp", version = "^0.2.12" }
 changepacks-utils = { path = "crates/utils", version = "^0.2.13" }

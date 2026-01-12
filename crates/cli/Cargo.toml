@@ -15,6 +15,7 @@ changepacks-node.workspace = true
 changepacks-rust.workspace = true
 changepacks-python.workspace = true
 changepacks-dart.workspace = true
+changepacks-csharp.workspace = true
 anyhow = "1.0"
 inquire = "0.9"
 colored = "3"

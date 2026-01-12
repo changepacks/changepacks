@@ -7,6 +7,7 @@ pub enum Language {
     Node,
     Rust,
     Dart,
+    CSharp,
 }
 
 impl Display for Language {
@@ -19,6 +20,7 @@ impl Display for Language {
                 Language::Node => "Node.js".green().bold(),
                 Language::Rust => "Rust".truecolor(139, 69, 19).bold(),
                 Language::Dart => "Dart".blue().bold(),
+                Language::CSharp => "C#".magenta().bold(),
             }
         )
     }
@@ -34,6 +36,7 @@ mod tests {
     #[case(Language::Node, "Node")]
     #[case(Language::Rust, "Rust")]
     #[case(Language::Dart, "Dart")]
+    #[case(Language::CSharp, "C#")]
     fn test_language_display(#[case] language: Language, #[case] expected: &str) {
         let display = format!("{}", language);
         assert!(display.contains(expected));
