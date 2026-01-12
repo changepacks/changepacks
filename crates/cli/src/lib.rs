@@ -15,6 +15,8 @@ mod finders;
 pub mod options;
 pub mod prompter;
 
+pub use prompter::UserCancelled;
+
 #[derive(ValueEnum, Debug, Clone)]
 enum CliUpdateType {
     Major,

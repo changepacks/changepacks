@@ -1,4 +1,5 @@
 use changepacks_core::ProjectFinder;
+use changepacks_csharp::CSharpProjectFinder;
 use changepacks_dart::DartProjectFinder;
 use changepacks_node::NodeProjectFinder;
 use changepacks_python::PythonProjectFinder;
@@ -11,6 +12,7 @@ pub fn get_finders() -> Vec<Box<dyn ProjectFinder>> {
         Box::new(RustProjectFinder::new()),
         Box::new(PythonProjectFinder::new()),
         Box::new(DartProjectFinder::new()),
+        Box::new(CSharpProjectFinder::new()),
     ]
 }
 
@@ -21,6 +23,6 @@ mod tests {
     #[test]
     fn test_get_finders() {
         let finders = get_finders();
-        assert_eq!(finders.len(), 4);
+        assert_eq!(finders.len(), 5);
     }
 }

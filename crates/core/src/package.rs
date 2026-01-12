@@ -83,6 +83,7 @@ pub trait Package: std::fmt::Debug + Send + Sync {
             crate::Language::Python => "python",
             crate::Language::Rust => "rust",
             crate::Language::Dart => "dart",
+            crate::Language::CSharp => "csharp",
         };
         if let Some(cmd) = config.publish.get(lang_key) {
             return cmd.clone();

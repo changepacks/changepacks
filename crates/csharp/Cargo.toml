@@ -1,21 +1,18 @@
 [package]
-name = "changepacks-dart"
+name = "changepacks-csharp"
 version = "0.2.12"
 edition = "2024"
 license = "Apache-2.0"
-description = "Dart project support for changepacks (pub)"
+description = "C# (.NET) project support for changepacks (NuGet)"
 readme = "../../README.md"
 
 [dependencies]
 changepacks-core.workspace = true
 changepacks-utils.workspace = true
 async-trait = "0.1"
-serde = { version = "1.0", features = ["derive"] }
-serde_yaml = "0.9"
 anyhow = "1.0"
 tokio = { version = "1.49", features = ["fs"] }
-yamlpatch = "0.9"
-yamlpath = "0.32"
+quick-xml = "0.39"
 
 [dev-dependencies]
 tempfile = "3.24"
