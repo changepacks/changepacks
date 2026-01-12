@@ -12,7 +12,7 @@ changepacks-utils.workspace = true
 async-trait = "0.1"
 anyhow = "1.0"
 tokio = { version = "1.49", features = ["fs"] }
-quick-xml = "0.37"
+quick-xml = "0.39"
 
 [dev-dependencies]
 tempfile = "3.24"

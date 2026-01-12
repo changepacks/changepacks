@@ -1,5 +1,11 @@
 use anyhow::Result;
 use changepacks_core::Project;
+use thiserror::Error;
+
+/// Error type for user cancellation (Ctrl+C or ESC)
+#[derive(Debug, Error)]
+#[error("")]
+pub struct UserCancelled;
 
 /// Trait for user input prompts - allows dependency injection for testing
 pub trait Prompter: Send + Sync {
@@ -43,15 +49,30 @@ impl Prompter for InquirePrompter {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        Ok(selector.prompt()?)
+        match selector.prompt() {
+            Ok(v) => Ok(v),
+            Err(inquire::InquireError::OperationCanceled)
+            | Err(inquire::InquireError::OperationInterrupted) => Err(UserCancelled.into()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn confirm(&self, message: &str) -> Result<bool> {
-        Ok(inquire::Confirm::new(message).prompt()?)
+        match inquire::Confirm::new(message).prompt() {
+            Ok(v) => Ok(v),
+            Err(inquire::InquireError::OperationCanceled)
+            | Err(inquire::InquireError::OperationInterrupted) => Err(UserCancelled.into()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn text(&self, message: &str) -> Result<String> {
-        Ok(inquire::Text::new(message).prompt()?)
+        match inquire::Text::new(message).prompt() {
+            Ok(v) => Ok(v),
+            Err(inquire::InquireError::OperationCanceled)
+            | Err(inquire::InquireError::OperationInterrupted) => Err(UserCancelled.into()),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 

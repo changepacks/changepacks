@@ -64,7 +64,7 @@ impl CSharpProjectFinder {
                     }
                 }
                 Ok(Event::Text(e)) => {
-                    if in_version && let Ok(text) = e.unescape() {
+                    if in_version && let Ok(text) = e.decode() {
                         let version = text.trim().to_string();
                         if !version.is_empty() {
                             return Some(version);

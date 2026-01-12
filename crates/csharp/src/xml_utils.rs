@@ -83,6 +83,9 @@ pub fn update_version_in_xml(
             Ok(Event::DocType(e)) => {
                 writer.write_event(Event::DocType(e.to_owned()))?;
             }
+            Ok(Event::GeneralRef(e)) => {
+                writer.write_event(Event::GeneralRef(e.to_owned()))?;
+            }
             Ok(Event::Eof) => break,
             Err(e) => return Err(anyhow::anyhow!("XML parsing error: {}", e)),
         }
