@@ -37,7 +37,20 @@ impl CSharpProjectFinder {
             .and_then(|s| s.to_str())
             .map(|s| s.to_string())
     }
+}
 
+/// Extract project name from a path string, handling both Windows and Unix separators
+/// Input: "..\CoreLib\CoreLib.csproj" or "../CoreLib/CoreLib.csproj"
+/// Output: "CoreLib"
+fn extract_project_name_from_path(path_str: &str) -> Option<String> {
+    // Split by both Windows (\) and Unix (/) separators
+    let filename = path_str.rsplit(['\\', '/']).next()?;
+
+    // Remove .csproj extension
+    filename.strip_suffix(".csproj").map(|s| s.to_string())
+}
+
+impl CSharpProjectFinder {
     /// Extract version from .csproj XML content using quick-xml
     fn extract_version(content: &str) -> Option<String> {
         let mut reader = Reader::from_str(content);
@@ -125,9 +138,9 @@ impl CSharpProjectFinder {
                                 && let Ok(value) = attr.unescape_value()
                             {
                                 // Extract project name from path like "..\CoreLib\CoreLib.csproj"
-                                let path = Path::new(value.as_ref());
-                                if let Some(name) = path.file_stem().and_then(|s| s.to_str()) {
-                                    projects.push(name.to_string());
+                                // Handle both Windows (\) and Unix (/) path separators
+                                if let Some(name) = extract_project_name_from_path(&value) {
+                                    projects.push(name);
                                 }
                             }
                         }
@@ -584,5 +597,30 @@ mod tests {
         assert_eq!(refs.len(), 2);
         assert!(refs.contains(&"CoreLib".to_string()));
         assert!(refs.contains(&"Utils".to_string()));
+    }
+
+    #[test]
+    fn test_extract_project_name_from_path() {
+        // Windows-style paths
+        assert_eq!(
+            super::extract_project_name_from_path(r"..\CoreLib\CoreLib.csproj"),
+            Some("CoreLib".to_string())
+        );
+        assert_eq!(
+            super::extract_project_name_from_path(r"..\..\Utils\Utils.csproj"),
+            Some("Utils".to_string())
+        );
+        // Unix-style paths
+        assert_eq!(
+            super::extract_project_name_from_path("../CoreLib/CoreLib.csproj"),
+            Some("CoreLib".to_string())
+        );
+        // Just filename
+        assert_eq!(
+            super::extract_project_name_from_path("MyProject.csproj"),
+            Some("MyProject".to_string())
+        );
+        // Invalid - no .csproj extension
+        assert_eq!(super::extract_project_name_from_path("MyProject.txt"), None);
     }
 }
