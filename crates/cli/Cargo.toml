@@ -16,6 +16,7 @@ changepacks-rust.workspace = true
 changepacks-python.workspace = true
 changepacks-dart.workspace = true
 changepacks-csharp.workspace = true
+changepacks-java.workspace = true
 anyhow = "1.0"
 thiserror = "2"
 inquire = "0.9"

@@ -86,6 +86,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
             crate::Language::Rust => "rust",
             crate::Language::Dart => "dart",
             crate::Language::CSharp => "csharp",
+            crate::Language::Java => "java",
         };
         if let Some(cmd) = config.publish.get(lang_key) {
             return cmd.clone();
