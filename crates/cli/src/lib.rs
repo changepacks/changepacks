@@ -35,7 +35,13 @@ impl From<CliUpdateType> for UpdateType {
 }
 
 #[derive(Parser, Debug)]
-#[command(author, version, about = "changepacks CLI")]
+#[command(
+    name = "changepacks",
+    author,
+    version,
+    about = "A unified version management and changelog tool for multi-language projects",
+    help_template = "{name} {version}\n{about}\n\n{usage-heading} {usage}\n\n{all-args}"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
