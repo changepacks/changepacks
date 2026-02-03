@@ -148,9 +148,9 @@ checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
 name = "bytes"
-version = "1.11.0"
+version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b35204fbdc0b3f4446b89fc1ac2cf84a8a68971995d0bf2e925ec7cd960f9cb3"
+checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "cc"
@@ -170,7 +170,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "changepacks"
-version = "0.2.15"
+version = "0.2.16"
 dependencies = [
  "anyhow",
  "changepacks-cli",
@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-cli"
-version = "0.2.17"
+version = "0.2.18"
 dependencies = [
  "anyhow",
  "changepacks-core",
@@ -206,7 +206,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-core"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-csharp"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -232,7 +232,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-dart"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -248,7 +248,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-java"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -261,7 +261,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-node"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -275,7 +275,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-python"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -289,7 +289,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-rust"
-version = "0.2.13"
+version = "0.2.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "changepacks-utils"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "anyhow",
  "changepacks-core",
