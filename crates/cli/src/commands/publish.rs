@@ -316,4 +316,55 @@ mod tests {
         assert!(err_msg.contains("pkg-a"));
         assert!(err_msg.contains("pkg-b"));
     }
+
+    #[test]
+    fn test_publish_result_from_failures_zero_total() {
+        let result = publish_result_from_failures(&[], 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_publish_args_short_dry_run() {
+        let cli = TestCli::parse_from(["test", "-d"]);
+        assert!(cli.publish.dry_run);
+    }
+
+    #[test]
+    fn test_publish_args_short_yes() {
+        let cli = TestCli::parse_from(["test", "-y"]);
+        assert!(cli.publish.yes);
+    }
+
+    #[test]
+    fn test_publish_args_short_remote() {
+        let cli = TestCli::parse_from(["test", "-r"]);
+        assert!(cli.publish.remote);
+    }
+
+    #[test]
+    fn test_publish_args_with_multiple_projects() {
+        let cli = TestCli::parse_from([
+            "test",
+            "--project",
+            "packages/a/package.json",
+            "--project",
+            "packages/b/package.json",
+        ]);
+        assert_eq!(cli.publish.project.len(), 2);
+        assert_eq!(cli.publish.project[0], "packages/a/package.json");
+        assert_eq!(cli.publish.project[1], "packages/b/package.json");
+    }
+
+    #[test]
+    fn test_publish_args_short_language() {
+        let cli = TestCli::parse_from(["test", "-l", "rust"]);
+        assert_eq!(cli.publish.language.len(), 1);
+    }
+
+    #[test]
+    fn test_publish_args_short_project() {
+        let cli = TestCli::parse_from(["test", "-p", "Cargo.toml"]);
+        assert_eq!(cli.publish.project.len(), 1);
+        assert_eq!(cli.publish.project[0], "Cargo.toml");
+    }
 }

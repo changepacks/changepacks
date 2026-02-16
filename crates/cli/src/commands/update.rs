@@ -263,4 +263,30 @@ mod tests {
         assert!(matches!(cli.update.format, FormatOptions::Json));
         assert!(cli.update.remote);
     }
+
+    #[test]
+    fn test_update_args_short_dry_run() {
+        let cli = TestCli::parse_from(["test", "-d"]);
+        assert!(cli.update.dry_run);
+    }
+
+    #[test]
+    fn test_update_args_short_yes() {
+        let cli = TestCli::parse_from(["test", "-y"]);
+        assert!(cli.update.yes);
+    }
+
+    #[test]
+    fn test_update_args_short_remote() {
+        let cli = TestCli::parse_from(["test", "-r"]);
+        assert!(cli.update.remote);
+    }
+
+    #[test]
+    fn test_update_args_all_short_flags() {
+        let cli = TestCli::parse_from(["test", "-d", "-y", "-r"]);
+        assert!(cli.update.dry_run);
+        assert!(cli.update.yes);
+        assert!(cli.update.remote);
+    }
 }
