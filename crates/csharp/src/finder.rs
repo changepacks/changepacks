@@ -157,11 +157,11 @@ impl CSharpProjectFinder {
 
     /// Check if this project is part of a solution (workspace)
     /// A project is considered a workspace if there's a .sln file in the same directory
-    fn is_workspace(path: &Path) -> bool {
+    async fn is_workspace(path: &Path) -> bool {
         if let Some(parent) = path.parent() {
             // Check if there's a .sln file in the parent directory
-            if let Ok(entries) = std::fs::read_dir(parent) {
-                for entry in entries.flatten() {
+            if let Ok(mut entries) = tokio::fs::read_dir(parent).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
                     if let Some(ext) = entry.path().extension()
                         && ext == "sln"
                     {
@@ -206,7 +206,7 @@ impl ProjectFinder for CSharpProjectFinder {
 
             let name = Self::extract_name_from_path(path);
             let version = Self::extract_version(&csproj_content);
-            let is_workspace = Self::is_workspace(path);
+            let is_workspace = Self::is_workspace(path).await;
 
             let (path_key, mut project) = if is_workspace {
                 (

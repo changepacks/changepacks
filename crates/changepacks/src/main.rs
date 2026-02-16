@@ -1,3 +1,10 @@
+//! # changepacks
+//!
+//! Binary entry point for the changepacks CLI tool.
+//!
+//! Delegates to `changepacks_cli::main()` with command-line arguments. Handles graceful
+//! exit on user cancellation (Ctrl+C or ESC) and prints error messages on failure.
+
 use std::process;
 
 #[tokio::main]

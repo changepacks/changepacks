@@ -1,3 +1,11 @@
+//! # changepacks-utils
+//!
+//! Shared utilities for the changepacks system.
+//!
+//! Provides git repository operations via gix, version calculation, dependency sorting with
+//! Kahn's algorithm, config management, and format detection for JSON indentation. These
+//! utilities are used across all language-specific crates and CLI commands.
+
 mod clear_update_logs;
 mod detect_indent;
 mod display_update;

@@ -1,3 +1,11 @@
+//! # changepacks-node
+//!
+//! Node.js project support for changepacks.
+//!
+//! Implements project discovery, version management, and workspace detection for package.json
+//! files. Automatically detects the package manager (npm, pnpm, yarn, bun) by looking for
+//! lock files and provides appropriate publish commands for each.
+
 pub mod finder;
 pub mod package;
 pub mod workspace;

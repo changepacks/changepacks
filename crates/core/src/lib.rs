@@ -1,3 +1,11 @@
+//! # changepacks-core
+//!
+//! Core traits, types, and interfaces for the changepacks version management system.
+//!
+//! This crate defines the fundamental abstractions used across all language-specific
+//! implementations. The main traits are `Package` for single projects, `Workspace` for
+//! monorepo roots, and `ProjectFinder` for discovering projects in a git tree.
+
 mod changepack_result;
 mod config;
 mod language;

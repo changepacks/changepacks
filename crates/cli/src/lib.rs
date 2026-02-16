@@ -1,3 +1,11 @@
+//! # changepacks-cli
+//!
+//! Command-line interface for the changepacks version management tool.
+//!
+//! Provides clap-based argument parsing, interactive prompts via inquire, and async
+//! command handlers for check, update, publish, config, and init operations. All commands
+//! use the `Prompter` trait for testability and support colored terminal output.
+
 use anyhow::Result;
 
 use changepacks_core::UpdateType;
