@@ -147,7 +147,7 @@ impl Workspace for RustWorkspace {
                 let (prefix, _) = split_version(dep["version"].as_str().unwrap_or(""))?;
                 dep["version"] = format!(
                     "{}{}",
-                    prefix.unwrap_or("".to_string()),
+                    prefix.unwrap_or_default(),
                     package.version().unwrap_or("0.0.0")
                 )
                 .into();
