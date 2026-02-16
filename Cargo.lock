@@ -214,6 +214,7 @@ dependencies = [
  "colored",
  "rstest",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

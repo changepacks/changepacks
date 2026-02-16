@@ -697,4 +697,112 @@ mod tests {
         let display = format!("{}", project);
         assert!(display.contains("unknown"));
     }
+
+    #[test]
+    fn test_project_sort_stability() {
+        let make_projects = || {
+            vec![
+                Project::Package(Box::new(MockPackage::new(
+                    Some("charlie"),
+                    Some("1.0.0"),
+                    Language::Rust,
+                ))),
+                Project::Workspace(Box::new(MockWorkspace::new(
+                    Some("alpha"),
+                    Some("2.0.0"),
+                    Language::Node,
+                ))),
+                Project::Package(Box::new(MockPackage::new(
+                    Some("bravo"),
+                    Some("0.1.0"),
+                    Language::Node,
+                ))),
+                Project::Workspace(Box::new(MockWorkspace::new(
+                    Some("delta"),
+                    Some("3.0.0"),
+                    Language::Python,
+                ))),
+                Project::Package(Box::new(MockPackage::new(
+                    Some("echo"),
+                    Some("1.0.0"),
+                    Language::Dart,
+                ))),
+            ]
+        };
+
+        let mut first = make_projects();
+        first.sort();
+        let first_order: Vec<Option<&str>> = first.iter().map(|p| p.name()).collect();
+
+        let mut second = make_projects();
+        second.sort();
+        let second_order: Vec<Option<&str>> = second.iter().map(|p| p.name()).collect();
+
+        let mut third = make_projects();
+        third.sort();
+        let third_order: Vec<Option<&str>> = third.iter().map(|p| p.name()).collect();
+
+        assert_eq!(first_order, second_order);
+        assert_eq!(second_order, third_order);
+    }
+
+    #[test]
+    fn test_project_sort_mixed() {
+        let mut projects = vec![
+            Project::Package(Box::new(MockPackage::new(
+                Some("pkg-a"),
+                Some("1.0.0"),
+                Language::Node,
+            ))),
+            Project::Workspace(Box::new(MockWorkspace::new(
+                Some("ws-b"),
+                Some("1.0.0"),
+                Language::Node,
+            ))),
+            Project::Package(Box::new(MockPackage::new(
+                Some("pkg-c"),
+                Some("1.0.0"),
+                Language::Rust,
+            ))),
+            Project::Workspace(Box::new(MockWorkspace::new(
+                Some("ws-d"),
+                Some("1.0.0"),
+                Language::Rust,
+            ))),
+        ];
+        projects.sort();
+
+        // All workspaces must come before all packages
+        let workspace_count = projects
+            .iter()
+            .take_while(|p| matches!(p, Project::Workspace(_)))
+            .count();
+        assert_eq!(workspace_count, 2);
+
+        let package_count = projects
+            .iter()
+            .skip(workspace_count)
+            .filter(|p| matches!(p, Project::Package(_)))
+            .count();
+        assert_eq!(package_count, 2);
+    }
+
+    #[test]
+    fn test_project_cmp_is_consistent_with_eq() {
+        // Two workspaces with identical fields
+        let w1 = MockWorkspace::new(Some("same"), Some("1.0.0"), Language::Node);
+        let w2 = MockWorkspace::new(Some("same"), Some("1.0.0"), Language::Node);
+        let p1 = Project::Workspace(Box::new(w1));
+        let p2 = Project::Workspace(Box::new(w2));
+        assert_eq!(p1, p2);
+        assert_eq!(p1.cmp(&p2), Ordering::Equal);
+
+        // Two packages with identical fields
+        let pkg1 = MockPackage::new(Some("same"), Some("1.0.0"), Language::Rust);
+        let pkg2 = MockPackage::new(Some("same"), Some("1.0.0"), Language::Rust);
+        let pp1 = Project::Package(Box::new(pkg1));
+        let pp2 = Project::Package(Box::new(pkg2));
+        assert_eq!(pp1, pp2);
+        assert_eq!(pp1.cmp(&pp2), Ordering::Equal);
+    }
 }

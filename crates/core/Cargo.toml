@@ -16,4 +16,5 @@ colored = "3.0"
 
 [dev-dependencies]
 rstest = "0.26"
+serde_json = "1.0"
 tokio = { version = "1.49", features = ["macros", "rt"] }
