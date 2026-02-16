@@ -1,3 +1,7 @@
+/// Detects JSON indentation (2-space, 4-space, or tab) from file content.
+///
+/// Scans content line-by-line to find the first non-empty, non-blank line and measures
+/// its leading whitespace. Returns 1 for tabs, 0 for no indentation.
 #[must_use]
 pub fn detect_indent(content: &str) -> usize {
     let mut indent = 0;
