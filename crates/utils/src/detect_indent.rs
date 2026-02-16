@@ -31,6 +31,11 @@ mod tests {
     #[case("", 0)]
     #[case("           ", 0)]
     #[case("\n    indented\n   less\n", 4)] // First non-empty, non-blank line counts
+    #[case("{\n\t\"key\": \"value\"\n}", 1)] // JSON with tab indentation
+    #[case("line1\nline2\nline3", 0)] // No indented lines at all
+    #[case("{\n   \"key\": \"value\"\n}", 3)] // 3-space indentation
+    #[case("\t\tdeep\n\tshallow", 2)] // Double-tab, first match wins
+    #[case("{\n\n\n  \"after_blanks\": true\n}", 2)] // Blank lines before first indented
     fn test_detect_indent(#[case] content: &str, #[case] expected: usize) {
         let indent = detect_indent(content);
         assert_eq!(indent, expected);

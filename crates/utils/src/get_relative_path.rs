@@ -71,4 +71,61 @@ mod tests {
         temp_dir.close().unwrap();
         outside_dir.close().unwrap();
     }
+
+    #[test]
+    fn test_get_relative_path_valid_nested_path() {
+        let root = PathBuf::from("repo");
+        let absolute = root.join("packages").join("foo").join("package.json");
+        let result = get_relative_path(&root, &absolute).unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from("packages").join("foo").join("package.json")
+        );
+    }
+
+    #[test]
+    fn test_get_relative_path_at_root_level() {
+        let root = PathBuf::from("repo");
+        let absolute = root.join("package.json");
+        let result = get_relative_path(&root, &absolute).unwrap();
+        assert_eq!(result, PathBuf::from("package.json"));
+    }
+
+    #[test]
+    fn test_get_relative_path_deeply_nested() {
+        let root = PathBuf::from("repo");
+        let absolute = root
+            .join("a")
+            .join("b")
+            .join("c")
+            .join("d")
+            .join("e")
+            .join("package.json");
+        let result = get_relative_path(&root, &absolute).unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from("a")
+                .join("b")
+                .join("c")
+                .join("d")
+                .join("e")
+                .join("package.json")
+        );
+    }
+
+    #[test]
+    fn test_get_relative_path_same_path() {
+        let root = PathBuf::from("repo");
+        let result = get_relative_path(&root, &root).unwrap();
+        assert_eq!(result, PathBuf::from(""));
+    }
+
+    #[test]
+    fn test_get_relative_path_with_real_tempdir() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let absolute = root.join("src").join("lib.rs");
+        let result = get_relative_path(root, &absolute).unwrap();
+        assert_eq!(result, PathBuf::from("src").join("lib.rs"));
+    }
 }
