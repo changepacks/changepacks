@@ -17,6 +17,7 @@ pub enum Project {
 }
 
 impl Project {
+    #[must_use]
     pub fn name(&self) -> Option<&str> {
         match self {
             Self::Workspace(workspace) => workspace.name(),
@@ -24,12 +25,14 @@ impl Project {
         }
     }
 
+    #[must_use]
     pub fn version(&self) -> Option<&str> {
         match self {
             Self::Workspace(workspace) => workspace.version(),
             Self::Package(package) => package.version(),
         }
     }
+    #[must_use]
     pub fn path(&self) -> &Path {
         match self {
             Self::Workspace(workspace) => workspace.path(),
@@ -37,6 +40,7 @@ impl Project {
         }
     }
 
+    #[must_use]
     pub fn relative_path(&self) -> &Path {
         match self {
             Self::Workspace(workspace) => workspace.relative_path(),
@@ -60,6 +64,7 @@ impl Project {
         Ok(())
     }
 
+    #[must_use]
     pub fn is_changed(&self) -> bool {
         match self {
             Self::Workspace(workspace) => workspace.is_changed(),
@@ -67,6 +72,7 @@ impl Project {
         }
     }
 
+    #[must_use]
     pub fn dependencies(&self) -> &HashSet<String> {
         match self {
             Self::Workspace(workspace) => workspace.dependencies(),
@@ -81,6 +87,7 @@ impl Project {
         }
     }
 
+    #[must_use]
     pub fn language(&self) -> crate::Language {
         match self {
             Self::Workspace(workspace) => workspace.language(),
