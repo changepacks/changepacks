@@ -1,4 +1,4 @@
-use changepacks_core::{ChangePackLog, Project, UpdateType};
+use changepacks_core::{ChangePackLog, UpdateType};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::write;
 
@@ -38,10 +38,7 @@ pub async fn handle_changepack_with_prompter(
         .collect::<Vec<_>>();
 
     if let Some(filter) = &args.filter {
-        projects.retain(|project| match filter {
-            FilterOptions::Workspace => matches!(project, Project::Workspace(_)),
-            FilterOptions::Package => matches!(project, Project::Package(_)),
-        });
+        projects.retain(|p| filter.matches(p));
     }
 
     println!("Found {} projects", projects.len());

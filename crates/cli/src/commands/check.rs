@@ -40,10 +40,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
         .flat_map(|finder| finder.projects())
         .collect::<Vec<_>>();
     if let Some(filter) = &args.filter {
-        projects.retain(|project| match filter {
-            FilterOptions::Workspace => matches!(project, Project::Workspace(_)),
-            FilterOptions::Package => matches!(project, Project::Package(_)),
-        });
+        projects.retain(|p| filter.matches(p));
     }
     projects.sort();
     if let FormatOptions::Stdout = args.format {

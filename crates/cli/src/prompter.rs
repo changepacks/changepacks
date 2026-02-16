@@ -21,6 +21,16 @@ pub trait Prompter: Send + Sync {
     fn text(&self, message: &str) -> Result<String>;
 }
 
+/// Helper function for handling inquire result errors
+fn handle_inquire_result<T>(result: Result<T, inquire::InquireError>) -> Result<T> {
+    match result {
+        Ok(v) => Ok(v),
+        Err(inquire::InquireError::OperationCanceled)
+        | Err(inquire::InquireError::OperationInterrupted) => Err(UserCancelled.into()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Real implementation using inquire crate
 #[derive(Default)]
 pub struct InquirePrompter;
@@ -49,30 +59,15 @@ impl Prompter for InquirePrompter {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        match selector.prompt() {
-            Ok(v) => Ok(v),
-            Err(inquire::InquireError::OperationCanceled)
-            | Err(inquire::InquireError::OperationInterrupted) => Err(UserCancelled.into()),
-            Err(e) => Err(e.into()),
-        }
+        handle_inquire_result(selector.prompt())
     }
 
     fn confirm(&self, message: &str) -> Result<bool> {
-        match inquire::Confirm::new(message).prompt() {
-            Ok(v) => Ok(v),
-            Err(inquire::InquireError::OperationCanceled)
-            | Err(inquire::InquireError::OperationInterrupted) => Err(UserCancelled.into()),
-            Err(e) => Err(e.into()),
-        }
+        handle_inquire_result(inquire::Confirm::new(message).prompt())
     }
 
     fn text(&self, message: &str) -> Result<String> {
-        match inquire::Text::new(message).prompt() {
-            Ok(v) => Ok(v),
-            Err(inquire::InquireError::OperationCanceled)
-            | Err(inquire::InquireError::OperationInterrupted) => Err(UserCancelled.into()),
-            Err(e) => Err(e.into()),
-        }
+        handle_inquire_result(inquire::Text::new(message).prompt())
     }
 }
 
