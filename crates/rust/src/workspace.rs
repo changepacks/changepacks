@@ -89,6 +89,26 @@ impl Workspace for RustWorkspace {
             ws_pkg["version"] = toml_edit::value(next_version.clone());
         }
 
+        // Sync [workspace.dependencies] for local path deps whose version matched
+        // the old workspace version (these are workspace members bumped together)
+        let old_version = self.version.as_deref().unwrap_or("0.0.0");
+        if let Some(ws_deps) = cargo_toml
+            .get_mut("workspace")
+            .and_then(|w| w.get_mut("dependencies"))
+            .and_then(|d| d.as_table_mut())
+        {
+            for (_, value) in ws_deps.iter_mut() {
+                if let Some(dep) = value.as_inline_table_mut()
+                    && dep.get("path").is_some()
+                    && let Some(ver_str) = dep.get("version").and_then(|v| v.as_str())
+                    && let Ok((prefix, ver)) = split_version(ver_str)
+                    && ver == old_version
+                {
+                    dep["version"] = format!("{}{next_version}", prefix.unwrap_or_default()).into();
+                }
+            }
+        }
+
         write(
             &self.path,
             format!(
@@ -621,5 +641,85 @@ edition = "2024"
             doc.get("package").is_none(),
             "virtual workspace should not get a [package] section"
         );
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_syncs_workspace_dependencies() {
+        // Virtual workspace with [workspace.dependencies] containing path deps
+        // that share the workspace version — these should be synced on bump
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.33"
+edition = "2024"
+
+[workspace.dependencies]
+vespera_core = { path = "crates/vespera_core", version = "0.1.33" }
+vespera_macro = { path = "crates/vespera_macro", version = "0.1.33" }
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+other_local = { path = "crates/other", version = "0.5.0" }
+"#,
+        )
+        .unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            None,
+            Some("0.1.33".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+
+        // [workspace.package].version bumped
+        assert_eq!(
+            doc["workspace"]["package"]["version"].as_str(),
+            Some("0.1.34")
+        );
+
+        // Path deps matching old version should be synced
+        let ws_deps = doc["workspace"]["dependencies"].as_table().unwrap();
+        assert_eq!(
+            ws_deps["vespera_core"]["version"].as_str(),
+            Some("0.1.34"),
+            "path dep with matching version should be bumped"
+        );
+        assert_eq!(
+            ws_deps["vespera_macro"]["version"].as_str(),
+            Some("0.1.34"),
+            "path dep with matching version should be bumped"
+        );
+
+        // Non-path deps should NOT be touched
+        assert_eq!(
+            ws_deps["serde"]["version"].as_str(),
+            Some("1.0"),
+            "non-path dep should remain unchanged"
+        );
+        assert_eq!(
+            ws_deps["tokio"]["version"].as_str(),
+            Some("1.0"),
+            "non-path dep should remain unchanged"
+        );
+
+        // Path dep with different version should NOT be touched
+        assert_eq!(
+            ws_deps["other_local"]["version"].as_str(),
+            Some("0.5.0"),
+            "path dep with different version should remain unchanged"
+        );
+
+        // No [package] section created
+        assert!(doc.get("package").is_none());
     }
 }
