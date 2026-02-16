@@ -136,6 +136,7 @@ pub async fn handle_publish_with_prompter(
     }
 
     let mut result_map = BTreeMap::new();
+    let mut failed_projects: Vec<String> = Vec::new();
 
     // Publish each project
     for project in projects.iter() {
@@ -165,12 +166,46 @@ pub async fn handle_publish_with_prompter(
                         PublishResult::new(false, Some(e.to_string())),
                     );
                 }
+                failed_projects.push(format!("{}", project));
             }
         }
     }
 
+    if !failed_projects.is_empty()
+        && let FormatOptions::Stdout = args.format
+    {
+        eprintln!(
+            "\n{} of {} projects failed to publish: {}",
+            failed_projects.len(),
+            projects.len(),
+            failed_projects.join(", ")
+        );
+    }
+
     if let FormatOptions::Json = args.format {
         println!("{}", serde_json::to_string_pretty(&result_map)?);
+    }
+
+    if !failed_projects.is_empty() {
+        anyhow::bail!(
+            "Failed to publish {} project(s): {}",
+            failed_projects.len(),
+            failed_projects.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+fn publish_result_from_failures(failed: &[String], total: usize) -> Result<()> {
+    if !failed.is_empty() {
+        anyhow::bail!(
+            "Failed to publish {} of {} project(s): {}",
+            failed.len(),
+            total,
+            failed.join(", ")
+        );
     }
     Ok(())
 }
@@ -260,5 +295,30 @@ mod tests {
         assert!(cli.publish.remote);
         assert_eq!(cli.publish.language.len(), 1);
         assert_eq!(cli.publish.project.len(), 1);
+    }
+
+    #[test]
+    fn test_publish_result_all_succeed() {
+        let result = publish_result_from_failures(&[], 3);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_publish_result_single_failure() {
+        let result = publish_result_from_failures(&["pkg-a".to_string()], 3);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("1 of 3"));
+        assert!(err_msg.contains("pkg-a"));
+    }
+
+    #[test]
+    fn test_publish_result_multiple_failures() {
+        let result = publish_result_from_failures(&["pkg-a".to_string(), "pkg-b".to_string()], 5);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("2 of 5"));
+        assert!(err_msg.contains("pkg-a"));
+        assert!(err_msg.contains("pkg-b"));
     }
 }

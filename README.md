@@ -26,11 +26,11 @@ A unified version management and changelog tool for multi-language monorepos.
 
 ## Overview
 
-**changepacks** is a Rust-powered CLI tool that brings consistent version management and changelog generation to polyglot projects. Inspired by [changesets](https://github.com/changesets/changesets), it extends beyond JavaScript to natively support Node.js, Python, Rust, and Dart ecosystems with a single, fast, and reliable tool.
+**changepacks** is a Rust-powered CLI tool that brings consistent version management and changelog generation to polyglot projects. Inspired by [changesets](https://github.com/changesets/changesets), it extends beyond JavaScript to natively support Node.js, Python, Rust, Dart, Java, and C# ecosystems with a single, fast, and reliable tool.
 
 ### Why changepacks?
 
-- 🌍 **True Multi-Language Support** - Manage versions across Node.js, Python, Rust, and Dart with unified workflow
+- 🌍 **True Multi-Language Support** - Manage versions across Node.js, Python, Rust, Dart, Java, and C# with unified workflow
 - 🚀 **Rust Performance** - Fast, parallel operations with single binary distribution
 - 🔗 **Smart Dependencies** - Automatic dependency resolution with topological sorting for publishing
 - 💾 **Format Preservation** - Respects language conventions (JSON indentation, TOML formatting, YAML structure)
@@ -48,7 +48,7 @@ A unified version management and changelog tool for multi-language monorepos.
 
 ## Features
 
-- 🚀 **Multi-language Support** - Native support for Node.js, Python, Rust, and Dart with workspace detection
+- 🚀 **Multi-language Support** - Native support for Node.js, Python, Rust, Dart, Java, and C# with workspace detection
 - 📝 **Changepack Logs** - Track version updates with timestamped logs and detailed notes
 - 🔄 **Automated Updates** - Smart version bumping with workspace dependency updates
 - 🔗 **Dependency Resolution** - Topological sorting ensures dependencies publish before dependents
@@ -63,10 +63,14 @@ A unified version management and changelog tool for multi-language monorepos.
 
 | Language | Package Manager | File | Status |
 |----------|----------------|------|--------|
-| **Node.js** | npm, pnpm, yarn | `package.json` | ✅ Supported |
+| **Node.js** | npm, pnpm, yarn, bun | `package.json` | ✅ Supported |
 | **Python** | pip, uv | `pyproject.toml` | ✅ Supported |
 | **Rust** | Cargo | `Cargo.toml` | ✅ Supported |
 | **Dart** | pub | `pubspec.yaml` | ✅ Supported |
+| **Java** | Gradle | `build.gradle.kts`, `build.gradle` | ✅ Supported |
+| **C#** | NuGet | `*.csproj` | ✅ Supported |
+
+> **Note**: Java/Gradle projects require the Gradle wrapper (`gradlew`) for version detection. The wrapper is used to resolve project properties dynamically.
 
 ## Installation
 
@@ -223,6 +227,8 @@ Default publish commands by language:
 - **Python**: `uv publish`
 - **Rust**: `cargo publish`
 - **Dart**: `dart pub publish`
+- **Java**: `./gradlew publish`
+- **C#**: `dotnet nuget push`
 
 ### Check Config
 
@@ -262,7 +268,7 @@ You can edit `.changepacks/config.json` to customize:
 - The base branch to compare against for changes (`baseBranch`, default: `"main"`).
 - The default main package for versioning (`latestPackage`, optional).
 - Custom publish commands (`publish`):
-  - Set language-specific commands using language keys: `"node"`, `"python"`, `"rust"`, `"dart"`.
+  - Set language-specific commands using language keys: `"node"`, `"python"`, `"rust"`, `"dart"`, `"java"`, `"csharp"`.
   - Set project-specific commands using relative paths (e.g., `"bridge/node/package.json"`).
   - If not specified, default commands are used (see Publish Packages section).
 - Dependency rules for forced updates (`updateOn`):
@@ -288,6 +294,8 @@ changepacks/
 │   ├── python/       # Python project support
 │   ├── rust/         # Rust project support
 │   ├── dart/         # Dart project support
+│   ├── java/         # Java/Gradle project support
+│   ├── csharp/       # C#/.NET project support
 │   └── utils/        # Utility functions
 ├── examples/         # Example projects for testing
 ├── Cargo.toml        # Workspace configuration
@@ -296,7 +304,7 @@ changepacks/
 
 ## How It Works
 
-1. **Project Detection**: Walks git tree to discover `package.json`, `Cargo.toml`, `pyproject.toml`, `pubspec.yaml` files
+1. **Project Detection**: Walks git tree to discover `package.json`, `Cargo.toml`, `pyproject.toml`, `pubspec.yaml`, `build.gradle.kts`, `build.gradle`, and `*.csproj` files
 2. **Change Tracking**: Uses git diff to detect changed files, marking projects with modifications
 3. **Changepack Logs**: Stores version bump intentions in `.changepacks/changepack_log_*.json` with notes and timestamps
 4. **Version Updates**: Reads changepack logs, calculates new versions (semver), updates files while preserving formatting
@@ -350,7 +358,7 @@ changepacks check
 The project follows a trait-based, modular architecture:
 
 - **Core** (`crates/core`) - Defines common traits (`Package`, `Workspace`, `ProjectFinder`) and types
-- **Language Crates** (`crates/{node,python,rust,dart}`) - Implement language-specific project detection and version management
+- **Language Crates** (`crates/{node,python,rust,dart,java,csharp}`) - Implement language-specific project detection and version management
 - **CLI** (`crates/cli`) - Command-line interface with clap, colored output, and interactive prompts
 - **Utils** (`crates/utils`) - Shared utilities: git operations, version calculation, dependency sorting, config management
 - **Bridges** (`bridge/{node,python}`) - N-API and PyO3 bindings for package manager distribution
@@ -437,6 +445,8 @@ This project is distributed under the MIT License. See the [LICENSE](LICENSE) fi
 - [x] Python package management support
 - [x] Rust package management support
 - [x] Dart package management support
+- [x] Java/Gradle package management support
+- [x] C#/.NET package management support
 - [x] CI/CD integration support (JSON output, dry-run mode)
 - [x] Dependency-aware publishing with topological sorting
 - [x] Format preservation across all languages
