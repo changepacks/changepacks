@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use changepacks_core::{Project, ProjectFinder};
+use changepacks_core::{Package, Project, ProjectFinder};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -9,10 +9,22 @@ use tokio::fs::read_to_string;
 
 use crate::{package::RustPackage, workspace::RustWorkspace};
 
+/// Package info deferred for workspace version resolution
+#[derive(Debug)]
+struct PendingWorkspacePackage {
+    name: Option<String>,
+    abs_path: PathBuf,
+    relative_path: PathBuf,
+    dependencies: Vec<String>,
+}
+
 #[derive(Debug)]
 pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
     project_files: Vec<&'static str>,
+    workspace_package_version: Option<String>,
+    workspace_root_path: Option<PathBuf>,
+    pending_workspace_packages: Vec<PendingWorkspacePackage>,
 }
 
 impl Default for RustProjectFinder {
@@ -27,6 +39,9 @@ impl RustProjectFinder {
         Self {
             projects: HashMap::new(),
             project_files: vec!["Cargo.toml"],
+            workspace_package_version: None,
+            workspace_root_path: None,
+            pending_workspace_packages: Vec::new(),
         }
     }
 }
@@ -60,8 +75,34 @@ impl ProjectFinder for RustProjectFinder {
             // read Cargo.toml
             let cargo_toml = read_to_string(path).await?;
             let cargo_toml: toml::Value = toml::from_str(&cargo_toml)?;
+
+            // Collect workspace dependencies for this file
+            let mut dep_names = Vec::new();
+            if let Some(deps) = cargo_toml.get("dependencies").and_then(|d| d.as_table()) {
+                for (dep_name, value) in deps {
+                    if let Some(dep) = value.as_table()
+                        && let Some(workspace) = dep.get("workspace")
+                        && workspace.as_bool().unwrap_or(false)
+                    {
+                        dep_names.push(dep_name.clone());
+                    }
+                }
+            }
+
             // if workspace
-            let (path, mut project) = if cargo_toml.get("workspace").is_some() {
+            if cargo_toml.get("workspace").is_some() {
+                // Read [workspace.package].version if present
+                let ws_pkg_version = cargo_toml
+                    .get("workspace")
+                    .and_then(|w| w.get("package"))
+                    .and_then(|p| p.get("version"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                if ws_pkg_version.is_some() {
+                    self.workspace_package_version = ws_pkg_version;
+                    self.workspace_root_path = Some(path.to_path_buf());
+                }
+
                 let version = cargo_toml
                     .get("package")
                     .and_then(|p| p.get("version"))
@@ -72,45 +113,106 @@ impl ProjectFinder for RustProjectFinder {
                     .and_then(|p| p.get("name"))
                     .and_then(|v| v.as_str())
                     .map(std::string::ToString::to_string);
-                (
+                let mut project = Project::Workspace(Box::new(RustWorkspace::new(
+                    name,
+                    version,
                     path.to_path_buf(),
-                    Project::Workspace(Box::new(RustWorkspace::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
+                    relative_path.to_path_buf(),
+                )));
+                for dep_name in &dep_names {
+                    project.add_dependency(dep_name);
+                }
+                self.projects.insert(path.to_path_buf(), project);
+
+                // Resolve any pending packages that were visited before this workspace
+                let pending = std::mem::take(&mut self.pending_workspace_packages);
+                for p in pending {
+                    let mut pkg = RustPackage::new_with_workspace_version(
+                        p.name,
+                        self.workspace_package_version.clone(),
+                        p.abs_path.clone(),
+                        p.relative_path,
+                        self.workspace_root_path.clone(),
+                    );
+                    for dep in &p.dependencies {
+                        pkg.add_dependency(dep);
+                    }
+                    self.projects
+                        .insert(p.abs_path, Project::Package(Box::new(pkg)));
+                }
             } else {
-                let version = cargo_toml["package"]["version"]
-                    .as_str()
-                    .map(std::string::ToString::to_string);
+                // Check if version.workspace = true
+                let inherits_workspace = cargo_toml
+                    .get("package")
+                    .and_then(|p| p.get("version"))
+                    .and_then(|v| v.as_table())
+                    .and_then(|t| t.get("workspace"))
+                    .and_then(|w| w.as_bool())
+                    .unwrap_or(false);
+
                 let name = cargo_toml["package"]["name"]
                     .as_str()
                     .map(std::string::ToString::to_string);
-                (
-                    path.to_path_buf(),
-                    Project::Package(Box::new(RustPackage::new(
+
+                if inherits_workspace {
+                    if self.workspace_package_version.is_some() {
+                        // Workspace already visited — resolve immediately
+                        let mut pkg = RustPackage::new_with_workspace_version(
+                            name,
+                            self.workspace_package_version.clone(),
+                            path.to_path_buf(),
+                            relative_path.to_path_buf(),
+                            self.workspace_root_path.clone(),
+                        );
+                        for dep_name in &dep_names {
+                            pkg.add_dependency(dep_name);
+                        }
+                        self.projects
+                            .insert(path.to_path_buf(), Project::Package(Box::new(pkg)));
+                    } else {
+                        // Workspace not yet visited — defer
+                        self.pending_workspace_packages
+                            .push(PendingWorkspacePackage {
+                                name,
+                                abs_path: path.to_path_buf(),
+                                relative_path: relative_path.to_path_buf(),
+                                dependencies: dep_names,
+                            });
+                    }
+                } else {
+                    let version = cargo_toml["package"]["version"]
+                        .as_str()
+                        .map(std::string::ToString::to_string);
+                    let mut project = Project::Package(Box::new(RustPackage::new(
                         name,
                         version,
                         path.to_path_buf(),
                         relative_path.to_path_buf(),
-                    ))),
-                )
-            };
-
-            if let Some(deps) = cargo_toml.get("dependencies").and_then(|d| d.as_table()) {
-                for (dep_name, value) in deps {
-                    if let Some(dep) = value.as_table()
-                        && let Some(workspace) = dep.get("workspace")
-                        && workspace.as_bool().unwrap_or(false)
-                    {
+                    )));
+                    for dep_name in &dep_names {
                         project.add_dependency(dep_name);
                     }
+                    self.projects.insert(path.to_path_buf(), project);
                 }
-            }
+            };
+        }
+        Ok(())
+    }
 
-            self.projects.insert(path, project);
+    async fn finalize(&mut self) -> Result<()> {
+        for pending in self.pending_workspace_packages.drain(..) {
+            let mut pkg = RustPackage::new_with_workspace_version(
+                pending.name,
+                self.workspace_package_version.clone(),
+                pending.abs_path.clone(),
+                pending.relative_path,
+                self.workspace_root_path.clone(),
+            );
+            for dep in &pending.dependencies {
+                pkg.add_dependency(dep);
+            }
+            self.projects
+                .insert(pending.abs_path, Project::Package(Box::new(pkg)));
         }
         Ok(())
     }
@@ -415,5 +517,120 @@ external = "1.0"
         }
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_package_with_workspace_version() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create workspace root
+        let workspace_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "2.5.0"
+edition = "2024"
+
+[package]
+name = "my-workspace"
+version = "2.5.0"
+"#,
+        )
+        .unwrap();
+
+        // Create member package with version.workspace = true
+        let pkg_dir = temp_dir.path().join("crates").join("my-crate");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        let pkg_toml = pkg_dir.join("Cargo.toml");
+        fs::write(
+            &pkg_toml,
+            r#"[package]
+name = "my-crate"
+version.workspace = true
+edition.workspace = true
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        // Visit workspace first (normal git index order)
+        finder
+            .visit(&workspace_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&pkg_toml, &PathBuf::from("crates/my-crate/Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 2);
+
+        // Find the package
+        let pkg = projects
+            .iter()
+            .find(|p| p.name() == Some("my-crate"))
+            .unwrap();
+        assert_eq!(pkg.version(), Some("2.5.0")); // Should inherit workspace version
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_package_before_workspace() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create workspace root
+        let workspace_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "3.0.0"
+
+[package]
+name = "my-workspace"
+version = "3.0.0"
+"#,
+        )
+        .unwrap();
+
+        // Create member package
+        let pkg_dir = temp_dir.path().join("crates").join("my-crate");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        let pkg_toml = pkg_dir.join("Cargo.toml");
+        fs::write(
+            &pkg_toml,
+            r#"[package]
+name = "my-crate"
+version.workspace = true
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        // Visit package BEFORE workspace (reverse order)
+        finder
+            .visit(&pkg_toml, &PathBuf::from("crates/my-crate/Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&workspace_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 2);
+
+        let pkg = projects
+            .iter()
+            .find(|p| p.name() == Some("my-crate"))
+            .unwrap();
+        assert_eq!(pkg.version(), Some("3.0.0")); // Should still resolve correctly
     }
 }
