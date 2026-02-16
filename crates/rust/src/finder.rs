@@ -206,6 +206,14 @@ impl ProjectFinder for RustProjectFinder {
             && !self.pending_workspace_packages.is_empty()
             && let Some(first_pkg) = self.pending_workspace_packages.first()
         {
+            // Derive git root from the first pending package's absolute/relative paths
+            // e.g. abs=<repo>/crates/foo/Cargo.toml, rel=crates/foo/Cargo.toml → git_root=<repo>
+            let rel_component_count = first_pkg.relative_path.components().count();
+            let mut git_root = first_pkg.abs_path.clone();
+            for _ in 0..rel_component_count {
+                git_root.pop();
+            }
+
             let mut dir = first_pkg.abs_path.parent().and_then(Path::parent);
             while let Some(parent) = dir {
                 let candidate = parent.join("Cargo.toml");
@@ -219,7 +227,35 @@ impl ProjectFinder for RustProjectFinder {
                         .and_then(|v| v.as_str())
                 {
                     self.workspace_package_version = Some(version.to_string());
-                    self.workspace_root_path = Some(candidate);
+                    self.workspace_root_path = Some(candidate.clone());
+
+                    // Insert synthetic workspace project so apply_updates() can find it
+                    let ws_name = parsed
+                        .get("package")
+                        .and_then(|p| p.get("name"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let ws_pkg_version = parsed
+                        .get("package")
+                        .and_then(|p| p.get("version"))
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+                    let ws_relative_path = candidate
+                        .strip_prefix(&git_root)
+                        .unwrap_or(Path::new("Cargo.toml"))
+                        .to_path_buf();
+
+                    let workspace = RustWorkspace::new(
+                        ws_name,
+                        // For virtual workspaces (no [package]), use [workspace.package].version
+                        ws_pkg_version.or_else(|| self.workspace_package_version.clone()),
+                        candidate,
+                        ws_relative_path,
+                    );
+                    self.projects.insert(
+                        self.workspace_root_path.clone().unwrap(),
+                        Project::Workspace(Box::new(workspace)),
+                    );
                     break;
                 }
                 dir = parent.parent();
@@ -776,7 +812,8 @@ workspace = true
         finder.finalize().await.unwrap();
 
         let projects = finder.projects();
-        assert_eq!(projects.len(), 2);
+        // 2 member packages + 1 synthetic workspace
+        assert_eq!(projects.len(), 3);
 
         for name in ["vespera", "vespera_core"] {
             let pkg = projects.iter().find(|p| p.name() == Some(name)).unwrap();
@@ -786,5 +823,13 @@ workspace = true
                 "{name} should inherit workspace version"
             );
         }
+
+        // Synthetic workspace should exist with the workspace version
+        let ws = projects
+            .iter()
+            .find(|p| matches!(p, Project::Workspace(_)))
+            .expect("synthetic workspace should be created");
+        assert_eq!(ws.version(), Some("0.1.33"));
+        assert_eq!(ws.relative_path(), Path::new("Cargo.toml"));
     }
 }

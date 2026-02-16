@@ -58,12 +58,28 @@ impl Workspace for RustWorkspace {
 
         let cargo_toml_raw = read_to_string(&self.path).await?;
         let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
-        if cargo_toml.get("package").is_none() {
-            cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
-        }
-        cargo_toml["package"]["version"] = next_version.clone().into();
 
-        // Also update [workspace.package].version if it exists
+        let has_package = cargo_toml.get("package").is_some();
+        let has_workspace_package_version = cargo_toml
+            .get("workspace")
+            .and_then(|w| w.get("package"))
+            .and_then(|p| p.get("version"))
+            .is_some();
+
+        if has_package {
+            cargo_toml["package"]["version"] = next_version.clone().into();
+            if cargo_toml["package"].get("name").is_none() {
+                cargo_toml["package"]["name"] = self.name.clone().unwrap_or("_".to_string()).into();
+            }
+        } else if !has_workspace_package_version {
+            // No [package] and no [workspace.package].version — create [package]
+            cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
+            cargo_toml["package"]["version"] = next_version.clone().into();
+            cargo_toml["package"]["name"] = self.name.clone().unwrap_or("_".to_string()).into();
+        }
+        // else: virtual workspace — only [workspace.package].version needs updating (below)
+
+        // Update [workspace.package].version if it exists
         if let Some(ws_pkg) = cargo_toml
             .get_mut("workspace")
             .and_then(|w| w.get_mut("package"))
@@ -71,15 +87,6 @@ impl Workspace for RustWorkspace {
             && ws_pkg.contains_key("version")
         {
             ws_pkg["version"] = toml_edit::value(next_version.clone());
-        }
-
-        if cargo_toml
-            .get("package")
-            .and_then(|p| p.get("name"))
-            .is_none()
-        {
-            // insert package.name with version, cargo rules
-            cargo_toml["package"]["name"] = self.name.clone().unwrap_or("_".to_string()).into();
         }
 
         write(
@@ -572,6 +579,47 @@ version = "1.0.0"
         assert_eq!(
             doc["workspace"]["package"]["version"].as_str(),
             Some("1.1.0")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_virtual_workspace() {
+        // Virtual workspace: has [workspace.package].version but NO [package] section
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.33"
+edition = "2024"
+"#,
+        )
+        .unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            None,
+            Some("0.1.33".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        // [workspace.package].version should be updated
+        assert_eq!(
+            doc["workspace"]["package"]["version"].as_str(),
+            Some("0.1.34")
+        );
+        // [package] section should NOT be created for virtual workspaces
+        assert!(
+            doc.get("package").is_none(),
+            "virtual workspace should not get a [package] section"
         );
     }
 }
