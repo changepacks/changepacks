@@ -1,16 +1,16 @@
 use changepacks_core::{ChangePackResultLog, Project, UpdateType};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use changepacks_utils::{
-    apply_reverse_dependencies, display_update, find_current_git_repo, find_project_dirs,
-    gen_changepack_result_map, gen_update_map, get_changepacks_config, get_relative_path,
+    apply_reverse_dependencies, display_update, gen_changepack_result_map, gen_update_map,
+    get_relative_path,
 };
 use clap::Args;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::{
-    finders::get_finders,
+    CommandContext,
     options::{FilterOptions, FormatOptions},
 };
 
@@ -32,16 +32,10 @@ pub struct CheckArgs {
 
 /// Check project status
 pub async fn handle_check(args: &CheckArgs) -> Result<()> {
-    let current_dir = std::env::current_dir()?;
-    let repo = find_current_git_repo(&current_dir)?;
-    let repo_root_path = repo.work_dir().context("Not a working directory")?;
-    // check if config.json exists
-    let config = get_changepacks_config(&current_dir).await?;
-    let mut project_finders = get_finders();
+    let ctx = CommandContext::new(args.remote).await?;
 
-    find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
-
-    let mut projects = project_finders
+    let mut projects = ctx
+        .project_finders
         .iter()
         .flat_map(|finder| finder.projects())
         .collect::<Vec<_>>();
@@ -55,14 +49,14 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     if let FormatOptions::Stdout = args.format {
         println!("Found {} projects", projects.len());
     }
-    let mut update_map = gen_update_map(&current_dir, &config).await?;
+    let mut update_map = gen_update_map(&CommandContext::current_dir()?, &ctx.config).await?;
 
     // Apply reverse dependency updates (workspace:* dependencies)
-    apply_reverse_dependencies(&mut update_map, &projects, repo_root_path);
+    apply_reverse_dependencies(&mut update_map, &projects, &ctx.repo_root_path);
 
     if args.tree {
         // Tree mode: show dependencies as a tree
-        display_tree(&projects, repo_root_path, &update_map)?;
+        display_tree(&projects, &ctx.repo_root_path, &update_map)?;
     } else {
         match args.format {
             FormatOptions::Stdout => {
@@ -77,8 +71,8 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                         "{}",
                         format!("{project}{changed_marker}",).replace(
                             project.version().unwrap_or("unknown"),
-                            &if let Some(update_type) =
-                                update_map.get(&get_relative_path(repo_root_path, project.path())?)
+                            &if let Some(update_type) = update_map
+                                .get(&get_relative_path(&ctx.repo_root_path, project.path())?)
                             {
                                 display_update(project.version(), update_type.0)?
                             } else {
@@ -91,7 +85,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
             FormatOptions::Json => {
                 let json = serde_json::to_string_pretty(&gen_changepack_result_map(
                     projects.as_slice(),
-                    repo_root_path,
+                    &ctx.repo_root_path,
                     &mut update_map,
                 )?)?;
                 println!("{json}");

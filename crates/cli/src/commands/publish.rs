@@ -2,13 +2,11 @@ use std::collections::BTreeMap;
 
 use anyhow::Result;
 use changepacks_core::PublishResult;
-use changepacks_utils::{
-    find_current_git_repo, find_project_dirs, get_changepacks_config, sort_by_dependencies,
-};
+use changepacks_utils::sort_by_dependencies;
 use clap::Args;
 
 use crate::{
-    finders::get_finders,
+    CommandContext,
     options::FormatOptions,
     prompter::{InquirePrompter, Prompter},
 };
@@ -47,15 +45,10 @@ pub async fn handle_publish_with_prompter(
     args: &PublishArgs,
     prompter: &dyn Prompter,
 ) -> Result<()> {
-    let current_dir = std::env::current_dir()?;
-    let repo = find_current_git_repo(&current_dir)?;
+    let ctx = CommandContext::new(args.remote).await?;
 
-    let config = get_changepacks_config(&current_dir).await?;
-    let mut project_finders = get_finders();
-
-    find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
-
-    let mut projects: Vec<_> = project_finders
+    let mut projects: Vec<_> = ctx
+        .project_finders
         .iter()
         .flat_map(|finder| finder.projects())
         .collect();
@@ -143,7 +136,7 @@ pub async fn handle_publish_with_prompter(
         if let FormatOptions::Stdout = args.format {
             println!("Publishing {project}...");
         }
-        let result = project.publish(&config).await;
+        let result = project.publish(&ctx.config).await;
         match result {
             Ok(_) => {
                 if let FormatOptions::Stdout = args.format {

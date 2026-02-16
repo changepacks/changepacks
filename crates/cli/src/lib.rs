@@ -11,6 +11,8 @@ use crate::{
     options::FilterOptions,
 };
 pub mod commands;
+mod context;
+pub use context::*;
 mod finders;
 pub mod options;
 pub mod prompter;

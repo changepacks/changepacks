@@ -1,13 +1,13 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use changepacks_core::{Package, Project};
 use changepacks_utils::{
-    apply_reverse_dependencies, clear_update_logs, display_update, find_current_git_repo,
-    find_project_dirs, gen_changepack_result_map, gen_update_map, get_changepacks_config,
-    get_changepacks_dir, get_relative_path,
+    apply_reverse_dependencies, clear_update_logs, display_update, find_project_dirs,
+    gen_changepack_result_map, gen_update_map, get_changepacks_dir, get_relative_path,
 };
 use clap::Args;
 
 use crate::{
+    CommandContext,
     finders::get_finders,
     options::FormatOptions,
     prompter::{InquirePrompter, Prompter},
@@ -35,19 +35,17 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
 }
 
 pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Prompter) -> Result<()> {
-    let current_dir = std::env::current_dir()?;
-    let repo = find_current_git_repo(&current_dir)?;
-    let repo_root_path = repo.work_dir().context("Not a working directory")?;
-    let changepacks_dir = get_changepacks_dir(&current_dir)?;
-    // check if config.json exists
+    let ctx = CommandContext::new(args.remote).await?;
+    let changepacks_dir = get_changepacks_dir(&CommandContext::current_dir()?)?;
+    let mut update_map = gen_update_map(&CommandContext::current_dir()?, &ctx.config).await?;
 
-    let config = get_changepacks_config(&current_dir).await?;
-    let mut update_map = gen_update_map(&current_dir, &config).await?;
-
-    let mut project_finders = get_finders();
+    let mut project_finders = ctx.project_finders;
     let mut all_finders = get_finders();
 
-    find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
+    // Need a second git repo reference for the all_finders, but since CommandContext already called find_project_dirs
+    // we use an empty config for all_finders which won't filter anything
+    let current_dir = CommandContext::current_dir()?;
+    let repo = changepacks_utils::find_current_git_repo(&current_dir)?;
     find_project_dirs(&repo, &mut all_finders, &Default::default(), args.remote).await?;
 
     // Apply reverse dependency updates (workspace:* dependencies)
@@ -55,7 +53,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         .iter()
         .flat_map(|finder| finder.projects())
         .collect();
-    apply_reverse_dependencies(&mut update_map, &all_projects, repo_root_path);
+    apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
 
     if update_map.is_empty() {
         match args.format {
@@ -78,7 +76,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     for finder in &mut project_finders {
         for project in finder.projects_mut() {
             if let Some((update_type, _)) =
-                update_map.get(&get_relative_path(repo_root_path, project.path())?)
+                update_map.get(&get_relative_path(&ctx.repo_root_path, project.path())?)
             {
                 update_projects.push((project, *update_type));
                 continue;
@@ -169,7 +167,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
                     .flat_map(|finder| finder.projects())
                     .collect::<Vec<_>>()
                     .as_slice(),
-                repo_root_path,
+                &ctx.repo_root_path,
                 &mut update_map,
             )?)?
         );

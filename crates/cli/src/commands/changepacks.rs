@@ -2,15 +2,12 @@ use changepacks_core::{ChangePackLog, Project, UpdateType};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::write;
 
-use changepacks_utils::{
-    find_current_git_repo, find_project_dirs, get_changepacks_config, get_changepacks_dir,
-    get_relative_path,
-};
+use changepacks_utils::{get_changepacks_dir, get_relative_path};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::{
-    finders::get_finders,
+    CommandContext,
     options::FilterOptions,
     prompter::{InquirePrompter, Prompter},
 };
@@ -32,16 +29,10 @@ pub async fn handle_changepack_with_prompter(
     args: &ChangepackArgs,
     prompter: &dyn Prompter,
 ) -> Result<()> {
-    let mut project_finders = get_finders();
-    let current_dir = std::env::current_dir()?;
+    let ctx = CommandContext::new(args.remote).await?;
 
-    // collect all projects
-    let repo = find_current_git_repo(&current_dir)?;
-    let repo_root_path = repo.work_dir().context("Not a working directory")?;
-    let config = get_changepacks_config(&current_dir).await?;
-    find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
-
-    let mut projects = project_finders
+    let mut projects = ctx
+        .project_finders
         .iter()
         .flat_map(|finder| finder.projects())
         .collect::<Vec<_>>();
@@ -91,7 +82,7 @@ pub async fn handle_changepack_with_prompter(
         // remove selected projects from projects by index
         for project in selected_projects {
             update_map.insert(
-                get_relative_path(repo_root_path, project.path())?,
+                get_relative_path(&ctx.repo_root_path, project.path())?,
                 update_type,
             );
         }
@@ -99,7 +90,7 @@ pub async fn handle_changepack_with_prompter(
         let project_with_relpath: Vec<_> = projects
             .iter()
             .map(|project| {
-                get_relative_path(repo_root_path, project.path()).map(|rel| (project, rel))
+                get_relative_path(&ctx.repo_root_path, project.path()).map(|rel| (project, rel))
             })
             .collect::<Result<Vec<_>>>()?;
 
@@ -130,8 +121,8 @@ pub async fn handle_changepack_with_prompter(
     let changepack_log = ChangePackLog::new(update_map, notes);
     // random uuid
     let changepack_log_id = nanoid::nanoid!();
-    let changepack_log_file =
-        get_changepacks_dir(&current_dir)?.join(format!("changepack_log_{changepack_log_id}.json"));
+    let changepack_log_file = get_changepacks_dir(&CommandContext::current_dir()?)?
+        .join(format!("changepack_log_{changepack_log_id}.json"));
     write(changepack_log_file, serde_json::to_string(&changepack_log)?).await?;
 
     Ok(())
