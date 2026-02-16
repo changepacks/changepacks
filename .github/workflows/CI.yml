@@ -19,9 +19,6 @@ jobs:
   test:
     name: Test
     runs-on: ${{ matrix.platform }}
-    container:
-      image: xd009642/tarpaulin:develop-nightly
-      options: --security-opt seccomp=unconfined
     strategy:
       fail-fast: false
 
@@ -62,6 +59,25 @@ jobs:
         run: bun run lint
       - name: Test
         run: bun run test
+  coverage-test:
+    name: Coverage Test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    container:
+      image: xd009642/tarpaulin:develop-nightly
+      options: --security-opt seccomp=unconfined
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Build
+        run: cargo check
+      - name: Lint
+        run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test Deploy
         run: cargo publish --dry-run
       - name: Test
@@ -84,7 +100,6 @@ jobs:
           fail_ci_if_error: true
           files: lcov.info
         if: github.ref == 'refs/heads/main'
-
   # publish
   changepacks:
     name: changepacks
@@ -98,6 +113,7 @@ jobs:
       contents: write
     needs:
       - test
+      - coverage-test
     steps:
       - uses: actions/checkout@v5
       - uses: changepacks/action@main
@@ -109,6 +125,7 @@ jobs:
   node-build:
     needs:
       - test
+      - coverage-test
       - changepacks
     if: ${{ contains(needs.changepacks.outputs.changepacks, 'bridge/node/package.json') }}
     strategy:
@@ -182,6 +199,7 @@ jobs:
     if: ${{ contains(needs.changepacks.outputs.changepacks, 'bridge/python/pyproject.toml') }}
     needs:
       - test
+      - coverage-test
       - changepacks
     strategy:
       fail-fast: false
