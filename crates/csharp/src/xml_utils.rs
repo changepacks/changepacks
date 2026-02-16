@@ -161,4 +161,96 @@ mod tests {
         let content = "<PropertyGroup>";
         assert_eq!(detect_indent(content), "    ");
     }
+
+    #[test]
+    fn test_update_version_preserves_empty_elements() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <IsPackable />
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("IsPackable"));
+    }
+
+    #[test]
+    fn test_update_version_preserves_comments() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <!-- This is a comment -->
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("<!-- This is a comment -->"));
+    }
+
+    #[test]
+    fn test_update_version_preserves_cdata() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <Description><![CDATA[some data]]></Description>
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("CDATA"));
+    }
+
+    #[test]
+    fn test_update_version_preserves_xml_declaration() {
+        let content = r#"<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("<?xml"));
+    }
+
+    #[test]
+    fn test_update_version_preserves_processing_instruction() {
+        let content = r#"<?xml version="1.0" encoding="utf-8"?>
+<?xml-stylesheet type="text/xsl" href="style.xsl"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("xml-stylesheet"));
+    }
+
+    #[test]
+    fn test_update_version_preserves_doctype() {
+        let content = r#"<!DOCTYPE Project>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("DOCTYPE"));
+    }
+
+    #[test]
+    fn test_update_version_malformed_xml() {
+        let content = r#"<Project><PropertyGroup><Version>1.0.0</Version></PropertyGroup"#;
+        let result = update_version_in_xml(content, "2.0.0", true);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("XML parsing error")
+        );
+    }
 }

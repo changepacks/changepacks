@@ -161,4 +161,50 @@ mod tests {
         let result = prompter.multi_select("test", options, vec![]).unwrap();
         assert!(result.is_empty());
     }
+
+    #[test]
+    fn test_handle_inquire_result_ok() {
+        let result: Result<&str> = handle_inquire_result(Ok("test_value"));
+        assert_eq!(result.unwrap(), "test_value");
+    }
+
+    #[test]
+    fn test_handle_inquire_result_operation_canceled() {
+        let result: Result<()> =
+            handle_inquire_result(Err(inquire::InquireError::OperationCanceled));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<UserCancelled>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_handle_inquire_result_operation_interrupted() {
+        let result: Result<()> =
+            handle_inquire_result(Err(inquire::InquireError::OperationInterrupted));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<UserCancelled>()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn test_handle_inquire_result_other_error() {
+        let result: Result<()> = handle_inquire_result(Err(
+            inquire::InquireError::InvalidConfiguration("test".into()),
+        ));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<UserCancelled>()
+                .is_none()
+        );
+    }
 }

@@ -69,7 +69,7 @@ impl Package for DartPackage {
                         operation: yamlpatch::Op::Replace(serde_yaml::Value::String(
                             new_version.clone()
                         )),
-                        route: yamlpath::route!("version"),
+                        route: yamlpath::route!("version")
                     }],
                 )?
                 .source()

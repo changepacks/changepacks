@@ -76,7 +76,7 @@ impl Workspace for DartWorkspace {
                             yamlpath::route!("version")
                         } else {
                             yamlpath::route!()
-                        },
+                        }
                     }],
                 )?
                 .source()

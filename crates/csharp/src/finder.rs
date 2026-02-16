@@ -623,4 +623,28 @@ mod tests {
         // Invalid - no .csproj extension
         assert_eq!(super::extract_project_name_from_path("MyProject.txt"), None);
     }
+
+    #[test]
+    fn test_extract_version_end_tag() {
+        let content = r#"<Project><PropertyGroup><Version>
+   1.2.3
+   </Version></PropertyGroup></Project>"#;
+        assert_eq!(
+            CSharpProjectFinder::extract_version(content),
+            Some("1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_version_malformed_xml() {
+        let content = "<Project><PropertyGroup><Version>1.0.0";
+        // Should not panic - either returns Some or None
+        let _ = CSharpProjectFinder::extract_version(content);
+    }
+
+    #[test]
+    fn test_extract_version_empty_version() {
+        let content = r#"<Project><PropertyGroup><Version>  </Version></PropertyGroup></Project>"#;
+        assert_eq!(CSharpProjectFinder::extract_version(content), None);
+    }
 }

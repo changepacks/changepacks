@@ -107,4 +107,30 @@ version '3.0.0'
         let updated = update_version_in_groovy(content, "3.0.1");
         assert!(updated.contains("version '3.0.1'"));
     }
+
+    #[test]
+    fn test_update_version_in_kts_no_match() {
+        let content = r#"
+plugins {
+    id("java")
+}
+
+group = "com.example"
+"#;
+        let result = update_version_in_kts(content, "2.0.0");
+        assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_update_version_in_groovy_no_match() {
+        let content = r#"
+plugins {
+    id 'java'
+}
+
+group = 'com.example'
+"#;
+        let result = update_version_in_groovy(content, "2.0.0");
+        assert_eq!(result, content);
+    }
 }

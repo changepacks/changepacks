@@ -409,4 +409,105 @@ version = "1.0.0"
 
         temp_dir.close().unwrap();
     }
+
+    #[tokio::test]
+    async fn test_get_gradle_properties_no_gradlew() {
+        let temp_dir = TempDir::new().unwrap();
+        let result = get_gradle_properties(temp_dir.path()).await;
+        assert!(result.is_none());
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_gradle_properties_with_mock() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create mock gradlew that outputs properties
+        if cfg!(windows) {
+            let gradlew_path = temp_dir.path().join("gradlew.bat");
+            fs::write(
+                &gradlew_path,
+                "@echo off\necho name: myproject\necho version: 1.2.3\n",
+            )
+            .unwrap();
+        } else {
+            let gradlew_path = temp_dir.path().join("gradlew");
+            fs::write(
+                &gradlew_path,
+                "#!/bin/sh\necho 'name: myproject'\necho 'version: 1.2.3'\n",
+            )
+            .unwrap();
+            // Make executable on Unix
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+
+        let result = get_gradle_properties(temp_dir.path()).await;
+        assert!(result.is_some());
+        let props = result.unwrap();
+        assert_eq!(props.name, Some("myproject".to_string()));
+        assert_eq!(props.version, Some("1.2.3".to_string()));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_gradle_properties_unspecified() {
+        let temp_dir = TempDir::new().unwrap();
+
+        if cfg!(windows) {
+            let gradlew_path = temp_dir.path().join("gradlew.bat");
+            fs::write(
+                &gradlew_path,
+                "@echo off\necho name: unspecified\necho version: unspecified\n",
+            )
+            .unwrap();
+        } else {
+            let gradlew_path = temp_dir.path().join("gradlew");
+            fs::write(
+                &gradlew_path,
+                "#!/bin/sh\necho 'name: unspecified'\necho 'version: unspecified'\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+
+        let result = get_gradle_properties(temp_dir.path()).await;
+        assert!(result.is_some());
+        let props = result.unwrap();
+        assert!(props.name.is_none());
+        assert!(props.version.is_none());
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_gradle_properties_gradlew_fails() {
+        let temp_dir = TempDir::new().unwrap();
+
+        if cfg!(windows) {
+            let gradlew_path = temp_dir.path().join("gradlew.bat");
+            fs::write(&gradlew_path, "@echo off\nexit /b 1\n").unwrap();
+        } else {
+            let gradlew_path = temp_dir.path().join("gradlew");
+            fs::write(&gradlew_path, "#!/bin/sh\nexit 1\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+
+        let result = get_gradle_properties(temp_dir.path()).await;
+        assert!(result.is_none());
+
+        temp_dir.close().unwrap();
+    }
 }

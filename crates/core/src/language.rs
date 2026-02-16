@@ -68,4 +68,15 @@ mod tests {
         let display = format!("{}", language);
         assert!(display.contains(expected));
     }
+
+    #[rstest]
+    #[case(Language::Python, "python")]
+    #[case(Language::Node, "node")]
+    #[case(Language::Rust, "rust")]
+    #[case(Language::Dart, "dart")]
+    #[case(Language::CSharp, "csharp")]
+    #[case(Language::Java, "java")]
+    fn test_publish_key(#[case] language: Language, #[case] expected: &str) {
+        assert_eq!(language.publish_key(), expected);
+    }
 }

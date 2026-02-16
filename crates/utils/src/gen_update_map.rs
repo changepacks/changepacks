@@ -137,11 +137,9 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         .keys()
         .filter_map(|path| {
             // Find the package name for this path
-            name_to_path.iter().find_map(
-                |(name, p)| {
-                    if p == path { Some(name.clone()) } else { None }
-                },
-            )
+            name_to_path
+                .iter()
+                .find_map(|(name, p)| if p == path { Some(name.clone()) } else { None })
         })
         .collect();
 

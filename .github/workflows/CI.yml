@@ -21,8 +21,6 @@ jobs:
     runs-on: ${{ matrix.platform }}
     strategy:
       fail-fast: false
-
-
       matrix:
         python-version:
           - '3.11'
@@ -59,6 +57,7 @@ jobs:
         run: bun run lint
       - name: Test
         run: bun run test
+
   coverage-test:
     name: Coverage Test
     runs-on: ubuntu-latest
