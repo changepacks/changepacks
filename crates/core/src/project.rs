@@ -748,7 +748,7 @@ mod tests {
 
     #[test]
     fn test_project_sort_mixed() {
-        let mut projects = vec![
+        let mut projects = [
             Project::Package(Box::new(MockPackage::new(
                 Some("pkg-a"),
                 Some("1.0.0"),

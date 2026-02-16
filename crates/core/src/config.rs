@@ -174,10 +174,12 @@ mod tests {
 
     #[test]
     fn test_config_serialize_roundtrip() {
-        let mut config = Config::default();
-        config.ignore = vec!["test/**".to_string()];
-        config.base_branch = "develop".to_string();
-        config.latest_package = Some("Cargo.toml".to_string());
+        let mut config = Config {
+            ignore: vec!["test/**".to_string()],
+            base_branch: "develop".to_string(),
+            latest_package: Some("Cargo.toml".to_string()),
+            ..Config::default()
+        };
         config
             .publish
             .insert("rust".to_string(), "cargo publish".to_string());
