@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    hash::BuildHasher,
     path::{Path, PathBuf},
 };
 
@@ -12,10 +13,10 @@ use crate::{get_relative_path, next_version};
 ///
 /// # Errors
 /// Returns error if relative path calculation or version calculation fails.
-pub fn gen_changepack_result_map(
+pub fn gen_changepack_result_map<S: BuildHasher>(
     projects: &[&Project],
     repo_root_path: &Path,
-    update_result: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    update_result: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
 ) -> Result<BTreeMap<PathBuf, ChangePackResult>> {
     let mut map = BTreeMap::<PathBuf, ChangePackResult>::new();
     for project in projects {

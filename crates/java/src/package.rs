@@ -65,7 +65,9 @@ impl Package for GradlePackage {
             .file_name()
             .and_then(|f| f.to_str())
             .unwrap_or_default();
-        let is_kts = file_name.ends_with(".kts");
+        let is_kts = Path::new(file_name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("kts"));
 
         let updated_content = if is_kts {
             update_version_in_kts(&content, &new_version)

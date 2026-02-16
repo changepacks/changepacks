@@ -51,7 +51,13 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // we use an empty config for all_finders which won't filter anything
     let current_dir = CommandContext::current_dir()?;
     let repo = changepacks_utils::find_current_git_repo(&current_dir)?;
-    find_project_dirs(&repo, &mut all_finders, &changepacks_core::Config::default(), args.remote).await?;
+    find_project_dirs(
+        &repo,
+        &mut all_finders,
+        &changepacks_core::Config::default(),
+        args.remote,
+    )
+    .await?;
 
     // Apply reverse dependency updates (workspace:* dependencies)
     let all_projects: Vec<&Project> = all_finders

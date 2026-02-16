@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    hash::BuildHasher,
     path::{Path, PathBuf},
 };
 
@@ -24,7 +25,11 @@ pub async fn gen_update_map(
     let mut entries = read_dir(&changepacks_dir).await?;
     while let Some(file) = entries.next_entry().await? {
         let file_name = file.file_name().to_string_lossy().to_string();
-        if file_name == "config.json" || !file_name.ends_with(".json") {
+        if file_name == "config.json"
+            || !Path::new(&file_name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        {
             continue;
         }
         let file_json = read_to_string(file.path()).await?;
@@ -87,8 +92,8 @@ fn apply_update_on_rules(
 
 /// Apply reverse dependency updates: if package A depends on package B (via workspace:*),
 /// and B is being updated, then A should also be updated as PATCH.
-pub fn apply_reverse_dependencies(
-    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+pub fn apply_reverse_dependencies<S: BuildHasher>(
+    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
     projects: &[&Project],
     repo_root_path: &Path,
 ) {

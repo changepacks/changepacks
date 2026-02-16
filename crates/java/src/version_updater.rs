@@ -81,7 +81,9 @@ group = "com.devfive"
 version = project.findProperty("releaseVersion") ?: "1.0.11"
 "#;
         let updated = update_version_in_kts(content, "1.0.12");
-        assert!(updated.contains(r#"version = project.findProperty("releaseVersion") ?: "1.0.12""#));
+        assert!(
+            updated.contains(r#"version = project.findProperty("releaseVersion") ?: "1.0.12""#)
+        );
     }
 
     #[test]
