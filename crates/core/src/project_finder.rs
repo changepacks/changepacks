@@ -27,6 +27,13 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     async fn test(&self) -> Result<()> {
         Ok(())
     }
+    /// Post-visit processing hook for resolving deferred state (e.g., workspace-inherited versions).
+    /// Called once after all `visit()` calls complete.
+    /// # Errors
+    /// Returns error if finalization fails.
+    async fn finalize(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -92,6 +99,12 @@ mod tests {
         }
         fn default_publish_command(&self) -> String {
             "echo test".to_string()
+        }
+        fn inherits_workspace_version(&self) -> bool {
+            false
+        }
+        fn workspace_root_path(&self) -> Option<&Path> {
+            None
         }
     }
 

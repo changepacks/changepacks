@@ -41,6 +41,16 @@ pub trait Package: std::fmt::Debug + Send + Sync {
     /// Get the default publish command for this package type
     fn default_publish_command(&self) -> String;
 
+    /// Whether this package inherits its version from the workspace root via `version.workspace = true`
+    fn inherits_workspace_version(&self) -> bool {
+        false
+    }
+
+    /// Path to the workspace root Cargo.toml, if this package inherits its version from workspace
+    fn workspace_root_path(&self) -> Option<&Path> {
+        None
+    }
+
     /// Publish the package using the configured command or default
     ///
     /// # Errors
