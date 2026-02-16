@@ -1,7 +1,7 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::Result;
-use changepacks_core::PublishResult;
+use changepacks_core::{Config, Language, Project, PublishResult};
 use changepacks_utils::sort_by_dependencies;
 use clap::Args;
 
@@ -10,7 +10,6 @@ use crate::{
     options::FormatOptions,
     prompter::{InquirePrompter, Prompter},
 };
-use changepacks_core::Language;
 
 #[derive(Args, Debug)]
 #[command(about = "Publish packages")]
@@ -85,14 +84,7 @@ pub async fn handle_publish_with_prompter(
     let projects = sort_by_dependencies(projects);
 
     if projects.is_empty() {
-        match args.format {
-            FormatOptions::Stdout => {
-                println!("No projects found");
-            }
-            FormatOptions::Json => {
-                println!("{{}}");
-            }
-        }
+        args.format.print("No projects found", "{}");
         return Ok(());
     }
 
@@ -104,14 +96,8 @@ pub async fn handle_publish_with_prompter(
     }
 
     if args.dry_run {
-        match args.format {
-            FormatOptions::Stdout => {
-                println!("Dry run, no packages will be published");
-            }
-            FormatOptions::Json => {
-                println!("{{}}");
-            }
-        }
+        args.format
+            .print("Dry run, no packages will be published", "{}");
         return Ok(());
     }
 
@@ -122,52 +108,12 @@ pub async fn handle_publish_with_prompter(
         prompter.confirm("Are you sure you want to publish the packages?")?
     };
     if !confirm {
-        match args.format {
-            FormatOptions::Stdout => {
-                println!("Publish cancelled");
-            }
-            FormatOptions::Json => {
-                println!("{{}}");
-            }
-        }
+        args.format.print("Publish cancelled", "{}");
         return Ok(());
     }
 
-    let mut result_map = BTreeMap::new();
-    let mut failed_projects: Vec<String> = Vec::new();
-
-    // Publish each project
-    for project in &projects {
-        if let FormatOptions::Stdout = args.format {
-            println!("Publishing {project}...");
-        }
-        let result = project.publish(&ctx.config).await;
-        match result {
-            Ok(()) => {
-                if let FormatOptions::Stdout = args.format {
-                    println!("Successfully published {project}");
-                }
-                if let FormatOptions::Json = args.format {
-                    result_map.insert(
-                        project.relative_path().to_path_buf(),
-                        PublishResult::new(true, None),
-                    );
-                }
-            }
-            Err(e) => {
-                if let FormatOptions::Stdout = args.format {
-                    eprintln!("Failed to publish {project}: {e}");
-                }
-                if let FormatOptions::Json = args.format {
-                    result_map.insert(
-                        project.relative_path().to_path_buf(),
-                        PublishResult::new(false, Some(e.to_string())),
-                    );
-                }
-                failed_projects.push(format!("{project}"));
-            }
-        }
-    }
+    let (result_map, failed_projects) =
+        execute_publish_loop(&projects, &ctx.config, &args.format).await;
 
     if !failed_projects.is_empty()
         && let FormatOptions::Stdout = args.format
@@ -193,6 +139,49 @@ pub async fn handle_publish_with_prompter(
     }
 
     Ok(())
+}
+
+async fn execute_publish_loop(
+    projects: &[&Project],
+    config: &Config,
+    format: &FormatOptions,
+) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
+    let mut result_map = BTreeMap::new();
+    let mut failed_projects: Vec<String> = Vec::new();
+
+    for project in projects {
+        if let FormatOptions::Stdout = format {
+            println!("Publishing {project}...");
+        }
+        let result = project.publish(config).await;
+        match result {
+            Ok(()) => {
+                if let FormatOptions::Stdout = format {
+                    println!("Successfully published {project}");
+                }
+                if let FormatOptions::Json = format {
+                    result_map.insert(
+                        project.relative_path().to_path_buf(),
+                        PublishResult::new(true, None),
+                    );
+                }
+            }
+            Err(e) => {
+                if let FormatOptions::Stdout = format {
+                    eprintln!("Failed to publish {project}: {e}");
+                }
+                if let FormatOptions::Json = format {
+                    result_map.insert(
+                        project.relative_path().to_path_buf(),
+                        PublishResult::new(false, Some(e.to_string())),
+                    );
+                }
+                failed_projects.push(format!("{project}"));
+            }
+        }
+    }
+
+    (result_map, failed_projects)
 }
 
 #[cfg(test)]

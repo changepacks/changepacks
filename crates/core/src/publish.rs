@@ -39,6 +39,8 @@ pub async fn run_publish_command(command: &str, working_dir: &Path) -> Result<()
     cmd.current_dir(working_dir);
     let output = cmd.output().await?;
     if !output.status.success() {
+        // Note: from_utf8_lossy silently replaces invalid UTF-8 with replacement characters.
+        // This is acceptable since stderr from child processes may contain non-UTF-8 bytes.
         anyhow::bail!(
             "Publish command failed: {}",
             String::from_utf8_lossy(&output.stderr)

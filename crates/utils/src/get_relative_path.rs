@@ -9,7 +9,11 @@ use anyhow::Result;
 pub fn get_relative_path(git_root_path: &Path, absolute_path: &Path) -> Result<PathBuf> {
     match absolute_path.strip_prefix(git_root_path) {
         Ok(relative) => Ok(relative.to_path_buf()),
-        Err(_) => Err(anyhow::anyhow!("Failed to get relative path")),
+        Err(_) => Err(anyhow::anyhow!(
+            "Failed to get relative path: '{}' is not within '{}'",
+            absolute_path.display(),
+            git_root_path.display()
+        )),
     }
 }
 

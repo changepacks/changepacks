@@ -1,27 +1,28 @@
 use regex::Regex;
+use std::sync::LazyLock;
+
+static KTS_SIMPLE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?m)^(version\s*=\s*)"[^"]+""#).expect("hardcoded regex must compile")
+});
+
+static KTS_FALLBACK_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?m)^(version\s*=\s*project\.findProperty\([^)]+\)\s*\?:\s*)"[^"]+""#)
+        .expect("hardcoded regex must compile")
+});
 
 /// Update version in build.gradle.kts content
-///
-/// # Panics
-///
-/// Panics if the internal regex pattern fails to compile. This should never
-/// happen as the patterns are hardcoded.
 #[must_use]
 pub fn update_version_in_kts(content: &str, new_version: &str) -> String {
     // Pattern 1: version = "1.0.0"
-    let simple_pattern = Regex::new(r#"(?m)^(version\s*=\s*)"[^"]+""#).unwrap();
-    if simple_pattern.is_match(content) {
-        return simple_pattern
+    if KTS_SIMPLE_PATTERN.is_match(content) {
+        return KTS_SIMPLE_PATTERN
             .replace(content, format!(r#"${{1}}"{new_version}""#))
             .to_string();
     }
 
     // Pattern 2: version = project.findProperty("...") ?: "1.0.0"
-    let fallback_pattern =
-        Regex::new(r#"(?m)^(version\s*=\s*project\.findProperty\([^)]+\)\s*\?:\s*)"[^"]+""#)
-            .unwrap();
-    if fallback_pattern.is_match(content) {
-        return fallback_pattern
+    if KTS_FALLBACK_PATTERN.is_match(content) {
+        return KTS_FALLBACK_PATTERN
             .replace(content, format!(r#"${{1}}"{new_version}""#))
             .to_string();
     }
@@ -29,26 +30,27 @@ pub fn update_version_in_kts(content: &str, new_version: &str) -> String {
     content.to_string()
 }
 
+static GROOVY_ASSIGN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?m)^(version\s*=\s*)['"][^'"]+['"]"#).expect("hardcoded regex must compile")
+});
+
+static GROOVY_SPACE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?m)^(version\s+)['"][^'"]+['"]"#).expect("hardcoded regex must compile")
+});
+
 /// Update version in build.gradle (Groovy) content
-///
-/// # Panics
-///
-/// Panics if the internal regex pattern fails to compile. This should never
-/// happen as the patterns are hardcoded.
 #[must_use]
 pub fn update_version_in_groovy(content: &str, new_version: &str) -> String {
     // Pattern 1: version = '1.0.0' or version = "1.0.0"
-    let assign_pattern = Regex::new(r#"(?m)^(version\s*=\s*)['"][^'"]+['"]"#).unwrap();
-    if assign_pattern.is_match(content) {
-        return assign_pattern
+    if GROOVY_ASSIGN_PATTERN.is_match(content) {
+        return GROOVY_ASSIGN_PATTERN
             .replace(content, format!(r"${{1}}'{new_version}'"))
             .to_string();
     }
 
     // Pattern 2: version '1.0.0' or version "1.0.0"
-    let space_pattern = Regex::new(r#"(?m)^(version\s+)['"][^'"]+['"]"#).unwrap();
-    if space_pattern.is_match(content) {
-        return space_pattern
+    if GROOVY_SPACE_PATTERN.is_match(content) {
+        return GROOVY_SPACE_PATTERN
             .replace(content, format!(r"${{1}}'{new_version}'"))
             .to_string();
     }
