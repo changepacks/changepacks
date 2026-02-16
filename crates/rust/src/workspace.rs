@@ -62,6 +62,17 @@ impl Workspace for RustWorkspace {
             cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
         cargo_toml["package"]["version"] = next_version.clone().into();
+
+        // Also update [workspace.package].version if it exists
+        if let Some(ws_pkg) = cargo_toml
+            .get_mut("workspace")
+            .and_then(|w| w.get_mut("package"))
+            .and_then(|p| p.as_table_mut())
+            && ws_pkg.contains_key("version")
+        {
+            ws_pkg["version"] = toml_edit::value(next_version.clone());
+        }
+
         if cargo_toml
             .get("package")
             .and_then(|p| p.get("name"))
@@ -520,5 +531,47 @@ version = "1.0.0"
             .unwrap();
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_updates_workspace_package_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+
+[package]
+name = "test-workspace"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Minor).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        // Both should be updated
+        assert!(content.contains(r#"version = "1.1.0""#));
+        // workspace.package.version should also be updated
+        // Parse to verify both locations
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        assert_eq!(doc["package"]["version"].as_str(), Some("1.1.0"));
+        assert_eq!(
+            doc["workspace"]["package"]["version"].as_str(),
+            Some("1.1.0")
+        );
     }
 }
