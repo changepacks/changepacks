@@ -19,79 +19,79 @@ pub enum Project {
 impl Project {
     pub fn name(&self) -> Option<&str> {
         match self {
-            Project::Workspace(workspace) => workspace.name(),
-            Project::Package(package) => package.name(),
+            Self::Workspace(workspace) => workspace.name(),
+            Self::Package(package) => package.name(),
         }
     }
 
     pub fn version(&self) -> Option<&str> {
         match self {
-            Project::Workspace(workspace) => workspace.version(),
-            Project::Package(package) => package.version(),
+            Self::Workspace(workspace) => workspace.version(),
+            Self::Package(package) => package.version(),
         }
     }
     pub fn path(&self) -> &Path {
         match self {
-            Project::Workspace(workspace) => workspace.path(),
-            Project::Package(package) => package.path(),
+            Self::Workspace(workspace) => workspace.path(),
+            Self::Package(package) => package.path(),
         }
     }
 
     pub fn relative_path(&self) -> &Path {
         match self {
-            Project::Workspace(workspace) => workspace.relative_path(),
-            Project::Package(package) => package.relative_path(),
+            Self::Workspace(workspace) => workspace.relative_path(),
+            Self::Package(package) => package.relative_path(),
         }
     }
 
     pub async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         match self {
-            Project::Workspace(workspace) => workspace.update_version(update_type).await?,
-            Project::Package(package) => package.update_version(update_type).await?,
+            Self::Workspace(workspace) => workspace.update_version(update_type).await?,
+            Self::Package(package) => package.update_version(update_type).await?,
         }
         Ok(())
     }
 
     pub fn check_changed(&mut self, path: &Path) -> Result<()> {
         match self {
-            Project::Workspace(workspace) => workspace.check_changed(path)?,
-            Project::Package(package) => package.check_changed(path)?,
+            Self::Workspace(workspace) => workspace.check_changed(path)?,
+            Self::Package(package) => package.check_changed(path)?,
         }
         Ok(())
     }
 
     pub fn is_changed(&self) -> bool {
         match self {
-            Project::Workspace(workspace) => workspace.is_changed(),
-            Project::Package(package) => package.is_changed(),
+            Self::Workspace(workspace) => workspace.is_changed(),
+            Self::Package(package) => package.is_changed(),
         }
     }
 
     pub fn dependencies(&self) -> &HashSet<String> {
         match self {
-            Project::Workspace(workspace) => workspace.dependencies(),
-            Project::Package(package) => package.dependencies(),
+            Self::Workspace(workspace) => workspace.dependencies(),
+            Self::Package(package) => package.dependencies(),
         }
     }
 
     pub fn add_dependency(&mut self, dependency: &str) {
         match self {
-            Project::Workspace(workspace) => workspace.add_dependency(dependency),
-            Project::Package(package) => package.add_dependency(dependency),
+            Self::Workspace(workspace) => workspace.add_dependency(dependency),
+            Self::Package(package) => package.add_dependency(dependency),
         }
     }
 
     pub fn language(&self) -> crate::Language {
         match self {
-            Project::Workspace(workspace) => workspace.language(),
-            Project::Package(package) => package.language(),
+            Self::Workspace(workspace) => workspace.language(),
+            Self::Package(package) => package.language(),
         }
     }
 
     pub async fn publish(&self, config: &Config) -> Result<()> {
         match self {
-            Project::Workspace(workspace) => workspace.publish(config).await,
-            Project::Package(package) => package.publish(config).await,
+            Self::Workspace(workspace) => workspace.publish(config).await,
+            Self::Package(package) => package.publish(config).await,
         }
     }
 }
@@ -113,9 +113,9 @@ impl PartialOrd for Project {
 impl Ord for Project {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            (Project::Workspace(_), Project::Package(_)) => Ordering::Less,
-            (Project::Package(_), Project::Workspace(_)) => Ordering::Greater,
-            (Project::Workspace(w1), Project::Workspace(w2)) => {
+            (Self::Workspace(_), Self::Package(_)) => Ordering::Less,
+            (Self::Package(_), Self::Workspace(_)) => Ordering::Greater,
+            (Self::Workspace(w1), Self::Workspace(w2)) => {
                 let lang_ord = w1.language().cmp(&w2.language());
                 if lang_ord != Ordering::Equal {
                     return lang_ord;
@@ -135,7 +135,7 @@ impl Ord for Project {
                     }
                 }
             }
-            (Project::Package(p1), Project::Package(p2)) => {
+            (Self::Package(p1), Self::Package(p2)) => {
                 let lang_ord = p1.language().cmp(&p2.language());
                 if lang_ord != Ordering::Equal {
                     return lang_ord;
@@ -154,7 +154,7 @@ impl Ord for Project {
 impl Display for Project {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Project::Workspace(workspace) => {
+            Self::Workspace(workspace) => {
                 write!(
                     f,
                     "{} {} {} {} {}",
@@ -166,7 +166,7 @@ impl Display for Project {
                         "({})",
                         workspace
                             .version()
-                            .map(|v| format!("v{}", v))
+                            .map(|v| format!("v{v}"))
                             .unwrap_or("unknown".to_string()),
                     )
                     .bright_green(),
@@ -178,7 +178,7 @@ impl Display for Project {
                         .bright_black()
                 )
             }
-            Project::Package(package) => {
+            Self::Package(package) => {
                 write!(
                     f,
                     "{} {} {} {} {}",
@@ -188,7 +188,7 @@ impl Display for Project {
                         "({})",
                         package
                             .version()
-                            .map(|v| format!("v{}", v))
+                            .map(|v| format!("v{v}"))
                             .unwrap_or("unknown".to_string())
                     )
                     .bright_green(),

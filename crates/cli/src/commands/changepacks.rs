@@ -72,7 +72,7 @@ pub async fn handle_changepack_with_prompter(
             if update_type == UpdateType::Patch && projects.len() == 1 {
                 vec![projects[0]]
             } else {
-                let message = format!("Select projects to update for {}", update_type);
+                let message = format!("Select projects to update for {update_type}");
                 let defaults = projects
                     .iter()
                     .enumerate()
@@ -132,8 +132,8 @@ pub async fn handle_changepack_with_prompter(
     let changepack_log = ChangePackLog::new(update_map, notes);
     // random uuid
     let changepack_log_id = nanoid::nanoid!();
-    let changepack_log_file = get_changepacks_dir(&current_dir)?
-        .join(format!("changepack_log_{}.json", changepack_log_id));
+    let changepack_log_file =
+        get_changepacks_dir(&current_dir)?.join(format!("changepack_log_{changepack_log_id}.json"));
     write(changepack_log_file, serde_json::to_string(&changepack_log)?).await?;
 
     Ok(())

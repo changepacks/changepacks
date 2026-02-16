@@ -27,9 +27,9 @@ enum CliUpdateType {
 impl From<CliUpdateType> for UpdateType {
     fn from(value: CliUpdateType) -> Self {
         match value {
-            CliUpdateType::Major => UpdateType::Major,
-            CliUpdateType::Minor => UpdateType::Minor,
-            CliUpdateType::Patch => UpdateType::Patch,
+            CliUpdateType::Major => Self::Major,
+            CliUpdateType::Minor => Self::Minor,
+            CliUpdateType::Patch => Self::Patch,
         }
     }
 }

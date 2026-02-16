@@ -17,12 +17,12 @@ impl Display for Language {
             f,
             "{}",
             match self {
-                Language::Python => "Python".yellow().bold(),
-                Language::Node => "Node.js".green().bold(),
-                Language::Rust => "Rust".truecolor(139, 69, 19).bold(),
-                Language::Dart => "Dart".blue().bold(),
-                Language::CSharp => "C#".magenta().bold(),
-                Language::Java => "Java".red().bold(),
+                Self::Python => "Python".yellow().bold(),
+                Self::Node => "Node.js".green().bold(),
+                Self::Rust => "Rust".truecolor(139, 69, 19).bold(),
+                Self::Dart => "Dart".blue().bold(),
+                Self::CSharp => "C#".magenta().bold(),
+                Self::Java => "Java".red().bold(),
             }
         )
     }

@@ -41,7 +41,7 @@ fn update_version_kts(content: &str, new_version: &str) -> String {
     let simple_pattern = Regex::new(r#"(?m)^(version\s*=\s*)"[^"]+""#).unwrap();
     if simple_pattern.is_match(content) {
         return simple_pattern
-            .replace(content, format!(r#"${{1}}"{}""#, new_version))
+            .replace(content, format!(r#"${{1}}"{new_version}""#))
             .to_string();
     }
 
@@ -51,7 +51,7 @@ fn update_version_kts(content: &str, new_version: &str) -> String {
             .unwrap();
     if fallback_pattern.is_match(content) {
         return fallback_pattern
-            .replace(content, format!(r#"${{1}}"{}""#, new_version))
+            .replace(content, format!(r#"${{1}}"{new_version}""#))
             .to_string();
     }
 
@@ -64,7 +64,7 @@ fn update_version_groovy(content: &str, new_version: &str) -> String {
     let assign_pattern = Regex::new(r#"(?m)^(version\s*=\s*)['"][^'"]+['"]"#).unwrap();
     if assign_pattern.is_match(content) {
         return assign_pattern
-            .replace(content, format!(r#"${{1}}'{}'"#, new_version))
+            .replace(content, format!(r#"${{1}}'{new_version}'"#))
             .to_string();
     }
 
@@ -72,7 +72,7 @@ fn update_version_groovy(content: &str, new_version: &str) -> String {
     let space_pattern = Regex::new(r#"(?m)^(version\s+)['"][^'"]+['"]"#).unwrap();
     if space_pattern.is_match(content) {
         return space_pattern
-            .replace(content, format!(r#"${{1}}'{}'"#, new_version))
+            .replace(content, format!(r#"${{1}}'{new_version}'"#))
             .to_string();
     }
 

@@ -13,11 +13,11 @@ pub enum CliLanguage {
 impl From<CliLanguage> for Language {
     fn from(value: CliLanguage) -> Self {
         match value {
-            CliLanguage::Python => Language::Python,
-            CliLanguage::Node => Language::Node,
-            CliLanguage::Rust => Language::Rust,
-            CliLanguage::Dart => Language::Dart,
-            CliLanguage::Java => Language::Java,
+            CliLanguage::Python => Self::Python,
+            CliLanguage::Node => Self::Node,
+            CliLanguage::Rust => Self::Rust,
+            CliLanguage::Dart => Self::Dart,
+            CliLanguage::Java => Self::Java,
         }
     }
 }

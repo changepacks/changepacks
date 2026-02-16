@@ -75,7 +75,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                     };
                     println!(
                         "{}",
-                        format!("{}{}", project, changed_marker,).replace(
+                        format!("{project}{changed_marker}",).replace(
                             project.version().unwrap_or("unknown"),
                             &if let Some(update_type) =
                                 update_map.get(&get_relative_path(repo_root_path, project.path())?)
@@ -94,7 +94,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                     repo_root_path,
                     &mut update_map,
                 )?)?;
-                println!("{}", json);
+                println!("{json}");
             }
         }
     }
@@ -274,7 +274,7 @@ fn format_project_line(
     } else {
         project
             .version()
-            .map(|v| format!("v{}", v))
+            .map(|v| format!("v{v}"))
             .unwrap_or("unknown".to_string())
     };
 
@@ -306,7 +306,7 @@ fn format_project_line(
                 .bright_blue()
                 .bold(),
             w.name().unwrap_or("noname").bright_white().bold(),
-            format!("({})", version).bright_green(),
+            format!("({version})").bright_green(),
             "-".bright_cyan(),
             w.relative_path().display().to_string().bright_black()
         ),
@@ -314,13 +314,13 @@ fn format_project_line(
             "{} {} {} {} {}",
             format!("[{}]", p.language()).bright_blue().bold(),
             p.name().unwrap_or("noname").bright_white().bold(),
-            format!("({})", version).bright_green(),
+            format!("({version})").bright_green(),
             "-".bright_cyan(),
             p.relative_path().display().to_string().bright_black()
         ),
     };
 
-    Ok(format!("{}{}{}", base_format, changed_marker, deps_info))
+    Ok(format!("{base_format}{changed_marker}{deps_info}"))
 }
 
 #[cfg(test)]

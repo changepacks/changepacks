@@ -15,9 +15,9 @@ impl Display for UpdateType {
             f,
             "{}",
             match self {
-                UpdateType::Major => "\x1b[1;31mMajor\x1b[0m", // bold red
-                UpdateType::Minor => "\x1b[1;33mMinor\x1b[0m", // bold yellow
-                UpdateType::Patch => "\x1b[1;32mPatch\x1b[0m", // bold green
+                Self::Major => "\x1b[1;31mMajor\x1b[0m", // bold red
+                Self::Minor => "\x1b[1;33mMinor\x1b[0m", // bold yellow
+                Self::Patch => "\x1b[1;32mPatch\x1b[0m", // bold green
             }
         )
     }

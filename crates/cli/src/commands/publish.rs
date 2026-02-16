@@ -101,7 +101,7 @@ pub async fn handle_publish_with_prompter(
     if let FormatOptions::Stdout = args.format {
         println!("Projects to publish:");
         for project in projects.iter() {
-            println!("  {}", project);
+            println!("  {project}");
         }
     }
 
@@ -141,13 +141,13 @@ pub async fn handle_publish_with_prompter(
     // Publish each project
     for project in projects.iter() {
         if let FormatOptions::Stdout = args.format {
-            println!("Publishing {}...", project);
+            println!("Publishing {project}...");
         }
         let result = project.publish(&config).await;
         match result {
             Ok(_) => {
                 if let FormatOptions::Stdout = args.format {
-                    println!("Successfully published {}", project);
+                    println!("Successfully published {project}");
                 }
                 if let FormatOptions::Json = args.format {
                     result_map.insert(
@@ -158,7 +158,7 @@ pub async fn handle_publish_with_prompter(
             }
             Err(e) => {
                 if let FormatOptions::Stdout = args.format {
-                    eprintln!("Failed to publish {}: {}", project, e);
+                    eprintln!("Failed to publish {project}: {e}");
                 }
                 if let FormatOptions::Json = args.format {
                     result_map.insert(
@@ -166,7 +166,7 @@ pub async fn handle_publish_with_prompter(
                         PublishResult::new(false, Some(e.to_string())),
                     );
                 }
-                failed_projects.push(format!("{}", project));
+                failed_projects.push(format!("{project}"));
             }
         }
     }

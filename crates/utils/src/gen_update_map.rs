@@ -73,10 +73,7 @@ fn apply_update_on_rules(
                         UpdateType::Patch,
                         vec![ChangePackResultLog::new(
                             UpdateType::Patch,
-                            format!(
-                                "Auto-update triggered by updateOn rule: {}",
-                                trigger_pattern
-                            ),
+                            format!("Auto-update triggered by updateOn rule: {trigger_pattern}"),
                         )],
                     )
                 });
@@ -159,10 +156,7 @@ pub fn apply_reverse_dependencies(
                 UpdateType::Patch,
                 vec![ChangePackResultLog::new(
                     UpdateType::Patch,
-                    format!(
-                        "Auto-update: depends on '{}' via workspace:*",
-                        dependency_name
-                    ),
+                    format!("Auto-update: depends on '{dependency_name}' via workspace:*"),
                 )],
             )
         });

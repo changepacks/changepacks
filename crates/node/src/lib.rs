@@ -19,10 +19,10 @@ impl PackageManager {
     /// Returns the publish command for this package manager
     pub fn publish_command(&self) -> &'static str {
         match self {
-            PackageManager::Npm => "npm publish",
-            PackageManager::Yarn => "yarn npm publish",
-            PackageManager::Pnpm => "pnpm publish",
-            PackageManager::Bun => "bun publish",
+            Self::Npm => "npm publish",
+            Self::Yarn => "yarn npm publish",
+            Self::Pnpm => "pnpm publish",
+            Self::Bun => "bun publish",
         }
     }
 }

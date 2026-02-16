@@ -22,7 +22,7 @@ fn main() {
         let out_dir = std::env::var("OUT_DIR").unwrap();
 
         // Tell Cargo where to find the library
-        println!("cargo:rustc-link-search=native={}", out_dir);
+        println!("cargo:rustc-link-search=native={out_dir}");
 
         // For newer linkers (ubuntu-22.04, x86_64-unknown-linux-gnu), use simple linking
         // to avoid duplicate symbols

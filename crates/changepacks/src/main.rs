@@ -9,7 +9,7 @@ async fn main() {
         if e.downcast_ref::<changepacks_cli::UserCancelled>().is_some() {
             process::exit(0);
         }
-        eprintln!("Error: {}", e);
+        eprintln!("Error: {e}");
         process::exit(1);
     }
 }
