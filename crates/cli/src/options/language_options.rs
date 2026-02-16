@@ -8,6 +8,7 @@ pub enum CliLanguage {
     Rust,
     Dart,
     Java,
+    CSharp,
 }
 
 impl From<CliLanguage> for Language {
@@ -18,6 +19,7 @@ impl From<CliLanguage> for Language {
             CliLanguage::Rust => Self::Rust,
             CliLanguage::Dart => Self::Dart,
             CliLanguage::Java => Self::Java,
+            CliLanguage::CSharp => Self::CSharp,
         }
     }
 }
@@ -33,6 +35,7 @@ mod tests {
     #[case(CliLanguage::Rust, Language::Rust)]
     #[case(CliLanguage::Dart, Language::Dart)]
     #[case(CliLanguage::Java, Language::Java)]
+    #[case(CliLanguage::CSharp, Language::CSharp)]
     fn test_cli_language_to_language(#[case] cli_lang: CliLanguage, #[case] expected: Language) {
         let result: Language = cli_lang.into();
         assert_eq!(result, expected);
