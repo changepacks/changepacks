@@ -80,7 +80,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
             if let Some((update_type, _)) =
                 update_map.get(&get_relative_path(repo_root_path, project.path())?)
             {
-                update_projects.push((project, update_type.clone()));
+                update_projects.push((project, *update_type));
                 continue;
             }
         }
@@ -98,7 +98,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
             println!(
                 "{} {}",
                 project,
-                display_update(project.version(), update_type.clone())?
+                display_update(project.version(), *update_type)?
             );
         }
     }
@@ -134,7 +134,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     futures::future::join_all(
         update_projects
             .iter_mut()
-            .map(|(project, update_type)| project.update_version(update_type.clone())),
+            .map(|(project, update_type)| project.update_version(*update_type)),
     )
     .await
     .into_iter()

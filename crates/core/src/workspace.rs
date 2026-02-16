@@ -155,7 +155,7 @@ mod tests {
             Ok(())
         }
         fn language(&self) -> Language {
-            self.language.clone()
+            self.language
         }
         fn dependencies(&self) -> &HashSet<String> {
             &self.dependencies

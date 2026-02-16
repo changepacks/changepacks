@@ -60,7 +60,7 @@ pub async fn handle_changepack_with_prompter(
     let mut update_map = HashMap::<PathBuf, UpdateType>::new();
 
     for update_type in if let Some(update_type) = &args.update_type {
-        vec![update_type.clone()]
+        vec![*update_type]
     } else {
         vec![UpdateType::Major, UpdateType::Minor, UpdateType::Patch]
     } {
@@ -94,7 +94,7 @@ pub async fn handle_changepack_with_prompter(
         for project in selected_projects {
             update_map.insert(
                 get_relative_path(repo_root_path, project.path())?,
-                update_type.clone(),
+                update_type,
             );
         }
 

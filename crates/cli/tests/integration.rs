@@ -1570,10 +1570,10 @@ async fn test_cli_publish_with_failing_command() {
 
     std::env::set_current_dir(&original_dir).unwrap();
 
-    // Should still succeed (errors are captured in JSON output)
+    // Should return error since publish failed (exit code propagation)
     assert!(
-        result.is_ok(),
-        "publish with failing command should still succeed for JSON output"
+        result.is_err(),
+        "publish with failing command should return error for non-zero exit code"
     );
 }
 
@@ -2289,10 +2289,10 @@ async fn test_cli_publish_stdout_failing() {
 
     std::env::set_current_dir(&original_dir).unwrap();
 
-    // Publishing fails but command should still succeed (error is printed)
+    // Publishing fails so command should return error (non-zero exit code)
     assert!(
-        result.is_ok(),
-        "publish stdout failing should still return ok"
+        result.is_err(),
+        "publish stdout failing should return error for non-zero exit code"
     );
 }
 

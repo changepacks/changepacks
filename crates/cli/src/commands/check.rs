@@ -80,7 +80,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                             &if let Some(update_type) =
                                 update_map.get(&get_relative_path(repo_root_path, project.path())?)
                             {
-                                display_update(project.version(), update_type.0.clone())?
+                                display_update(project.version(), update_type.0)?
                             } else {
                                 project.version().unwrap_or("unknown").to_string()
                             },
@@ -270,7 +270,7 @@ fn format_project_line(
 
     let relative_path = get_relative_path(repo_root_path, project.path())?;
     let version = if let Some(update_entry) = update_map.get(&relative_path) {
-        changepacks_utils::display_update(project.version(), update_entry.0.clone())?
+        changepacks_utils::display_update(project.version(), update_entry.0)?
     } else {
         project
             .version()

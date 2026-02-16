@@ -28,13 +28,13 @@ pub async fn gen_update_map(
         for (project_path, update_type) in file_json.changes().iter() {
             let ret = update_map
                 .entry(project_path.clone())
-                .or_insert((update_type.clone(), vec![]));
+                .or_insert((*update_type, vec![]));
             ret.1.push(ChangePackResultLog::new(
-                update_type.clone(),
+                *update_type,
                 file_json.note().to_string(),
             ));
             if ret.0 > *update_type {
-                ret.0 = update_type.clone();
+                ret.0 = *update_type;
             }
         }
     }
