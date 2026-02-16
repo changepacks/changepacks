@@ -97,7 +97,7 @@ pub fn update_version_in_xml(
 }
 
 /// Detect indentation style from XML content
-pub fn detect_indent(content: &str) -> &str {
+pub fn detect_indent(content: &str) -> &'static str {
     for line in content.lines() {
         if line.starts_with("    ") {
             return "    ";

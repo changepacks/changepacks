@@ -143,7 +143,7 @@ pub async fn handle_publish_with_prompter(
         }
         let result = project.publish(&ctx.config).await;
         match result {
-            Ok(_) => {
+            Ok(()) => {
                 if let FormatOptions::Stdout = args.format {
                     println!("Successfully published {project}");
                 }

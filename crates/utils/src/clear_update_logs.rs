@@ -27,7 +27,7 @@ pub async fn clear_update_logs(changepacks_dir: &PathBuf) -> Result<()> {
     } else {
         let error_details: Vec<String> = failures
             .iter()
-            .filter_map(|r| r.as_ref().err().map(|e| e.to_string()))
+            .filter_map(|r| r.as_ref().err().map(std::string::ToString::to_string))
             .collect();
         Err(anyhow::anyhow!(
             "Failed to remove {} update log(s): {}",

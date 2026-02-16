@@ -31,7 +31,7 @@ pub fn update_version_in_groovy(content: &str, new_version: &str) -> String {
     let assign_pattern = Regex::new(r#"(?m)^(version\s*=\s*)['"][^'"]+['"]"#).unwrap();
     if assign_pattern.is_match(content) {
         return assign_pattern
-            .replace(content, format!(r#"${{1}}'{new_version}'"#))
+            .replace(content, format!(r"${{1}}'{new_version}'"))
             .to_string();
     }
 
@@ -39,7 +39,7 @@ pub fn update_version_in_groovy(content: &str, new_version: &str) -> String {
     let space_pattern = Regex::new(r#"(?m)^(version\s+)['"][^'"]+['"]"#).unwrap();
     if space_pattern.is_match(content) {
         return space_pattern
-            .replace(content, format!(r#"${{1}}'{new_version}'"#))
+            .replace(content, format!(r"${{1}}'{new_version}'"))
             .to_string();
     }
 
@@ -71,9 +71,7 @@ group = "com.devfive"
 version = project.findProperty("releaseVersion") ?: "1.0.11"
 "#;
         let updated = update_version_in_kts(content, "1.0.12");
-        assert!(
-            updated.contains(r#"version = project.findProperty("releaseVersion") ?: "1.0.12""#)
-        );
+        assert!(updated.contains(r#"version = project.findProperty("releaseVersion") ?: "1.0.12""#));
     }
 
     #[test]

@@ -79,7 +79,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                                 project.version().unwrap_or("unknown").to_string()
                             },
                         ),
-                    )
+                    );
                 }
             }
             FormatOptions::Json => {
