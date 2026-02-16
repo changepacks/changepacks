@@ -200,6 +200,32 @@ impl ProjectFinder for RustProjectFinder {
     }
 
     async fn finalize(&mut self) -> Result<()> {
+        // If workspace root was never visited (e.g. excluded by ignore patterns),
+        // walk up from the first pending package to find and read it
+        if self.workspace_package_version.is_none()
+            && !self.pending_workspace_packages.is_empty()
+            && let Some(first_pkg) = self.pending_workspace_packages.first()
+        {
+            let mut dir = first_pkg.abs_path.parent().and_then(Path::parent);
+            while let Some(parent) = dir {
+                let candidate = parent.join("Cargo.toml");
+                if candidate.is_file()
+                    && let Ok(content) = read_to_string(&candidate).await
+                    && let Ok(parsed) = toml::from_str::<toml::Value>(&content)
+                    && let Some(version) = parsed
+                        .get("workspace")
+                        .and_then(|w| w.get("package"))
+                        .and_then(|p| p.get("version"))
+                        .and_then(|v| v.as_str())
+                {
+                    self.workspace_package_version = Some(version.to_string());
+                    self.workspace_root_path = Some(candidate);
+                    break;
+                }
+                dir = parent.parent();
+            }
+        }
+
         for pending in self.pending_workspace_packages.drain(..) {
             let mut pkg = RustPackage::new_with_workspace_version(
                 pending.name,
@@ -520,6 +546,66 @@ external = "1.0"
     }
 
     #[tokio::test]
+    async fn test_rust_project_finder_virtual_workspace_with_workspace_version() {
+        // Reproduces vespera-style virtual workspace (no [package] section)
+        let temp_dir = TempDir::new().unwrap();
+
+        let workspace_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            r#"[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.33"
+edition = "2024"
+"#,
+        )
+        .unwrap();
+
+        let pkg_dir = temp_dir.path().join("crates").join("vespera");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        let pkg_toml = pkg_dir.join("Cargo.toml");
+        fs::write(
+            &pkg_toml,
+            r#"[package]
+name = "vespera"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+vespera_core = { workspace = true }
+
+[lints]
+workspace = true
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&workspace_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&pkg_toml, &PathBuf::from("crates/vespera/Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        let projects = finder.projects();
+        // Virtual workspace (no [package]) + 1 member
+        assert_eq!(projects.len(), 2);
+
+        let pkg = projects
+            .iter()
+            .find(|p| p.name() == Some("vespera"))
+            .unwrap();
+        assert_eq!(pkg.version(), Some("0.1.33"));
+    }
+
+    #[tokio::test]
     async fn test_rust_project_finder_visit_package_with_workspace_version() {
         let temp_dir = TempDir::new().unwrap();
 
@@ -632,5 +718,73 @@ version.workspace = true
             .find(|p| p.name() == Some("my-crate"))
             .unwrap();
         assert_eq!(pkg.version(), Some("3.0.0")); // Should still resolve correctly
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_workspace_ignored_by_config() {
+        // Simulates when ignore patterns like ["**", "!crates/**"] skip the root Cargo.toml
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create workspace root (won't be visited due to ignore)
+        let workspace_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            r#"[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.33"
+edition = "2024"
+"#,
+        )
+        .unwrap();
+
+        // Create 2 member packages
+        for name in ["vespera", "vespera_core"] {
+            let pkg_dir = temp_dir.path().join("crates").join(name);
+            fs::create_dir_all(&pkg_dir).unwrap();
+            fs::write(
+                pkg_dir.join("Cargo.toml"),
+                format!(
+                    r#"[package]
+name = "{name}"
+version.workspace = true
+edition.workspace = true
+
+[lints]
+workspace = true
+"#
+                ),
+            )
+            .unwrap();
+        }
+
+        let mut finder = RustProjectFinder::new();
+        // Only visit member packages (workspace root is ignored)
+        for name in ["vespera", "vespera_core"] {
+            let pkg_toml = temp_dir.path().join("crates").join(name).join("Cargo.toml");
+            finder
+                .visit(
+                    &pkg_toml,
+                    &PathBuf::from(format!("crates/{name}/Cargo.toml")),
+                )
+                .await
+                .unwrap();
+        }
+        // finalize should discover the workspace root by walking up
+        finder.finalize().await.unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 2);
+
+        for name in ["vespera", "vespera_core"] {
+            let pkg = projects.iter().find(|p| p.name() == Some(name)).unwrap();
+            assert_eq!(
+                pkg.version(),
+                Some("0.1.33"),
+                "{name} should inherit workspace version"
+            );
+        }
     }
 }
