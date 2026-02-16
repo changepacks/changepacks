@@ -13,7 +13,7 @@ pub enum Language {
 
 impl Language {
     /// Returns the config key used for publish command lookup
-    pub fn publish_key(&self) -> &'static str {
+    pub const fn publish_key(&self) -> &'static str {
         match self {
             Self::Node => "node",
             Self::Python => "python",

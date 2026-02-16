@@ -11,7 +11,7 @@ pub struct ChangePackResultLog {
 }
 
 impl ChangePackResultLog {
-    pub fn new(r#type: UpdateType, note: String) -> Self {
+    pub const fn new(r#type: UpdateType, note: String) -> Self {
         Self { r#type, note }
     }
 }
@@ -28,7 +28,7 @@ pub struct ChangePackResult {
 }
 
 impl ChangePackResult {
-    pub fn new(
+    pub const fn new(
         logs: Vec<ChangePackResultLog>,
         version: Option<String>,
         next_version: Option<String>,
