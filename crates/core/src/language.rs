@@ -14,7 +14,7 @@ pub enum Language {
     Rust,
     /// Dart projects using pubspec.yaml (pub)
     Dart,
-    /// C# projects using .csproj (NuGet, dotnet)
+    /// C# projects using .csproj (`NuGet`, `dotnet`)
     CSharp,
     /// Java projects using build.gradle or build.gradle.kts (Gradle)
     Java,

@@ -290,7 +290,7 @@ fn format_project_line(
             .map(|d| d.as_str())
             .collect::<Vec<_>>()
             .join("\n        ");
-        format!(" [deps:\n        {}]", deps_str).bright_black()
+        format!(" [deps:\n        {deps_str}]").bright_black()
     };
 
     // Format similar to Project::Display but with version update and dependencies

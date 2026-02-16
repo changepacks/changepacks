@@ -1,6 +1,6 @@
 //! # changepacks-python-bridge
 //!
-//! Standalone binary for PyPI distribution of changepacks.
+//! Standalone binary for `PyPI` distribution of changepacks.
 //!
 //! Compiled with maturin as a native executable that can be invoked from Python. The
 //! Python stub locates this binary via sysconfig paths and executes it with command-line
