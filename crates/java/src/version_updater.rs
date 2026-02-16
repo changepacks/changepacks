@@ -1,6 +1,11 @@
 use regex::Regex;
 
 /// Update version in build.gradle.kts content
+///
+/// # Panics
+///
+/// Panics if the internal regex pattern fails to compile. This should never
+/// happen as the patterns are hardcoded.
 #[must_use]
 pub fn update_version_in_kts(content: &str, new_version: &str) -> String {
     // Pattern 1: version = "1.0.0"
@@ -25,6 +30,11 @@ pub fn update_version_in_kts(content: &str, new_version: &str) -> String {
 }
 
 /// Update version in build.gradle (Groovy) content
+///
+/// # Panics
+///
+/// Panics if the internal regex pattern fails to compile. This should never
+/// happen as the patterns are hardcoded.
 #[must_use]
 pub fn update_version_in_groovy(content: &str, new_version: &str) -> String {
     // Pattern 1: version = '1.0.0' or version = "1.0.0"
