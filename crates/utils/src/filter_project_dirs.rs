@@ -6,6 +6,9 @@ use ignore::gitignore::GitignoreBuilder;
 use std::path::Path;
 
 /// Find project directories containing specific files from git tracked files
+///
+/// # Errors
+/// Returns error if git operations fail, gitignore parsing fails, or project visiting fails.
 pub async fn find_project_dirs(
     repo: &ThreadSafeRepository,
     project_finders: &mut [Box<dyn ProjectFinder>],

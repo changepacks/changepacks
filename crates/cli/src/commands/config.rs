@@ -6,7 +6,10 @@ use clap::Args;
 #[command(about = "Change changepacks configuration")]
 pub struct ConfigArgs {}
 
-/// Update project version
+/// Display changepacks configuration
+///
+/// # Errors
+/// Returns error if reading the configuration fails.
 pub async fn handle_config(_args: &ConfigArgs) -> Result<()> {
     let current_dir = std::env::current_dir()?;
     let config = get_changepacks_config(&current_dir).await?;

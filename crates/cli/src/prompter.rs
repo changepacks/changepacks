@@ -9,6 +9,8 @@ pub struct UserCancelled;
 
 /// Trait for user input prompts - allows dependency injection for testing
 pub trait Prompter: Send + Sync {
+    /// # Errors
+    /// Returns error if user cancels the selection or interaction fails.
     fn multi_select<'a>(
         &self,
         message: &str,
@@ -16,8 +18,12 @@ pub trait Prompter: Send + Sync {
         defaults: Vec<usize>,
     ) -> Result<Vec<&'a Project>>;
 
+    /// # Errors
+    /// Returns error if user cancels the confirmation or interaction fails.
     fn confirm(&self, message: &str) -> Result<bool>;
 
+    /// # Errors
+    /// Returns error if user cancels the input or interaction fails.
     fn text(&self, message: &str) -> Result<String>;
 }
 

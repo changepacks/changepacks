@@ -48,6 +48,8 @@ impl Project {
         }
     }
 
+    /// # Errors
+    /// Returns error if the underlying update_version call fails.
     pub async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         match self {
             Self::Workspace(workspace) => workspace.update_version(update_type).await?,
@@ -56,6 +58,8 @@ impl Project {
         Ok(())
     }
 
+    /// # Errors
+    /// Returns error if the underlying check_changed call fails.
     pub fn check_changed(&mut self, path: &Path) -> Result<()> {
         match self {
             Self::Workspace(workspace) => workspace.check_changed(path)?,
@@ -95,6 +99,8 @@ impl Project {
         }
     }
 
+    /// # Errors
+    /// Returns error if the underlying publish call fails.
     pub async fn publish(&self, config: &Config) -> Result<()> {
         match self {
             Self::Workspace(workspace) => workspace.publish(config).await,

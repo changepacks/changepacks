@@ -1,6 +1,10 @@
 use anyhow::{Context, Result};
 use changepacks_core::UpdateType;
 
+/// Calculate the next version based on semver and update type
+///
+/// # Errors
+/// Returns error if the version format is invalid.
 pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     let mut version_parts = version.split('.').collect::<Vec<&str>>();
 

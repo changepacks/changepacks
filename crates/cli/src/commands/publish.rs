@@ -37,10 +37,15 @@ pub struct PublishArgs {
 }
 
 /// Publish packages
+///
+/// # Errors
+/// Returns error if command context creation or publishing fails.
 pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
     handle_publish_with_prompter(args, &InquirePrompter).await
 }
 
+/// # Errors
+/// Returns error if project discovery, dependency sorting, or publishing fails.
 pub async fn handle_publish_with_prompter(
     args: &PublishArgs,
     prompter: &dyn Prompter,

@@ -2,6 +2,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+/// Get the relative path from a git root to an absolute path
+///
+/// # Errors
+/// Returns error if the absolute path is not within the git root directory.
 pub fn get_relative_path(git_root_path: &Path, absolute_path: &Path) -> Result<PathBuf> {
     match absolute_path.strip_prefix(git_root_path) {
         Ok(relative) => Ok(relative.to_path_buf()),

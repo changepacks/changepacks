@@ -21,10 +21,14 @@ pub struct ChangepackArgs {
     pub update_type: Option<UpdateType>,
 }
 
+/// # Errors
+/// Returns error if command context creation or changepack creation fails.
 pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     handle_changepack_with_prompter(args, &InquirePrompter).await
 }
 
+/// # Errors
+/// Returns error if project discovery, prompting, or changepack file creation fails.
 pub async fn handle_changepack_with_prompter(
     args: &ChangepackArgs,
     prompter: &dyn Prompter,

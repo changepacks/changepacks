@@ -10,6 +10,10 @@ use tokio::fs::{read_dir, read_to_string};
 
 use crate::get_changepacks_dir;
 
+/// Generate update map from changepack logs
+///
+/// # Errors
+/// Returns error if reading changepacks directory or parsing JSON fails.
 pub async fn gen_update_map(
     current_dir: &Path,
     config: &Config,

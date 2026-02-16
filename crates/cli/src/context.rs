@@ -12,6 +12,8 @@ pub struct CommandContext {
 }
 
 impl CommandContext {
+    /// # Errors
+    /// Returns error if finding git repository or discovering projects fails.
     pub async fn new(remote: bool) -> Result<Self> {
         let current_dir = std::env::current_dir()?;
         let repo = find_current_git_repo(&current_dir)?;
@@ -30,6 +32,8 @@ impl CommandContext {
         })
     }
 
+    /// # Errors
+    /// Returns error if retrieving the current directory fails.
     pub fn current_dir() -> Result<PathBuf> {
         Ok(std::env::current_dir()?)
     }

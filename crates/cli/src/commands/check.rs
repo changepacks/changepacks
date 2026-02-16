@@ -31,6 +31,9 @@ pub struct CheckArgs {
 }
 
 /// Check project status
+///
+/// # Errors
+/// Returns error if command context creation or project checking fails.
 pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
 

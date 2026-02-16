@@ -10,7 +10,11 @@ pub trait Package: std::fmt::Debug + Send + Sync {
     fn version(&self) -> Option<&str>;
     fn path(&self) -> &Path;
     fn relative_path(&self) -> &Path;
+    /// # Errors
+    /// Returns error if the version update operation fails.
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()>;
+    /// # Errors
+    /// Returns error if the parent path cannot be determined.
     fn check_changed(&mut self, path: &Path) -> Result<()> {
         if self.is_changed() {
             return Ok(());
@@ -34,6 +38,9 @@ pub trait Package: std::fmt::Debug + Send + Sync {
     fn default_publish_command(&self) -> String;
 
     /// Publish the package using the configured command or default
+    ///
+    /// # Errors
+    /// Returns error if the publish command fails to execute or returns non-zero exit code.
     async fn publish(&self, config: &Config) -> Result<()> {
         let command = self.get_publish_command(config);
         let dir = self

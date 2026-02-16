@@ -30,10 +30,15 @@ pub struct UpdateArgs {
 }
 
 /// Update project version
+///
+/// # Errors
+/// Returns error if command context creation or version update fails.
 pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     handle_update_with_prompter(args, &InquirePrompter).await
 }
 
+/// # Errors
+/// Returns error if reading changepack logs, updating versions, or writing results fails.
 pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Prompter) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
     let changepacks_dir = get_changepacks_dir(&CommandContext::current_dir()?)?;

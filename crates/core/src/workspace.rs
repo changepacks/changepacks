@@ -10,12 +10,16 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn path(&self) -> &Path;
     fn relative_path(&self) -> &Path;
     fn version(&self) -> Option<&str>;
+    /// # Errors
+    /// Returns error if the version update operation fails.
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()>;
     fn language(&self) -> Language;
 
     fn dependencies(&self) -> &HashSet<String>;
     fn add_dependency(&mut self, dependency: &str);
 
+    /// # Errors
+    /// Returns error if the parent path cannot be determined.
     // Default implementation for check_changed
     fn check_changed(&mut self, path: &Path) -> Result<()> {
         if self.is_changed() {
@@ -36,6 +40,9 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn default_publish_command(&self) -> String;
 
     /// Publish the workspace using the configured command or default
+    ///
+    /// # Errors
+    /// Returns error if the publish command fails to execute or returns non-zero exit code.
     async fn publish(&self, config: &Config) -> Result<()> {
         let command = self.get_publish_command(config);
         let dir = self

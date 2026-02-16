@@ -73,6 +73,8 @@ enum Commands {
     Publish(PublishArgs),
 }
 
+/// # Errors
+/// Returns error if command execution fails.
 pub async fn main(args: &[String]) -> Result<()> {
     let cli = Cli::parse_from(args);
     if let Some(command) = cli.command {

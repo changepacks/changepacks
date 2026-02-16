@@ -9,7 +9,11 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     fn projects(&self) -> Vec<&Project>;
     fn projects_mut(&mut self) -> Vec<&mut Project>;
     fn project_files(&self) -> &[&str];
+    /// # Errors
+    /// Returns error if the file visitation fails.
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()>;
+    /// # Errors
+    /// Returns error if checking changed status fails for any project.
     fn check_changed(&mut self, path: &Path) -> Result<()> {
         for project in self.projects_mut() {
             project.check_changed(path)?;

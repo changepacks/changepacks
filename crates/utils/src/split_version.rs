@@ -1,5 +1,9 @@
 use anyhow::Result;
 
+/// Split a version string into prefix and version parts
+///
+/// # Errors
+/// Returns error if splitting the version fails (currently never fails).
 pub fn split_version(version: &str) -> Result<(Option<String>, String)> {
     let first_digit_pos = version
         .char_indices()

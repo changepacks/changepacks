@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use tokio::fs::{read_dir, remove_file};
 
-// remove all update logs without confirmation
+/// Remove all update logs without confirmation
+///
+/// # Errors
+/// Returns error if any update log file fails to be removed.
 pub async fn clear_update_logs(changepacks_dir: &PathBuf) -> Result<()> {
     if !changepacks_dir.exists() {
         return Ok(());

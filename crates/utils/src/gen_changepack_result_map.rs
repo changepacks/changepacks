@@ -8,6 +8,10 @@ use changepacks_core::{ChangePackResult, ChangePackResultLog, Project, UpdateTyp
 
 use crate::{get_relative_path, next_version};
 
+/// Generate a changepack result map from projects and update results
+///
+/// # Errors
+/// Returns error if relative path calculation or version calculation fails.
 pub fn gen_changepack_result_map(
     projects: &[&Project],
     repo_root_path: &Path,

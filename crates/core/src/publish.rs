@@ -22,6 +22,9 @@ pub fn resolve_publish_command(
 }
 
 /// Execute a publish command in the given directory
+///
+/// # Errors
+/// Returns error if the command fails to execute or returns non-zero exit code.
 pub async fn run_publish_command(command: &str, working_dir: &Path) -> Result<()> {
     let mut cmd = if cfg!(target_os = "windows") {
         let mut c = tokio::process::Command::new("cmd");
