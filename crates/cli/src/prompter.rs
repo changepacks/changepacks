@@ -7,7 +7,10 @@ use thiserror::Error;
 #[error("")]
 pub struct UserCancelled;
 
-/// Trait for user input prompts - allows dependency injection for testing
+/// Dependency injection interface for interactive prompts.
+///
+/// Allows commands to accept `&dyn Prompter` for testability. Production code uses
+/// `InquirePrompter`, tests use `MockPrompter` with predetermined responses.
 pub trait Prompter: Send + Sync {
     /// # Errors
     /// Returns error if user cancels the selection or interaction fails.

@@ -88,12 +88,7 @@ pub async fn handle_publish_with_prompter(
         return Ok(());
     }
 
-    if let FormatOptions::Stdout = args.format {
-        println!("Projects to publish:");
-        for project in &projects {
-            println!("  {project}");
-        }
-    }
+    print_projects_to_publish(&projects, &args.format);
 
     if args.dry_run {
         args.format
@@ -139,6 +134,15 @@ pub async fn handle_publish_with_prompter(
     }
 
     Ok(())
+}
+
+fn print_projects_to_publish(projects: &[&Project], format: &FormatOptions) {
+    if let FormatOptions::Stdout = format {
+        println!("Projects to publish:");
+        for project in projects {
+            println!("  {project}");
+        }
+    }
 }
 
 async fn execute_publish_loop(

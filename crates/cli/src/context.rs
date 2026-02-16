@@ -5,9 +5,16 @@ use changepacks_core::ProjectFinder;
 use changepacks_utils::{find_current_git_repo, find_project_dirs, get_changepacks_config};
 use std::path::PathBuf;
 
+/// Shared setup context for all CLI commands.
+///
+/// Contains git repository path, loaded config, and initialized project finders.
+/// Instantiated once per command to avoid repetitive setup code.
 pub struct CommandContext {
+    /// Root path of the git repository
     pub repo_root_path: PathBuf,
+    /// Loaded configuration from `.changepacks/config.json`
     pub config: Config,
+    /// Project finders for all supported languages
     pub project_finders: Vec<Box<dyn ProjectFinder>>,
 }
 

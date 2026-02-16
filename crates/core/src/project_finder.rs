@@ -4,6 +4,10 @@ use crate::project::Project;
 use anyhow::Result;
 use async_trait::async_trait;
 
+/// Visitor pattern for discovering projects by walking the git tree.
+///
+/// Each language implements this trait to detect its project files (package.json, Cargo.toml, etc.)
+/// and build a collection of projects. The `visit` method is called for each file in the git tree.
 #[async_trait]
 pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     fn projects(&self) -> Vec<&Project>;

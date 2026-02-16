@@ -4,6 +4,10 @@ use crate::{Config, Language, Package, update_type::UpdateType};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+/// Interface for monorepo workspace roots.
+///
+/// Extends Package behavior with workspace-specific operations like updating workspace
+/// dependencies. Implemented by language-specific workspace types.
 #[async_trait]
 pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn name(&self) -> Option<&str>;

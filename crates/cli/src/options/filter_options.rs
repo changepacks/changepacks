@@ -1,9 +1,14 @@
 use changepacks_core::Project;
 use clap::ValueEnum;
 
+/// CLI filter for workspace-only or package-only listing.
+///
+/// Used by the check command to filter projects by type.
 #[derive(Debug, Clone, ValueEnum)]
 pub enum FilterOptions {
+    /// Show only workspace projects
     Workspace,
+    /// Show only package projects
     Package,
 }
 

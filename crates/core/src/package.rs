@@ -4,6 +4,10 @@ use crate::{Config, Language, update_type::UpdateType};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+/// Interface for single versioned packages.
+///
+/// Implemented by language-specific package types for reading versions, updating files,
+/// detecting changes, and publishing. All I/O operations are async.
 #[async_trait]
 pub trait Package: std::fmt::Debug + Send + Sync {
     fn name(&self) -> Option<&str>;
