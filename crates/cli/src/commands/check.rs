@@ -7,7 +7,7 @@ use changepacks_utils::{
 };
 use clap::Args;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::{
     CommandContext,
@@ -146,19 +146,16 @@ fn display_tree(
 
     // Display tree starting from roots
     let mut visited: HashSet<String> = HashSet::new();
+    let mut ctx = TreeContext {
+        graph: &graph,
+        path_to_project: &path_to_project,
+        repo_root_path,
+        update_map,
+    };
     for (idx, root) in sorted_roots.iter().enumerate() {
         if let Some(project) = path_to_project.get(root) {
             let is_last = idx == sorted_roots.len() - 1;
-            display_tree_node(
-                project,
-                &graph,
-                &path_to_project,
-                repo_root_path,
-                update_map,
-                "",
-                is_last,
-                &mut visited,
-            )?;
+            display_tree_node(project, &mut ctx, "", is_last, &mut visited)?;
         }
     }
 
@@ -175,14 +172,18 @@ fn display_tree(
     Ok(())
 }
 
+/// Context for tree display operations
+struct TreeContext<'a> {
+    graph: &'a HashMap<String, Vec<String>>,
+    path_to_project: &'a HashMap<String, &'a Project>,
+    repo_root_path: &'a Path,
+    update_map: &'a HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+}
+
 /// Display a single node in the tree
-#[allow(clippy::too_many_arguments)]
 fn display_tree_node(
     project: &Project,
-    graph: &HashMap<String, Vec<String>>,
-    path_to_project: &HashMap<String, &Project>,
-    repo_root_path: &std::path::Path,
-    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    ctx: &mut TreeContext,
     prefix: &str,
     is_last: bool,
     visited: &mut HashSet<String>,
@@ -200,17 +201,22 @@ fn display_tree_node(
             "{}{}{}",
             prefix,
             connector,
-            format_project_line(project, repo_root_path, update_map, path_to_project)?
+            format_project_line(
+                project,
+                ctx.repo_root_path,
+                ctx.update_map,
+                ctx.path_to_project
+            )?
         );
     }
 
     // Always display dependencies, even if the node was already visited
     // This ensures all dependencies are shown in the tree
-    if let Some(deps) = graph.get(&project_name) {
+    if let Some(deps) = ctx.graph.get(&project_name) {
         let mut sorted_deps = deps.clone();
         sorted_deps.sort();
         for (idx, dep_name) in sorted_deps.iter().enumerate() {
-            if let Some(dep_project) = path_to_project.get(dep_name) {
+            if let Some(dep_project) = ctx.path_to_project.get(dep_name) {
                 let is_last_dep = idx == sorted_deps.len() - 1;
                 let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
                 // Use a separate visited set for dependencies to avoid infinite loops
@@ -228,22 +234,13 @@ fn display_tree_node(
                         dep_connector,
                         format_project_line(
                             dep_project,
-                            repo_root_path,
-                            update_map,
-                            path_to_project
+                            ctx.repo_root_path,
+                            ctx.update_map,
+                            ctx.path_to_project
                         )?
                     );
                 } else {
-                    display_tree_node(
-                        dep_project,
-                        graph,
-                        path_to_project,
-                        repo_root_path,
-                        update_map,
-                        &new_prefix,
-                        is_last_dep,
-                        visited,
-                    )?;
+                    display_tree_node(dep_project, ctx, &new_prefix, is_last_dep, visited)?;
                 }
             }
         }
