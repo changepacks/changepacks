@@ -24,9 +24,10 @@ pub async fn gen_update_map(
 
     let mut entries = read_dir(&changepacks_dir).await?;
     while let Some(file) = entries.next_entry().await? {
-        let file_name = file.file_name().to_string_lossy().to_string();
-        if file_name == "config.json"
-            || !Path::new(&file_name)
+        let file_name = file.file_name();
+        let file_name = file_name.to_string_lossy();
+        if file_name.as_ref() == "config.json"
+            || !Path::new(file_name.as_ref())
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
         {
@@ -63,6 +64,7 @@ fn apply_update_on_rules(
 
     for (trigger_pattern, dependents) in &config.update_on {
         let Ok(pattern) = Pattern::new(trigger_pattern) else {
+            eprintln!("warning: invalid glob pattern in updateOn config: {trigger_pattern}");
             continue;
         };
 
