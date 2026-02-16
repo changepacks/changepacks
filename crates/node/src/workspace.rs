@@ -71,7 +71,7 @@ impl Workspace for NodeWorkspace {
             &self.path,
             format!(
                 "{}{}",
-                String::from_utf8(ser.into_inner())?.clone().trim_end(),
+                String::from_utf8(ser.into_inner())?.trim_end(),
                 if package_json_raw.ends_with('\n') {
                     "\n"
                 } else {

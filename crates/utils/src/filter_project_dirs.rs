@@ -86,7 +86,13 @@ pub async fn find_project_dirs(
             .object()?
             .try_into_tree()?
     } else {
-        repo.find_reference(&format!("refs/heads/{}", config.base_branch))?
+        repo.find_reference(&format!("refs/heads/{}", config.base_branch))
+            .with_context(|| {
+                format!(
+                    "base branch '{}' not found in local refs",
+                    config.base_branch
+                )
+            })?
             .id()
             .object()?
             .try_into_commit()?
