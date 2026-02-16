@@ -110,16 +110,7 @@ pub async fn handle_publish_with_prompter(
     let (result_map, failed_projects) =
         execute_publish_loop(&projects, &ctx.config, &args.format).await;
 
-    if !failed_projects.is_empty()
-        && let FormatOptions::Stdout = args.format
-    {
-        eprintln!(
-            "\n{} of {} projects failed to publish: {}",
-            failed_projects.len(),
-            projects.len(),
-            failed_projects.join(", ")
-        );
-    }
+    print_publish_failure_summary(&failed_projects, projects.len(), &args.format);
 
     if let FormatOptions::Json = args.format {
         println!("{}", serde_json::to_string_pretty(&result_map)?);
@@ -142,6 +133,19 @@ fn print_projects_to_publish(projects: &[&Project], format: &FormatOptions) {
         for project in projects {
             println!("  {project}");
         }
+    }
+}
+
+fn print_publish_failure_summary(failed_projects: &[String], total: usize, format: &FormatOptions) {
+    if !failed_projects.is_empty()
+        && let FormatOptions::Stdout = format
+    {
+        eprintln!(
+            "\n{} of {} projects failed to publish: {}",
+            failed_projects.len(),
+            total,
+            failed_projects.join(", ")
+        );
     }
 }
 
