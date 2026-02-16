@@ -17,7 +17,7 @@ impl CommandContext {
         let repo = find_current_git_repo(&current_dir)?;
         let repo_root_path = repo
             .work_dir()
-            .context("Not a working directory")?
+            .context("Not a git working directory. Ensure you are inside a git repository.")?
             .to_path_buf();
         let config = get_changepacks_config(&current_dir).await?;
         let mut project_finders = get_finders();
