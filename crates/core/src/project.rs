@@ -49,7 +49,7 @@ impl Project {
     }
 
     /// # Errors
-    /// Returns error if the underlying update_version call fails.
+    /// Returns error if the underlying `update_version` call fails.
     pub async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         match self {
             Self::Workspace(workspace) => workspace.update_version(update_type).await?,
@@ -59,7 +59,7 @@ impl Project {
     }
 
     /// # Errors
-    /// Returns error if the underlying check_changed call fails.
+    /// Returns error if the underlying `check_changed` call fails.
     pub fn check_changed(&mut self, path: &Path) -> Result<()> {
         match self {
             Self::Workspace(workspace) => workspace.check_changed(path)?,

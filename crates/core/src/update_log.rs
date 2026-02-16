@@ -13,6 +13,7 @@ pub struct ChangePackLog {
 }
 
 impl ChangePackLog {
+    #[must_use]
     pub fn new(changes: HashMap<PathBuf, UpdateType>, note: String) -> Self {
         Self {
             changes,
@@ -21,10 +22,12 @@ impl ChangePackLog {
         }
     }
 
+    #[must_use]
     pub fn changes(&self) -> &HashMap<PathBuf, UpdateType> {
         &self.changes
     }
 
+    #[must_use]
     pub fn note(&self) -> &str {
         &self.note
     }

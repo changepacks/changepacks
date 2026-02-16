@@ -19,6 +19,7 @@ pub struct CSharpWorkspace {
 }
 
 impl CSharpWorkspace {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,

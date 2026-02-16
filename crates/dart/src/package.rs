@@ -18,6 +18,7 @@ pub struct DartPackage {
 }
 
 impl DartPackage {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,

@@ -13,6 +13,7 @@ pub enum Language {
 
 impl Language {
     /// Returns the config key used for publish command lookup
+    #[must_use]
     pub const fn publish_key(&self) -> &'static str {
         match self {
             Self::Node => "node",

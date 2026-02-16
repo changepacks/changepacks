@@ -18,6 +18,7 @@ pub struct RustWorkspace {
 }
 
 impl RustWorkspace {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,

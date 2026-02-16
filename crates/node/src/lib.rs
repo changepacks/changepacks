@@ -17,6 +17,7 @@ pub enum PackageManager {
 
 impl PackageManager {
     /// Returns the publish command for this package manager
+    #[must_use]
     pub fn publish_command(&self) -> &'static str {
         match self {
             Self::Npm => "npm publish",
@@ -29,6 +30,7 @@ impl PackageManager {
 
 /// Detects the package manager by checking for lock files in the given directory
 /// Priority: bun.lockb > pnpm-lock.yaml > yarn.lock > package-lock.json > npm (default)
+#[must_use]
 pub fn detect_package_manager(dir: &Path) -> PackageManager {
     if dir.join("bun.lockb").exists() || dir.join("bun.lock").exists() {
         PackageManager::Bun
@@ -45,6 +47,7 @@ pub fn detect_package_manager(dir: &Path) -> PackageManager {
 }
 
 /// Detects the package manager by searching from the given path up to the root
+#[must_use]
 pub fn detect_package_manager_recursive(path: &Path) -> PackageManager {
     let mut current = if path.is_file() {
         path.parent()

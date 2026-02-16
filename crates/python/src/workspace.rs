@@ -18,6 +18,7 @@ pub struct PythonWorkspace {
 }
 
 impl PythonWorkspace {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,

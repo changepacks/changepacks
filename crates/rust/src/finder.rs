@@ -22,6 +22,7 @@ impl Default for RustProjectFinder {
 }
 
 impl RustProjectFinder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),

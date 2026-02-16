@@ -19,6 +19,7 @@ pub struct GradlePackage {
 }
 
 impl GradlePackage {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,

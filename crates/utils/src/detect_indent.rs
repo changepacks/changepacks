@@ -1,3 +1,4 @@
+#[must_use]
 pub fn detect_indent(content: &str) -> usize {
     let mut indent = 0;
     for line in content.lines() {

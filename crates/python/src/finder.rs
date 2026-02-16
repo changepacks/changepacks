@@ -22,6 +22,7 @@ impl Default for PythonProjectFinder {
 }
 
 impl PythonProjectFinder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),

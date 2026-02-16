@@ -19,6 +19,7 @@ pub struct GradleWorkspace {
 }
 
 impl GradleWorkspace {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,

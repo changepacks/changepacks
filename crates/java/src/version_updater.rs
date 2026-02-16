@@ -1,6 +1,7 @@
 use regex::Regex;
 
 /// Update version in build.gradle.kts content
+#[must_use]
 pub fn update_version_in_kts(content: &str, new_version: &str) -> String {
     // Pattern 1: version = "1.0.0"
     let simple_pattern = Regex::new(r#"(?m)^(version\s*=\s*)"[^"]+""#).unwrap();
@@ -24,6 +25,7 @@ pub fn update_version_in_kts(content: &str, new_version: &str) -> String {
 }
 
 /// Update version in build.gradle (Groovy) content
+#[must_use]
 pub fn update_version_in_groovy(content: &str, new_version: &str) -> String {
     // Pattern 1: version = '1.0.0' or version = "1.0.0"
     let assign_pattern = Regex::new(r#"(?m)^(version\s*=\s*)['"][^'"]+['"]"#).unwrap();

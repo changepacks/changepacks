@@ -31,8 +31,9 @@ pub trait Prompter: Send + Sync {
 fn handle_inquire_result<T>(result: Result<T, inquire::InquireError>) -> Result<T> {
     match result {
         Ok(v) => Ok(v),
-        Err(inquire::InquireError::OperationCanceled)
-        | Err(inquire::InquireError::OperationInterrupted) => Err(UserCancelled.into()),
+        Err(
+            inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted,
+        ) => Err(UserCancelled.into()),
         Err(e) => Err(e.into()),
     }
 }

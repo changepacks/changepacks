@@ -17,6 +17,7 @@ pub struct DartWorkspace {
 }
 
 impl DartWorkspace {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,

@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// Sort projects by their dependencies using topological sort.
 /// Projects with no dependencies or whose dependencies are already published will come first.
 /// Returns a sorted vector of project references (no cloning, just reordering).
+#[must_use]
 pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     if projects.is_empty() {
         return projects;

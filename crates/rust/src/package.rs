@@ -18,6 +18,7 @@ pub struct RustPackage {
 }
 
 impl RustPackage {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,

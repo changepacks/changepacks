@@ -22,6 +22,7 @@ impl Default for NodeProjectFinder {
 }
 
 impl NodeProjectFinder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),

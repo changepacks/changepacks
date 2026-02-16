@@ -22,6 +22,7 @@ impl Default for DartProjectFinder {
 }
 
 impl DartProjectFinder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),

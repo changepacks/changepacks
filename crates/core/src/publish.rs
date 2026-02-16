@@ -3,6 +3,7 @@ use anyhow::Result;
 use std::path::Path;
 
 /// Resolve the publish command from config, language, or default
+#[must_use]
 pub fn resolve_publish_command(
     relative_path: &Path,
     language: Language,

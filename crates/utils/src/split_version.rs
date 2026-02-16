@@ -11,13 +11,12 @@ pub fn split_version(version: &str) -> Result<(Option<String>, String)> {
         .map(|(pos, _)| pos);
 
     match first_digit_pos {
-        Some(0) => Ok((None, version.to_string())),
+        Some(0) | None => Ok((None, version.to_string())),
         Some(pos) => {
             let prefix = version[..pos].to_string();
             let version_part = version[pos..].to_string();
             Ok((Some(prefix), version_part))
         }
-        None => Ok((None, version.to_string())),
     }
 }
 

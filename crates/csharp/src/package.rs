@@ -20,6 +20,7 @@ pub struct CSharpPackage {
 }
 
 impl CSharpPackage {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,

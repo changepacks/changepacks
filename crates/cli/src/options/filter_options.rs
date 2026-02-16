@@ -8,6 +8,7 @@ pub enum FilterOptions {
 }
 
 impl FilterOptions {
+    #[must_use]
     pub fn matches(&self, project: &Project) -> bool {
         match self {
             Self::Workspace => matches!(project, Project::Workspace(_)),

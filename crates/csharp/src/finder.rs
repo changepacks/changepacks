@@ -24,6 +24,7 @@ impl Default for CSharpProjectFinder {
 }
 
 impl CSharpProjectFinder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),
@@ -40,8 +41,8 @@ impl CSharpProjectFinder {
 }
 
 /// Extract project name from a path string, handling both Windows and Unix separators
-/// Input: "..\CoreLib\CoreLib.csproj" or "../CoreLib/CoreLib.csproj"
-/// Output: "CoreLib"
+/// Input: `"..\CoreLib\CoreLib.csproj"` or `"../CoreLib/CoreLib.csproj"`
+/// Output: `"CoreLib"`
 fn extract_project_name_from_path(path_str: &str) -> Option<String> {
     // Split by both Windows (\) and Unix (/) separators
     let filename = path_str.rsplit(['\\', '/']).next()?;
@@ -86,8 +87,7 @@ impl CSharpProjectFinder {
                         }
                     }
                 }
-                Ok(Event::Eof) => break,
-                Err(_) => break,
+                Ok(Event::Eof) | Err(_) => break,
                 _ => {}
             }
             buf.clear();
@@ -95,7 +95,7 @@ impl CSharpProjectFinder {
         None
     }
 
-    /// Extract PackageReference dependencies from .csproj XML content using quick-xml
+    /// Extract `PackageReference` dependencies from .csproj XML content using quick-xml
     #[allow(dead_code)]
     fn extract_package_references(content: &str) -> Vec<String> {
         let mut reader = Reader::from_str(content);
@@ -104,7 +104,7 @@ impl CSharpProjectFinder {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(e)) | Ok(Event::Start(e)) => {
+                Ok(Event::Empty(e) | Event::Start(e)) => {
                     if e.local_name().as_ref() == b"PackageReference" {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"Include"
@@ -115,8 +115,7 @@ impl CSharpProjectFinder {
                         }
                     }
                 }
-                Ok(Event::Eof) => break,
-                Err(_) => break,
+                Ok(Event::Eof) | Err(_) => break,
                 _ => {}
             }
             buf.clear();
@@ -124,7 +123,7 @@ impl CSharpProjectFinder {
         packages
     }
 
-    /// Extract ProjectReference dependencies from .csproj XML content using quick-xml
+    /// Extract `ProjectReference` dependencies from .csproj XML content using quick-xml
     /// Returns the project names (extracted from paths)
     fn extract_project_references(content: &str) -> Vec<String> {
         let mut reader = Reader::from_str(content);
@@ -133,7 +132,7 @@ impl CSharpProjectFinder {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(e)) | Ok(Event::Start(e)) => {
+                Ok(Event::Empty(e) | Event::Start(e)) => {
                     if e.local_name().as_ref() == b"ProjectReference" {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"Include"
@@ -148,8 +147,7 @@ impl CSharpProjectFinder {
                         }
                     }
                 }
-                Ok(Event::Eof) => break,
-                Err(_) => break,
+                Ok(Event::Eof) | Err(_) => break,
                 _ => {}
             }
             buf.clear();

@@ -7,6 +7,7 @@ pub struct PublishResult {
 }
 
 impl PublishResult {
+    #[must_use]
     pub const fn new(result: bool, error: Option<String>) -> Self {
         Self { result, error }
     }

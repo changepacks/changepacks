@@ -24,6 +24,7 @@ impl Default for GradleProjectFinder {
 }
 
 impl GradleProjectFinder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),

@@ -20,6 +20,7 @@ pub struct NodePackage {
 }
 
 impl NodePackage {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,
@@ -72,7 +73,7 @@ impl Package for NodePackage {
             &self.path,
             format!(
                 "{}{}",
-                String::from_utf8(ser.into_inner())?.to_string().trim_end(),
+                String::from_utf8(ser.into_inner())?.clone().trim_end(),
                 if package_json_raw.ends_with('\n') {
                     "\n"
                 } else {

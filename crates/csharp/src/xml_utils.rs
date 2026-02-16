@@ -28,7 +28,7 @@ pub fn update_version_in_xml(
                 } else if in_property_group && name.as_ref() == b"Version" {
                     in_version = true;
                 }
-                writer.write_event(Event::Start(e.to_owned()))?;
+                writer.write_event(Event::Start(e.clone()))?;
             }
             Ok(Event::End(e)) => {
                 let name = e.local_name();
@@ -54,7 +54,7 @@ pub fn update_version_in_xml(
                 } else if name.as_ref() == b"Version" {
                     in_version = false;
                 }
-                writer.write_event(Event::End(e.to_owned()))?;
+                writer.write_event(Event::End(e.clone()))?;
             }
             Ok(Event::Text(e)) => {
                 if in_version && !version_updated {
@@ -62,29 +62,29 @@ pub fn update_version_in_xml(
                     writer.write_event(Event::Text(BytesText::new(new_version)))?;
                     version_updated = true;
                 } else {
-                    writer.write_event(Event::Text(e.to_owned()))?;
+                    writer.write_event(Event::Text(e.clone()))?;
                 }
             }
             Ok(Event::Empty(e)) => {
-                writer.write_event(Event::Empty(e.to_owned()))?;
+                writer.write_event(Event::Empty(e.clone()))?;
             }
             Ok(Event::Comment(e)) => {
-                writer.write_event(Event::Comment(e.to_owned()))?;
+                writer.write_event(Event::Comment(e.clone()))?;
             }
             Ok(Event::CData(e)) => {
-                writer.write_event(Event::CData(e.to_owned()))?;
+                writer.write_event(Event::CData(e.clone()))?;
             }
             Ok(Event::Decl(e)) => {
-                writer.write_event(Event::Decl(e.to_owned()))?;
+                writer.write_event(Event::Decl(e.clone()))?;
             }
             Ok(Event::PI(e)) => {
-                writer.write_event(Event::PI(e.to_owned()))?;
+                writer.write_event(Event::PI(e.clone()))?;
             }
             Ok(Event::DocType(e)) => {
-                writer.write_event(Event::DocType(e.to_owned()))?;
+                writer.write_event(Event::DocType(e.clone()))?;
             }
             Ok(Event::GeneralRef(e)) => {
-                writer.write_event(Event::GeneralRef(e.to_owned()))?;
+                writer.write_event(Event::GeneralRef(e.clone()))?;
             }
             Ok(Event::Eof) => break,
             Err(e) => return Err(anyhow::anyhow!("XML parsing error: {e}")),
