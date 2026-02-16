@@ -215,9 +215,10 @@ fn display_tree_node(
     if let Some(deps) = ctx.graph.get(&project_name) {
         let mut sorted_deps = deps.clone();
         sorted_deps.sort();
+        let sorted_deps_count = sorted_deps.len();
         for (idx, dep_name) in sorted_deps.iter().enumerate() {
             if let Some(dep_project) = ctx.path_to_project.get(dep_name) {
-                let is_last_dep = idx == sorted_deps.len() - 1;
+                let is_last_dep = idx == sorted_deps_count - 1;
                 let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
                 // Use a separate visited set for dependencies to avoid infinite loops
                 // but still show all dependencies
@@ -275,17 +276,21 @@ fn format_project_line(
     };
 
     // Only show dependencies that are in the monorepo (in path_to_project)
-    let monorepo_deps: Vec<String> = project
+    let monorepo_deps: Vec<&String> = project
         .dependencies()
         .iter()
         .filter(|dep| path_to_project.contains_key(*dep))
-        .map(std::string::ToString::to_string)
         .collect();
 
     let deps_info = if monorepo_deps.is_empty() {
         "".normal()
     } else {
-        format!(" [deps:\n        {}]", monorepo_deps.join("\n        ")).bright_black()
+        let deps_str = monorepo_deps
+            .iter()
+            .map(|d| d.as_str())
+            .collect::<Vec<_>>()
+            .join("\n        ");
+        format!(" [deps:\n        {}]", deps_str).bright_black()
     };
 
     // Format similar to Project::Display but with version update and dependencies

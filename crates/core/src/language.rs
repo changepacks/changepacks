@@ -1,13 +1,22 @@
 use colored::Colorize;
 use std::fmt::Display;
 
+/// Supported programming languages and their corresponding package manager ecosystems.
+///
+/// Each variant represents a language that changepacks can manage versions for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Language {
+    /// Python projects using pyproject.toml (pip, uv)
     Python,
+    /// Node.js projects using package.json (npm, pnpm, yarn, bun)
     Node,
+    /// Rust projects using Cargo.toml (cargo)
     Rust,
+    /// Dart projects using pubspec.yaml (pub)
     Dart,
+    /// C# projects using .csproj (NuGet, dotnet)
     CSharp,
+    /// Java projects using build.gradle or build.gradle.kts (Gradle)
     Java,
 }
 

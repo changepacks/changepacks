@@ -10,9 +10,16 @@ use colored::Colorize;
 
 use crate::{config::Config, package::Package, update_type::UpdateType, workspace::Workspace};
 
+/// Discriminated union of Package (single project) or Workspace (monorepo root).
+///
+/// Provides unified interface for operations on both package and workspace projects,
+/// delegating to the appropriate trait implementation. Workspaces sort before packages
+/// in ordering comparisons.
 #[derive(Debug)]
 pub enum Project {
+    /// Monorepo workspace root containing multiple packages
     Workspace(Box<dyn Workspace>),
+    /// Single versioned package
     Package(Box<dyn Package>),
 }
 

@@ -2,10 +2,16 @@ use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
 
+/// Semantic versioning bump types following semver conventions.
+///
+/// Determines how the version number increments: major (breaking), minor (features), or patch (fixes).
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum UpdateType {
+    /// Breaking changes: increments X.0.0
     Major = 0,
+    /// New features, backward-compatible: increments 0.X.0
     Minor = 1,
+    /// Bug fixes, backward-compatible: increments 0.0.X
     Patch = 2,
 }
 
