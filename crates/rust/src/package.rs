@@ -64,7 +64,7 @@ impl Package for RustPackage {
             format!(
                 "{}{}",
                 cargo_toml.to_string().trim_end(),
-                if cargo_toml_raw.ends_with("\n") {
+                if cargo_toml_raw.ends_with('\n') {
                     "\n"
                 } else {
                     ""

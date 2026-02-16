@@ -68,8 +68,12 @@ impl ProjectFinder for NodeProjectFinder {
                     .join("pnpm-workspace.yaml")
                     .is_file()
             {
-                let version = package_json["version"].as_str().map(|v| v.to_string());
-                let name = package_json["name"].as_str().map(|v| v.to_string());
+                let version = package_json["version"]
+                    .as_str()
+                    .map(std::string::ToString::to_string);
+                let name = package_json["name"]
+                    .as_str()
+                    .map(std::string::ToString::to_string);
                 (
                     path.to_path_buf(),
                     Project::Workspace(Box::new(NodeWorkspace::new(
@@ -80,8 +84,12 @@ impl ProjectFinder for NodeProjectFinder {
                     ))),
                 )
             } else {
-                let version = package_json["version"].as_str().map(|v| v.to_string());
-                let name = package_json["name"].as_str().map(|v| v.to_string());
+                let version = package_json["version"]
+                    .as_str()
+                    .map(std::string::ToString::to_string);
+                let name = package_json["name"]
+                    .as_str()
+                    .map(std::string::ToString::to_string);
                 (
                     path.to_path_buf(),
                     Project::Package(Box::new(NodePackage::new(

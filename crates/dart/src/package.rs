@@ -73,7 +73,7 @@ impl Package for DartPackage {
                 )?
                 .source()
                 .trim_end(),
-                if pubspec_yaml_raw.ends_with("\n") {
+                if pubspec_yaml_raw.ends_with('\n') {
                     "\n"
                 } else {
                     ""

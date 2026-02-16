@@ -100,7 +100,7 @@ pub async fn handle_publish_with_prompter(
 
     if let FormatOptions::Stdout = args.format {
         println!("Projects to publish:");
-        for project in projects.iter() {
+        for project in &projects {
             println!("  {project}");
         }
     }
@@ -139,7 +139,7 @@ pub async fn handle_publish_with_prompter(
     let mut failed_projects: Vec<String> = Vec::new();
 
     // Publish each project
-    for project in projects.iter() {
+    for project in &projects {
         if let FormatOptions::Stdout = args.format {
             println!("Publishing {project}...");
         }

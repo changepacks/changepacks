@@ -72,11 +72,11 @@ impl ProjectFinder for PythonProjectFinder {
                 let version = project
                     .get("version")
                     .and_then(|v| v.as_str())
-                    .map(|v| v.to_string());
+                    .map(std::string::ToString::to_string);
                 let name = project
                     .get("name")
                     .and_then(|v| v.as_str())
-                    .map(|v| v.to_string());
+                    .map(std::string::ToString::to_string);
                 (
                     path.to_path_buf(),
                     Project::Workspace(Box::new(PythonWorkspace::new(
@@ -90,11 +90,11 @@ impl ProjectFinder for PythonProjectFinder {
                 let version = project
                     .get("version")
                     .and_then(|v| v.as_str())
-                    .map(|v| v.to_string());
+                    .map(std::string::ToString::to_string);
                 let name = project
                     .get("name")
                     .and_then(|v| v.as_str())
-                    .map(|v| v.to_string());
+                    .map(std::string::ToString::to_string);
 
                 (
                     path.to_path_buf(),

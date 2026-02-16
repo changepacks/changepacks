@@ -25,7 +25,7 @@ pub async fn gen_update_map(
         }
         let file_json = read_to_string(file.path()).await?;
         let file_json: ChangePackLog = serde_json::from_str(&file_json)?;
-        for (project_path, update_type) in file_json.changes().iter() {
+        for (project_path, update_type) in file_json.changes() {
             let ret = update_map
                 .entry(project_path.clone())
                 .or_insert((*update_type, vec![]));
@@ -53,9 +53,8 @@ fn apply_update_on_rules(
     let updated_paths: Vec<PathBuf> = update_map.keys().cloned().collect();
 
     for (trigger_pattern, dependents) in &config.update_on {
-        let pattern = match Pattern::new(trigger_pattern) {
-            Ok(p) => p,
-            Err(_) => continue,
+        let Ok(pattern) = Pattern::new(trigger_pattern) else {
+            continue;
         };
 
         // Check if any updated package matches the trigger pattern

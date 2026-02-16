@@ -70,8 +70,12 @@ impl ProjectFinder for DartProjectFinder {
                     .is_file();
 
             let (path, mut project) = if is_workspace {
-                let version = pubspec["version"].as_str().map(|v| v.to_string());
-                let name = pubspec["name"].as_str().map(|v| v.to_string());
+                let version = pubspec["version"]
+                    .as_str()
+                    .map(std::string::ToString::to_string);
+                let name = pubspec["name"]
+                    .as_str()
+                    .map(std::string::ToString::to_string);
                 (
                     path.to_path_buf(),
                     Project::Workspace(Box::new(DartWorkspace::new(
@@ -82,8 +86,12 @@ impl ProjectFinder for DartProjectFinder {
                     ))),
                 )
             } else {
-                let version = pubspec["version"].as_str().map(|v| v.to_string());
-                let name = pubspec["name"].as_str().map(|v| v.to_string());
+                let version = pubspec["version"]
+                    .as_str()
+                    .map(std::string::ToString::to_string);
+                let name = pubspec["name"]
+                    .as_str()
+                    .map(std::string::ToString::to_string);
 
                 (
                     path.to_path_buf(),

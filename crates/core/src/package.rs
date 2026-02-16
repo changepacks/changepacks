@@ -62,9 +62,8 @@ pub trait Package: std::fmt::Debug + Send + Sync {
                 "Publish command failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 
     /// Get the publish command for this package, checking config first

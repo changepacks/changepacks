@@ -68,26 +68,24 @@ pub async fn handle_changepack_with_prompter(
             break;
         }
 
-        let selected_projects = if !args.yes {
-            if update_type == UpdateType::Patch && projects.len() == 1 {
-                vec![projects[0]]
-            } else {
-                let message = format!("Select projects to update for {update_type}");
-                let defaults = projects
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(index, project)| {
-                        if project.is_changed() {
-                            Some(index)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                prompter.multi_select(&message, projects.clone(), defaults)?
-            }
-        } else {
+        let selected_projects = if args.yes {
             projects.clone()
+        } else if update_type == UpdateType::Patch && projects.len() == 1 {
+            vec![projects[0]]
+        } else {
+            let message = format!("Select projects to update for {update_type}");
+            let defaults = projects
+                .iter()
+                .enumerate()
+                .filter_map(|(index, project)| {
+                    if project.is_changed() {
+                        Some(index)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            prompter.multi_select(&message, projects.clone(), defaults)?
         };
 
         // remove selected projects from projects by index

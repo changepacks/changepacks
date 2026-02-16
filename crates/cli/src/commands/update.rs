@@ -75,7 +75,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     let mut update_projects = Vec::new();
     let mut workspace_projects = Vec::new();
 
-    for finder in project_finders.iter_mut() {
+    for finder in &mut project_finders {
         for project in finder.projects_mut() {
             if let Some((update_type, _)) =
                 update_map.get(&get_relative_path(repo_root_path, project.path())?)
@@ -85,7 +85,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
             }
         }
     }
-    for finder in all_finders.iter_mut() {
+    for finder in &mut all_finders {
         for project in finder.projects() {
             if let Project::Workspace(workspace) = project {
                 workspace_projects.push(workspace);
@@ -94,7 +94,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
     update_projects.sort();
     if let FormatOptions::Stdout = args.format {
-        for (project, update_type) in update_projects.iter() {
+        for (project, update_type) in &update_projects {
             println!(
                 "{} {}",
                 project,

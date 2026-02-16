@@ -65,12 +65,12 @@ impl ProjectFinder for RustProjectFinder {
                     .get("package")
                     .and_then(|p| p.get("version"))
                     .and_then(|v| v.as_str())
-                    .map(|v| v.to_string());
+                    .map(std::string::ToString::to_string);
                 let name = cargo_toml
                     .get("package")
                     .and_then(|p| p.get("name"))
                     .and_then(|v| v.as_str())
-                    .map(|v| v.to_string());
+                    .map(std::string::ToString::to_string);
                 (
                     path.to_path_buf(),
                     Project::Workspace(Box::new(RustWorkspace::new(
@@ -83,10 +83,10 @@ impl ProjectFinder for RustProjectFinder {
             } else {
                 let version = cargo_toml["package"]["version"]
                     .as_str()
-                    .map(|v| v.to_string());
+                    .map(std::string::ToString::to_string);
                 let name = cargo_toml["package"]["name"]
                     .as_str()
-                    .map(|v| v.to_string());
+                    .map(std::string::ToString::to_string);
                 (
                     path.to_path_buf(),
                     Project::Package(Box::new(RustPackage::new(

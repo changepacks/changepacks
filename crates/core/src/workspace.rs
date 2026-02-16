@@ -64,9 +64,8 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
                 "Publish command failed: {}",
                 String::from_utf8_lossy(&output.stderr)
             );
-        } else {
-            Ok(())
         }
+        Ok(())
     }
 
     /// Get the publish command for this workspace, checking config first

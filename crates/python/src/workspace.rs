@@ -66,7 +66,7 @@ impl Workspace for PythonWorkspace {
             format!(
                 "{}{}",
                 pyproject_toml.to_string().trim_end(),
-                if pyproject_toml_raw.ends_with("\n") {
+                if pyproject_toml_raw.ends_with('\n') {
                     "\n"
                 } else {
                     ""

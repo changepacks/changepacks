@@ -20,7 +20,7 @@ pub async fn clear_update_logs(changepacks_dir: &PathBuf) -> Result<()> {
     if futures::future::join_all(update_logs)
         .await
         .iter()
-        .all(|f| f.is_ok())
+        .all(std::result::Result::is_ok)
     {
         Ok(())
     } else {

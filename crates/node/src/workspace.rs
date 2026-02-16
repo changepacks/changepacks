@@ -71,7 +71,7 @@ impl Workspace for NodeWorkspace {
             format!(
                 "{}{}",
                 String::from_utf8(ser.into_inner())?.to_string().trim_end(),
-                if package_json_raw.ends_with("\n") {
+                if package_json_raw.ends_with('\n') {
                     "\n"
                 } else {
                     ""

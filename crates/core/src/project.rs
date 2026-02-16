@@ -166,8 +166,7 @@ impl Display for Project {
                         "({})",
                         workspace
                             .version()
-                            .map(|v| format!("v{v}"))
-                            .unwrap_or("unknown".to_string()),
+                            .map_or("unknown".to_string(), |v| format!("v{v}")),
                     )
                     .bright_green(),
                     "-".bright_cyan(),
@@ -188,8 +187,7 @@ impl Display for Project {
                         "({})",
                         package
                             .version()
-                            .map(|v| format!("v{v}"))
-                            .unwrap_or("unknown".to_string())
+                            .map_or("unknown".to_string(), |v| format!("v{v}"))
                     )
                     .bright_green(),
                     "-".bright_cyan(),

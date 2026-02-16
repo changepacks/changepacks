@@ -35,7 +35,7 @@ impl CSharpProjectFinder {
     fn extract_name_from_path(path: &Path) -> Option<String> {
         path.file_stem()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 }
 
@@ -47,7 +47,9 @@ fn extract_project_name_from_path(path_str: &str) -> Option<String> {
     let filename = path_str.rsplit(['\\', '/']).next()?;
 
     // Remove .csproj extension
-    filename.strip_suffix(".csproj").map(|s| s.to_string())
+    filename
+        .strip_suffix(".csproj")
+        .map(std::string::ToString::to_string)
 }
 
 impl CSharpProjectFinder {

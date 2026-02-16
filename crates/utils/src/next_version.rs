@@ -2,13 +2,13 @@ use anyhow::{Context, Result};
 use changepacks_core::UpdateType;
 
 pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
-    let mut version_parts = version.split(".").collect::<Vec<&str>>();
+    let mut version_parts = version.split('.').collect::<Vec<&str>>();
 
     // Ensure we have exactly 3 parts (major.minor.patch)
     if version_parts.len() != 3 {
         return Err(anyhow::anyhow!("Invalid version format: {version}"));
     }
-    let plus_split = version_parts[2].split("+").collect::<Vec<&str>>();
+    let plus_split = version_parts[2].split('+').collect::<Vec<&str>>();
     let plus_part = if plus_split.len() == 2 {
         version_parts[2] = plus_split[0];
         Some(plus_split[1])

@@ -221,18 +221,7 @@ fn display_tree_node(
                 let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
                 // Use a separate visited set for dependencies to avoid infinite loops
                 // but still show all dependencies
-                if !visited.contains(dep_name) {
-                    display_tree_node(
-                        dep_project,
-                        graph,
-                        path_to_project,
-                        repo_root_path,
-                        update_map,
-                        &new_prefix,
-                        is_last_dep,
-                        visited,
-                    )?;
-                } else {
+                if visited.contains(dep_name) {
                     // If already visited, just print it without recursion to avoid loops
                     let dep_connector = if is_last_dep {
                         "└── "
@@ -250,6 +239,17 @@ fn display_tree_node(
                             path_to_project
                         )?
                     );
+                } else {
+                    display_tree_node(
+                        dep_project,
+                        graph,
+                        path_to_project,
+                        repo_root_path,
+                        update_map,
+                        &new_prefix,
+                        is_last_dep,
+                        visited,
+                    )?;
                 }
             }
         }
@@ -274,8 +274,7 @@ fn format_project_line(
     } else {
         project
             .version()
-            .map(|v| format!("v{v}"))
-            .unwrap_or("unknown".to_string())
+            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
     };
 
     let changed_marker = if project.is_changed() {
@@ -289,13 +288,13 @@ fn format_project_line(
         .dependencies()
         .iter()
         .filter(|dep| path_to_project.contains_key(*dep))
-        .map(|dep| dep.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
 
-    let deps_info = if !monorepo_deps.is_empty() {
-        format!(" [deps:\n        {}]", monorepo_deps.join("\n        ")).bright_black()
-    } else {
+    let deps_info = if monorepo_deps.is_empty() {
         "".normal()
+    } else {
+        format!(" [deps:\n        {}]", monorepo_deps.join("\n        ")).bright_black()
     };
 
     // Format similar to Project::Display but with version update and dependencies

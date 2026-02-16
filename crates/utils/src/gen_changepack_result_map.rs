@@ -19,20 +19,20 @@ pub fn gen_changepack_result_map(
         let result = match update_result.remove(&key) {
             Some((update_type, notes)) => ChangePackResult::new(
                 notes,
-                project.version().map(|v| v.to_string()),
+                project.version().map(std::string::ToString::to_string),
                 Some(next_version(
                     project.version().unwrap_or("0.0.0"),
                     update_type,
                 )?),
-                project.name().map(|n| n.to_string()),
+                project.name().map(std::string::ToString::to_string),
                 project.is_changed(),
                 key.clone(),
             ),
             None => ChangePackResult::new(
                 vec![],
-                project.version().map(|v| v.to_string()),
+                project.version().map(std::string::ToString::to_string),
                 None,
-                project.name().map(|n| n.to_string()),
+                project.name().map(std::string::ToString::to_string),
                 project.is_changed(),
                 key.clone(),
             ),

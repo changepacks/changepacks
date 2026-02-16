@@ -67,13 +67,15 @@ pub async fn find_project_dirs(
                     .rela_path()
                     .to_path()
                     .ok()
-                    .map(|path| path.to_path_buf())
+                    .map(std::path::Path::to_path_buf)
             })
         })
         .collect::<Vec<_>>();
     // diff from main branch
-    let main_tree = if !remote {
-        repo.find_reference(&format!("refs/heads/{}", config.base_branch))?
+    let main_tree = if remote {
+        repo.find_remote("origin")?
+            .repo
+            .find_reference(&format!("refs/remotes/origin/{}", config.base_branch))?
             .id()
             .object()?
             .try_into_commit()?
@@ -81,9 +83,7 @@ pub async fn find_project_dirs(
             .object()?
             .try_into_tree()?
     } else {
-        repo.find_remote("origin")?
-            .repo
-            .find_reference(&format!("refs/remotes/origin/{}", config.base_branch))?
+        repo.find_reference(&format!("refs/heads/{}", config.base_branch))?
             .id()
             .object()?
             .try_into_commit()?
@@ -104,7 +104,7 @@ pub async fn find_project_dirs(
                 .location()
                 .to_path()
                 .ok()
-                .map(|path| path.to_path_buf())
+                .map(std::path::Path::to_path_buf)
         })
         .collect::<Vec<_>>();
 

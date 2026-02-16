@@ -103,7 +103,7 @@ pub fn detect_indent(content: &str) -> &str {
             return "    ";
         } else if line.starts_with("  ") {
             return "  ";
-        } else if line.starts_with("\t") {
+        } else if line.starts_with('\t') {
             return "\t";
         }
     }
