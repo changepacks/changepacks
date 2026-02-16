@@ -1,4 +1,4 @@
-use changepacks_core::{ChangePackLog, UpdateType};
+use changepacks_core::{ChangePackLog, Project, UpdateType};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::write;
 
@@ -40,6 +40,16 @@ pub async fn handle_changepack_with_prompter(
         .iter()
         .flat_map(|finder| finder.projects())
         .collect::<Vec<_>>();
+
+    // Hide packages that inherit their version from workspace root.
+    // They are updated automatically when the workspace version bumps.
+    projects.retain(|p| {
+        if let Project::Package(pkg) = p {
+            !pkg.inherits_workspace_version()
+        } else {
+            true
+        }
+    });
 
     if let Some(filter) = &args.filter {
         projects.retain(|p| filter.matches(p));
