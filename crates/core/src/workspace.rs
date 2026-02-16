@@ -38,61 +38,21 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     /// Publish the workspace using the configured command or default
     async fn publish(&self, config: &Config) -> Result<()> {
         let command = self.get_publish_command(config);
-        // Get the directory containing the workspace file
-        let workspace_dir = self
+        let dir = self
             .path()
             .parent()
             .context("Workspace directory not found")?;
-
-        let mut cmd = if cfg!(target_os = "windows") {
-            let mut c = tokio::process::Command::new("cmd");
-            c.arg("/C");
-            c.arg(command);
-            c
-        } else {
-            let mut c = tokio::process::Command::new("sh");
-            c.arg("-c");
-            c.arg(command);
-            c
-        };
-
-        cmd.current_dir(workspace_dir);
-        let output = cmd.output().await?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "Publish command failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-        Ok(())
+        crate::publish::run_publish_command(&command, dir).await
     }
 
     /// Get the publish command for this workspace, checking config first
     fn get_publish_command(&self, config: &Config) -> String {
-        // Check for custom command by relative path
-        if let Some(cmd) = config
-            .publish
-            .get(self.relative_path().to_string_lossy().as_ref())
-        {
-            return cmd.clone();
-        }
-
-        // Check for custom command by language
-        let lang_key = match self.language() {
-            crate::Language::Node => "node",
-            crate::Language::Python => "python",
-            crate::Language::Rust => "rust",
-            crate::Language::Dart => "dart",
-            crate::Language::CSharp => "csharp",
-            crate::Language::Java => "java",
-        };
-        if let Some(cmd) = config.publish.get(lang_key) {
-            return cmd.clone();
-        }
-
-        // Use default command
-        self.default_publish_command()
+        crate::publish::resolve_publish_command(
+            self.relative_path(),
+            self.language(),
+            &self.default_publish_command(),
+            config,
+        )
     }
 
     async fn update_workspace_dependencies(&self, _packages: &[&dyn Package]) -> Result<()> {

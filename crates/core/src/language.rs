@@ -11,6 +11,20 @@ pub enum Language {
     Java,
 }
 
+impl Language {
+    /// Returns the config key used for publish command lookup
+    pub fn publish_key(&self) -> &'static str {
+        match self {
+            Self::Node => "node",
+            Self::Python => "python",
+            Self::Rust => "rust",
+            Self::Dart => "dart",
+            Self::CSharp => "csharp",
+            Self::Java => "java",
+        }
+    }
+}
+
 impl Display for Language {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(

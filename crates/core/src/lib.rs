@@ -4,6 +4,7 @@ mod language;
 mod package;
 mod project;
 mod project_finder;
+pub mod publish;
 mod publish_result;
 mod update_log;
 mod update_type;
