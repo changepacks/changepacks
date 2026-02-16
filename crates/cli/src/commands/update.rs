@@ -76,6 +76,9 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         .collect();
     apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
 
+    // Merge workspace-inherited package updates into workspace entries
+    merge_workspace_inherited_updates(&mut update_map, &all_finders, &ctx.repo_root_path);
+
     if update_map.is_empty() {
         args.format.print("No updates found", "{}");
         return Ok(());
@@ -208,6 +211,47 @@ async fn apply_updates(
     .collect::<Result<Vec<_>>>()?;
 
     Ok(())
+}
+
+/// Merge workspace-inherited package updates into workspace entries.
+/// Packages with `version.workspace = true` should have their bumps promoted
+/// to the workspace level (most significant bump wins). The packages are then
+/// removed from the update map since their Cargo.toml doesn't need changes.
+fn merge_workspace_inherited_updates(
+    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    project_finders: &[Box<dyn ProjectFinder>],
+    repo_root_path: &Path,
+) {
+    // Collect (pkg_rel_path, ws_rel_path) pairs to merge
+    let mut merge_targets: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+    for finder in project_finders {
+        for project in finder.projects() {
+            if let Project::Package(pkg) = project
+                && pkg.inherits_workspace_version()
+                && let Ok(rel_path) = get_relative_path(repo_root_path, pkg.path())
+                && update_map.contains_key(&rel_path)
+                && let Some(ws_root) = pkg.workspace_root_path()
+                && let Ok(ws_rel_path) = get_relative_path(repo_root_path, ws_root)
+            {
+                merge_targets.push((rel_path, ws_rel_path));
+            }
+        }
+    }
+
+    for (pkg_path, ws_path) in merge_targets {
+        // Remove takes ownership, avoiding Clone requirement
+        if let Some((update_type, logs)) = update_map.remove(&pkg_path) {
+            let ws_entry = update_map
+                .entry(ws_path)
+                .or_insert((UpdateType::Patch, vec![]));
+            // More significant bump wins (Major=0 < Minor=1 < Patch=2)
+            if update_type < ws_entry.0 {
+                ws_entry.0 = update_type;
+            }
+            ws_entry.1.extend(logs);
+        }
+    }
 }
 
 #[cfg(test)]

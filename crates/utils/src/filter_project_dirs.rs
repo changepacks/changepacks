@@ -61,6 +61,11 @@ pub async fn find_project_dirs(
         .collect::<Result<Vec<_>>>()?;
     }
 
+    // Post-visit finalization (resolves deferred state like workspace-inherited versions)
+    for finder in project_finders.iter_mut() {
+        finder.finalize().await?;
+    }
+
     let changed_files = repo
         .status(progress::Discard)?
         .into_index_worktree_iter(Vec::new())?
