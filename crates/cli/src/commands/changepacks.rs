@@ -1,4 +1,4 @@
-use changepacks_core::{ChangePackLog, Project, UpdateType};
+use changepacks_core::{ChangePackLog, Language, Project, UpdateType};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::write;
 
@@ -8,7 +8,7 @@ use anyhow::Result;
 
 use crate::{
     CommandContext,
-    options::FilterOptions,
+    options::{CliLanguage, FilterOptions},
     prompter::{InquirePrompter, Prompter},
 };
 
@@ -19,6 +19,7 @@ pub struct ChangepackArgs {
     pub yes: bool,
     pub message: Option<String>,
     pub update_type: Option<UpdateType>,
+    pub language: Vec<CliLanguage>,
 }
 
 /// # Errors
@@ -53,6 +54,14 @@ pub async fn handle_changepack_with_prompter(
 
     if let Some(filter) = &args.filter {
         projects.retain(|p| filter.matches(p));
+    }
+    if !args.language.is_empty() {
+        let allowed_languages: Vec<Language> = args
+            .language
+            .iter()
+            .map(|&lang| Language::from(lang))
+            .collect();
+        projects.retain(|project| allowed_languages.contains(&project.language()));
     }
 
     println!("Found {} projects", projects.len());
@@ -151,6 +160,7 @@ mod tests {
             yes: true,
             message: Some("Test".to_string()),
             update_type: Some(UpdateType::Patch),
+            language: vec![],
         };
 
         // Test Debug trait
@@ -166,6 +176,7 @@ mod tests {
             yes: false,
             message: None,
             update_type: None,
+            language: vec![],
         };
 
         assert!(args.filter.is_some());
@@ -183,6 +194,7 @@ mod tests {
             yes: true,
             message: Some("msg".to_string()),
             update_type: Some(UpdateType::Major),
+            language: vec![],
         };
 
         assert!(matches!(args.filter, Some(FilterOptions::Workspace)));
@@ -197,8 +209,23 @@ mod tests {
             yes: true,
             message: Some("feature".to_string()),
             update_type: Some(UpdateType::Minor),
+            language: vec![],
         };
 
         assert!(matches!(args.update_type, Some(UpdateType::Minor)));
+    }
+
+    #[test]
+    fn test_changepack_args_with_language() {
+        let args = ChangepackArgs {
+            filter: None,
+            remote: false,
+            yes: true,
+            message: None,
+            update_type: None,
+            language: vec![CliLanguage::Node, CliLanguage::Rust],
+        };
+
+        assert_eq!(args.language.len(), 2);
     }
 }

@@ -16,7 +16,7 @@ use crate::{
         ChangepackArgs, CheckArgs, ConfigArgs, InitArgs, PublishArgs, UpdateArgs,
         handle_changepack, handle_check, handle_config, handle_init, handle_publish, handle_update,
     },
-    options::FilterOptions,
+    options::{CliLanguage, FilterOptions},
 };
 pub mod commands;
 mod context;
@@ -70,6 +70,10 @@ struct Cli {
 
     #[arg(short, long)]
     update_type: Option<CliUpdateType>,
+
+    /// Filter projects by language. Can be specified multiple times to include multiple languages.
+    #[arg(short, long, value_enum)]
+    language: Vec<CliLanguage>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -100,6 +104,7 @@ pub async fn main(args: &[String]) -> Result<()> {
             yes: cli.yes,
             message: cli.message,
             update_type: cli.update_type.map(Into::into),
+            language: cli.language,
         })
         .await?;
     }
@@ -189,5 +194,19 @@ mod tests {
         use clap::Parser;
         let cli = Cli::parse_from(["changepacks", "--remote"]);
         assert!(cli.remote);
+    }
+
+    #[test]
+    fn test_cli_parsing_with_language() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["changepacks", "--language", "node"]);
+        assert_eq!(cli.language.len(), 1);
+    }
+
+    #[test]
+    fn test_cli_parsing_with_multiple_languages() {
+        use clap::Parser;
+        let cli = Cli::parse_from(["changepacks", "--language", "node", "--language", "rust"]);
+        assert_eq!(cli.language.len(), 2);
     }
 }
