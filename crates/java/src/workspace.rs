@@ -92,6 +92,10 @@ impl Workspace for GradleWorkspace {
         &self.relative_path
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn default_publish_command(&self) -> String {
         "./gradlew publish".to_string()
     }

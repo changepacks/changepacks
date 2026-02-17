@@ -66,6 +66,38 @@ pub async fn find_project_dirs(
         finder.finalize().await?;
     }
 
+    // Fallback: set git repo name for projects with no name
+    // Priority: remote origin repo name > directory name
+    let repo_name = repo
+        .try_find_remote("origin")
+        .and_then(|r| r.ok())
+        .and_then(|remote| {
+            let url = remote.url(gix::remote::Direction::Fetch)?;
+            let path = url.path.to_string();
+            let name = path.rsplit('/').next()?;
+            let name = name.strip_suffix(".git").unwrap_or(name);
+            if name.is_empty() {
+                None
+            } else {
+                Some(name.to_string())
+            }
+        })
+        .or_else(|| {
+            git_root_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(String::from)
+        });
+    if let Some(ref repo_name) = repo_name {
+        for finder in project_finders.iter_mut() {
+            for project in finder.projects_mut() {
+                if project.name().is_none() {
+                    project.set_name(repo_name.clone());
+                }
+            }
+        }
+    }
+
     let changed_files = repo
         .status(progress::Discard)?
         .into_index_worktree_iter(Vec::new())?

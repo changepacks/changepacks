@@ -83,6 +83,10 @@ impl Workspace for CSharpWorkspace {
         &self.relative_path
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn default_publish_command(&self) -> String {
         "dotnet pack -c Release && dotnet nuget push".to_string()
     }

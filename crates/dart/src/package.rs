@@ -97,6 +97,10 @@ impl Package for DartPackage {
         self.is_changed = changed;
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn default_publish_command(&self) -> String {
         "dart pub publish".to_string()
     }

@@ -104,8 +104,13 @@ impl Workspace for DartWorkspace {
     fn set_changed(&mut self, changed: bool) {
         self.is_changed = changed;
     }
+
     fn relative_path(&self) -> &Path {
         &self.relative_path
+    }
+
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
     }
 
     fn default_publish_command(&self) -> String {

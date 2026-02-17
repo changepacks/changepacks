@@ -95,6 +95,10 @@ impl Workspace for PythonWorkspace {
         &self.relative_path
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn default_publish_command(&self) -> String {
         "uv publish".to_string()
     }

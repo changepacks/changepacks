@@ -93,8 +93,13 @@ impl Package for NodePackage {
     fn set_changed(&mut self, changed: bool) {
         self.is_changed = changed;
     }
+
     fn is_changed(&self) -> bool {
         self.is_changed
+    }
+
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
     }
 
     fn default_publish_command(&self) -> String {

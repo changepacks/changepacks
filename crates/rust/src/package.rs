@@ -109,6 +109,10 @@ impl Package for RustPackage {
         self.is_changed = changed;
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn is_changed(&self) -> bool {
         self.is_changed
     }

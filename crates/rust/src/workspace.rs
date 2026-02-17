@@ -138,6 +138,10 @@ impl Workspace for RustWorkspace {
         self.is_changed = changed;
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn relative_path(&self) -> &Path {
         &self.relative_path
     }

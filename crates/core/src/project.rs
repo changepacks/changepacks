@@ -98,6 +98,13 @@ impl Project {
         }
     }
 
+    pub fn set_name(&mut self, name: String) {
+        match self {
+            Self::Workspace(workspace) => workspace.set_name(name),
+            Self::Package(package) => package.set_name(name),
+        }
+    }
+
     #[must_use]
     pub fn language(&self) -> crate::Language {
         match self {
