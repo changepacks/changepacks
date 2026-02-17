@@ -1,4 +1,4 @@
-use changepacks_core::{ChangePackResultLog, Project, UpdateType};
+use changepacks_core::{ChangePackResultLog, Language, Project, UpdateType};
 
 use anyhow::Result;
 use changepacks_utils::{
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     CommandContext,
-    options::{FilterOptions, FormatOptions},
+    options::{CliLanguage, FilterOptions, FormatOptions},
 };
 
 #[derive(Args, Debug)]
@@ -28,6 +28,10 @@ pub struct CheckArgs {
 
     #[arg(long)]
     tree: bool,
+
+    /// Filter projects by language. Can be specified multiple times to include multiple languages.
+    #[arg(short, long, value_enum)]
+    pub language: Vec<CliLanguage>,
 }
 
 /// Check project status
@@ -44,6 +48,14 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
         .collect::<Vec<_>>();
     if let Some(filter) = &args.filter {
         projects.retain(|p| filter.matches(p));
+    }
+    if !args.language.is_empty() {
+        let allowed_languages: Vec<Language> = args
+            .language
+            .iter()
+            .map(|&lang| Language::from(lang))
+            .collect();
+        projects.retain(|project| allowed_languages.contains(&project.language()));
     }
     projects.sort();
     if let FormatOptions::Stdout = args.format {
@@ -390,6 +402,24 @@ mod tests {
     fn test_check_args_short_remote() {
         let cli = TestCli::parse_from(["test", "-r"]);
         assert!(cli.check.remote);
+    }
+
+    #[test]
+    fn test_check_args_with_language_filter() {
+        let cli = TestCli::parse_from(["test", "--language", "node"]);
+        assert_eq!(cli.check.language.len(), 1);
+    }
+
+    #[test]
+    fn test_check_args_with_multiple_languages() {
+        let cli = TestCli::parse_from(["test", "--language", "node", "--language", "python"]);
+        assert_eq!(cli.check.language.len(), 2);
+    }
+
+    #[test]
+    fn test_check_args_short_language() {
+        let cli = TestCli::parse_from(["test", "-l", "rust"]);
+        assert_eq!(cli.check.language.len(), 1);
     }
 
     // --- format_project_line tests using mock trait implementations ---

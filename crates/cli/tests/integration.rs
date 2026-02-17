@@ -2391,6 +2391,7 @@ mod interactive_tests {
             yes: false,
             format: FormatOptions::Stdout,
             remote: false,
+            language: vec![],
         };
 
         let prompter = MockPrompter {
@@ -2437,6 +2438,7 @@ mod interactive_tests {
             yes: false,
             format: FormatOptions::Json,
             remote: false,
+            language: vec![],
         };
 
         let prompter = MockPrompter {
@@ -2482,6 +2484,7 @@ mod interactive_tests {
             yes: false,                                // Use interactive mode
             message: Some("test message".to_string()), // Provide message to skip text prompt
             update_type: None,                         // Will iterate through Major, Minor, Patch
+            language: vec![],
         };
 
         let prompter = MockPrompter {
@@ -2528,6 +2531,7 @@ mod interactive_tests {
             yes: false,
             message: Some("test".to_string()),
             update_type: None,
+            language: vec![],
         };
 
         let prompter = MockPrompter {
@@ -2574,6 +2578,7 @@ mod interactive_tests {
             yes: true,     // Auto-select all
             message: None, // No message, will use text prompt
             update_type: Some(changepacks_core::UpdateType::Patch),
+            language: vec![],
         };
 
         let prompter = MockPrompter {
@@ -2631,6 +2636,7 @@ mod interactive_tests {
             yes: false, // Interactive mode
             message: Some("test message".to_string()),
             update_type: None, // Will iterate through all update types
+            language: vec![],
         };
 
         let prompter = MockPrompter {

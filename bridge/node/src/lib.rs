@@ -17,5 +17,10 @@ use napi_derive::napi;
 pub async fn main() -> Result<()> {
   changepacks_cli::main(&std::env::args().skip(1).collect::<Vec<String>>())
     .await
-    .map_err(|e| Error::from_reason(e.to_string()))
+    .map_err(|e| {
+      if e.downcast_ref::<changepacks_cli::UserCancelled>().is_some() {
+        std::process::exit(0);
+      }
+      Error::from_reason(e.to_string())
+    })
 }

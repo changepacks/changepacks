@@ -119,7 +119,7 @@ jobs:
         id: changepacks
         with:
           publish: true
-          publish_options: -l rust
+          language: rust
     outputs:
       changepacks: ${{ steps.changepacks.outputs.changepacks }}
       release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}

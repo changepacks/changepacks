@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::Result;
 use changepacks_core::{
-    ChangePackResultLog, Package, Project, ProjectFinder, UpdateType, Workspace,
+    ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType, Workspace,
 };
 use changepacks_utils::{
     apply_reverse_dependencies, clear_update_logs, display_update, find_project_dirs,
@@ -16,7 +16,7 @@ use clap::Args;
 use crate::{
     CommandContext,
     finders::get_finders,
-    options::FormatOptions,
+    options::{CliLanguage, FormatOptions},
     prompter::{InquirePrompter, Prompter},
 };
 
@@ -37,6 +37,10 @@ pub struct UpdateArgs {
 
     #[arg(short, long, default_value = "false")]
     pub remote: bool,
+
+    /// Filter projects by language. Can be specified multiple times to include multiple languages.
+    #[arg(short, long, value_enum)]
+    pub language: Vec<CliLanguage>,
 }
 
 /// Update project version
@@ -86,6 +90,25 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
 
     if let FormatOptions::Stdout = args.format {
         println!("Updates found:");
+    }
+
+    // Filter update_map by language if specified
+    if !args.language.is_empty() {
+        let allowed_languages: Vec<Language> = args
+            .language
+            .iter()
+            .map(|&lang| Language::from(lang))
+            .collect();
+        let all_projects_for_filter: Vec<&Project> = project_finders
+            .iter()
+            .flat_map(|finder| finder.projects())
+            .collect();
+        update_map.retain(|path, _| {
+            all_projects_for_filter.iter().any(|p| {
+                get_relative_path(&ctx.repo_root_path, p.path()).is_ok_and(|rel| &rel == path)
+                    && allowed_languages.contains(&p.language())
+            })
+        });
     }
 
     let (mut update_projects, workspace_projects) = collect_update_projects(
@@ -687,5 +710,23 @@ mod tests {
         assert!(cli.update.dry_run);
         assert!(cli.update.yes);
         assert!(cli.update.remote);
+    }
+
+    #[test]
+    fn test_update_args_with_language_filter() {
+        let cli = TestCli::parse_from(["test", "--language", "node"]);
+        assert_eq!(cli.update.language.len(), 1);
+    }
+
+    #[test]
+    fn test_update_args_with_multiple_languages() {
+        let cli = TestCli::parse_from(["test", "--language", "node", "--language", "python"]);
+        assert_eq!(cli.update.language.len(), 2);
+    }
+
+    #[test]
+    fn test_update_args_short_language() {
+        let cli = TestCli::parse_from(["test", "-l", "rust"]);
+        assert_eq!(cli.update.language.len(), 1);
     }
 }
