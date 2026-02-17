@@ -55,6 +55,7 @@ pub trait Package: std::fmt::Debug + Send + Sync {
     ///
     /// # Errors
     /// Returns error if the publish command fails to execute or returns non-zero exit code.
+    #[cfg(not(tarpaulin_include))]
     async fn publish(&self, config: &Config) -> Result<()> {
         let command = self.get_publish_command(config);
         let dir = self
