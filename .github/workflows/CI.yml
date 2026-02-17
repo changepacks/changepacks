@@ -114,14 +114,12 @@ jobs:
       - test
       - coverage-test
     steps:
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
       - uses: actions/checkout@v5
       - uses: changepacks/action@main
         id: changepacks
         with:
           publish: true
+          publish-options: -l rust
     outputs:
       changepacks: ${{ steps.changepacks.outputs.changepacks }}
       release_assets_urls: ${{ steps.changepacks.outputs.release_assets_urls }}
