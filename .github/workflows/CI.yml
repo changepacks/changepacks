@@ -114,6 +114,9 @@ jobs:
       - test
       - coverage-test
     steps:
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - uses: actions/checkout@v5
       - uses: changepacks/action@main
         id: changepacks
