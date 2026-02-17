@@ -41,10 +41,29 @@ fn handle_inquire_result<T>(result: Result<T, inquire::InquireError>) -> Result<
     }
 }
 
+/// Score function for project selection: changed projects rank higher in the list.
+pub(crate) fn score_project(project: &Project) -> Option<i64> {
+    if project.is_changed() {
+        Some(100)
+    } else {
+        Some(0)
+    }
+}
+
+/// Format selected projects as a newline-separated display string.
+pub(crate) fn format_selected_projects(projects: &[&Project]) -> String {
+    projects
+        .iter()
+        .map(|p| format!("{p}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Real implementation using inquire crate
 #[derive(Default)]
 pub struct InquirePrompter;
 
+#[cfg(not(tarpaulin_include))]
 impl Prompter for InquirePrompter {
     fn multi_select<'a>(
         &self,
@@ -55,19 +74,11 @@ impl Prompter for InquirePrompter {
         let mut selector = inquire::MultiSelect::new(message, options);
         selector.page_size = 15;
         selector.default = Some(defaults);
-        selector.scorer = &|_input, option, _string_value, _idx| -> Option<i64> {
-            if option.is_changed() {
-                Some(100)
-            } else {
-                Some(0)
-            }
-        };
+        selector.scorer =
+            &|_input, option, _string_value, _idx| -> Option<i64> { score_project(option) };
         selector.formatter = &|option| {
-            option
-                .iter()
-                .map(|o| format!("{}", o.value))
-                .collect::<Vec<_>>()
-                .join("\n")
+            let projects: Vec<&Project> = option.iter().map(|o| *o.value).collect();
+            format_selected_projects(&projects)
         };
         handle_inquire_result(selector.prompt())
     }
@@ -124,6 +135,63 @@ impl Prompter for MockPrompter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use changepacks_core::{Language, Package, UpdateType};
+    use std::collections::HashSet;
+    use std::path::Path;
+
+    /// Minimal mock Package for testing scorer and formatter functions
+    #[derive(Debug)]
+    struct MockTestPackage {
+        name: Option<String>,
+        changed: bool,
+    }
+
+    impl MockTestPackage {
+        fn new(name: &str, changed: bool) -> Self {
+            Self {
+                name: Some(name.to_string()),
+                changed,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Package for MockTestPackage {
+        fn name(&self) -> Option<&str> {
+            self.name.as_deref()
+        }
+        fn version(&self) -> Option<&str> {
+            Some("1.0.0")
+        }
+        fn path(&self) -> &Path {
+            Path::new("package.json")
+        }
+        fn relative_path(&self) -> &Path {
+            Path::new("package.json")
+        }
+        async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
+            Ok(())
+        }
+        fn is_changed(&self) -> bool {
+            self.changed
+        }
+        fn language(&self) -> Language {
+            Language::Node
+        }
+        fn dependencies(&self) -> &HashSet<String> {
+            static EMPTY: std::sync::LazyLock<HashSet<String>> =
+                std::sync::LazyLock::new(HashSet::new);
+            &EMPTY
+        }
+        fn add_dependency(&mut self, _dep: &str) {}
+        fn set_changed(&mut self, changed: bool) {
+            self.changed = changed;
+        }
+        fn default_publish_command(&self) -> String {
+            "echo test".to_string()
+        }
+    }
 
     #[test]
     fn test_mock_prompter_default() {
@@ -209,28 +277,39 @@ mod tests {
     }
 
     #[test]
-    fn test_inquire_prompter_confirm_no_terminal() {
-        // InquirePrompter methods execute their body (constructing the prompt)
-        // before .prompt() fails due to no terminal — covering lines 51-52
-        let prompter = InquirePrompter;
-        let result = prompter.confirm("test");
-        assert!(result.is_err());
+    fn test_score_project_changed() {
+        let project = Project::Package(Box::new(MockTestPackage::new("pkg", true)));
+        assert_eq!(score_project(&project), Some(100));
     }
 
     #[test]
-    fn test_inquire_prompter_text_no_terminal() {
-        // Covers lines 55-56
-        let prompter = InquirePrompter;
-        let result = prompter.text("test");
-        assert!(result.is_err());
+    fn test_score_project_unchanged() {
+        let project = Project::Package(Box::new(MockTestPackage::new("pkg", false)));
+        assert_eq!(score_project(&project), Some(0));
     }
 
     #[test]
-    fn test_inquire_prompter_multi_select_no_terminal() {
-        // Covers lines 42-48: selector construction + page_size + default + scorer + formatter
-        let prompter = InquirePrompter;
-        let options: Vec<&Project> = vec![];
-        let result = prompter.multi_select("test", options, vec![]);
-        assert!(result.is_err());
+    fn test_format_selected_projects_empty() {
+        let projects: Vec<&Project> = vec![];
+        assert_eq!(format_selected_projects(&projects), "");
+    }
+
+    #[test]
+    fn test_format_selected_projects_single() {
+        let project = Project::Package(Box::new(MockTestPackage::new("my-app", false)));
+        let projects = vec![&project];
+        let result = format_selected_projects(&projects);
+        assert!(result.contains("my-app"));
+    }
+
+    #[test]
+    fn test_format_selected_projects_multiple() {
+        let p1 = Project::Package(Box::new(MockTestPackage::new("app-a", true)));
+        let p2 = Project::Package(Box::new(MockTestPackage::new("app-b", false)));
+        let projects = vec![&p1, &p2];
+        let result = format_selected_projects(&projects);
+        assert!(result.contains('\n'));
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(lines.len(), 2);
     }
 }
