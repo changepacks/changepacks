@@ -316,4 +316,17 @@ version = "1.0.0"
         workspace.add_dependency("requests");
         assert_eq!(workspace.dependencies().len(), 2);
     }
+
+    #[test]
+    fn test_set_name() {
+        let mut workspace = PythonWorkspace::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("pyproject.toml"),
+        );
+        assert_eq!(workspace.name(), None);
+        workspace.set_name("my-project".to_string());
+        assert_eq!(workspace.name(), Some("my-project"));
+    }
 }

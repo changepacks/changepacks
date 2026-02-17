@@ -795,6 +795,24 @@ mod tests {
     }
 
     #[test]
+    fn test_project_set_name_workspace() {
+        let workspace = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);
+        let mut project = Project::Workspace(Box::new(workspace));
+        project.set_name("new-name".to_string());
+        // Mock doesn't override set_name, so default no-op applies
+        assert_eq!(project.name(), Some("test"));
+    }
+
+    #[test]
+    fn test_project_set_name_package() {
+        let package = MockPackage::new(Some("test"), Some("1.0.0"), Language::Rust);
+        let mut project = Project::Package(Box::new(package));
+        project.set_name("new-name".to_string());
+        // Mock doesn't override set_name, so default no-op applies
+        assert_eq!(project.name(), Some("test"));
+    }
+
+    #[test]
     fn test_project_cmp_is_consistent_with_eq() {
         // Two workspaces with identical fields
         let w1 = MockWorkspace::new(Some("same"), Some("1.0.0"), Language::Node);

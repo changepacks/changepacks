@@ -348,4 +348,17 @@ mod tests {
         workspace.add_dependency("Newtonsoft.Json");
         assert_eq!(workspace.dependencies().len(), 2);
     }
+
+    #[test]
+    fn test_set_name() {
+        let mut workspace = CSharpWorkspace::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/Test.csproj"),
+            PathBuf::from("Test.csproj"),
+        );
+        assert_eq!(workspace.name(), None);
+        workspace.set_name("my-project".to_string());
+        assert_eq!(workspace.name(), Some("my-project"));
+    }
 }

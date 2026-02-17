@@ -320,4 +320,17 @@ mod tests {
         package.add_dependency("Newtonsoft.Json");
         assert_eq!(package.dependencies().len(), 2);
     }
+
+    #[test]
+    fn test_set_name() {
+        let mut package = CSharpPackage::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/Test.csproj"),
+            PathBuf::from("Test.csproj"),
+        );
+        assert_eq!(package.name(), None);
+        package.set_name("my-project".to_string());
+        assert_eq!(package.name(), Some("my-project"));
+    }
 }

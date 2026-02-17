@@ -544,4 +544,127 @@ mod tests {
         local_dir.close().unwrap();
         remote_dir.close().unwrap();
     }
+
+    #[tokio::test]
+    async fn test_find_project_dirs_sets_name_from_remote_origin() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        init_git_repo(temp_path);
+
+        // Add origin remote with a URL containing the repo name
+        std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/testuser/my-cool-repo.git",
+            ])
+            .current_dir(temp_path)
+            .output()
+            .unwrap();
+
+        // Create a package.json WITHOUT a name field
+        fs::write(temp_path.join("package.json"), r#"{"version": "1.0.0"}"#)
+            .await
+            .unwrap();
+
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let config = Config::default();
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        find_project_dirs(&repo, &mut finders, &config, false)
+            .await
+            .unwrap();
+
+        let projects: Vec<_> = finders.iter().flat_map(|f| f.projects()).collect();
+        assert_eq!(projects.len(), 1);
+        // Name should be extracted from the remote origin URL
+        assert_eq!(projects[0].name(), Some("my-cool-repo"));
+    }
+
+    #[tokio::test]
+    async fn test_find_project_dirs_sets_name_from_ssh_remote() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        init_git_repo(temp_path);
+
+        // Add origin remote with SSH URL
+        std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:testuser/ssh-repo.git",
+            ])
+            .current_dir(temp_path)
+            .output()
+            .unwrap();
+
+        // Create a package.json WITHOUT a name field
+        fs::write(temp_path.join("package.json"), r#"{"version": "1.0.0"}"#)
+            .await
+            .unwrap();
+
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let config = Config::default();
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        find_project_dirs(&repo, &mut finders, &config, false)
+            .await
+            .unwrap();
+
+        let projects: Vec<_> = finders.iter().flat_map(|f| f.projects()).collect();
+        assert_eq!(projects.len(), 1);
+        // Name should be extracted from the SSH remote URL
+        assert_eq!(projects[0].name(), Some("ssh-repo"));
+    }
+
+    #[tokio::test]
+    async fn test_find_project_dirs_name_not_overwritten_by_remote() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        init_git_repo(temp_path);
+
+        // Add origin remote
+        std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/testuser/remote-name.git",
+            ])
+            .current_dir(temp_path)
+            .output()
+            .unwrap();
+
+        // Create a package.json WITH a name field
+        fs::write(
+            temp_path.join("package.json"),
+            r#"{"name": "explicit-name", "version": "1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let config = Config::default();
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        find_project_dirs(&repo, &mut finders, &config, false)
+            .await
+            .unwrap();
+
+        let projects: Vec<_> = finders.iter().flat_map(|f| f.projects()).collect();
+        assert_eq!(projects.len(), 1);
+        // Explicit name should NOT be overwritten by remote repo name
+        assert_eq!(projects[0].name(), Some("explicit-name"));
+    }
 }

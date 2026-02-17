@@ -348,4 +348,13 @@ mod tests {
                 .contains("Package directory not found")
         );
     }
+
+    #[test]
+    fn test_set_name_default_is_noop() {
+        let mut package =
+            MockPackage::new(Some("original"), "/project/package.json", "package.json");
+        package.set_name("new-name".to_string());
+        // Default implementation is a no-op, name should remain unchanged
+        assert_eq!(package.name(), Some("original"));
+    }
 }

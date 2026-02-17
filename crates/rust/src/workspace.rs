@@ -729,4 +729,17 @@ other_local = { path = "crates/other", version = "0.5.0" }
         // No [package] section created
         assert!(doc.get("package").is_none());
     }
+
+    #[test]
+    fn test_set_name() {
+        let mut workspace = RustWorkspace::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/Cargo.toml"),
+            PathBuf::from("Cargo.toml"),
+        );
+        assert_eq!(workspace.name(), None);
+        workspace.set_name("my-project".to_string());
+        assert_eq!(workspace.name(), Some("my-project"));
+    }
 }

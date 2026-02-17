@@ -308,4 +308,17 @@ mod tests {
 
         temp_dir.close().unwrap();
     }
+
+    #[test]
+    fn test_set_name() {
+        let mut package = NodePackage::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/package.json"),
+            PathBuf::from("package.json"),
+        );
+        assert_eq!(package.name(), None);
+        package.set_name("my-project".to_string());
+        assert_eq!(package.name(), Some("my-project"));
+    }
 }

@@ -352,4 +352,13 @@ mod tests {
                 .contains("Workspace directory not found")
         );
     }
+
+    #[test]
+    fn test_set_name_default_is_noop() {
+        let mut workspace =
+            MockWorkspace::new(Some("original"), "/project/package.json", "package.json");
+        workspace.set_name("new-name".to_string());
+        // Default implementation is a no-op, name should remain unchanged
+        assert_eq!(workspace.name(), Some("original"));
+    }
 }

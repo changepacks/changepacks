@@ -297,4 +297,17 @@ requests = "2.31.0"
         package.add_dependency("requests");
         assert_eq!(package.dependencies().len(), 2);
     }
+
+    #[test]
+    fn test_set_name() {
+        let mut package = PythonPackage::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("pyproject.toml"),
+        );
+        assert_eq!(package.name(), None);
+        package.set_name("my-project".to_string());
+        assert_eq!(package.name(), Some("my-project"));
+    }
 }
