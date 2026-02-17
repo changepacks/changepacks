@@ -22,20 +22,30 @@ pub fn resolve_publish_command(
     default_command.to_string()
 }
 
+/// Build a platform-specific shell command.
+/// Uses compile-time `#[cfg]` so only the active platform's code is compiled,
+/// eliminating coverage gaps from unreachable platform branches.
+#[cfg(target_os = "windows")]
+fn build_shell_command(command: &str) -> tokio::process::Command {
+    let mut c = tokio::process::Command::new("cmd");
+    c.arg("/C").arg(command);
+    c
+}
+
+/// Build a platform-specific shell command (Unix variant).
+#[cfg(not(target_os = "windows"))]
+fn build_shell_command(command: &str) -> tokio::process::Command {
+    let mut c = tokio::process::Command::new("sh");
+    c.arg("-c").arg(command);
+    c
+}
+
 /// Execute a publish command in the given directory
 ///
 /// # Errors
 /// Returns error if the command fails to execute or returns non-zero exit code.
 pub async fn run_publish_command(command: &str, working_dir: &Path) -> Result<()> {
-    let mut cmd = if cfg!(target_os = "windows") {
-        let mut c = tokio::process::Command::new("cmd");
-        c.arg("/C").arg(command);
-        c
-    } else {
-        let mut c = tokio::process::Command::new("sh");
-        c.arg("-c").arg(command);
-        c
-    };
+    let mut cmd = build_shell_command(command);
     cmd.current_dir(working_dir);
     let output = cmd.output().await?;
     if !output.status.success() {
@@ -131,5 +141,15 @@ mod tests {
         };
         let result = run_publish_command(command, &temp_dir).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_build_shell_command() {
+        let cmd = build_shell_command("echo hello");
+        let program = cmd.as_std().get_program().to_string_lossy().to_string();
+        #[cfg(target_os = "windows")]
+        assert_eq!(program, "cmd");
+        #[cfg(not(target_os = "windows"))]
+        assert_eq!(program, "sh");
     }
 }

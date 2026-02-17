@@ -832,4 +832,64 @@ workspace = true
         assert_eq!(ws.version(), Some("0.1.33"));
         assert_eq!(ws.relative_path(), Path::new("Cargo.toml"));
     }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_finalize_discovers_workspace_with_package_section() {
+        // When finalize() walks up to discover the workspace root, and that root
+        // has a [package] section with name and version, lines 162-163 return Some(...)
+        let temp_dir = TempDir::new().unwrap();
+
+        let workspace_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            r#"[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.2.0"
+
+[package]
+name = "my-workspace-root"
+version = "0.2.0"
+"#,
+        )
+        .unwrap();
+
+        let pkg_dir = temp_dir.path().join("crates").join("my-crate");
+        fs::create_dir_all(&pkg_dir).unwrap();
+        fs::write(
+            pkg_dir.join("Cargo.toml"),
+            r#"[package]
+name = "my-crate"
+version.workspace = true
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        // Only visit member (workspace root is NOT visited — simulates ignore config)
+        let pkg_toml = pkg_dir.join("Cargo.toml");
+        finder
+            .visit(&pkg_toml, &PathBuf::from("crates/my-crate/Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 2);
+
+        let ws = projects
+            .iter()
+            .find(|p| matches!(p, Project::Workspace(_)))
+            .unwrap();
+        assert_eq!(ws.name(), Some("my-workspace-root"));
+        assert_eq!(ws.version(), Some("0.2.0"));
+
+        let pkg = projects
+            .iter()
+            .find(|p| p.name() == Some("my-crate"))
+            .unwrap();
+        assert_eq!(pkg.version(), Some("0.2.0"));
+    }
 }

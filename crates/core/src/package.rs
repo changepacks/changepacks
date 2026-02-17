@@ -322,4 +322,26 @@ mod tests {
         let result = package.publish(&config).await;
         assert!(result.is_err());
     }
+
+    #[tokio::test]
+    async fn test_publish_no_parent_directory() {
+        let package = MockPackage {
+            name: Some("test".to_string()),
+            path: PathBuf::from(""),
+            relative_path: PathBuf::from(""),
+            version: Some("1.0.0".to_string()),
+            language: Language::Node,
+            dependencies: HashSet::new(),
+            changed: false,
+        };
+        let config = Config::default();
+        let result = package.publish(&config).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Package directory not found")
+        );
+    }
 }

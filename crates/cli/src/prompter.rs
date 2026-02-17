@@ -207,4 +207,30 @@ mod tests {
                 .is_none()
         );
     }
+
+    #[test]
+    fn test_inquire_prompter_confirm_no_terminal() {
+        // InquirePrompter methods execute their body (constructing the prompt)
+        // before .prompt() fails due to no terminal — covering lines 51-52
+        let prompter = InquirePrompter;
+        let result = prompter.confirm("test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_inquire_prompter_text_no_terminal() {
+        // Covers lines 55-56
+        let prompter = InquirePrompter;
+        let result = prompter.text("test");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_inquire_prompter_multi_select_no_terminal() {
+        // Covers lines 42-48: selector construction + page_size + default + scorer + formatter
+        let prompter = InquirePrompter;
+        let options: Vec<&Project> = vec![];
+        let result = prompter.multi_select("test", options, vec![]);
+        assert!(result.is_err());
+    }
 }

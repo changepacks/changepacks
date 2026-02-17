@@ -272,4 +272,15 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(finder.projects().len(), 1);
     }
+
+    #[tokio::test]
+    async fn test_project_finder_test_with_projects() {
+        let package = MockPackage::new("pkg1", "/project/package.json");
+        let workspace = MockWorkspace::new("root", "/root/package.json");
+        let finder = MockProjectFinder::new()
+            .with_package(package)
+            .with_workspace(workspace);
+        let result = finder.test().await;
+        assert!(result.is_ok());
+    }
 }

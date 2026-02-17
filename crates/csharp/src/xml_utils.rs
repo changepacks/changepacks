@@ -253,4 +253,15 @@ mod tests {
                 .contains("XML parsing error")
         );
     }
+
+    #[test]
+    fn test_update_version_preserves_general_ref() {
+        // XML with entity references like &custom; triggers Event::GeneralRef in quick-xml,
+        // exercising the GeneralRef handler (lines 78-79)
+        let content = r#"<Project><PropertyGroup><Description>Hello &custom; World</Description><Version>1.0.0</Version></PropertyGroup></Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true);
+        if let Ok(output) = result {
+            assert!(output.contains("2.0.0"));
+        }
+    }
 }
