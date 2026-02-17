@@ -1,3 +1,11 @@
+//! # changepacks-cli
+//!
+//! Command-line interface for the changepacks version management tool.
+//!
+//! Provides clap-based argument parsing, interactive prompts via inquire, and async
+//! command handlers for check, update, publish, config, and init operations. All commands
+//! use the `Prompter` trait for testability and support colored terminal output.
+
 use anyhow::Result;
 
 use changepacks_core::UpdateType;
@@ -11,6 +19,8 @@ use crate::{
     options::FilterOptions,
 };
 pub mod commands;
+mod context;
+pub use context::*;
 mod finders;
 pub mod options;
 pub mod prompter;
@@ -27,9 +37,9 @@ enum CliUpdateType {
 impl From<CliUpdateType> for UpdateType {
     fn from(value: CliUpdateType) -> Self {
         match value {
-            CliUpdateType::Major => UpdateType::Major,
-            CliUpdateType::Minor => UpdateType::Minor,
-            CliUpdateType::Patch => UpdateType::Patch,
+            CliUpdateType::Major => Self::Major,
+            CliUpdateType::Minor => Self::Minor,
+            CliUpdateType::Patch => Self::Patch,
         }
     }
 }
@@ -71,6 +81,8 @@ enum Commands {
     Publish(PublishArgs),
 }
 
+/// # Errors
+/// Returns error if command execution fails.
 pub async fn main(args: &[String]) -> Result<()> {
     let cli = Cli::parse_from(args);
     if let Some(command) = cli.command {

@@ -4,13 +4,21 @@ use crate::{Config, Language, update_type::UpdateType};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+/// Interface for single versioned packages.
+///
+/// Implemented by language-specific package types for reading versions, updating files,
+/// detecting changes, and publishing. All I/O operations are async.
 #[async_trait]
 pub trait Package: std::fmt::Debug + Send + Sync {
     fn name(&self) -> Option<&str>;
     fn version(&self) -> Option<&str>;
     fn path(&self) -> &Path;
     fn relative_path(&self) -> &Path;
+    /// # Errors
+    /// Returns error if the version update operation fails.
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()>;
+    /// # Errors
+    /// Returns error if the parent path cannot be determined.
     fn check_changed(&mut self, path: &Path) -> Result<()> {
         if self.is_changed() {
             return Ok(());
@@ -33,65 +41,38 @@ pub trait Package: std::fmt::Debug + Send + Sync {
     /// Get the default publish command for this package type
     fn default_publish_command(&self) -> String;
 
+    /// Whether this package inherits its version from the workspace root via `version.workspace = true`
+    fn inherits_workspace_version(&self) -> bool {
+        false
+    }
+
+    /// Path to the workspace root Cargo.toml, if this package inherits its version from workspace
+    fn workspace_root_path(&self) -> Option<&Path> {
+        None
+    }
+
     /// Publish the package using the configured command or default
+    ///
+    /// # Errors
+    /// Returns error if the publish command fails to execute or returns non-zero exit code.
+    #[cfg(not(tarpaulin_include))]
     async fn publish(&self, config: &Config) -> Result<()> {
         let command = self.get_publish_command(config);
-        // Get the directory containing the package file
-        let package_dir = self
+        let dir = self
             .path()
             .parent()
             .context("Package directory not found")?;
-
-        let mut cmd = if cfg!(target_os = "windows") {
-            let mut c = tokio::process::Command::new("cmd");
-            c.arg("/C");
-            c.arg(command);
-            c
-        } else {
-            let mut c = tokio::process::Command::new("sh");
-            c.arg("-c");
-            c.arg(command);
-            c
-        };
-
-        cmd.current_dir(package_dir);
-        let output = cmd.output().await?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "Publish command failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        } else {
-            Ok(())
-        }
+        crate::publish::run_publish_command(&command, dir).await
     }
 
     /// Get the publish command for this package, checking config first
     fn get_publish_command(&self, config: &Config) -> String {
-        // Check for custom command by relative path
-        if let Some(cmd) = config
-            .publish
-            .get(self.relative_path().to_string_lossy().as_ref())
-        {
-            return cmd.clone();
-        }
-
-        // Check for custom command by language
-        let lang_key = match self.language() {
-            crate::Language::Node => "node",
-            crate::Language::Python => "python",
-            crate::Language::Rust => "rust",
-            crate::Language::Dart => "dart",
-            crate::Language::CSharp => "csharp",
-            crate::Language::Java => "java",
-        };
-        if let Some(cmd) = config.publish.get(lang_key) {
-            return cmd.clone();
-        }
-
-        // Use default command
-        self.default_publish_command()
+        crate::publish::resolve_publish_command(
+            self.relative_path(),
+            self.language(),
+            &self.default_publish_command(),
+            config,
+        )
     }
 }
 
@@ -152,7 +133,7 @@ mod tests {
             self.changed
         }
         fn language(&self) -> Language {
-            self.language.clone()
+            self.language
         }
         fn dependencies(&self) -> &HashSet<String> {
             &self.dependencies
@@ -207,6 +188,18 @@ mod tests {
             .check_changed(Path::new("/other-project/src/index.js"))
             .unwrap();
         assert!(!package.is_changed());
+    }
+
+    #[test]
+    fn test_inherits_workspace_version_default() {
+        let package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
+        assert!(!package.inherits_workspace_version());
+    }
+
+    #[test]
+    fn test_workspace_root_path_default() {
+        let package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
+        assert!(package.workspace_root_path().is_none());
     }
 
     #[test]
@@ -329,5 +322,27 @@ mod tests {
 
         let result = package.publish(&config).await;
         assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_publish_no_parent_directory() {
+        let package = MockPackage {
+            name: Some("test".to_string()),
+            path: PathBuf::from(""),
+            relative_path: PathBuf::from(""),
+            version: Some("1.0.0".to_string()),
+            language: Language::Node,
+            dependencies: HashSet::new(),
+            changed: false,
+        };
+        let config = Config::default();
+        let result = package.publish(&config).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Package directory not found")
+        );
     }
 }

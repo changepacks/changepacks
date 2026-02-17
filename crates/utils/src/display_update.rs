@@ -3,10 +3,14 @@ use changepacks_core::UpdateType;
 
 use crate::next_version;
 
+/// Display the version update as a formatted string
+///
+/// # Errors
+/// Returns error if the next version cannot be calculated.
 pub fn display_update(current_version: Option<&str>, update_type: UpdateType) -> Result<String> {
     if let Some(current_version) = current_version {
         let next_version = next_version(current_version, update_type)?;
-        Ok(format!("v{} → v{}", current_version, next_version))
+        Ok(format!("v{current_version} → v{next_version}"))
     } else {
         let next_version = next_version("0.0.0", update_type)?;
         Ok(format!("{} → v{}", "unknown", next_version))

@@ -1,10 +1,11 @@
-
 [package]
-authors = ["JeongMin Oh <owjs3901@gmail.com>"]
-edition = "2024"
 name = "node-cli"
 version = "0.1.1"
-license = "Apache-2.0"
+authors = ["JeongMin Oh <owjs3901@gmail.com>"]
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Node.js bridge for changepacks (N-API bindings)"
 readme = "../../README.md"
 publish = false
@@ -20,3 +21,6 @@ tokio = { version = "1.49" }
 
 [build-dependencies]
 napi-build = "2"
+
+ [lints.rust]
+ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

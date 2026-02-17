@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use anyhow::Result;
 use tokio::fs::{read_dir, remove_file};
 
-// remove all update logs without confirmation
+/// Remove all update logs without confirmation
+///
+/// # Errors
+/// Returns error if any update log file fails to be removed.
 pub async fn clear_update_logs(changepacks_dir: &PathBuf) -> Result<()> {
     if !changepacks_dir.exists() {
         return Ok(());
@@ -17,14 +20,20 @@ pub async fn clear_update_logs(changepacks_dir: &PathBuf) -> Result<()> {
         update_logs.push(remove_file(file.path()));
     }
 
-    if futures::future::join_all(update_logs)
-        .await
-        .iter()
-        .all(|f| f.is_ok())
-    {
+    let results: Vec<_> = futures::future::join_all(update_logs).await;
+    let failures: Vec<_> = results.iter().filter(|r| r.is_err()).collect();
+    if failures.is_empty() {
         Ok(())
     } else {
-        Err(anyhow::anyhow!("Failed to remove update logs"))
+        let error_details: Vec<String> = failures
+            .iter()
+            .filter_map(|r| r.as_ref().err().map(std::string::ToString::to_string))
+            .collect();
+        Err(anyhow::anyhow!(
+            "Failed to remove {} update log(s): {}",
+            error_details.len(),
+            error_details.join("; ")
+        ))
     }
 }
 
@@ -248,9 +257,7 @@ mod tests {
         // Test clearing logs - should fail because we're trying to remove a directory
         let result = clear_update_logs(&changepacks_dir).await;
         assert!(result.is_err());
-        assert_eq!(
-            result.unwrap_err().to_string(),
-            "Failed to remove update logs"
-        );
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("Failed to remove 1 update log(s)"));
     }
 }

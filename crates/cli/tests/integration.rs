@@ -512,12 +512,7 @@ async fn test_cli_check_with_changepack_updates() {
     tokio::fs::create_dir_all(temp_path.join(".changepacks"))
         .await
         .unwrap();
-    tokio::fs::write(
-        temp_path.join(".changepacks/changepack_log_test.json"),
-        r#"{"changes": {"package.json": "Minor"}, "note": "test feature", "date": "2025-01-01T00:00:00Z"}"#,
-    )
-    .await
-    .unwrap();
+    tokio::fs::write(temp_path.join(".changepacks/changepack_log_test.json"), r#"{"changes": {"package.json": "Minor"}, "note": "test feature", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
 
     tokio::fs::write(
         temp_path.join("package.json"),
@@ -1108,12 +1103,7 @@ async fn test_cli_check_tree_complex_deps() {
     // root -> pkg-a, pkg-b
     // pkg-a -> pkg-c
     // pkg-b -> pkg-c (diamond pattern)
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*", "pkg-b": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
+    tokio::fs::write(temp_path.join("package.json"), r#"{"name": "root", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*", "pkg-b": "workspace:*"}}"#).await.unwrap();
     tokio::fs::write(
         temp_path.join("pnpm-workspace.yaml"),
         "packages:\n  - packages/*",
@@ -1231,12 +1221,7 @@ async fn test_cli_update_actual_execution() {
     tokio::fs::create_dir_all(temp_path.join(".changepacks"))
         .await
         .unwrap();
-    tokio::fs::write(
-        temp_path.join(".changepacks/changepack_log_test.json"),
-        r#"{"changes": {"package.json": "Patch"}, "note": "test update", "date": "2025-01-01T00:00:00Z"}"#,
-    )
-    .await
-    .unwrap();
+    tokio::fs::write(temp_path.join(".changepacks/changepack_log_test.json"), r#"{"changes": {"package.json": "Patch"}, "note": "test update", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
 
     tokio::fs::write(
         temp_path.join("package.json"),
@@ -1334,12 +1319,7 @@ async fn test_cli_update_with_workspace_deps() {
     .unwrap();
 
     // Create changepack log for core only
-    tokio::fs::write(
-        temp_path.join(".changepacks/changepack_log_core.json"),
-        r#"{"changes": {"packages/core/package.json": "Minor"}, "note": "update core", "date": "2025-01-01T00:00:00Z"}"#,
-    )
-    .await
-    .unwrap();
+    tokio::fs::write(temp_path.join(".changepacks/changepack_log_core.json"), r#"{"changes": {"packages/core/package.json": "Minor"}, "note": "update core", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
 
     git_add_and_commit(&temp_path, "Initial commit");
 
@@ -1376,23 +1356,13 @@ async fn test_cli_check_tree_with_updates_and_changes() {
         .unwrap();
 
     // Create changepack log for one package
-    tokio::fs::write(
-        temp_path.join(".changepacks/changepack_log_update.json"),
-        r#"{"changes": {"packages/pkg-a/package.json": "Minor"}, "note": "update pkg-a", "date": "2025-01-01T00:00:00Z"}"#,
-    )
-    .await
-    .unwrap();
+    tokio::fs::write(temp_path.join(".changepacks/changepack_log_update.json"), r#"{"changes": {"packages/pkg-a/package.json": "Minor"}, "note": "update pkg-a", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
 
     // Create packages with workspace:* dependencies
     // root -> pkg-a, pkg-b
     // pkg-a -> pkg-c
     // pkg-b -> pkg-c (diamond pattern)
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*", "pkg-b": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
+    tokio::fs::write(temp_path.join("package.json"), r#"{"name": "root", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*", "pkg-b": "workspace:*"}}"#).await.unwrap();
     tokio::fs::write(
         temp_path.join("pnpm-workspace.yaml"),
         "packages:\n  - packages/*",
@@ -1570,10 +1540,10 @@ async fn test_cli_publish_with_failing_command() {
 
     std::env::set_current_dir(&original_dir).unwrap();
 
-    // Should still succeed (errors are captured in JSON output)
+    // Should return error since publish failed (exit code propagation)
     assert!(
-        result.is_ok(),
-        "publish with failing command should still succeed for JSON output"
+        result.is_err(),
+        "publish with failing command should return error for non-zero exit code"
     );
 }
 
@@ -1700,12 +1670,7 @@ async fn test_cli_check_tree_with_workspace() {
         .unwrap();
 
     // Create a pnpm workspace with workspace:* dependencies
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root-workspace", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
+    tokio::fs::write(temp_path.join("package.json"), r#"{"name": "root-workspace", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*"}}"#).await.unwrap();
     tokio::fs::write(
         temp_path.join("pnpm-workspace.yaml"),
         "packages:\n  - packages/*",
@@ -2174,12 +2139,7 @@ async fn test_cli_update_with_workspace_only() {
     .unwrap();
 
     // Create changepack log for the workspace
-    tokio::fs::write(
-        temp_path.join(".changepacks/changepack_log_ws.json"),
-        r#"{"changes": {"package.json": "Minor"}, "note": "update workspace", "date": "2025-01-01T00:00:00Z"}"#,
-    )
-    .await
-    .unwrap();
+    tokio::fs::write(temp_path.join(".changepacks/changepack_log_ws.json"), r#"{"changes": {"package.json": "Minor"}, "note": "update workspace", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
 
     git_add_and_commit(&temp_path, "Initial commit");
 
@@ -2289,10 +2249,10 @@ async fn test_cli_publish_stdout_failing() {
 
     std::env::set_current_dir(&original_dir).unwrap();
 
-    // Publishing fails but command should still succeed (error is printed)
+    // Publishing fails so command should return error (non-zero exit code)
     assert!(
-        result.is_ok(),
-        "publish stdout failing should still return ok"
+        result.is_err(),
+        "publish stdout failing should return error for non-zero exit code"
     );
 }
 
@@ -2412,12 +2372,7 @@ mod interactive_tests {
             .await
             .unwrap();
 
-        tokio::fs::write(
-            temp_path.join(".changepacks/changepack_log_test.json"),
-            r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(temp_path.join(".changepacks/changepack_log_test.json"), r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
 
         tokio::fs::write(
             temp_path.join("package.json"),
@@ -2463,12 +2418,7 @@ mod interactive_tests {
             .await
             .unwrap();
 
-        tokio::fs::write(
-            temp_path.join(".changepacks/changepack_log_test.json"),
-            r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(temp_path.join(".changepacks/changepack_log_test.json"), r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
 
         tokio::fs::write(
             temp_path.join("package.json"),

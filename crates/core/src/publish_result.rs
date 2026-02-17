@@ -1,13 +1,19 @@
 use serde::Serialize;
 
+/// Result of a publish attempt with success flag and optional error message.
+///
+/// Used for JSON output format and tracking publish failures across multiple packages.
 #[derive(Serialize, Debug)]
 pub struct PublishResult {
+    /// True if publish succeeded, false otherwise
     result: bool,
+    /// Error message if publish failed, None if successful
     error: Option<String>,
 }
 
 impl PublishResult {
-    pub fn new(result: bool, error: Option<String>) -> Self {
+    #[must_use]
+    pub const fn new(result: bool, error: Option<String>) -> Self {
         Self { result, error }
     }
 }

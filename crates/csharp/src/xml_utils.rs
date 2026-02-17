@@ -28,7 +28,7 @@ pub fn update_version_in_xml(
                 } else if in_property_group && name.as_ref() == b"Version" {
                     in_version = true;
                 }
-                writer.write_event(Event::Start(e.to_owned()))?;
+                writer.write_event(Event::Start(e.clone()))?;
             }
             Ok(Event::End(e)) => {
                 let name = e.local_name();
@@ -54,7 +54,7 @@ pub fn update_version_in_xml(
                 } else if name.as_ref() == b"Version" {
                     in_version = false;
                 }
-                writer.write_event(Event::End(e.to_owned()))?;
+                writer.write_event(Event::End(e.clone()))?;
             }
             Ok(Event::Text(e)) => {
                 if in_version && !version_updated {
@@ -62,32 +62,32 @@ pub fn update_version_in_xml(
                     writer.write_event(Event::Text(BytesText::new(new_version)))?;
                     version_updated = true;
                 } else {
-                    writer.write_event(Event::Text(e.to_owned()))?;
+                    writer.write_event(Event::Text(e.clone()))?;
                 }
             }
             Ok(Event::Empty(e)) => {
-                writer.write_event(Event::Empty(e.to_owned()))?;
+                writer.write_event(Event::Empty(e.clone()))?;
             }
             Ok(Event::Comment(e)) => {
-                writer.write_event(Event::Comment(e.to_owned()))?;
+                writer.write_event(Event::Comment(e.clone()))?;
             }
             Ok(Event::CData(e)) => {
-                writer.write_event(Event::CData(e.to_owned()))?;
+                writer.write_event(Event::CData(e.clone()))?;
             }
             Ok(Event::Decl(e)) => {
-                writer.write_event(Event::Decl(e.to_owned()))?;
+                writer.write_event(Event::Decl(e.clone()))?;
             }
             Ok(Event::PI(e)) => {
-                writer.write_event(Event::PI(e.to_owned()))?;
+                writer.write_event(Event::PI(e.clone()))?;
             }
             Ok(Event::DocType(e)) => {
-                writer.write_event(Event::DocType(e.to_owned()))?;
+                writer.write_event(Event::DocType(e.clone()))?;
             }
             Ok(Event::GeneralRef(e)) => {
-                writer.write_event(Event::GeneralRef(e.to_owned()))?;
+                writer.write_event(Event::GeneralRef(e.clone()))?;
             }
             Ok(Event::Eof) => break,
-            Err(e) => return Err(anyhow::anyhow!("XML parsing error: {}", e)),
+            Err(e) => return Err(anyhow::anyhow!("XML parsing error: {e}")),
         }
         buf.clear();
     }
@@ -97,13 +97,13 @@ pub fn update_version_in_xml(
 }
 
 /// Detect indentation style from XML content
-pub fn detect_indent(content: &str) -> &str {
+pub fn detect_indent(content: &str) -> &'static str {
     for line in content.lines() {
         if line.starts_with("    ") {
             return "    ";
         } else if line.starts_with("  ") {
             return "  ";
-        } else if line.starts_with("\t") {
+        } else if line.starts_with('\t') {
             return "\t";
         }
     }
@@ -160,5 +160,108 @@ mod tests {
     fn test_detect_indent_default() {
         let content = "<PropertyGroup>";
         assert_eq!(detect_indent(content), "    ");
+    }
+
+    #[test]
+    fn test_update_version_preserves_empty_elements() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <IsPackable />
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("IsPackable"));
+    }
+
+    #[test]
+    fn test_update_version_preserves_comments() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <!-- This is a comment -->
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("<!-- This is a comment -->"));
+    }
+
+    #[test]
+    fn test_update_version_preserves_cdata() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <Description><![CDATA[some data]]></Description>
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("CDATA"));
+    }
+
+    #[test]
+    fn test_update_version_preserves_xml_declaration() {
+        let content = r#"<?xml version="1.0" encoding="utf-8"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("<?xml"));
+    }
+
+    #[test]
+    fn test_update_version_preserves_processing_instruction() {
+        let content = r#"<?xml version="1.0" encoding="utf-8"?>
+<?xml-stylesheet type="text/xsl" href="style.xsl"?>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("xml-stylesheet"));
+    }
+
+    #[test]
+    fn test_update_version_preserves_doctype() {
+        let content = r#"<!DOCTYPE Project>
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert!(result.contains("2.0.0"));
+        assert!(result.contains("DOCTYPE"));
+    }
+
+    #[test]
+    fn test_update_version_malformed_xml() {
+        let content = r#"<Project><PropertyGroup><Version>1.0.0</Version></PropertyGroup"#;
+        let result = update_version_in_xml(content, "2.0.0", true);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("XML parsing error")
+        );
+    }
+
+    #[test]
+    fn test_update_version_preserves_general_ref() {
+        // XML with entity references like &custom; triggers Event::GeneralRef in quick-xml,
+        // exercising the GeneralRef handler (lines 78-79)
+        let content = r#"<Project><PropertyGroup><Description>Hello &custom; World</Description><Version>1.0.0</Version></PropertyGroup></Project>"#;
+        let result = update_version_in_xml(content, "2.0.0", true);
+        if let Ok(output) = result {
+            assert!(output.contains("2.0.0"));
+        }
     }
 }

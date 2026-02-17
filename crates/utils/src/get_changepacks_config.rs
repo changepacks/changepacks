@@ -8,6 +8,9 @@ use crate::get_changepacks_dir;
 
 /// Get the changepacks configuration from .changepacks/config.json
 /// Returns default config if the file doesn't exist or is empty
+///
+/// # Errors
+/// Returns error if reading or parsing the config.json file fails.
 pub async fn get_changepacks_config(current_dir: &Path) -> Result<Config> {
     let changepacks_dir = get_changepacks_dir(current_dir)?;
     let config_file = changepacks_dir.join("config.json");

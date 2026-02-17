@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 /// Sort projects by their dependencies using topological sort.
 /// Projects with no dependencies or whose dependencies are already published will come first.
 /// Returns a sorted vector of project references (no cloning, just reordering).
+#[must_use]
 pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     if projects.is_empty() {
         return projects;
@@ -14,7 +15,7 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     // Also create a map from project name to index (for dependencies stored as names)
     let mut name_to_index: HashMap<String, usize> = HashMap::new();
     for (idx, project) in projects.iter().enumerate() {
-        let path = project.relative_path().to_string_lossy().to_string();
+        let path = project.relative_path().to_string_lossy().into_owned();
         path_to_index.insert(path.clone(), idx);
         // Also map by name if available
         if let Some(name) = project.name() {

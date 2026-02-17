@@ -4,18 +4,26 @@ use crate::{Config, Language, Package, update_type::UpdateType};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+/// Interface for monorepo workspace roots.
+///
+/// Extends Package behavior with workspace-specific operations like updating workspace
+/// dependencies. Implemented by language-specific workspace types.
 #[async_trait]
 pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn name(&self) -> Option<&str>;
     fn path(&self) -> &Path;
     fn relative_path(&self) -> &Path;
     fn version(&self) -> Option<&str>;
+    /// # Errors
+    /// Returns error if the version update operation fails.
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()>;
     fn language(&self) -> Language;
 
     fn dependencies(&self) -> &HashSet<String>;
     fn add_dependency(&mut self, dependency: &str);
 
+    /// # Errors
+    /// Returns error if the parent path cannot be determined.
     // Default implementation for check_changed
     fn check_changed(&mut self, path: &Path) -> Result<()> {
         if self.is_changed() {
@@ -36,66 +44,30 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn default_publish_command(&self) -> String;
 
     /// Publish the workspace using the configured command or default
+    ///
+    /// # Errors
+    /// Returns error if the publish command fails to execute or returns non-zero exit code.
+    #[cfg(not(tarpaulin_include))]
     async fn publish(&self, config: &Config) -> Result<()> {
         let command = self.get_publish_command(config);
-        // Get the directory containing the workspace file
-        let workspace_dir = self
+        let dir = self
             .path()
             .parent()
             .context("Workspace directory not found")?;
-
-        let mut cmd = if cfg!(target_os = "windows") {
-            let mut c = tokio::process::Command::new("cmd");
-            c.arg("/C");
-            c.arg(command);
-            c
-        } else {
-            let mut c = tokio::process::Command::new("sh");
-            c.arg("-c");
-            c.arg(command);
-            c
-        };
-
-        cmd.current_dir(workspace_dir);
-        let output = cmd.output().await?;
-
-        if !output.status.success() {
-            anyhow::bail!(
-                "Publish command failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        } else {
-            Ok(())
-        }
+        crate::publish::run_publish_command(&command, dir).await
     }
 
     /// Get the publish command for this workspace, checking config first
     fn get_publish_command(&self, config: &Config) -> String {
-        // Check for custom command by relative path
-        if let Some(cmd) = config
-            .publish
-            .get(self.relative_path().to_string_lossy().as_ref())
-        {
-            return cmd.clone();
-        }
-
-        // Check for custom command by language
-        let lang_key = match self.language() {
-            crate::Language::Node => "node",
-            crate::Language::Python => "python",
-            crate::Language::Rust => "rust",
-            crate::Language::Dart => "dart",
-            crate::Language::CSharp => "csharp",
-            crate::Language::Java => "java",
-        };
-        if let Some(cmd) = config.publish.get(lang_key) {
-            return cmd.clone();
-        }
-
-        // Use default command
-        self.default_publish_command()
+        crate::publish::resolve_publish_command(
+            self.relative_path(),
+            self.language(),
+            &self.default_publish_command(),
+            config,
+        )
     }
 
+    #[cfg(not(tarpaulin_include))]
     async fn update_workspace_dependencies(&self, _packages: &[&dyn Package]) -> Result<()> {
         Ok(())
     }
@@ -155,7 +127,7 @@ mod tests {
             Ok(())
         }
         fn language(&self) -> Language {
-            self.language.clone()
+            self.language
         }
         fn dependencies(&self) -> &HashSet<String> {
             &self.dependencies
@@ -354,5 +326,27 @@ mod tests {
 
         let result = workspace.update_workspace_dependencies(&packages).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_publish_no_parent_directory() {
+        let workspace = MockWorkspace {
+            name: Some("test".to_string()),
+            path: PathBuf::from(""),
+            relative_path: PathBuf::from(""),
+            version: Some("1.0.0".to_string()),
+            language: Language::Node,
+            dependencies: HashSet::new(),
+            changed: false,
+        };
+        let config = Config::default();
+        let result = workspace.publish(&config).await;
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Workspace directory not found")
+        );
     }
 }

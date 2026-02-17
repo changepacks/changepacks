@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    hash::BuildHasher,
     path::{Path, PathBuf},
 };
 
@@ -10,6 +11,10 @@ use tokio::fs::{read_dir, read_to_string};
 
 use crate::get_changepacks_dir;
 
+/// Generate update map from changepack logs
+///
+/// # Errors
+/// Returns error if reading changepacks directory or parsing JSON fails.
 pub async fn gen_update_map(
     current_dir: &Path,
     config: &Config,
@@ -19,22 +24,27 @@ pub async fn gen_update_map(
 
     let mut entries = read_dir(&changepacks_dir).await?;
     while let Some(file) = entries.next_entry().await? {
-        let file_name = file.file_name().to_string_lossy().to_string();
-        if file_name == "config.json" || !file_name.ends_with(".json") {
+        let file_name = file.file_name();
+        let file_name = file_name.to_string_lossy();
+        if file_name.as_ref() == "config.json"
+            || !Path::new(file_name.as_ref())
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        {
             continue;
         }
         let file_json = read_to_string(file.path()).await?;
         let file_json: ChangePackLog = serde_json::from_str(&file_json)?;
-        for (project_path, update_type) in file_json.changes().iter() {
+        for (project_path, update_type) in file_json.changes() {
             let ret = update_map
                 .entry(project_path.clone())
-                .or_insert((update_type.clone(), vec![]));
+                .or_insert((*update_type, vec![]));
             ret.1.push(ChangePackResultLog::new(
-                update_type.clone(),
+                *update_type,
                 file_json.note().to_string(),
             ));
             if ret.0 > *update_type {
-                ret.0 = update_type.clone();
+                ret.0 = *update_type;
             }
         }
     }
@@ -53,9 +63,9 @@ fn apply_update_on_rules(
     let updated_paths: Vec<PathBuf> = update_map.keys().cloned().collect();
 
     for (trigger_pattern, dependents) in &config.update_on {
-        let pattern = match Pattern::new(trigger_pattern) {
-            Ok(p) => p,
-            Err(_) => continue,
+        let Ok(pattern) = Pattern::new(trigger_pattern) else {
+            eprintln!("warning: invalid glob pattern in updateOn config: {trigger_pattern}");
+            continue;
         };
 
         // Check if any updated package matches the trigger pattern
@@ -73,10 +83,7 @@ fn apply_update_on_rules(
                         UpdateType::Patch,
                         vec![ChangePackResultLog::new(
                             UpdateType::Patch,
-                            format!(
-                                "Auto-update triggered by updateOn rule: {}",
-                                trigger_pattern
-                            ),
+                            format!("Auto-update triggered by updateOn rule: {trigger_pattern}"),
                         )],
                     )
                 });
@@ -87,8 +94,8 @@ fn apply_update_on_rules(
 
 /// Apply reverse dependency updates: if package A depends on package B (via workspace:*),
 /// and B is being updated, then A should also be updated as PATCH.
-pub fn apply_reverse_dependencies(
-    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+pub fn apply_reverse_dependencies<S: BuildHasher>(
+    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
     projects: &[&Project],
     repo_root_path: &Path,
 ) {
@@ -130,11 +137,9 @@ pub fn apply_reverse_dependencies(
         .keys()
         .filter_map(|path| {
             // Find the package name for this path
-            name_to_path.iter().find_map(
-                |(name, p)| {
-                    if p == path { Some(name.clone()) } else { None }
-                },
-            )
+            name_to_path
+                .iter()
+                .find_map(|(name, p)| if p == path { Some(name.clone()) } else { None })
         })
         .collect();
 
@@ -159,10 +164,7 @@ pub fn apply_reverse_dependencies(
                 UpdateType::Patch,
                 vec![ChangePackResultLog::new(
                     UpdateType::Patch,
-                    format!(
-                        "Auto-update: depends on '{}' via workspace:*",
-                        dependency_name
-                    ),
+                    format!("Auto-update: depends on '{dependency_name}' via workspace:*"),
                 )],
             )
         });

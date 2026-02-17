@@ -1,17 +1,27 @@
-use anyhow::{Context, Result};
-use changepacks_core::{Package, Project};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
+
+use anyhow::Result;
+use changepacks_core::{
+    ChangePackResultLog, Package, Project, ProjectFinder, UpdateType, Workspace,
+};
 use changepacks_utils::{
-    apply_reverse_dependencies, clear_update_logs, display_update, find_current_git_repo,
-    find_project_dirs, gen_changepack_result_map, gen_update_map, get_changepacks_config,
-    get_changepacks_dir, get_relative_path,
+    apply_reverse_dependencies, clear_update_logs, display_update, find_project_dirs,
+    gen_changepack_result_map, gen_update_map, get_changepacks_dir, get_relative_path,
 };
 use clap::Args;
 
 use crate::{
+    CommandContext,
     finders::get_finders,
     options::FormatOptions,
     prompter::{InquirePrompter, Prompter},
 };
+
+type UpdateProjectMut<'a> = (&'a mut Project, UpdateType);
+type WorkspaceRef<'a> = &'a dyn Workspace;
 
 #[derive(Args, Debug)]
 #[command(about = "Check project status")]
@@ -30,111 +40,151 @@ pub struct UpdateArgs {
 }
 
 /// Update project version
+///
+/// # Errors
+/// Returns error if command context creation or version update fails.
 pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
     handle_update_with_prompter(args, &InquirePrompter).await
 }
 
+/// # Errors
+/// Returns error if reading changepack logs, updating versions, or writing results fails.
 pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Prompter) -> Result<()> {
-    let current_dir = std::env::current_dir()?;
-    let repo = find_current_git_repo(&current_dir)?;
-    let repo_root_path = repo.work_dir().context("Not a working directory")?;
-    let changepacks_dir = get_changepacks_dir(&current_dir)?;
-    // check if config.json exists
+    let ctx = CommandContext::new(args.remote).await?;
+    let changepacks_dir = get_changepacks_dir(&CommandContext::current_dir()?)?;
+    let mut update_map = gen_update_map(&CommandContext::current_dir()?, &ctx.config).await?;
 
-    let config = get_changepacks_config(&current_dir).await?;
-    let mut update_map = gen_update_map(&current_dir, &config).await?;
-
-    let mut project_finders = get_finders();
+    let mut project_finders = ctx.project_finders;
     let mut all_finders = get_finders();
 
-    find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
-    find_project_dirs(&repo, &mut all_finders, &Default::default(), args.remote).await?;
+    // Need a second git repo reference for the all_finders, but since CommandContext already called find_project_dirs
+    // we use an empty config for all_finders which won't filter anything
+    let current_dir = CommandContext::current_dir()?;
+    let repo = changepacks_utils::find_current_git_repo(&current_dir)?;
+    find_project_dirs(
+        &repo,
+        &mut all_finders,
+        &changepacks_core::Config::default(),
+        args.remote,
+    )
+    .await?;
 
     // Apply reverse dependency updates (workspace:* dependencies)
     let all_projects: Vec<&Project> = all_finders
         .iter()
         .flat_map(|finder| finder.projects())
         .collect();
-    apply_reverse_dependencies(&mut update_map, &all_projects, repo_root_path);
+    apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
+
+    // Merge workspace-inherited package updates into workspace entries
+    merge_workspace_inherited_updates(&mut update_map, &all_finders, &ctx.repo_root_path);
 
     if update_map.is_empty() {
-        match args.format {
-            FormatOptions::Stdout => {
-                println!("No updates found");
-            }
-            FormatOptions::Json => {
-                println!("{{}}");
-            }
-        }
+        args.format.print("No updates found", "{}");
         return Ok(());
     }
+
     if let FormatOptions::Stdout = args.format {
         println!("Updates found:");
     }
 
-    let mut update_projects = Vec::new();
-    let mut workspace_projects = Vec::new();
+    let (mut update_projects, workspace_projects) = collect_update_projects(
+        &mut project_finders,
+        &all_finders,
+        &update_map,
+        &ctx.repo_root_path,
+    )?;
 
-    for finder in project_finders.iter_mut() {
-        for project in finder.projects_mut() {
-            if let Some((update_type, _)) =
-                update_map.get(&get_relative_path(repo_root_path, project.path())?)
-            {
-                update_projects.push((project, update_type.clone()));
-                continue;
-            }
-        }
-    }
-    for finder in all_finders.iter_mut() {
-        for project in finder.projects() {
-            if let Project::Workspace(workspace) = project {
-                workspace_projects.push(workspace);
-            }
-        }
-    }
-    update_projects.sort();
     if let FormatOptions::Stdout = args.format {
-        for (project, update_type) in update_projects.iter() {
+        for (project, update_type) in &update_projects {
             println!(
                 "{} {}",
                 project,
-                display_update(project.version(), update_type.clone())?
+                display_update(project.version(), *update_type)?
             );
         }
     }
+
     if args.dry_run {
-        match args.format {
-            FormatOptions::Stdout => {
-                println!("Dry run, no updates will be made");
-            }
-            FormatOptions::Json => {
-                println!("{{}}");
-            }
-        }
+        args.format.print("Dry run, no updates will be made", "{}");
         return Ok(());
     }
+
     // confirm
     let confirm = if args.yes {
         true
     } else {
         prompter.confirm("Are you sure you want to update the projects?")?
     };
+
     if !confirm {
-        match args.format {
-            FormatOptions::Stdout => {
-                println!("Update cancelled");
-            }
-            FormatOptions::Json => {
-                println!("{{}}");
-            }
-        }
+        args.format.print("Update cancelled", "{}");
         return Ok(());
     }
 
+    apply_updates(&mut update_projects, &workspace_projects).await?;
+    drop(update_projects);
+
+    if let FormatOptions::Json = args.format {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&gen_changepack_result_map(
+                project_finders
+                    .iter()
+                    .flat_map(|finder| finder.projects())
+                    .collect::<Vec<_>>()
+                    .as_slice(),
+                &ctx.repo_root_path,
+                &mut update_map,
+            )?)?
+        );
+    }
+
+    // Clear files
+    clear_update_logs(&changepacks_dir).await?;
+
+    Ok(())
+}
+
+fn collect_update_projects<'a>(
+    project_finders: &'a mut [Box<dyn ProjectFinder>],
+    all_finders: &'a [Box<dyn ProjectFinder>],
+    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    repo_root_path: &Path,
+) -> Result<(Vec<UpdateProjectMut<'a>>, Vec<WorkspaceRef<'a>>)> {
+    let mut update_projects = Vec::new();
+    let mut workspace_projects = Vec::new();
+
+    for finder in project_finders {
+        for project in finder.projects_mut() {
+            if let Some((update_type, _)) =
+                update_map.get(&get_relative_path(repo_root_path, project.path())?)
+            {
+                update_projects.push((project, *update_type));
+            }
+        }
+    }
+
+    for finder in all_finders {
+        for project in finder.projects() {
+            if let Project::Workspace(workspace) = project {
+                workspace_projects.push(workspace.as_ref());
+            }
+        }
+    }
+
+    update_projects.sort();
+    Ok((update_projects, workspace_projects))
+}
+
+async fn apply_updates(
+    update_projects: &mut [UpdateProjectMut<'_>],
+    workspace_projects: &[WorkspaceRef<'_>],
+) -> Result<()> {
     futures::future::join_all(
         update_projects
             .iter_mut()
-            .map(|(project, update_type)| project.update_version(update_type.clone())),
+            .map(|(project, update_type)| project.update_version(*update_type)),
     )
     .await
     .into_iter()
@@ -150,7 +200,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
             }
         })
         .collect();
-    // update workspace dependencies
+
     futures::future::join_all(
         workspace_projects
             .iter()
@@ -160,36 +210,414 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
 
-    if let FormatOptions::Json = args.format {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&gen_changepack_result_map(
-                project_finders
-                    .iter()
-                    .flat_map(|finder| finder.projects())
-                    .collect::<Vec<_>>()
-                    .as_slice(),
-                repo_root_path,
-                &mut update_map,
-            )?)?
-        );
+    Ok(())
+}
+
+/// Merge workspace-inherited package updates into workspace entries.
+/// Packages with `version.workspace = true` should have their bumps promoted
+/// to the workspace level (most significant bump wins). The packages are then
+/// removed from the update map since their Cargo.toml doesn't need changes.
+fn merge_workspace_inherited_updates(
+    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    project_finders: &[Box<dyn ProjectFinder>],
+    repo_root_path: &Path,
+) {
+    // Collect (pkg_rel_path, ws_rel_path) pairs to merge
+    let mut merge_targets: Vec<(PathBuf, PathBuf)> = Vec::new();
+
+    for finder in project_finders {
+        for project in finder.projects() {
+            if let Project::Package(pkg) = project
+                && pkg.inherits_workspace_version()
+                && let Ok(rel_path) = get_relative_path(repo_root_path, pkg.path())
+                && update_map.contains_key(&rel_path)
+                && let Some(ws_root) = pkg.workspace_root_path()
+                && let Ok(ws_rel_path) = get_relative_path(repo_root_path, ws_root)
+            {
+                merge_targets.push((rel_path, ws_rel_path));
+            }
+        }
     }
 
-    // Clear files
-    clear_update_logs(&changepacks_dir).await?;
-
-    Ok(())
+    for (pkg_path, ws_path) in merge_targets {
+        // Remove takes ownership, avoiding Clone requirement
+        if let Some((update_type, logs)) = update_map.remove(&pkg_path) {
+            let ws_entry = update_map
+                .entry(ws_path)
+                .or_insert((UpdateType::Patch, vec![]));
+            // More significant bump wins (Major=0 < Minor=1 < Patch=2)
+            if update_type < ws_entry.0 {
+                ws_entry.0 = update_type;
+            }
+            ws_entry.1.extend(logs);
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{UpdateArgs, merge_workspace_inherited_updates};
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use changepacks_core::{
+        ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType,
+    };
     use clap::Parser;
+    use std::{
+        collections::{HashMap, HashSet},
+        path::{Path, PathBuf},
+    };
+
+    use crate::options::FormatOptions;
 
     #[derive(Parser)]
     struct TestCli {
         #[command(flatten)]
         update: UpdateArgs,
+    }
+
+    #[derive(Debug)]
+    struct MockInheritPackage {
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        language: Language,
+        dependencies: HashSet<String>,
+        changed: bool,
+        inherits_ws_version: bool,
+        workspace_root: Option<PathBuf>,
+    }
+
+    impl MockInheritPackage {
+        fn new(
+            path: &str,
+            relative_path: &str,
+            inherits_ws_version: bool,
+            workspace_root: Option<&str>,
+        ) -> Self {
+            Self {
+                name: Some("mock-package".to_string()),
+                version: Some("1.0.0".to_string()),
+                path: PathBuf::from(path),
+                relative_path: PathBuf::from(relative_path),
+                language: Language::Rust,
+                dependencies: HashSet::new(),
+                changed: false,
+                inherits_ws_version,
+                workspace_root: workspace_root.map(PathBuf::from),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Package for MockInheritPackage {
+        fn name(&self) -> Option<&str> {
+            self.name.as_deref()
+        }
+
+        fn version(&self) -> Option<&str> {
+            self.version.as_deref()
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn relative_path(&self) -> &Path {
+            &self.relative_path
+        }
+
+        async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
+            Ok(())
+        }
+
+        fn is_changed(&self) -> bool {
+            self.changed
+        }
+
+        fn language(&self) -> Language {
+            self.language
+        }
+
+        fn dependencies(&self) -> &HashSet<String> {
+            &self.dependencies
+        }
+
+        fn add_dependency(&mut self, dep: &str) {
+            self.dependencies.insert(dep.to_string());
+        }
+
+        fn set_changed(&mut self, changed: bool) {
+            self.changed = changed;
+        }
+
+        fn default_publish_command(&self) -> String {
+            "echo publish".to_string()
+        }
+
+        fn inherits_workspace_version(&self) -> bool {
+            self.inherits_ws_version
+        }
+
+        fn workspace_root_path(&self) -> Option<&Path> {
+            self.workspace_root.as_deref()
+        }
+    }
+
+    #[derive(Debug)]
+    struct MockFinder {
+        projects: Vec<Project>,
+    }
+
+    impl MockFinder {
+        fn new(projects: Vec<Project>) -> Self {
+            Self { projects }
+        }
+    }
+
+    #[async_trait]
+    impl ProjectFinder for MockFinder {
+        fn projects(&self) -> Vec<&Project> {
+            self.projects.iter().collect()
+        }
+
+        fn projects_mut(&mut self) -> Vec<&mut Project> {
+            self.projects.iter_mut().collect()
+        }
+
+        fn project_files(&self) -> &[&str] {
+            &["Cargo.toml"]
+        }
+
+        async fn visit(&mut self, _path: &Path, _relative_path: &Path) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn mock_package_project(
+        path: &str,
+        relative_path: &str,
+        inherits_ws_version: bool,
+        workspace_root: Option<&str>,
+    ) -> Project {
+        Project::Package(Box::new(MockInheritPackage::new(
+            path,
+            relative_path,
+            inherits_ws_version,
+            workspace_root,
+        )))
+    }
+
+    fn mock_log(note: &str) -> ChangePackResultLog {
+        ChangePackResultLog::new(UpdateType::Patch, note.to_string())
+    }
+
+    fn summarize_update_map(
+        update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    ) -> HashMap<PathBuf, (UpdateType, usize)> {
+        update_map
+            .iter()
+            .map(|(path, (update_type, logs))| (path.clone(), (*update_type, logs.len())))
+            .collect()
+    }
+
+    #[test]
+    fn test_merge_workspace_inherited_updates_no_inherited_packages() {
+        let repo_root = Path::new("/repo");
+        let pkg_rel_path = PathBuf::from("crates/foo/Cargo.toml");
+        let mut update_map = HashMap::from([(
+            pkg_rel_path.clone(),
+            (UpdateType::Minor, vec![mock_log("pkg update")]),
+        )]);
+
+        let project_finders: Vec<Box<dyn ProjectFinder>> =
+            vec![Box::new(MockFinder::new(vec![mock_package_project(
+                "/repo/crates/foo/Cargo.toml",
+                "crates/foo/Cargo.toml",
+                false,
+                Some("/repo/Cargo.toml"),
+            )]))];
+
+        let before = summarize_update_map(&update_map);
+        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+
+        assert_eq!(summarize_update_map(&update_map), before);
+        assert!(update_map.contains_key(&pkg_rel_path));
+    }
+
+    #[test]
+    fn test_merge_workspace_inherited_updates_basic_merge() {
+        let repo_root = Path::new("/repo");
+        let pkg_rel_path = PathBuf::from("crates/foo/Cargo.toml");
+        let ws_rel_path = PathBuf::from("Cargo.toml");
+        let mut update_map = HashMap::from([(
+            pkg_rel_path.clone(),
+            (UpdateType::Minor, vec![mock_log("pkg update")]),
+        )]);
+
+        let project_finders: Vec<Box<dyn ProjectFinder>> =
+            vec![Box::new(MockFinder::new(vec![mock_package_project(
+                "/repo/crates/foo/Cargo.toml",
+                "crates/foo/Cargo.toml",
+                true,
+                Some("/repo/Cargo.toml"),
+            )]))];
+
+        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+
+        assert!(!update_map.contains_key(&pkg_rel_path));
+        let (update_type, logs) = update_map
+            .get(&ws_rel_path)
+            .expect("workspace entry should exist");
+        assert_eq!(*update_type, UpdateType::Minor);
+        assert_eq!(logs.len(), 1);
+    }
+
+    #[test]
+    fn test_merge_workspace_inherited_updates_most_significant_bump_wins() {
+        let repo_root = Path::new("/repo");
+        let pkg1_rel_path = PathBuf::from("crates/foo/Cargo.toml");
+        let pkg2_rel_path = PathBuf::from("crates/bar/Cargo.toml");
+        let ws_rel_path = PathBuf::from("Cargo.toml");
+        let mut update_map = HashMap::from([
+            (
+                pkg1_rel_path.clone(),
+                (UpdateType::Minor, vec![mock_log("foo update")]),
+            ),
+            (
+                pkg2_rel_path.clone(),
+                (UpdateType::Major, vec![mock_log("bar update")]),
+            ),
+        ]);
+
+        let project_finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(MockFinder::new(vec![
+            mock_package_project(
+                "/repo/crates/foo/Cargo.toml",
+                "crates/foo/Cargo.toml",
+                true,
+                Some("/repo/Cargo.toml"),
+            ),
+            mock_package_project(
+                "/repo/crates/bar/Cargo.toml",
+                "crates/bar/Cargo.toml",
+                true,
+                Some("/repo/Cargo.toml"),
+            ),
+        ]))];
+
+        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+
+        assert!(!update_map.contains_key(&pkg1_rel_path));
+        assert!(!update_map.contains_key(&pkg2_rel_path));
+        let (update_type, logs) = update_map
+            .get(&ws_rel_path)
+            .expect("workspace entry should exist");
+        assert_eq!(*update_type, UpdateType::Major);
+        assert_eq!(logs.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_workspace_inherited_updates_package_not_in_update_map() {
+        let repo_root = Path::new("/repo");
+        let mut update_map = HashMap::from([(
+            PathBuf::from("crates/bar/Cargo.toml"),
+            (UpdateType::Patch, vec![mock_log("bar update")]),
+        )]);
+
+        let project_finders: Vec<Box<dyn ProjectFinder>> =
+            vec![Box::new(MockFinder::new(vec![mock_package_project(
+                "/repo/crates/foo/Cargo.toml",
+                "crates/foo/Cargo.toml",
+                true,
+                Some("/repo/Cargo.toml"),
+            )]))];
+
+        let before = summarize_update_map(&update_map);
+        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+
+        assert_eq!(summarize_update_map(&update_map), before);
+        assert!(!update_map.contains_key(&PathBuf::from("Cargo.toml")));
+    }
+
+    #[test]
+    fn test_merge_workspace_inherited_updates_workspace_already_in_update_map() {
+        let repo_root = Path::new("/repo");
+        let pkg_rel_path = PathBuf::from("crates/foo/Cargo.toml");
+        let ws_rel_path = PathBuf::from("Cargo.toml");
+        let mut update_map = HashMap::from([
+            (
+                pkg_rel_path.clone(),
+                (UpdateType::Major, vec![mock_log("foo update")]),
+            ),
+            (
+                ws_rel_path.clone(),
+                (UpdateType::Minor, vec![mock_log("workspace update")]),
+            ),
+        ]);
+
+        let project_finders: Vec<Box<dyn ProjectFinder>> =
+            vec![Box::new(MockFinder::new(vec![mock_package_project(
+                "/repo/crates/foo/Cargo.toml",
+                "crates/foo/Cargo.toml",
+                true,
+                Some("/repo/Cargo.toml"),
+            )]))];
+
+        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+
+        assert!(!update_map.contains_key(&pkg_rel_path));
+        let (update_type, logs) = update_map
+            .get(&ws_rel_path)
+            .expect("workspace entry should exist");
+        assert_eq!(*update_type, UpdateType::Major);
+        assert_eq!(logs.len(), 2);
+    }
+
+    #[test]
+    fn test_merge_workspace_inherited_updates_logs_accumulated() {
+        let repo_root = Path::new("/repo");
+        let pkg1_rel_path = PathBuf::from("crates/foo/Cargo.toml");
+        let pkg2_rel_path = PathBuf::from("crates/bar/Cargo.toml");
+        let ws_rel_path = PathBuf::from("Cargo.toml");
+        let mut update_map = HashMap::from([
+            (
+                pkg1_rel_path.clone(),
+                (
+                    UpdateType::Patch,
+                    vec![mock_log("foo update 1"), mock_log("foo update 2")],
+                ),
+            ),
+            (
+                pkg2_rel_path.clone(),
+                (UpdateType::Patch, vec![mock_log("bar update")]),
+            ),
+        ]);
+
+        let project_finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(MockFinder::new(vec![
+            mock_package_project(
+                "/repo/crates/foo/Cargo.toml",
+                "crates/foo/Cargo.toml",
+                true,
+                Some("/repo/Cargo.toml"),
+            ),
+            mock_package_project(
+                "/repo/crates/bar/Cargo.toml",
+                "crates/bar/Cargo.toml",
+                true,
+                Some("/repo/Cargo.toml"),
+            ),
+        ]))];
+
+        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+
+        assert!(!update_map.contains_key(&pkg1_rel_path));
+        assert!(!update_map.contains_key(&pkg2_rel_path));
+        let (update_type, logs) = update_map
+            .get(&ws_rel_path)
+            .expect("workspace entry should exist");
+        assert_eq!(*update_type, UpdateType::Patch);
+        assert_eq!(logs.len(), 3);
     }
 
     #[test]
@@ -232,6 +660,32 @@ mod tests {
         assert!(cli.update.dry_run);
         assert!(cli.update.yes);
         assert!(matches!(cli.update.format, FormatOptions::Json));
+        assert!(cli.update.remote);
+    }
+
+    #[test]
+    fn test_update_args_short_dry_run() {
+        let cli = TestCli::parse_from(["test", "-d"]);
+        assert!(cli.update.dry_run);
+    }
+
+    #[test]
+    fn test_update_args_short_yes() {
+        let cli = TestCli::parse_from(["test", "-y"]);
+        assert!(cli.update.yes);
+    }
+
+    #[test]
+    fn test_update_args_short_remote() {
+        let cli = TestCli::parse_from(["test", "-r"]);
+        assert!(cli.update.remote);
+    }
+
+    #[test]
+    fn test_update_args_all_short_flags() {
+        let cli = TestCli::parse_from(["test", "-d", "-y", "-r"]);
+        assert!(cli.update.dry_run);
+        assert!(cli.update.yes);
         assert!(cli.update.remote);
     }
 }

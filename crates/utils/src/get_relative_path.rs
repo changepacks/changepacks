@@ -2,10 +2,18 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+/// Get the relative path from a git root to an absolute path
+///
+/// # Errors
+/// Returns error if the absolute path is not within the git root directory.
 pub fn get_relative_path(git_root_path: &Path, absolute_path: &Path) -> Result<PathBuf> {
     match absolute_path.strip_prefix(git_root_path) {
         Ok(relative) => Ok(relative.to_path_buf()),
-        Err(_) => Err(anyhow::anyhow!("Failed to get relative path")),
+        Err(_) => Err(anyhow::anyhow!(
+            "Failed to get relative path: '{}' is not within '{}'",
+            absolute_path.display(),
+            git_root_path.display()
+        )),
     }
 }
 
@@ -62,5 +70,62 @@ mod tests {
         assert!(result.is_err());
         temp_dir.close().unwrap();
         outside_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_get_relative_path_valid_nested_path() {
+        let root = PathBuf::from("repo");
+        let absolute = root.join("packages").join("foo").join("package.json");
+        let result = get_relative_path(&root, &absolute).unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from("packages").join("foo").join("package.json")
+        );
+    }
+
+    #[test]
+    fn test_get_relative_path_at_root_level() {
+        let root = PathBuf::from("repo");
+        let absolute = root.join("package.json");
+        let result = get_relative_path(&root, &absolute).unwrap();
+        assert_eq!(result, PathBuf::from("package.json"));
+    }
+
+    #[test]
+    fn test_get_relative_path_deeply_nested() {
+        let root = PathBuf::from("repo");
+        let absolute = root
+            .join("a")
+            .join("b")
+            .join("c")
+            .join("d")
+            .join("e")
+            .join("package.json");
+        let result = get_relative_path(&root, &absolute).unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from("a")
+                .join("b")
+                .join("c")
+                .join("d")
+                .join("e")
+                .join("package.json")
+        );
+    }
+
+    #[test]
+    fn test_get_relative_path_same_path() {
+        let root = PathBuf::from("repo");
+        let result = get_relative_path(&root, &root).unwrap();
+        assert_eq!(result, PathBuf::from(""));
+    }
+
+    #[test]
+    fn test_get_relative_path_with_real_tempdir() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let absolute = root.join("src").join("lib.rs");
+        let result = get_relative_path(root, &absolute).unwrap();
+        assert_eq!(result, PathBuf::from("src").join("lib.rs"));
     }
 }

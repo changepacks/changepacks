@@ -6,6 +6,9 @@ use ignore::gitignore::GitignoreBuilder;
 use std::path::Path;
 
 /// Find project directories containing specific files from git tracked files
+///
+/// # Errors
+/// Returns error if git operations fail, gitignore parsing fails, or project visiting fails.
 pub async fn find_project_dirs(
     repo: &ThreadSafeRepository,
     project_finders: &mut [Box<dyn ProjectFinder>],
@@ -58,6 +61,11 @@ pub async fn find_project_dirs(
         .collect::<Result<Vec<_>>>()?;
     }
 
+    // Post-visit finalization (resolves deferred state like workspace-inherited versions)
+    for finder in project_finders.iter_mut() {
+        finder.finalize().await?;
+    }
+
     let changed_files = repo
         .status(progress::Discard)?
         .into_index_worktree_iter(Vec::new())?
@@ -67,13 +75,15 @@ pub async fn find_project_dirs(
                     .rela_path()
                     .to_path()
                     .ok()
-                    .map(|path| path.to_path_buf())
+                    .map(std::path::Path::to_path_buf)
             })
         })
         .collect::<Vec<_>>();
     // diff from main branch
-    let main_tree = if !remote {
-        repo.find_reference(&format!("refs/heads/{}", config.base_branch))?
+    let main_tree = if remote {
+        repo.find_remote("origin")?
+            .repo
+            .find_reference(&format!("refs/remotes/origin/{}", config.base_branch))?
             .id()
             .object()?
             .try_into_commit()?
@@ -81,9 +91,13 @@ pub async fn find_project_dirs(
             .object()?
             .try_into_tree()?
     } else {
-        repo.find_remote("origin")?
-            .repo
-            .find_reference(&format!("refs/remotes/origin/{}", config.base_branch))?
+        repo.find_reference(&format!("refs/heads/{}", config.base_branch))
+            .with_context(|| {
+                format!(
+                    "base branch '{}' not found in local refs",
+                    config.base_branch
+                )
+            })?
             .id()
             .object()?
             .try_into_commit()?
@@ -104,7 +118,7 @@ pub async fn find_project_dirs(
                 .location()
                 .to_path()
                 .ok()
-                .map(|path| path.to_path_buf())
+                .map(std::path::Path::to_path_buf)
         })
         .collect::<Vec<_>>();
 

@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
+    hash::BuildHasher,
     path::{Path, PathBuf},
 };
 
@@ -8,10 +9,14 @@ use changepacks_core::{ChangePackResult, ChangePackResultLog, Project, UpdateTyp
 
 use crate::{get_relative_path, next_version};
 
-pub fn gen_changepack_result_map(
+/// Generate a changepack result map from projects and update results
+///
+/// # Errors
+/// Returns error if relative path calculation or version calculation fails.
+pub fn gen_changepack_result_map<S: BuildHasher>(
     projects: &[&Project],
     repo_root_path: &Path,
-    update_result: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    update_result: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
 ) -> Result<BTreeMap<PathBuf, ChangePackResult>> {
     let mut map = BTreeMap::<PathBuf, ChangePackResult>::new();
     for project in projects {
@@ -19,20 +24,20 @@ pub fn gen_changepack_result_map(
         let result = match update_result.remove(&key) {
             Some((update_type, notes)) => ChangePackResult::new(
                 notes,
-                project.version().map(|v| v.to_string()),
+                project.version().map(std::string::ToString::to_string),
                 Some(next_version(
                     project.version().unwrap_or("0.0.0"),
                     update_type,
                 )?),
-                project.name().map(|n| n.to_string()),
+                project.name().map(std::string::ToString::to_string),
                 project.is_changed(),
                 key.clone(),
             ),
             None => ChangePackResult::new(
                 vec![],
-                project.version().map(|v| v.to_string()),
+                project.version().map(std::string::ToString::to_string),
                 None,
-                project.name().map(|n| n.to_string()),
+                project.name().map(std::string::ToString::to_string),
                 project.is_changed(),
                 key.clone(),
             ),
@@ -485,6 +490,125 @@ mod tests {
                 .map(|a| a.len()),
             Some(3)
         );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_gen_changepack_result_map_empty_projects() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_root = temp_dir.path();
+
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(repo_root)
+            .output()
+            .unwrap();
+
+        let mut update_result = HashMap::new();
+        let projects: Vec<&Project> = vec![];
+        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+
+        assert!(result.is_empty());
+
+        temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_gen_changepack_result_map_no_matching_update_entry() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_root = temp_dir.path();
+
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(repo_root)
+            .output()
+            .unwrap();
+
+        let project_path = repo_root.join("projectA");
+        fs::create_dir_all(&project_path).unwrap();
+        let package_json = project_path.join("package.json");
+        fs::write(&package_json, r#"{"name": "pkg-a", "version": "1.0.0"}"#).unwrap();
+
+        let project = create_test_project(
+            "pkg-a",
+            "1.0.0",
+            package_json,
+            PathBuf::from("projectA/package.json"),
+            false,
+        );
+
+        // update_result has an entry for a DIFFERENT project, not matching this one
+        let mut update_result = HashMap::new();
+        update_result.insert(
+            PathBuf::from("other-project/package.json"),
+            (
+                UpdateType::Patch,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Patch,
+                    "unrelated fix".to_string(),
+                )],
+            ),
+        );
+
+        let projects = vec![&project];
+        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+
+        assert_eq!(result.len(), 1);
+        let change_result = result.get(&PathBuf::from("projectA/package.json")).unwrap();
+        let json = serde_json::to_value(change_result).unwrap();
+        // No matching entry means no nextVersion
+        assert!(
+            get_json_field(&json, "nextVersion").is_none()
+                || get_json_field(&json, "nextVersion").unwrap().is_null()
+        );
+        // The unmatched update_result entry should remain unconsumed
+        assert_eq!(update_result.len(), 1);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_gen_changepack_result_map_project_with_empty_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_root = temp_dir.path();
+
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(repo_root)
+            .output()
+            .unwrap();
+
+        let project_path = repo_root.join("project_empty_ver");
+        fs::create_dir_all(&project_path).unwrap();
+        let package_json = project_path.join("package.json");
+        fs::write(&package_json, r#"{"name": "empty-ver-pkg"}"#).unwrap();
+
+        let mut package = NodePackage::new(
+            Some("empty-ver-pkg".to_string()),
+            Some(String::new()),
+            package_json,
+            PathBuf::from("project_empty_ver/package.json"),
+        );
+        package.set_changed(false);
+        let project = Project::Package(Box::new(package));
+
+        let mut update_result = HashMap::new();
+        update_result.insert(
+            PathBuf::from("project_empty_ver/package.json"),
+            (
+                UpdateType::Patch,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Patch,
+                    "test".to_string(),
+                )],
+            ),
+        );
+
+        let projects = vec![&project];
+        // Empty version "" with an update triggers next_version("", Patch) which should fail
+        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result);
+        assert!(result.is_err());
 
         temp_dir.close().unwrap();
     }

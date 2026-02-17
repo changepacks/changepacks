@@ -183,6 +183,7 @@ name = "changepacks-cli"
 version = "0.2.18"
 dependencies = [
  "anyhow",
+ "async-trait",
  "changepacks-core",
  "changepacks-csharp",
  "changepacks-dart",
@@ -214,6 +215,7 @@ dependencies = [
  "colored",
  "rstest",
  "serde",
+ "serde_json",
  "tokio",
 ]
 

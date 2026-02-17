@@ -1,14 +1,18 @@
 use anyhow::{Context, Result};
 use changepacks_core::UpdateType;
 
+/// Calculate the next version based on semver and update type
+///
+/// # Errors
+/// Returns error if the version format is invalid.
 pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
-    let mut version_parts = version.split(".").collect::<Vec<&str>>();
+    let mut version_parts = version.split('.').collect::<Vec<&str>>();
 
     // Ensure we have exactly 3 parts (major.minor.patch)
     if version_parts.len() != 3 {
-        return Err(anyhow::anyhow!("Invalid version format: {}", version));
+        return Err(anyhow::anyhow!("Invalid version format: {version}"));
     }
-    let plus_split = version_parts[2].split("+").collect::<Vec<&str>>();
+    let plus_split = version_parts[2].split('+').collect::<Vec<&str>>();
     let plus_part = if plus_split.len() == 2 {
         version_parts[2] = plus_split[0];
         Some(plus_split[1])
@@ -24,7 +28,7 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
 
     let version_part = (version_parts[version_index]
         .parse::<usize>()
-        .context(format!("Invalid version: {}", version))?
+        .context(format!("Invalid version: {version}"))?
         + 1)
     .to_string();
     version_parts[version_index] = version_part.as_str();
@@ -37,7 +41,7 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     Ok(format!(
         "{}{}",
         version_parts.join("."),
-        plus_part.map(|p| format!("+{}", p)).unwrap_or_default()
+        plus_part.map(|p| format!("+{p}")).unwrap_or_default()
     ))
 }
 

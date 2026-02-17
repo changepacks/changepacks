@@ -17,6 +17,7 @@ pub struct DartWorkspace {
 }
 
 impl DartWorkspace {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,
@@ -75,12 +76,12 @@ impl Workspace for DartWorkspace {
                             yamlpath::route!("version")
                         } else {
                             yamlpath::route!()
-                        },
+                        }
                     }],
                 )?
                 .source()
                 .trim_end(),
-                if pubspec_yaml_raw.ends_with("\n") {
+                if pubspec_yaml_raw.ends_with('\n') {
                     "\n"
                 } else {
                     ""

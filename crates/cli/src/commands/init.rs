@@ -14,6 +14,9 @@ pub struct InitArgs {
 }
 
 /// Initialize a new changepacks project
+///
+/// # Errors
+/// Returns error if creating the .changepacks directory or config file fails.
 pub async fn handle_init(args: &InitArgs) -> Result<()> {
     // create .changepacks directory
     let current_dir = std::env::current_dir()?;

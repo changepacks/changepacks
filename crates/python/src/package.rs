@@ -18,6 +18,7 @@ pub struct PythonPackage {
 }
 
 impl PythonPackage {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,
@@ -65,7 +66,7 @@ impl Package for PythonPackage {
             format!(
                 "{}{}",
                 pyproject_toml.to_string().trim_end(),
-                if pyproject_toml_raw.ends_with("\n") {
+                if pyproject_toml_raw.ends_with('\n') {
                     "\n"
                 } else {
                     ""

@@ -1,18 +1,15 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::Result;
-use changepacks_core::PublishResult;
-use changepacks_utils::{
-    find_current_git_repo, find_project_dirs, get_changepacks_config, sort_by_dependencies,
-};
+use changepacks_core::{Config, Language, Project, PublishResult};
+use changepacks_utils::sort_by_dependencies;
 use clap::Args;
 
 use crate::{
-    finders::get_finders,
+    CommandContext,
     options::FormatOptions,
     prompter::{InquirePrompter, Prompter},
 };
-use changepacks_core::Language;
 
 #[derive(Args, Debug)]
 #[command(about = "Publish packages")]
@@ -39,23 +36,23 @@ pub struct PublishArgs {
 }
 
 /// Publish packages
+///
+/// # Errors
+/// Returns error if command context creation or publishing fails.
 pub async fn handle_publish(args: &PublishArgs) -> Result<()> {
     handle_publish_with_prompter(args, &InquirePrompter).await
 }
 
+/// # Errors
+/// Returns error if project discovery, dependency sorting, or publishing fails.
 pub async fn handle_publish_with_prompter(
     args: &PublishArgs,
     prompter: &dyn Prompter,
 ) -> Result<()> {
-    let current_dir = std::env::current_dir()?;
-    let repo = find_current_git_repo(&current_dir)?;
+    let ctx = CommandContext::new(args.remote).await?;
 
-    let config = get_changepacks_config(&current_dir).await?;
-    let mut project_finders = get_finders();
-
-    find_project_dirs(&repo, &mut project_finders, &config, args.remote).await?;
-
-    let mut projects: Vec<_> = project_finders
+    let mut projects: Vec<_> = ctx
+        .project_finders
         .iter()
         .flat_map(|finder| finder.projects())
         .collect();
@@ -72,14 +69,12 @@ pub async fn handle_publish_with_prompter(
 
     // Filter by project relative path if specified
     if !args.project.is_empty() {
+        let normalized_args: Vec<String> =
+            args.project.iter().map(|p| p.replace('\\', "/")).collect();
         projects.retain(|project| {
             let relative_path = project.relative_path().to_string_lossy();
             let normalized_path = relative_path.replace('\\', "/");
-            args.project.iter().any(|p| {
-                // Normalize path separators for comparison
-                let normalized_p = p.replace('\\', "/");
-                normalized_path == normalized_p
-            })
+            normalized_args.contains(&normalized_path)
         });
     }
 
@@ -87,33 +82,15 @@ pub async fn handle_publish_with_prompter(
     let projects = sort_by_dependencies(projects);
 
     if projects.is_empty() {
-        match args.format {
-            FormatOptions::Stdout => {
-                println!("No projects found");
-            }
-            FormatOptions::Json => {
-                println!("{{}}");
-            }
-        }
+        args.format.print("No projects found", "{}");
         return Ok(());
     }
 
-    if let FormatOptions::Stdout = args.format {
-        println!("Projects to publish:");
-        for project in projects.iter() {
-            println!("  {}", project);
-        }
-    }
+    print_projects_to_publish(&projects, &args.format);
 
     if args.dry_run {
-        match args.format {
-            FormatOptions::Stdout => {
-                println!("Dry run, no packages will be published");
-            }
-            FormatOptions::Json => {
-                println!("{{}}");
-            }
-        }
+        args.format
+            .print("Dry run, no packages will be published", "{}");
         return Ok(());
     }
 
@@ -124,31 +101,71 @@ pub async fn handle_publish_with_prompter(
         prompter.confirm("Are you sure you want to publish the packages?")?
     };
     if !confirm {
-        match args.format {
-            FormatOptions::Stdout => {
-                println!("Publish cancelled");
-            }
-            FormatOptions::Json => {
-                println!("{{}}");
-            }
-        }
+        args.format.print("Publish cancelled", "{}");
         return Ok(());
     }
 
-    let mut result_map = BTreeMap::new();
+    let (result_map, failed_projects) =
+        execute_publish_loop(&projects, &ctx.config, &args.format).await;
 
-    // Publish each project
-    for project in projects.iter() {
-        if let FormatOptions::Stdout = args.format {
-            println!("Publishing {}...", project);
+    print_publish_failure_summary(&failed_projects, projects.len(), &args.format);
+
+    if let FormatOptions::Json = args.format {
+        println!("{}", serde_json::to_string_pretty(&result_map)?);
+    }
+
+    if !failed_projects.is_empty() {
+        anyhow::bail!(
+            "Failed to publish {} project(s): {}",
+            failed_projects.len(),
+            failed_projects.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
+fn print_projects_to_publish(projects: &[&Project], format: &FormatOptions) {
+    if let FormatOptions::Stdout = format {
+        println!("Projects to publish:");
+        for project in projects {
+            println!("  {project}");
         }
-        let result = project.publish(&config).await;
+    }
+}
+
+fn print_publish_failure_summary(failed_projects: &[String], total: usize, format: &FormatOptions) {
+    if !failed_projects.is_empty()
+        && let FormatOptions::Stdout = format
+    {
+        eprintln!(
+            "\n{} of {} projects failed to publish: {}",
+            failed_projects.len(),
+            total,
+            failed_projects.join(", ")
+        );
+    }
+}
+
+async fn execute_publish_loop(
+    projects: &[&Project],
+    config: &Config,
+    format: &FormatOptions,
+) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
+    let mut result_map = BTreeMap::new();
+    let mut failed_projects: Vec<String> = Vec::new();
+
+    for project in projects {
+        if let FormatOptions::Stdout = format {
+            println!("Publishing {project}...");
+        }
+        let result = project.publish(config).await;
         match result {
-            Ok(_) => {
-                if let FormatOptions::Stdout = args.format {
-                    println!("Successfully published {}", project);
+            Ok(()) => {
+                if let FormatOptions::Stdout = format {
+                    println!("Successfully published {project}");
                 }
-                if let FormatOptions::Json = args.format {
+                if let FormatOptions::Json = format {
                     result_map.insert(
                         project.relative_path().to_path_buf(),
                         PublishResult::new(true, None),
@@ -156,21 +173,32 @@ pub async fn handle_publish_with_prompter(
                 }
             }
             Err(e) => {
-                if let FormatOptions::Stdout = args.format {
-                    eprintln!("Failed to publish {}: {}", project, e);
+                if let FormatOptions::Stdout = format {
+                    eprintln!("Failed to publish {project}: {e}");
                 }
-                if let FormatOptions::Json = args.format {
+                if let FormatOptions::Json = format {
                     result_map.insert(
                         project.relative_path().to_path_buf(),
                         PublishResult::new(false, Some(e.to_string())),
                     );
                 }
+                failed_projects.push(format!("{project}"));
             }
         }
     }
 
-    if let FormatOptions::Json = args.format {
-        println!("{}", serde_json::to_string_pretty(&result_map)?);
+    (result_map, failed_projects)
+}
+
+#[cfg(test)]
+fn publish_result_from_failures(failed: &[String], total: usize) -> Result<()> {
+    if !failed.is_empty() {
+        anyhow::bail!(
+            "Failed to publish {} of {} project(s): {}",
+            failed.len(),
+            total,
+            failed.join(", ")
+        );
     }
     Ok(())
 }
@@ -260,5 +288,81 @@ mod tests {
         assert!(cli.publish.remote);
         assert_eq!(cli.publish.language.len(), 1);
         assert_eq!(cli.publish.project.len(), 1);
+    }
+
+    #[test]
+    fn test_publish_result_all_succeed() {
+        let result = publish_result_from_failures(&[], 3);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_publish_result_single_failure() {
+        let result = publish_result_from_failures(&["pkg-a".to_string()], 3);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("1 of 3"));
+        assert!(err_msg.contains("pkg-a"));
+    }
+
+    #[test]
+    fn test_publish_result_multiple_failures() {
+        let result = publish_result_from_failures(&["pkg-a".to_string(), "pkg-b".to_string()], 5);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("2 of 5"));
+        assert!(err_msg.contains("pkg-a"));
+        assert!(err_msg.contains("pkg-b"));
+    }
+
+    #[test]
+    fn test_publish_result_from_failures_zero_total() {
+        let result = publish_result_from_failures(&[], 0);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_publish_args_short_dry_run() {
+        let cli = TestCli::parse_from(["test", "-d"]);
+        assert!(cli.publish.dry_run);
+    }
+
+    #[test]
+    fn test_publish_args_short_yes() {
+        let cli = TestCli::parse_from(["test", "-y"]);
+        assert!(cli.publish.yes);
+    }
+
+    #[test]
+    fn test_publish_args_short_remote() {
+        let cli = TestCli::parse_from(["test", "-r"]);
+        assert!(cli.publish.remote);
+    }
+
+    #[test]
+    fn test_publish_args_with_multiple_projects() {
+        let cli = TestCli::parse_from([
+            "test",
+            "--project",
+            "packages/a/package.json",
+            "--project",
+            "packages/b/package.json",
+        ]);
+        assert_eq!(cli.publish.project.len(), 2);
+        assert_eq!(cli.publish.project[0], "packages/a/package.json");
+        assert_eq!(cli.publish.project[1], "packages/b/package.json");
+    }
+
+    #[test]
+    fn test_publish_args_short_language() {
+        let cli = TestCli::parse_from(["test", "-l", "rust"]);
+        assert_eq!(cli.publish.language.len(), 1);
+    }
+
+    #[test]
+    fn test_publish_args_short_project() {
+        let cli = TestCli::parse_from(["test", "-p", "Cargo.toml"]);
+        assert_eq!(cli.publish.project.len(), 1);
+        assert_eq!(cli.publish.project[0], "Cargo.toml");
     }
 }

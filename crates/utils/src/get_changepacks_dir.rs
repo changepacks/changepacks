@@ -4,6 +4,10 @@ use anyhow::{Context, Result};
 
 use crate::find_current_git_repo;
 
+/// Get the .changepacks directory path from the git repository root
+///
+/// # Errors
+/// Returns error if finding the git repository fails.
 pub fn get_changepacks_dir(current_dir: &Path) -> Result<PathBuf> {
     let repo = find_current_git_repo(current_dir)?;
     let changepacks_dir = repo

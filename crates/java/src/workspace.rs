@@ -2,10 +2,11 @@ use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
 use changepacks_utils::next_version;
-use regex::Regex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
+
+use crate::{update_version_in_groovy, update_version_in_kts};
 
 #[derive(Debug)]
 pub struct GradleWorkspace {
@@ -18,6 +19,7 @@ pub struct GradleWorkspace {
 }
 
 impl GradleWorkspace {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,
@@ -33,50 +35,6 @@ impl GradleWorkspace {
             dependencies: HashSet::new(),
         }
     }
-}
-
-/// Update version in build.gradle.kts content
-fn update_version_kts(content: &str, new_version: &str) -> String {
-    // Pattern 1: version = "1.0.0"
-    let simple_pattern = Regex::new(r#"(?m)^(version\s*=\s*)"[^"]+""#).unwrap();
-    if simple_pattern.is_match(content) {
-        return simple_pattern
-            .replace(content, format!(r#"${{1}}"{}""#, new_version))
-            .to_string();
-    }
-
-    // Pattern 2: version = project.findProperty("...") ?: "1.0.0"
-    let fallback_pattern =
-        Regex::new(r#"(?m)^(version\s*=\s*project\.findProperty\([^)]+\)\s*\?:\s*)"[^"]+""#)
-            .unwrap();
-    if fallback_pattern.is_match(content) {
-        return fallback_pattern
-            .replace(content, format!(r#"${{1}}"{}""#, new_version))
-            .to_string();
-    }
-
-    content.to_string()
-}
-
-/// Update version in build.gradle (Groovy) content
-fn update_version_groovy(content: &str, new_version: &str) -> String {
-    // Pattern 1: version = '1.0.0' or version = "1.0.0"
-    let assign_pattern = Regex::new(r#"(?m)^(version\s*=\s*)['"][^'"]+['"]"#).unwrap();
-    if assign_pattern.is_match(content) {
-        return assign_pattern
-            .replace(content, format!(r#"${{1}}'{}'"#, new_version))
-            .to_string();
-    }
-
-    // Pattern 2: version '1.0.0' or version "1.0.0"
-    let space_pattern = Regex::new(r#"(?m)^(version\s+)['"][^'"]+['"]"#).unwrap();
-    if space_pattern.is_match(content) {
-        return space_pattern
-            .replace(content, format!(r#"${{1}}'{}'"#, new_version))
-            .to_string();
-    }
-
-    content.to_string()
 }
 
 #[async_trait]
@@ -103,12 +61,14 @@ impl Workspace for GradleWorkspace {
             .file_name()
             .and_then(|f| f.to_str())
             .unwrap_or_default();
-        let is_kts = file_name.ends_with(".kts");
+        let is_kts = Path::new(file_name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("kts"));
 
         let updated_content = if is_kts {
-            update_version_kts(&content, &new_version)
+            update_version_in_kts(&content, &new_version)
         } else {
-            update_version_groovy(&content, &new_version)
+            update_version_in_groovy(&content, &new_version)
         };
 
         write(&self.path, updated_content).await?;

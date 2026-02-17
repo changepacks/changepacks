@@ -10,88 +10,108 @@ use colored::Colorize;
 
 use crate::{config::Config, package::Package, update_type::UpdateType, workspace::Workspace};
 
+/// Discriminated union of Package (single project) or Workspace (monorepo root).
+///
+/// Provides unified interface for operations on both package and workspace projects,
+/// delegating to the appropriate trait implementation. Workspaces sort before packages
+/// in ordering comparisons.
 #[derive(Debug)]
 pub enum Project {
+    /// Monorepo workspace root containing multiple packages
     Workspace(Box<dyn Workspace>),
+    /// Single versioned package
     Package(Box<dyn Package>),
 }
 
 impl Project {
+    #[must_use]
     pub fn name(&self) -> Option<&str> {
         match self {
-            Project::Workspace(workspace) => workspace.name(),
-            Project::Package(package) => package.name(),
+            Self::Workspace(workspace) => workspace.name(),
+            Self::Package(package) => package.name(),
         }
     }
 
+    #[must_use]
     pub fn version(&self) -> Option<&str> {
         match self {
-            Project::Workspace(workspace) => workspace.version(),
-            Project::Package(package) => package.version(),
+            Self::Workspace(workspace) => workspace.version(),
+            Self::Package(package) => package.version(),
         }
     }
+    #[must_use]
     pub fn path(&self) -> &Path {
         match self {
-            Project::Workspace(workspace) => workspace.path(),
-            Project::Package(package) => package.path(),
+            Self::Workspace(workspace) => workspace.path(),
+            Self::Package(package) => package.path(),
         }
     }
 
+    #[must_use]
     pub fn relative_path(&self) -> &Path {
         match self {
-            Project::Workspace(workspace) => workspace.relative_path(),
-            Project::Package(package) => package.relative_path(),
+            Self::Workspace(workspace) => workspace.relative_path(),
+            Self::Package(package) => package.relative_path(),
         }
     }
 
+    /// # Errors
+    /// Returns error if the underlying `update_version` call fails.
     pub async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         match self {
-            Project::Workspace(workspace) => workspace.update_version(update_type).await?,
-            Project::Package(package) => package.update_version(update_type).await?,
+            Self::Workspace(workspace) => workspace.update_version(update_type).await?,
+            Self::Package(package) => package.update_version(update_type).await?,
         }
         Ok(())
     }
 
+    /// # Errors
+    /// Returns error if the underlying `check_changed` call fails.
     pub fn check_changed(&mut self, path: &Path) -> Result<()> {
         match self {
-            Project::Workspace(workspace) => workspace.check_changed(path)?,
-            Project::Package(package) => package.check_changed(path)?,
+            Self::Workspace(workspace) => workspace.check_changed(path)?,
+            Self::Package(package) => package.check_changed(path)?,
         }
         Ok(())
     }
 
+    #[must_use]
     pub fn is_changed(&self) -> bool {
         match self {
-            Project::Workspace(workspace) => workspace.is_changed(),
-            Project::Package(package) => package.is_changed(),
+            Self::Workspace(workspace) => workspace.is_changed(),
+            Self::Package(package) => package.is_changed(),
         }
     }
 
+    #[must_use]
     pub fn dependencies(&self) -> &HashSet<String> {
         match self {
-            Project::Workspace(workspace) => workspace.dependencies(),
-            Project::Package(package) => package.dependencies(),
+            Self::Workspace(workspace) => workspace.dependencies(),
+            Self::Package(package) => package.dependencies(),
         }
     }
 
     pub fn add_dependency(&mut self, dependency: &str) {
         match self {
-            Project::Workspace(workspace) => workspace.add_dependency(dependency),
-            Project::Package(package) => package.add_dependency(dependency),
+            Self::Workspace(workspace) => workspace.add_dependency(dependency),
+            Self::Package(package) => package.add_dependency(dependency),
         }
     }
 
+    #[must_use]
     pub fn language(&self) -> crate::Language {
         match self {
-            Project::Workspace(workspace) => workspace.language(),
-            Project::Package(package) => package.language(),
+            Self::Workspace(workspace) => workspace.language(),
+            Self::Package(package) => package.language(),
         }
     }
 
+    /// # Errors
+    /// Returns error if the underlying publish call fails.
     pub async fn publish(&self, config: &Config) -> Result<()> {
         match self {
-            Project::Workspace(workspace) => workspace.publish(config).await,
-            Project::Package(package) => package.publish(config).await,
+            Self::Workspace(workspace) => workspace.publish(config).await,
+            Self::Package(package) => package.publish(config).await,
         }
     }
 }
@@ -113,9 +133,9 @@ impl PartialOrd for Project {
 impl Ord for Project {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
-            (Project::Workspace(_), Project::Package(_)) => Ordering::Less,
-            (Project::Package(_), Project::Workspace(_)) => Ordering::Greater,
-            (Project::Workspace(w1), Project::Workspace(w2)) => {
+            (Self::Workspace(_), Self::Package(_)) => Ordering::Less,
+            (Self::Package(_), Self::Workspace(_)) => Ordering::Greater,
+            (Self::Workspace(w1), Self::Workspace(w2)) => {
                 let lang_ord = w1.language().cmp(&w2.language());
                 if lang_ord != Ordering::Equal {
                     return lang_ord;
@@ -135,7 +155,7 @@ impl Ord for Project {
                     }
                 }
             }
-            (Project::Package(p1), Project::Package(p2)) => {
+            (Self::Package(p1), Self::Package(p2)) => {
                 let lang_ord = p1.language().cmp(&p2.language());
                 if lang_ord != Ordering::Equal {
                     return lang_ord;
@@ -154,7 +174,7 @@ impl Ord for Project {
 impl Display for Project {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Project::Workspace(workspace) => {
+            Self::Workspace(workspace) => {
                 write!(
                     f,
                     "{} {} {} {} {}",
@@ -166,8 +186,7 @@ impl Display for Project {
                         "({})",
                         workspace
                             .version()
-                            .map(|v| format!("v{}", v))
-                            .unwrap_or("unknown".to_string()),
+                            .map_or("unknown".to_string(), |v| format!("v{v}")),
                     )
                     .bright_green(),
                     "-".bright_cyan(),
@@ -178,7 +197,7 @@ impl Display for Project {
                         .bright_black()
                 )
             }
-            Project::Package(package) => {
+            Self::Package(package) => {
                 write!(
                     f,
                     "{} {} {} {} {}",
@@ -188,8 +207,7 @@ impl Display for Project {
                         "({})",
                         package
                             .version()
-                            .map(|v| format!("v{}", v))
-                            .unwrap_or("unknown".to_string())
+                            .map_or("unknown".to_string(), |v| format!("v{v}"))
                     )
                     .bright_green(),
                     "-".bright_cyan(),
@@ -250,7 +268,7 @@ mod tests {
             Ok(())
         }
         fn language(&self) -> Language {
-            self.language.clone()
+            self.language
         }
         fn dependencies(&self) -> &HashSet<String> {
             &self.dependencies
@@ -312,7 +330,7 @@ mod tests {
             Ok(())
         }
         fn language(&self) -> Language {
-            self.language.clone()
+            self.language
         }
         fn dependencies(&self) -> &HashSet<String> {
             &self.dependencies
@@ -678,5 +696,113 @@ mod tests {
         let project = Project::Package(Box::new(package));
         let display = format!("{}", project);
         assert!(display.contains("unknown"));
+    }
+
+    #[test]
+    fn test_project_sort_stability() {
+        let make_projects = || {
+            vec![
+                Project::Package(Box::new(MockPackage::new(
+                    Some("charlie"),
+                    Some("1.0.0"),
+                    Language::Rust,
+                ))),
+                Project::Workspace(Box::new(MockWorkspace::new(
+                    Some("alpha"),
+                    Some("2.0.0"),
+                    Language::Node,
+                ))),
+                Project::Package(Box::new(MockPackage::new(
+                    Some("bravo"),
+                    Some("0.1.0"),
+                    Language::Node,
+                ))),
+                Project::Workspace(Box::new(MockWorkspace::new(
+                    Some("delta"),
+                    Some("3.0.0"),
+                    Language::Python,
+                ))),
+                Project::Package(Box::new(MockPackage::new(
+                    Some("echo"),
+                    Some("1.0.0"),
+                    Language::Dart,
+                ))),
+            ]
+        };
+
+        let mut first = make_projects();
+        first.sort();
+        let first_order: Vec<Option<&str>> = first.iter().map(|p| p.name()).collect();
+
+        let mut second = make_projects();
+        second.sort();
+        let second_order: Vec<Option<&str>> = second.iter().map(|p| p.name()).collect();
+
+        let mut third = make_projects();
+        third.sort();
+        let third_order: Vec<Option<&str>> = third.iter().map(|p| p.name()).collect();
+
+        assert_eq!(first_order, second_order);
+        assert_eq!(second_order, third_order);
+    }
+
+    #[test]
+    fn test_project_sort_mixed() {
+        let mut projects = [
+            Project::Package(Box::new(MockPackage::new(
+                Some("pkg-a"),
+                Some("1.0.0"),
+                Language::Node,
+            ))),
+            Project::Workspace(Box::new(MockWorkspace::new(
+                Some("ws-b"),
+                Some("1.0.0"),
+                Language::Node,
+            ))),
+            Project::Package(Box::new(MockPackage::new(
+                Some("pkg-c"),
+                Some("1.0.0"),
+                Language::Rust,
+            ))),
+            Project::Workspace(Box::new(MockWorkspace::new(
+                Some("ws-d"),
+                Some("1.0.0"),
+                Language::Rust,
+            ))),
+        ];
+        projects.sort();
+
+        // All workspaces must come before all packages
+        let workspace_count = projects
+            .iter()
+            .take_while(|p| matches!(p, Project::Workspace(_)))
+            .count();
+        assert_eq!(workspace_count, 2);
+
+        let package_count = projects
+            .iter()
+            .skip(workspace_count)
+            .filter(|p| matches!(p, Project::Package(_)))
+            .count();
+        assert_eq!(package_count, 2);
+    }
+
+    #[test]
+    fn test_project_cmp_is_consistent_with_eq() {
+        // Two workspaces with identical fields
+        let w1 = MockWorkspace::new(Some("same"), Some("1.0.0"), Language::Node);
+        let w2 = MockWorkspace::new(Some("same"), Some("1.0.0"), Language::Node);
+        let p1 = Project::Workspace(Box::new(w1));
+        let p2 = Project::Workspace(Box::new(w2));
+        assert_eq!(p1, p2);
+        assert_eq!(p1.cmp(&p2), Ordering::Equal);
+
+        // Two packages with identical fields
+        let pkg1 = MockPackage::new(Some("same"), Some("1.0.0"), Language::Rust);
+        let pkg2 = MockPackage::new(Some("same"), Some("1.0.0"), Language::Rust);
+        let pp1 = Project::Package(Box::new(pkg1));
+        let pp2 = Project::Package(Box::new(pkg2));
+        assert_eq!(pp1, pp2);
+        assert_eq!(pp1.cmp(&pp2), Ordering::Equal);
     }
 }

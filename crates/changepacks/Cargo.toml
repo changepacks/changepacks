@@ -1,8 +1,10 @@
 [package]
 name = "changepacks"
 version = "0.2.16"
-edition = "2024"
-license = "Apache-2.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "A unified version management and changelog tool for multi-language projects"
 readme = "../../README.md"
 default-run = "changepacks"
@@ -18,3 +20,6 @@ embed-manifest = "1.5"
 [[bin]]
 name = "changepacks"
 path = "src/main.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

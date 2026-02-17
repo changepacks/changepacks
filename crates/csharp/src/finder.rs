@@ -24,6 +24,7 @@ impl Default for CSharpProjectFinder {
 }
 
 impl CSharpProjectFinder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),
@@ -35,19 +36,21 @@ impl CSharpProjectFinder {
     fn extract_name_from_path(path: &Path) -> Option<String> {
         path.file_stem()
             .and_then(|s| s.to_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
     }
 }
 
 /// Extract project name from a path string, handling both Windows and Unix separators
-/// Input: "..\CoreLib\CoreLib.csproj" or "../CoreLib/CoreLib.csproj"
-/// Output: "CoreLib"
+/// Input: `"..\CoreLib\CoreLib.csproj"` or `"../CoreLib/CoreLib.csproj"`
+/// Output: `"CoreLib"`
 fn extract_project_name_from_path(path_str: &str) -> Option<String> {
     // Split by both Windows (\) and Unix (/) separators
     let filename = path_str.rsplit(['\\', '/']).next()?;
 
     // Remove .csproj extension
-    filename.strip_suffix(".csproj").map(|s| s.to_string())
+    filename
+        .strip_suffix(".csproj")
+        .map(std::string::ToString::to_string)
 }
 
 impl CSharpProjectFinder {
@@ -84,8 +87,7 @@ impl CSharpProjectFinder {
                         }
                     }
                 }
-                Ok(Event::Eof) => break,
-                Err(_) => break,
+                Ok(Event::Eof) | Err(_) => break,
                 _ => {}
             }
             buf.clear();
@@ -93,7 +95,7 @@ impl CSharpProjectFinder {
         None
     }
 
-    /// Extract PackageReference dependencies from .csproj XML content using quick-xml
+    /// Extract `PackageReference` dependencies from .csproj XML content using quick-xml
     #[allow(dead_code)]
     fn extract_package_references(content: &str) -> Vec<String> {
         let mut reader = Reader::from_str(content);
@@ -102,7 +104,7 @@ impl CSharpProjectFinder {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(e)) | Ok(Event::Start(e)) => {
+                Ok(Event::Empty(e) | Event::Start(e)) => {
                     if e.local_name().as_ref() == b"PackageReference" {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"Include"
@@ -113,8 +115,7 @@ impl CSharpProjectFinder {
                         }
                     }
                 }
-                Ok(Event::Eof) => break,
-                Err(_) => break,
+                Ok(Event::Eof) | Err(_) => break,
                 _ => {}
             }
             buf.clear();
@@ -122,7 +123,7 @@ impl CSharpProjectFinder {
         packages
     }
 
-    /// Extract ProjectReference dependencies from .csproj XML content using quick-xml
+    /// Extract `ProjectReference` dependencies from .csproj XML content using quick-xml
     /// Returns the project names (extracted from paths)
     fn extract_project_references(content: &str) -> Vec<String> {
         let mut reader = Reader::from_str(content);
@@ -131,7 +132,7 @@ impl CSharpProjectFinder {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(e)) | Ok(Event::Start(e)) => {
+                Ok(Event::Empty(e) | Event::Start(e)) => {
                     if e.local_name().as_ref() == b"ProjectReference" {
                         for attr in e.attributes().flatten() {
                             if attr.key.as_ref() == b"Include"
@@ -146,8 +147,7 @@ impl CSharpProjectFinder {
                         }
                     }
                 }
-                Ok(Event::Eof) => break,
-                Err(_) => break,
+                Ok(Event::Eof) | Err(_) => break,
                 _ => {}
             }
             buf.clear();
@@ -157,11 +157,11 @@ impl CSharpProjectFinder {
 
     /// Check if this project is part of a solution (workspace)
     /// A project is considered a workspace if there's a .sln file in the same directory
-    fn is_workspace(path: &Path) -> bool {
+    async fn is_workspace(path: &Path) -> bool {
         if let Some(parent) = path.parent() {
             // Check if there's a .sln file in the parent directory
-            if let Ok(entries) = std::fs::read_dir(parent) {
-                for entry in entries.flatten() {
+            if let Ok(mut entries) = tokio::fs::read_dir(parent).await {
+                while let Ok(Some(entry)) = entries.next_entry().await {
                     if let Some(ext) = entry.path().extension()
                         && ext == "sln"
                     {
@@ -206,7 +206,7 @@ impl ProjectFinder for CSharpProjectFinder {
 
             let name = Self::extract_name_from_path(path);
             let version = Self::extract_version(&csproj_content);
-            let is_workspace = Self::is_workspace(path);
+            let is_workspace = Self::is_workspace(path).await;
 
             let (path_key, mut project) = if is_workspace {
                 (
@@ -622,5 +622,60 @@ mod tests {
         );
         // Invalid - no .csproj extension
         assert_eq!(super::extract_project_name_from_path("MyProject.txt"), None);
+    }
+
+    #[test]
+    fn test_extract_version_end_tag() {
+        let content = r#"<Project><PropertyGroup><Version>
+   1.2.3
+   </Version></PropertyGroup></Project>"#;
+        assert_eq!(
+            CSharpProjectFinder::extract_version(content),
+            Some("1.2.3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_version_malformed_xml() {
+        let content = "<Project><PropertyGroup><Version>1.0.0";
+        // Should not panic - either returns Some or None
+        let _ = CSharpProjectFinder::extract_version(content);
+    }
+
+    #[test]
+    fn test_extract_version_empty_version() {
+        let content = r#"<Project><PropertyGroup><Version>  </Version></PropertyGroup></Project>"#;
+        assert_eq!(CSharpProjectFinder::extract_version(content), None);
+    }
+
+    #[test]
+    fn test_extract_version_with_empty_element() {
+        // Self-closing tags like <IsPackable /> generate Event::Empty,
+        // which exercises the wildcard `_ => {}` arm in extract_version
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable />
+    <Version>3.2.1</Version>
+  </PropertyGroup>
+</Project>"#;
+        assert_eq!(
+            CSharpProjectFinder::extract_version(content),
+            Some("3.2.1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_version_with_comment() {
+        // XML comments generate Event::Comment, exercising the wildcard arm
+        let content = r#"<Project>
+  <PropertyGroup>
+    <!-- version follows -->
+    <Version>4.0.0</Version>
+  </PropertyGroup>
+</Project>"#;
+        assert_eq!(
+            CSharpProjectFinder::extract_version(content),
+            Some("4.0.0".to_string())
+        );
     }
 }

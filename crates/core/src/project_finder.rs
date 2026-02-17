@@ -4,19 +4,32 @@ use crate::project::Project;
 use anyhow::Result;
 use async_trait::async_trait;
 
+/// Visitor pattern for discovering projects by walking the git tree.
+///
+/// Each language implements this trait to detect its project files (package.json, Cargo.toml, etc.)
+/// and build a collection of projects. The `visit` method is called for each file in the git tree.
 #[async_trait]
 pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     fn projects(&self) -> Vec<&Project>;
     fn projects_mut(&mut self) -> Vec<&mut Project>;
     fn project_files(&self) -> &[&str];
+    /// # Errors
+    /// Returns error if the file visitation fails.
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()>;
+    /// # Errors
+    /// Returns error if checking changed status fails for any project.
     fn check_changed(&mut self, path: &Path) -> Result<()> {
         for project in self.projects_mut() {
             project.check_changed(path)?;
         }
         Ok(())
     }
-    async fn test(&self) -> Result<()> {
+    /// Post-visit processing hook for resolving deferred state (e.g., workspace-inherited versions).
+    /// Called once after all `visit()` calls complete.
+    /// # Errors
+    /// Returns error if finalization fails.
+    #[cfg(not(tarpaulin_include))]
+    async fn finalize(&mut self) -> Result<()> {
         Ok(())
     }
 }
@@ -84,6 +97,12 @@ mod tests {
         }
         fn default_publish_command(&self) -> String {
             "echo test".to_string()
+        }
+        fn inherits_workspace_version(&self) -> bool {
+            false
+        }
+        fn workspace_root_path(&self) -> Option<&Path> {
+            None
         }
     }
 
@@ -217,13 +236,6 @@ mod tests {
         assert!(!finder.projects()[1].is_changed());
     }
 
-    #[tokio::test]
-    async fn test_project_finder_test() {
-        let finder = MockProjectFinder::new();
-        let result = finder.test().await;
-        assert!(result.is_ok());
-    }
-
     #[test]
     fn test_project_finder_with_workspace() {
         let workspace = MockWorkspace::new("root", "/project/package.json");
@@ -234,5 +246,21 @@ mod tests {
             .unwrap();
 
         assert!(finder.projects()[0].is_changed());
+    }
+
+    #[tokio::test]
+    async fn test_project_finder_finalize() {
+        let mut finder = MockProjectFinder::new();
+        let result = finder.finalize().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_project_finder_finalize_with_projects() {
+        let package = MockPackage::new("pkg1", "/project/package.json");
+        let mut finder = MockProjectFinder::new().with_package(package);
+        let result = finder.finalize().await;
+        assert!(result.is_ok());
+        assert_eq!(finder.projects().len(), 1);
     }
 }

@@ -1,3 +1,11 @@
+//! # changepacks-node
+//!
+//! Node.js project support for changepacks.
+//!
+//! Implements project discovery, version management, and workspace detection for package.json
+//! files. Automatically detects the package manager (npm, pnpm, yarn, bun) by looking for
+//! lock files and provides appropriate publish commands for each.
+
 pub mod finder;
 pub mod package;
 pub mod workspace;
@@ -17,18 +25,20 @@ pub enum PackageManager {
 
 impl PackageManager {
     /// Returns the publish command for this package manager
+    #[must_use]
     pub fn publish_command(&self) -> &'static str {
         match self {
-            PackageManager::Npm => "npm publish",
-            PackageManager::Yarn => "yarn npm publish",
-            PackageManager::Pnpm => "pnpm publish",
-            PackageManager::Bun => "bun publish",
+            Self::Npm => "npm publish",
+            Self::Yarn => "yarn npm publish",
+            Self::Pnpm => "pnpm publish",
+            Self::Bun => "bun publish",
         }
     }
 }
 
 /// Detects the package manager by checking for lock files in the given directory
 /// Priority: bun.lockb > pnpm-lock.yaml > yarn.lock > package-lock.json > npm (default)
+#[must_use]
 pub fn detect_package_manager(dir: &Path) -> PackageManager {
     if dir.join("bun.lockb").exists() || dir.join("bun.lock").exists() {
         PackageManager::Bun
@@ -45,6 +55,7 @@ pub fn detect_package_manager(dir: &Path) -> PackageManager {
 }
 
 /// Detects the package manager by searching from the given path up to the root
+#[must_use]
 pub fn detect_package_manager_recursive(path: &Path) -> PackageManager {
     let mut current = if path.is_file() {
         path.parent()

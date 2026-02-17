@@ -18,6 +18,7 @@ pub struct DartPackage {
 }
 
 impl DartPackage {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,
@@ -68,12 +69,12 @@ impl Package for DartPackage {
                         operation: yamlpatch::Op::Replace(serde_yaml::Value::String(
                             new_version.clone()
                         )),
-                        route: yamlpath::route!("version"),
+                        route: yamlpath::route!("version")
                     }],
                 )?
                 .source()
                 .trim_end(),
-                if pubspec_yaml_raw.ends_with("\n") {
+                if pubspec_yaml_raw.ends_with('\n') {
                     "\n"
                 } else {
                     ""

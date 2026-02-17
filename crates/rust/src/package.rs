@@ -15,9 +15,12 @@ pub struct RustPackage {
     relative_path: PathBuf,
     is_changed: bool,
     dependencies: HashSet<String>,
+    workspace_version_inherited: bool,
+    workspace_root: Option<PathBuf>,
 }
 
 impl RustPackage {
+    #[must_use]
     pub fn new(
         name: Option<String>,
         version: Option<String>,
@@ -31,6 +34,28 @@ impl RustPackage {
             relative_path,
             is_changed: false,
             dependencies: HashSet::new(),
+            workspace_version_inherited: false,
+            workspace_root: None,
+        }
+    }
+
+    #[must_use]
+    pub fn new_with_workspace_version(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        workspace_root: Option<PathBuf>,
+    ) -> Self {
+        Self {
+            name,
+            version,
+            path,
+            relative_path,
+            is_changed: false,
+            dependencies: HashSet::new(),
+            workspace_version_inherited: true,
+            workspace_root,
         }
     }
 }
@@ -64,7 +89,7 @@ impl Package for RustPackage {
             format!(
                 "{}{}",
                 cargo_toml.to_string().trim_end(),
-                if cargo_toml_raw.ends_with("\n") {
+                if cargo_toml_raw.ends_with('\n') {
                     "\n"
                 } else {
                     ""
@@ -98,6 +123,14 @@ impl Package for RustPackage {
 
     fn add_dependency(&mut self, dependency: &str) {
         self.dependencies.insert(dependency.to_string());
+    }
+
+    fn inherits_workspace_version(&self) -> bool {
+        self.workspace_version_inherited
+    }
+
+    fn workspace_root_path(&self) -> Option<&Path> {
+        self.workspace_root.as_deref()
     }
 }
 
@@ -286,5 +319,33 @@ tokio = "1.0"
         // Adding duplicate should not increase count
         package.add_dependency("core");
         assert_eq!(package.dependencies().len(), 2);
+    }
+
+    #[test]
+    fn test_rust_package_inherits_workspace_version() {
+        let package = RustPackage::new(
+            Some("test".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/Cargo.toml"),
+            PathBuf::from("test/Cargo.toml"),
+        );
+        assert!(!package.inherits_workspace_version());
+        assert!(package.workspace_root_path().is_none());
+    }
+
+    #[test]
+    fn test_rust_package_with_workspace_version() {
+        let package = RustPackage::new_with_workspace_version(
+            Some("test".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/crates/foo/Cargo.toml"),
+            PathBuf::from("crates/foo/Cargo.toml"),
+            Some(PathBuf::from("/test/Cargo.toml")),
+        );
+        assert!(package.inherits_workspace_version());
+        assert_eq!(
+            package.workspace_root_path(),
+            Some(Path::new("/test/Cargo.toml"))
+        );
     }
 }
