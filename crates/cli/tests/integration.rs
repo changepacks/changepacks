@@ -2655,3 +2655,169 @@ mod interactive_tests {
         );
     }
 }
+
+// --- Language filter integration tests ---
+
+#[tokio::test]
+#[serial]
+async fn test_cli_check_with_language_filter() {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    init_git_repo(&temp_path);
+    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
+        .await
+        .unwrap();
+
+    // Create Node.js package
+    tokio::fs::write(
+        temp_path.join("package.json"),
+        r#"{"name": "node-pkg", "version": "1.0.0"}"#,
+    )
+    .await
+    .unwrap();
+
+    // Create Rust package
+    tokio::fs::write(
+        temp_path.join("Cargo.toml"),
+        "[package]\nname = \"rust-pkg\"\nversion = \"1.0.0\"\n",
+    )
+    .await
+    .unwrap();
+
+    git_add_and_commit(&temp_path, "Initial commit");
+
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&temp_path).unwrap();
+
+    // Filter check to only Node.js
+    let args = vec![
+        "changepacks".to_string(),
+        "check".to_string(),
+        "--language".to_string(),
+        "node".to_string(),
+    ];
+    let result = changepacks_cli::main(&args).await;
+
+    std::env::set_current_dir(&original_dir).unwrap();
+
+    assert!(
+        result.is_ok(),
+        "check with language filter failed: {:?}",
+        result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_update_with_language_filter() {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    init_git_repo(&temp_path);
+    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
+        .await
+        .unwrap();
+
+    // Create changepack log targeting the Node package
+    tokio::fs::write(
+        temp_path.join(".changepacks/changepack_log_lang.json"),
+        r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+    )
+    .await
+    .unwrap();
+
+    // Create Node.js package
+    tokio::fs::write(
+        temp_path.join("package.json"),
+        r#"{"name": "node-pkg", "version": "1.0.0"}"#,
+    )
+    .await
+    .unwrap();
+
+    git_add_and_commit(&temp_path, "Initial commit");
+
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&temp_path).unwrap();
+
+    // Filter update to only Rust (should filter out the Node package update)
+    let args = vec![
+        "changepacks".to_string(),
+        "update".to_string(),
+        "--yes".to_string(),
+        "--language".to_string(),
+        "rust".to_string(),
+    ];
+    let result = changepacks_cli::main(&args).await;
+
+    std::env::set_current_dir(&original_dir).unwrap();
+
+    assert!(
+        result.is_ok(),
+        "update with language filter failed: {:?}",
+        result.err()
+    );
+
+    // Verify version was NOT updated (filtered out by language)
+    let content = tokio::fs::read_to_string(temp_path.join("package.json"))
+        .await
+        .unwrap();
+    assert!(
+        content.contains("1.0.0"),
+        "Node package should not be updated when filtering by Rust"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_changepacks_with_language_filter() {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    init_git_repo(&temp_path);
+    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
+        .await
+        .unwrap();
+
+    // Create Node.js package
+    tokio::fs::write(
+        temp_path.join("package.json"),
+        r#"{"name": "node-pkg", "version": "1.0.0"}"#,
+    )
+    .await
+    .unwrap();
+
+    // Create Rust package
+    tokio::fs::write(
+        temp_path.join("Cargo.toml"),
+        "[package]\nname = \"rust-pkg\"\nversion = \"1.0.0\"\n",
+    )
+    .await
+    .unwrap();
+
+    git_add_and_commit(&temp_path, "Initial commit");
+
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&temp_path).unwrap();
+
+    // Filter to only Node.js and create changepack
+    let args = vec![
+        "changepacks".to_string(),
+        "--yes".to_string(),
+        "-m".to_string(),
+        "Test language filter".to_string(),
+        "--update-type".to_string(),
+        "patch".to_string(),
+        "--language".to_string(),
+        "node".to_string(),
+    ];
+    let result = changepacks_cli::main(&args).await;
+
+    std::env::set_current_dir(&original_dir).unwrap();
+
+    assert!(
+        result.is_ok(),
+        "changepacks with language filter failed: {:?}",
+        result.err()
+    );
+}
