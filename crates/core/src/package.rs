@@ -190,6 +190,18 @@ mod tests {
     }
 
     #[test]
+    fn test_inherits_workspace_version_default() {
+        let package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
+        assert!(!package.inherits_workspace_version());
+    }
+
+    #[test]
+    fn test_workspace_root_path_default() {
+        let package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
+        assert!(package.workspace_root_path().is_none());
+    }
+
+    #[test]
     fn test_get_publish_command_by_path() {
         let package = MockPackage::new(
             Some("test"),
