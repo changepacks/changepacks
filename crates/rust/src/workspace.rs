@@ -143,7 +143,7 @@ impl Workspace for RustWorkspace {
     }
 
     fn default_publish_command(&self) -> String {
-        "cargo publish".to_string()
+        "cargo publish --workspace".to_string()
     }
 
     fn dependencies(&self) -> &HashSet<String> {
@@ -234,7 +234,10 @@ mod tests {
         assert_eq!(workspace.relative_path(), PathBuf::from("test/Cargo.toml"));
         assert_eq!(workspace.language(), Language::Rust);
         assert!(!workspace.is_changed());
-        assert_eq!(workspace.default_publish_command(), "cargo publish");
+        assert_eq!(
+            workspace.default_publish_command(),
+            "cargo publish --workspace"
+        );
     }
 
     #[tokio::test]
