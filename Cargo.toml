@@ -9,7 +9,7 @@ repository = "https://github.com/changepacks/changepacks"
 homepage = "https://github.com/changepacks/changepacks"
 
 [workspace.dependencies]
-changepacks-cli = { path = "crates/cli", version = "^0.2.24" }
+changepacks-cli = { path = "crates/cli", version = "^0.2.25" }
 changepacks-core = { path = "crates/core", version = "^0.2.17" }
 changepacks-node = { path = "crates/node", version = "^0.2.17" }
 changepacks-rust = { path = "crates/rust", version = "^0.2.19" }
