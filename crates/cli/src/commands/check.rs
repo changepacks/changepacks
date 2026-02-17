@@ -82,13 +82,17 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                     println!(
                         "{}",
                         format!("{project}{changed_marker}",).replace(
-                            project.version().unwrap_or("unknown"),
+                            &project
+                                .version()
+                                .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"),),
                             &if let Some(update_type) = update_map
                                 .get(&get_relative_path(&ctx.repo_root_path, project.path())?)
                             {
                                 display_update(project.version(), update_type.0)?
                             } else {
-                                project.version().unwrap_or("unknown").to_string()
+                                project
+                                    .version()
+                                    .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
                             },
                         ),
                     );
