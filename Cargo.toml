@@ -2,6 +2,12 @@
 resolver = "3"
 members = ["crates/*", "bridge/*"]
 
+[workspace.package]
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/changepacks/changepacks"
+homepage = "https://github.com/changepacks/changepacks"
+
 [workspace.dependencies]
 changepacks-cli = { path = "crates/cli", version = "^0.2.18" }
 changepacks-core = { path = "crates/core", version = "^0.2.15" }

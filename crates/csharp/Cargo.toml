@@ -1,8 +1,10 @@
 [package]
 name = "changepacks-csharp"
 version = "0.2.14"
-edition = "2024"
-license = "Apache-2.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "C# (.NET) project support for changepacks (NuGet)"
 readme = "../../README.md"
 

@@ -256,4 +256,20 @@ mod tests {
 
         assert!(finder.projects()[0].is_changed());
     }
+
+    #[tokio::test]
+    async fn test_project_finder_finalize() {
+        let mut finder = MockProjectFinder::new();
+        let result = finder.finalize().await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_project_finder_finalize_with_projects() {
+        let package = MockPackage::new("pkg1", "/project/package.json");
+        let mut finder = MockProjectFinder::new().with_package(package);
+        let result = finder.finalize().await;
+        assert!(result.is_ok());
+        assert_eq!(finder.projects().len(), 1);
+    }
 }

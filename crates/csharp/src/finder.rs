@@ -647,4 +647,35 @@ mod tests {
         let content = r#"<Project><PropertyGroup><Version>  </Version></PropertyGroup></Project>"#;
         assert_eq!(CSharpProjectFinder::extract_version(content), None);
     }
+
+    #[test]
+    fn test_extract_version_with_empty_element() {
+        // Self-closing tags like <IsPackable /> generate Event::Empty,
+        // which exercises the wildcard `_ => {}` arm in extract_version
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable />
+    <Version>3.2.1</Version>
+  </PropertyGroup>
+</Project>"#;
+        assert_eq!(
+            CSharpProjectFinder::extract_version(content),
+            Some("3.2.1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_version_with_comment() {
+        // XML comments generate Event::Comment, exercising the wildcard arm
+        let content = r#"<Project>
+  <PropertyGroup>
+    <!-- version follows -->
+    <Version>4.0.0</Version>
+  </PropertyGroup>
+</Project>"#;
+        assert_eq!(
+            CSharpProjectFinder::extract_version(content),
+            Some("4.0.0".to_string())
+        );
+    }
 }
