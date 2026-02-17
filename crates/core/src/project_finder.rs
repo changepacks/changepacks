@@ -24,9 +24,6 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
         }
         Ok(())
     }
-    async fn test(&self) -> Result<()> {
-        Ok(())
-    }
     /// Post-visit processing hook for resolving deferred state (e.g., workspace-inherited versions).
     /// Called once after all `visit()` calls complete.
     /// # Errors
@@ -238,13 +235,6 @@ mod tests {
         assert!(!finder.projects()[1].is_changed());
     }
 
-    #[tokio::test]
-    async fn test_project_finder_test() {
-        let finder = MockProjectFinder::new();
-        let result = finder.test().await;
-        assert!(result.is_ok());
-    }
-
     #[test]
     fn test_project_finder_with_workspace() {
         let workspace = MockWorkspace::new("root", "/project/package.json");
@@ -271,16 +261,5 @@ mod tests {
         let result = finder.finalize().await;
         assert!(result.is_ok());
         assert_eq!(finder.projects().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_project_finder_test_with_projects() {
-        let package = MockPackage::new("pkg1", "/project/package.json");
-        let workspace = MockWorkspace::new("root", "/root/package.json");
-        let finder = MockProjectFinder::new()
-            .with_package(package)
-            .with_workspace(workspace);
-        let result = finder.test().await;
-        assert!(result.is_ok());
     }
 }
