@@ -28,6 +28,7 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// Called once after all `visit()` calls complete.
     /// # Errors
     /// Returns error if finalization fails.
+    #[cfg(not(tarpaulin_include))]
     async fn finalize(&mut self) -> Result<()> {
         Ok(())
     }
