@@ -92,6 +92,10 @@ impl Workspace for GradleWorkspace {
         &self.relative_path
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn default_publish_command(&self) -> String {
         "./gradlew publish".to_string()
     }
@@ -362,5 +366,18 @@ version = "0.0.0"
         // Adding duplicate should not increase count
         workspace.add_dependency("core");
         assert_eq!(workspace.dependencies().len(), 2);
+    }
+
+    #[test]
+    fn test_set_name() {
+        let mut workspace = GradleWorkspace::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/build.gradle.kts"),
+            PathBuf::from("build.gradle.kts"),
+        );
+        assert_eq!(workspace.name(), None);
+        workspace.set_name("my-project".to_string());
+        assert_eq!(workspace.name(), Some("my-project"));
     }
 }

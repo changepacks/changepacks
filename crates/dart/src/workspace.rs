@@ -104,8 +104,13 @@ impl Workspace for DartWorkspace {
     fn set_changed(&mut self, changed: bool) {
         self.is_changed = changed;
     }
+
     fn relative_path(&self) -> &Path {
         &self.relative_path
+    }
+
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
     }
 
     fn default_publish_command(&self) -> String {
@@ -362,5 +367,18 @@ workspace:
         // Adding duplicate should not increase count
         workspace.add_dependency("http");
         assert_eq!(workspace.dependencies().len(), 2);
+    }
+
+    #[test]
+    fn test_set_name() {
+        let mut workspace = DartWorkspace::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pubspec.yaml"),
+            PathBuf::from("pubspec.yaml"),
+        );
+        assert_eq!(workspace.name(), None);
+        workspace.set_name("my-project".to_string());
+        assert_eq!(workspace.name(), Some("my-project"));
     }
 }

@@ -428,17 +428,15 @@ jobs:
           toolchain: stable
           target: x86_64-pc-windows-msvc
           components: clippy, rustfmt
-
+      - uses: cargo-bins/cargo-binstall@main
       - name: Build Rust binary
         run: cargo build --release --target x86_64-pc-windows-msvc -p changepacks
       - name: Extract version
         run: |
           echo "version=$(cargo pkgid -p changepacks | sed -E 's/.*#([0-9]+\.[0-9]+\.[0-9]+).*/\1/')" >> $GITHUB_OUTPUT
         id: version
-      - name: Run Komac
-        uses: michidk/run-komac@v2
-        with:
-          args: '--version'
+      - name: Install Komac
+        run: cargo binstall komac
       - uses: vedantmgoyal9/winget-releaser@main
         with:
           identifier: Changepacks.Changepacks

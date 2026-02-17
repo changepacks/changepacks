@@ -83,6 +83,10 @@ impl Workspace for CSharpWorkspace {
         &self.relative_path
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn default_publish_command(&self) -> String {
         "dotnet pack -c Release && dotnet nuget push".to_string()
     }
@@ -343,5 +347,18 @@ mod tests {
         // Adding duplicate should not increase count
         workspace.add_dependency("Newtonsoft.Json");
         assert_eq!(workspace.dependencies().len(), 2);
+    }
+
+    #[test]
+    fn test_set_name() {
+        let mut workspace = CSharpWorkspace::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/Test.csproj"),
+            PathBuf::from("Test.csproj"),
+        );
+        assert_eq!(workspace.name(), None);
+        workspace.set_name("my-project".to_string());
+        assert_eq!(workspace.name(), Some("my-project"));
     }
 }

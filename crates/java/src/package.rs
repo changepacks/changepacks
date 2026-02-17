@@ -92,6 +92,10 @@ impl Package for GradlePackage {
         self.is_changed
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn default_publish_command(&self) -> String {
         "./gradlew publish".to_string()
     }
@@ -345,5 +349,18 @@ version = project.findProperty("releaseVersion") ?: "1.0.11"
         // Adding duplicate should not increase count
         package.add_dependency("core");
         assert_eq!(package.dependencies().len(), 2);
+    }
+
+    #[test]
+    fn test_set_name() {
+        let mut package = GradlePackage::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/build.gradle.kts"),
+            PathBuf::from("build.gradle.kts"),
+        );
+        assert_eq!(package.name(), None);
+        package.set_name("my-project".to_string());
+        assert_eq!(package.name(), Some("my-project"));
     }
 }

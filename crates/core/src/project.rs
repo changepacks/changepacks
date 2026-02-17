@@ -98,6 +98,13 @@ impl Project {
         }
     }
 
+    pub fn set_name(&mut self, name: String) {
+        match self {
+            Self::Workspace(workspace) => workspace.set_name(name),
+            Self::Package(package) => package.set_name(name),
+        }
+    }
+
     #[must_use]
     pub fn language(&self) -> crate::Language {
         match self {
@@ -785,6 +792,24 @@ mod tests {
             .filter(|p| matches!(p, Project::Package(_)))
             .count();
         assert_eq!(package_count, 2);
+    }
+
+    #[test]
+    fn test_project_set_name_workspace() {
+        let workspace = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);
+        let mut project = Project::Workspace(Box::new(workspace));
+        project.set_name("new-name".to_string());
+        // Mock doesn't override set_name, so default no-op applies
+        assert_eq!(project.name(), Some("test"));
+    }
+
+    #[test]
+    fn test_project_set_name_package() {
+        let package = MockPackage::new(Some("test"), Some("1.0.0"), Language::Rust);
+        let mut project = Project::Package(Box::new(package));
+        project.set_name("new-name".to_string());
+        // Mock doesn't override set_name, so default no-op applies
+        assert_eq!(project.name(), Some("test"));
     }
 
     #[test]

@@ -109,6 +109,10 @@ impl Package for RustPackage {
         self.is_changed = changed;
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn is_changed(&self) -> bool {
         self.is_changed
     }
@@ -347,5 +351,18 @@ tokio = "1.0"
             package.workspace_root_path(),
             Some(Path::new("/test/Cargo.toml"))
         );
+    }
+
+    #[test]
+    fn test_set_name() {
+        let mut package = RustPackage::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/Cargo.toml"),
+            PathBuf::from("Cargo.toml"),
+        );
+        assert_eq!(package.name(), None);
+        package.set_name("my-project".to_string());
+        assert_eq!(package.name(), Some("my-project"));
     }
 }
