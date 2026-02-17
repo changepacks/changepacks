@@ -7,6 +7,7 @@
 //! arguments forwarded from sys.argv.
 
 #[tokio::main]
+#[cfg(not(tarpaulin_include))]
 async fn main() -> anyhow::Result<()> {
     changepacks_cli::main(&std::env::args().collect::<Vec<String>>()).await
 }

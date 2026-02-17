@@ -21,3 +21,6 @@ tokio = { version = "1.49" }
 
 [build-dependencies]
 napi-build = "2"
+
+ [lints.rust]
+ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

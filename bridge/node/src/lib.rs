@@ -13,6 +13,7 @@ use napi_derive::napi;
 /// # Errors
 ///
 /// Returns an error if the CLI command execution fails.
+#[cfg(not(tarpaulin_include))]
 pub async fn main() -> Result<()> {
   changepacks_cli::main(&std::env::args().skip(1).collect::<Vec<String>>())
     .await

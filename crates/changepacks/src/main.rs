@@ -8,6 +8,7 @@
 use std::process;
 
 #[tokio::main]
+#[cfg(not(tarpaulin_include))]
 async fn main() {
     if let Err(e) =
         changepacks_cli::main(std::env::args().collect::<Vec<String>>().as_slice()).await
