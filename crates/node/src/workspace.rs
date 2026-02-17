@@ -100,6 +100,10 @@ impl Workspace for NodeWorkspace {
         &self.relative_path
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn default_publish_command(&self) -> String {
         detect_package_manager_recursive(&self.path)
             .publish_command()
@@ -352,5 +356,18 @@ mod tests {
         // Adding duplicate should not increase count
         workspace.add_dependency("core");
         assert_eq!(workspace.dependencies().len(), 2);
+    }
+
+    #[test]
+    fn test_set_name() {
+        let mut workspace = NodeWorkspace::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/package.json"),
+            PathBuf::from("package.json"),
+        );
+        assert_eq!(workspace.name(), None);
+        workspace.set_name("my-project".to_string());
+        assert_eq!(workspace.name(), Some("my-project"));
     }
 }

@@ -95,6 +95,10 @@ impl Workspace for PythonWorkspace {
         &self.relative_path
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn default_publish_command(&self) -> String {
         "uv publish".to_string()
     }
@@ -311,5 +315,18 @@ version = "1.0.0"
         // Adding duplicate should not increase count
         workspace.add_dependency("requests");
         assert_eq!(workspace.dependencies().len(), 2);
+    }
+
+    #[test]
+    fn test_set_name() {
+        let mut workspace = PythonWorkspace::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("pyproject.toml"),
+        );
+        assert_eq!(workspace.name(), None);
+        workspace.set_name("my-project".to_string());
+        assert_eq!(workspace.name(), Some("my-project"));
     }
 }

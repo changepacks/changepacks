@@ -97,6 +97,10 @@ impl Package for DartPackage {
         self.is_changed = changed;
     }
 
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
+    }
+
     fn default_publish_command(&self) -> String {
         "dart pub publish".to_string()
     }
@@ -309,5 +313,18 @@ dependencies:
         // Adding duplicate should not increase count
         package.add_dependency("http");
         assert_eq!(package.dependencies().len(), 2);
+    }
+
+    #[test]
+    fn test_set_name() {
+        let mut package = DartPackage::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pubspec.yaml"),
+            PathBuf::from("pubspec.yaml"),
+        );
+        assert_eq!(package.name(), None);
+        package.set_name("my-project".to_string());
+        assert_eq!(package.name(), Some("my-project"));
     }
 }

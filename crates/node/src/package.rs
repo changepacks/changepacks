@@ -93,8 +93,13 @@ impl Package for NodePackage {
     fn set_changed(&mut self, changed: bool) {
         self.is_changed = changed;
     }
+
     fn is_changed(&self) -> bool {
         self.is_changed
+    }
+
+    fn set_name(&mut self, name: String) {
+        self.name = Some(name);
     }
 
     fn default_publish_command(&self) -> String {
@@ -302,5 +307,18 @@ mod tests {
         assert!(content.contains(r#""version": "1.0.1""#));
 
         temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_set_name() {
+        let mut package = NodePackage::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/package.json"),
+            PathBuf::from("package.json"),
+        );
+        assert_eq!(package.name(), None);
+        package.set_name("my-project".to_string());
+        assert_eq!(package.name(), Some("my-project"));
     }
 }

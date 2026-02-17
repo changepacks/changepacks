@@ -40,6 +40,9 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn is_changed(&self) -> bool;
     fn set_changed(&mut self, changed: bool);
 
+    /// Set the workspace name (used for fallback when name is not found in manifest)
+    fn set_name(&mut self, _name: String) {}
+
     /// Get the default publish command for this workspace type
     fn default_publish_command(&self) -> String;
 
@@ -348,5 +351,14 @@ mod tests {
                 .to_string()
                 .contains("Workspace directory not found")
         );
+    }
+
+    #[test]
+    fn test_set_name_default_is_noop() {
+        let mut workspace =
+            MockWorkspace::new(Some("original"), "/project/package.json", "package.json");
+        workspace.set_name("new-name".to_string());
+        // Default implementation is a no-op, name should remain unchanged
+        assert_eq!(workspace.name(), Some("original"));
     }
 }
