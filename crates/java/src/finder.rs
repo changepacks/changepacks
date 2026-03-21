@@ -123,13 +123,24 @@ async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
 
     // On Unix, invoke via `sh` to avoid issues when gradlew lacks execute permission
     // (common after git clone with core.fileMode=false or on some CI systems).
-    let output = Command::new(&gradlew)
-        .args(&args)
-        .current_dir(&gradlew_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .await?;
+    let output = if cfg!(windows) {
+        Command::new(&gradlew)
+            .args(&args)
+            .current_dir(&gradlew_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await?
+    } else {
+        Command::new("sh")
+            .arg(&gradlew)
+            .args(&args)
+            .current_dir(&gradlew_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .await?
+    };
 
     if !output.status.success() {
         return Ok(GradleProperties::default());
