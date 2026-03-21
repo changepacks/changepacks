@@ -130,7 +130,7 @@ async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
-            .await?
+            .await
     } else {
         Command::new("sh")
             .arg(&gradlew)
@@ -139,8 +139,15 @@ async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .output()
-            .await?
-    };
+            .await
+    }
+    .map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to execute gradlew for '{}' (gradlew: '{}'): {e}",
+            project_dir.display(),
+            gradlew.display(),
+        )
+    })?;
 
     if !output.status.success() {
         return Ok(GradleProperties::default());

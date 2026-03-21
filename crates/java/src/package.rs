@@ -97,7 +97,11 @@ impl Package for GradlePackage {
     }
 
     fn default_publish_command(&self) -> String {
-        "./gradlew publish".to_string()
+        if cfg!(windows) {
+            ".\\gradlew.bat publish".to_string()
+        } else {
+            "./gradlew publish".to_string()
+        }
     }
 
     fn dependencies(&self) -> &HashSet<String> {
@@ -135,7 +139,11 @@ mod tests {
         );
         assert_eq!(package.language(), Language::Java);
         assert!(!package.is_changed());
-        assert_eq!(package.default_publish_command(), "./gradlew publish");
+        if cfg!(windows) {
+            assert_eq!(package.default_publish_command(), ".\\gradlew.bat publish");
+        } else {
+            assert_eq!(package.default_publish_command(), "./gradlew publish");
+        }
     }
 
     #[tokio::test]
