@@ -284,11 +284,7 @@ mod tests {
             .unwrap();
         } else {
             let gradlew_path = dir.join("gradlew");
-            fs::write(
-                &gradlew_path,
-                format!("#!/bin/sh\necho 'name: {name}'\necho 'version: {version}'\necho 'subprojects: []'\n"),
-            )
-            .unwrap();
+            fs::write(&gradlew_path, format!("#!/bin/sh\necho 'name: {name}'\necho 'version: {version}'\necho 'subprojects: []'\n")).unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -401,18 +397,10 @@ version = "1.0.0"
 
         // Mock gradlew that reports subprojects (this is what makes it a workspace)
         if cfg!(windows) {
-            fs::write(
-                project_dir.join("gradlew.bat"),
-                "@echo off\necho name: multiproject\necho version: 1.0.0\necho subprojects: [project ':subproject1', project ':subproject2']\n",
-            )
-            .unwrap();
+            fs::write(project_dir.join("gradlew.bat"), "@echo off\necho name: multiproject\necho version: 1.0.0\necho subprojects: [project ':subproject1', project ':subproject2']\n").unwrap();
         } else {
             let gradlew_path = project_dir.join("gradlew");
-            fs::write(
-                &gradlew_path,
-                "#!/bin/sh\necho 'name: multiproject'\necho 'version: 1.0.0'\necho \"subprojects: [project ':subproject1', project ':subproject2']\"\n",
-            )
-            .unwrap();
+            fs::write(&gradlew_path, "#!/bin/sh\necho 'name: multiproject'\necho 'version: 1.0.0'\necho \"subprojects: [project ':subproject1', project ':subproject2']\"\n").unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -496,11 +484,7 @@ version = "1.0.0"
             .unwrap();
         } else {
             let gradlew_path = project_dir.join("gradlew");
-            fs::write(
-                &gradlew_path,
-                "#!/bin/sh\necho 'name: standalone'\necho 'version: 1.0.0'\necho 'subprojects: []'\n",
-            )
-            .unwrap();
+            fs::write(&gradlew_path, "#!/bin/sh\necho 'name: standalone'\necho 'version: 1.0.0'\necho 'subprojects: []'\n").unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -703,18 +687,10 @@ version = "1.0.0"
         let temp_dir = TempDir::new().unwrap();
 
         if cfg!(windows) {
-            fs::write(
-                temp_dir.path().join("gradlew.bat"),
-                "@echo off\necho name: root\necho version: 1.0.0\necho subprojects: [project ':app', project ':lib']\n",
-            )
-            .unwrap();
+            fs::write(temp_dir.path().join("gradlew.bat"), "@echo off\necho name: root\necho version: 1.0.0\necho subprojects: [project ':app', project ':lib']\n").unwrap();
         } else {
             let gradlew_path = temp_dir.path().join("gradlew");
-            fs::write(
-                &gradlew_path,
-                "#!/bin/sh\necho 'name: root'\necho 'version: 1.0.0'\necho \"subprojects: [project ':app', project ':lib']\"\n",
-            )
-            .unwrap();
+            fs::write(&gradlew_path, "#!/bin/sh\necho 'name: root'\necho 'version: 1.0.0'\necho \"subprojects: [project ':app', project ':lib']\"\n").unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
@@ -885,6 +861,83 @@ version = "1.0.0"
         let props = get_gradle_properties(temp_dir.path()).await.unwrap();
         assert!(props.name.is_none());
         assert!(props.version.is_none());
+
+        temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_which_java_returns_some_or_none() {
+        // Exercises which_java() — the result depends on the test environment,
+        // but the function must not panic regardless.
+        let result = which_java();
+        // On most dev/CI machines java is on PATH → Some; otherwise None.
+        // Both branches are valid; we just verify it runs without error.
+        let _ = result;
+    }
+
+    #[test]
+    fn test_which_java_with_empty_path() {
+        // Temporarily set PATH to empty to guarantee the None branch (line 50).
+        let original = std::env::var_os("PATH");
+        // SAFETY: this test runs single-threaded; no other thread reads PATH concurrently.
+        unsafe { std::env::set_var("PATH", "") };
+
+        let result = which_java();
+        assert!(result.is_none());
+
+        // Restore
+        if let Some(p) = original {
+            // SAFETY: restoring original value, single-threaded test context.
+            unsafe { std::env::set_var("PATH", p) };
+        }
+    }
+
+    #[tokio::test]
+    async fn test_gradle_project_finder_visit_name_fallback_to_dir() {
+        // When gradlew returns name: unspecified, visit() falls back to directory name (line 173).
+        let temp_dir = TempDir::new().unwrap();
+        let project_dir = temp_dir.path().join("my-fallback-project");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let build_gradle = project_dir.join("build.gradle.kts");
+        fs::write(&build_gradle, "version = \"1.0.0\"\n").unwrap();
+
+        // Mock gradlew that returns unspecified name (filtered to None)
+        if cfg!(windows) {
+            fs::write(
+                project_dir.join("gradlew.bat"),
+                "@echo off\necho name: unspecified\necho version: 1.0.0\necho subprojects: []\n",
+            )
+            .unwrap();
+        } else {
+            let gradlew_path = project_dir.join("gradlew");
+            fs::write(&gradlew_path, "#!/bin/sh\necho 'name: unspecified'\necho 'version: 1.0.0'\necho 'subprojects: []'\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+
+        let mut finder = GradleProjectFinder::new();
+        finder
+            .visit(
+                &build_gradle,
+                &PathBuf::from("my-fallback-project/build.gradle.kts"),
+            )
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Package(pkg) => {
+                // name fell back to directory name
+                assert_eq!(pkg.name(), Some("my-fallback-project"));
+                assert_eq!(pkg.version(), Some("1.0.0"));
+            }
+            _ => panic!("Expected Package"),
+        }
 
         temp_dir.close().unwrap();
     }
