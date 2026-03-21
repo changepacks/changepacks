@@ -11,7 +11,7 @@ default-run = "changepacks"
 
 [dependencies]
 changepacks-cli.workspace = true
-tokio = { version = "1.49", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
 anyhow = "1.0"
 
 [target.'cfg(windows)'.build-dependencies]
