@@ -10,7 +10,7 @@ readme = "../../README.md"
 publish = false
 
 [dependencies]
-tokio = { version = "1.49", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
 changepacks-cli.workspace = true
 anyhow = "1.0"
 
