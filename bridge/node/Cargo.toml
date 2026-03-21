@@ -17,7 +17,7 @@ crate-type = ["cdylib"]
 napi = { version = "3.8", features = ["tokio_rt"] }
 napi-derive = "3.5"
 changepacks-cli.workspace = true
-tokio = { version = "1.49" }
+tokio = { version = "1.50" }
 
 [build-dependencies]
 napi-build = "2"
