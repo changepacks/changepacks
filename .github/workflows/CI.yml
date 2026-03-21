@@ -119,6 +119,9 @@ jobs:
       - coverage-test
     steps:
       - uses: actions/checkout@v5
+      - name: Make gradlew executable
+        working-directory: ./examples/dart/flutter_app/android
+        run: chmod +x gradlew
       - uses: changepacks/action@main
         id: changepacks
         with:
