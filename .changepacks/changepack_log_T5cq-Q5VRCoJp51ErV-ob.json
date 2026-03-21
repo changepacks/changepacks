@@ -1,0 +1,1 @@
+{"changes":{"crates/java/Cargo.toml":"Patch"},"note":"Fix JAVA_HOME env issue","date":"2026-03-21T15:24:44.601741900Z"}
