@@ -2,6 +2,17 @@ use crate::{Config, Language};
 use anyhow::Result;
 use std::path::Path;
 
+/// Output captured from a publish command execution.
+#[derive(Debug)]
+pub struct PublishOutput {
+    /// Whether the command exited with a zero status code
+    pub success: bool,
+    /// Captured stdout from the child process
+    pub stdout: String,
+    /// Captured stderr from the child process
+    pub stderr: String,
+}
+
 /// Resolve the publish command from config, language, or default
 #[must_use]
 pub fn resolve_publish_command(
@@ -40,23 +51,22 @@ fn build_shell_command(command: &str) -> tokio::process::Command {
     c
 }
 
-/// Execute a publish command in the given directory
+/// Execute a publish command in the given directory and return captured output.
 ///
 /// # Errors
-/// Returns error if the command fails to execute or returns non-zero exit code.
-pub async fn run_publish_command(command: &str, working_dir: &Path) -> Result<()> {
+/// Returns error if the command fails to spawn (e.g., binary not found).
+/// A non-zero exit code is reported via `PublishOutput::success = false`, not as an error.
+pub async fn run_publish_command(command: &str, working_dir: &Path) -> Result<PublishOutput> {
     let mut cmd = build_shell_command(command);
     cmd.current_dir(working_dir);
     let output = cmd.output().await?;
-    if !output.status.success() {
-        // Note: from_utf8_lossy silently replaces invalid UTF-8 with replacement characters.
-        // This is acceptable since stderr from child processes may contain non-UTF-8 bytes.
-        anyhow::bail!(
-            "Publish command failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    Ok(())
+    // Note: from_utf8_lossy silently replaces invalid UTF-8 with replacement characters.
+    // This is acceptable since child processes may produce non-UTF-8 bytes.
+    Ok(PublishOutput {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
 }
 
 #[cfg(test)]
@@ -127,8 +137,9 @@ mod tests {
         } else {
             "echo publish"
         };
-        let result = run_publish_command(command, &temp_dir).await;
-        assert!(result.is_ok());
+        let output = run_publish_command(command, &temp_dir).await.unwrap();
+        assert!(output.success);
+        assert!(output.stdout.contains("publish"));
     }
 
     #[tokio::test]
@@ -139,8 +150,8 @@ mod tests {
         } else {
             "exit 1"
         };
-        let result = run_publish_command(command, &temp_dir).await;
-        assert!(result.is_err());
+        let output = run_publish_command(command, &temp_dir).await.unwrap();
+        assert!(!output.success);
     }
 
     #[test]

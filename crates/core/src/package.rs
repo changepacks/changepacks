@@ -57,9 +57,10 @@ pub trait Package: std::fmt::Debug + Send + Sync {
     /// Publish the package using the configured command or default
     ///
     /// # Errors
-    /// Returns error if the publish command fails to execute or returns non-zero exit code.
+    /// Returns error if the publish command fails to spawn or the package directory is missing.
+    /// A non-zero exit code is reported via `PublishOutput::success = false`.
     #[cfg(not(tarpaulin_include))]
-    async fn publish(&self, config: &Config) -> Result<()> {
+    async fn publish(&self, config: &Config) -> Result<crate::publish::PublishOutput> {
         let command = self.get_publish_command(config);
         let dir = self
             .path()
@@ -302,8 +303,8 @@ mod tests {
         let package = MockPackage::new(Some("test"), path.to_str().unwrap(), "package.json");
         let config = Config::default();
 
-        let result = package.publish(&config).await;
-        assert!(result.is_ok());
+        let output = package.publish(&config).await.unwrap();
+        assert!(output.success);
     }
 
     #[tokio::test]
@@ -323,8 +324,8 @@ mod tests {
             ..Default::default()
         };
 
-        let result = package.publish(&config).await;
-        assert!(result.is_err());
+        let output = package.publish(&config).await.unwrap();
+        assert!(!output.success);
     }
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::Result;
-use changepacks_core::{Config, Language, Project, PublishResult};
+use changepacks_core::{Config, Language, Project, PublishOutput, PublishResult};
 use changepacks_utils::sort_by_dependencies;
 use clap::Args;
 
@@ -147,6 +147,15 @@ fn print_publish_failure_summary(failed_projects: &[String], total: usize, forma
     }
 }
 
+fn print_publish_output(output: &PublishOutput) {
+    if !output.stdout.is_empty() {
+        print!("{}", output.stdout);
+    }
+    if !output.stderr.is_empty() {
+        eprint!("{}", output.stderr);
+    }
+}
+
 async fn execute_publish_loop(
     projects: &[&Project],
     config: &Config,
@@ -159,18 +168,31 @@ async fn execute_publish_loop(
         if let FormatOptions::Stdout = format {
             println!("Publishing {project}...");
         }
-        let result = project.publish(config).await;
-        match result {
-            Ok(()) => {
+        match project.publish(config).await {
+            Ok(output) if output.success => {
                 if let FormatOptions::Stdout = format {
+                    print_publish_output(&output);
                     println!("Successfully published {project}");
                 }
                 if let FormatOptions::Json = format {
                     result_map.insert(
                         project.relative_path().to_path_buf(),
-                        PublishResult::new(true, None),
+                        PublishResult::new(true, None, output.stdout, output.stderr),
                     );
                 }
+            }
+            Ok(output) => {
+                if let FormatOptions::Stdout = format {
+                    print_publish_output(&output);
+                    eprintln!("Failed to publish {project}");
+                }
+                if let FormatOptions::Json = format {
+                    result_map.insert(
+                        project.relative_path().to_path_buf(),
+                        PublishResult::new(false, None, output.stdout, output.stderr),
+                    );
+                }
+                failed_projects.push(format!("{project}"));
             }
             Err(e) => {
                 if let FormatOptions::Stdout = format {
@@ -179,7 +201,12 @@ async fn execute_publish_loop(
                 if let FormatOptions::Json = format {
                     result_map.insert(
                         project.relative_path().to_path_buf(),
-                        PublishResult::new(false, Some(e.to_string())),
+                        PublishResult::new(
+                            false,
+                            Some(e.to_string()),
+                            String::new(),
+                            String::new(),
+                        ),
                     );
                 }
                 failed_projects.push(format!("{project}"));
