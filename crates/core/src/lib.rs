@@ -25,6 +25,7 @@ pub use language::Language;
 pub use package::Package;
 pub use project::Project;
 pub use project_finder::ProjectFinder;
+pub use publish::PublishOutput;
 pub use publish_result::PublishResult;
 pub use update_log::ChangePackLog;
 pub use update_type::UpdateType;

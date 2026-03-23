@@ -114,8 +114,8 @@ impl Project {
     }
 
     /// # Errors
-    /// Returns error if the underlying publish call fails.
-    pub async fn publish(&self, config: &Config) -> Result<()> {
+    /// Returns error if the underlying publish call fails to spawn.
+    pub async fn publish(&self, config: &Config) -> Result<crate::publish::PublishOutput> {
         match self {
             Self::Workspace(workspace) => workspace.publish(config).await,
             Self::Package(package) => package.publish(config).await,
@@ -513,8 +513,8 @@ mod tests {
         workspace.path = temp_dir.join("package.json");
         let project = Project::Workspace(Box::new(workspace));
         let config = Config::default();
-        let result = project.publish(&config).await;
-        assert!(result.is_ok());
+        let output = project.publish(&config).await.unwrap();
+        assert!(output.success);
     }
 
     #[tokio::test]
@@ -524,8 +524,8 @@ mod tests {
         package.path = temp_dir.join("Cargo.toml");
         let project = Project::Package(Box::new(package));
         let config = Config::default();
-        let result = project.publish(&config).await;
-        assert!(result.is_ok());
+        let output = project.publish(&config).await.unwrap();
+        assert!(output.success);
     }
 
     #[test]

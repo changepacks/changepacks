@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::Result;
-use changepacks_core::{Config, Language, Project, PublishResult};
+use changepacks_core::{Config, Language, Project, PublishOutput, PublishResult};
 use changepacks_utils::sort_by_dependencies;
 use clap::Args;
 
@@ -147,6 +147,15 @@ fn print_publish_failure_summary(failed_projects: &[String], total: usize, forma
     }
 }
 
+fn print_publish_output(output: &PublishOutput) {
+    if !output.stdout.is_empty() {
+        print!("{}", output.stdout);
+    }
+    if !output.stderr.is_empty() {
+        eprint!("{}", output.stderr);
+    }
+}
+
 async fn execute_publish_loop(
     projects: &[&Project],
     config: &Config,
@@ -159,18 +168,31 @@ async fn execute_publish_loop(
         if let FormatOptions::Stdout = format {
             println!("Publishing {project}...");
         }
-        let result = project.publish(config).await;
-        match result {
-            Ok(()) => {
+        match project.publish(config).await {
+            Ok(output) if output.success => {
                 if let FormatOptions::Stdout = format {
+                    print_publish_output(&output);
                     println!("Successfully published {project}");
                 }
                 if let FormatOptions::Json = format {
                     result_map.insert(
                         project.relative_path().to_path_buf(),
-                        PublishResult::new(true, None),
+                        PublishResult::new(true, None, output.stdout, output.stderr),
                     );
                 }
+            }
+            Ok(output) => {
+                if let FormatOptions::Stdout = format {
+                    print_publish_output(&output);
+                    eprintln!("Failed to publish {project}");
+                }
+                if let FormatOptions::Json = format {
+                    result_map.insert(
+                        project.relative_path().to_path_buf(),
+                        PublishResult::new(false, None, output.stdout, output.stderr),
+                    );
+                }
+                failed_projects.push(format!("{project}"));
             }
             Err(e) => {
                 if let FormatOptions::Stdout = format {
@@ -179,7 +201,12 @@ async fn execute_publish_loop(
                 if let FormatOptions::Json = format {
                     result_map.insert(
                         project.relative_path().to_path_buf(),
-                        PublishResult::new(false, Some(e.to_string())),
+                        PublishResult::new(
+                            false,
+                            Some(e.to_string()),
+                            String::new(),
+                            String::new(),
+                        ),
                     );
                 }
                 failed_projects.push(format!("{project}"));
@@ -206,7 +233,9 @@ fn publish_result_from_failures(failed: &[String], total: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use changepacks_core::{Package, UpdateType};
     use clap::Parser;
+    use std::collections::HashSet;
 
     #[derive(Parser)]
     struct TestCli {
@@ -364,5 +393,105 @@ mod tests {
         let cli = TestCli::parse_from(["test", "-p", "Cargo.toml"]);
         assert_eq!(cli.publish.project.len(), 1);
         assert_eq!(cli.publish.project[0], "Cargo.toml");
+    }
+
+    #[test]
+    fn test_print_publish_output_with_stderr() {
+        let output = PublishOutput {
+            success: false,
+            stdout: "some stdout\n".to_string(),
+            stderr: "some stderr\n".to_string(),
+        };
+        print_publish_output(&output);
+    }
+
+    #[test]
+    fn test_print_publish_output_empty() {
+        let output = PublishOutput {
+            success: true,
+            stdout: String::new(),
+            stderr: String::new(),
+        };
+        print_publish_output(&output);
+    }
+
+    /// A mock package whose `publish` always returns `Err`.
+    #[derive(Debug)]
+    struct FailSpawnPackage {
+        path: PathBuf,
+        relative_path: PathBuf,
+    }
+
+    #[async_trait::async_trait]
+    impl Package for FailSpawnPackage {
+        fn name(&self) -> Option<&str> {
+            Some("fail-spawn")
+        }
+        fn version(&self) -> Option<&str> {
+            Some("1.0.0")
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+        fn relative_path(&self) -> &std::path::Path {
+            &self.relative_path
+        }
+        async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_changed(&self) -> bool {
+            false
+        }
+        fn language(&self) -> Language {
+            Language::Node
+        }
+        fn dependencies(&self) -> &HashSet<String> {
+            &EMPTY_DEPS
+        }
+        fn add_dependency(&mut self, _dependency: &str) {}
+        fn set_changed(&mut self, _changed: bool) {}
+        fn default_publish_command(&self) -> String {
+            "echo publish".to_string()
+        }
+        async fn publish(&self, _config: &Config) -> anyhow::Result<PublishOutput> {
+            anyhow::bail!("spawn failed: No such file or directory")
+        }
+    }
+
+    static EMPTY_DEPS: std::sync::LazyLock<HashSet<String>> =
+        std::sync::LazyLock::new(HashSet::new);
+
+    #[tokio::test]
+    async fn test_execute_publish_loop_spawn_error_stdout() {
+        let pkg = FailSpawnPackage {
+            path: PathBuf::from("/nonexistent/package.json"),
+            relative_path: PathBuf::from("package.json"),
+        };
+        let project = Project::Package(Box::new(pkg));
+        let projects: Vec<&Project> = vec![&project];
+        let config = Config::default();
+
+        let (result_map, failed) =
+            execute_publish_loop(&projects, &config, &FormatOptions::Stdout).await;
+
+        assert!(result_map.is_empty());
+        assert_eq!(failed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_execute_publish_loop_spawn_error_json() {
+        let pkg = FailSpawnPackage {
+            path: PathBuf::from("/nonexistent/package.json"),
+            relative_path: PathBuf::from("package.json"),
+        };
+        let project = Project::Package(Box::new(pkg));
+        let projects: Vec<&Project> = vec![&project];
+        let config = Config::default();
+
+        let (result_map, failed) =
+            execute_publish_loop(&projects, &config, &FormatOptions::Json).await;
+
+        assert_eq!(result_map.len(), 1);
+        assert_eq!(failed.len(), 1);
     }
 }
