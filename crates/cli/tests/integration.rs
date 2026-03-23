@@ -2821,3 +2821,48 @@ async fn test_cli_changepacks_with_language_filter() {
         result.err()
     );
 }
+
+// Test publish with stderr output in stdout format (covers publish.rs line 128 - stderr branch in print_publish_output)
+#[tokio::test]
+#[serial]
+async fn test_cli_publish_stdout_failing_with_stderr() {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    init_git_repo(&temp_path);
+
+    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
+        .await
+        .unwrap();
+    let fail_cmd = if cfg!(target_os = "windows") {
+        r#"{"publish": {"node": "echo error_output 1>&2 & exit 1"}}"#
+    } else {
+        r#"{"publish": {"node": "echo error_output >&2; exit 1"}}"#
+    };
+    tokio::fs::write(temp_path.join(".changepacks/config.json"), fail_cmd)
+        .await
+        .unwrap();
+
+    tokio::fs::write(
+        temp_path.join("package.json"),
+        r#"{"name": "test", "version": "1.0.0"}"#,
+    )
+    .await
+    .unwrap();
+
+    git_add_and_commit(&temp_path, "Initial commit");
+
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(&temp_path).unwrap();
+
+    let args = vec![
+        "changepacks".to_string(),
+        "publish".to_string(),
+        "--yes".to_string(),
+    ];
+    let result = changepacks_cli::main(&args).await;
+
+    std::env::set_current_dir(&original_dir).unwrap();
+
+    assert!(result.is_err(), "publish with stderr should fail");
+}
