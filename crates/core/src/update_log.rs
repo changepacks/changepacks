@@ -96,7 +96,6 @@ mod tests {
         );
 
         let log = ChangePackLog::new(changes, "Detailed changelog note".to_string());
-
         assert_eq!(log.note(), "Detailed changelog note");
     }
 
