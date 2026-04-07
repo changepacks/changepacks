@@ -186,14 +186,12 @@ impl Workspace for RustWorkspace {
             }
 
             let dep = dependencies[package_name].as_inline_table_mut();
-            if let Some(dep) = dep {
-                let (prefix, _) = split_version(dep["version"].as_str().unwrap_or(""))?;
-                dep["version"] = format!(
-                    "{}{}",
-                    prefix.unwrap_or_default(),
-                    package.version().unwrap_or("0.0.0")
-                )
-                .into();
+            if let Some(dep) = dep
+                && let Some(current_version) = dep.get("version").and_then(|v| v.as_str())
+                && let Some(next_version) = package.version()
+            {
+                let (prefix, _) = split_version(current_version)?;
+                dep["version"] = format!("{}{}", prefix.unwrap_or_default(), next_version).into();
             }
         }
 
@@ -523,6 +521,96 @@ utils = { version = "2.0.0", path = "crates/utils" }
         assert!(content.contains("version = \"1.1.0\""));
         // utils should remain unchanged
         assert!(content.contains("version = \"2.0.0\""));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_workspace_dependencies_without_dependency_version() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+core = { path = "crates/core" }
+utils = { version = "2.0.0", path = "crates/utils" }
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            Some("1.1.0".to_string()),
+            PathBuf::from("/test/crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+
+        let packages: Vec<&dyn Package> = vec![&core_pkg];
+
+        workspace
+            .update_workspace_dependencies(&packages)
+            .await
+            .unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains(r#"core = { path = "crates/core" }"#));
+        assert!(content.contains(r#"utils = { version = "2.0.0", path = "crates/utils" }"#));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_workspace_dependencies_without_package_version() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+core = { version = "1.0.0", path = "crates/core" }
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            None,
+            PathBuf::from("/test/crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+
+        let packages: Vec<&dyn Package> = vec![&core_pkg];
+
+        workspace
+            .update_workspace_dependencies(&packages)
+            .await
+            .unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(content.contains(r#"core = { version = "1.0.0", path = "crates/core" }"#));
 
         temp_dir.close().unwrap();
     }
