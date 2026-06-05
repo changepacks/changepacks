@@ -90,6 +90,14 @@ impl Package for CSharpPackage {
         "dotnet pack -c Release && dotnet nuget push".to_string()
     }
 
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        // `dotnet nuget push` has no `--dry-run`. Returning `None` lets the
+        // dry-run loop skip with a warning. Users can override via
+        // `publishDryRun` (e.g. `dotnet pack -c Release` to verify the
+        // packaging step without pushing to the registry).
+        None
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }
@@ -137,6 +145,9 @@ mod tests {
             package.default_publish_command(),
             "dotnet pack -c Release && dotnet nuget push"
         );
+        // `dotnet nuget push` has no built-in dry-run mode, so the crate
+        // returns None and lets the publish loop skip with a warning.
+        assert!(package.default_dry_run_publish_command().is_none());
 
         temp_dir.close().unwrap();
     }

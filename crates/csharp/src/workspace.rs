@@ -91,6 +91,11 @@ impl Workspace for CSharpWorkspace {
         "dotnet pack -c Release && dotnet nuget push".to_string()
     }
 
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        // `dotnet nuget push` has no `--dry-run`. See package impl for details.
+        None
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }
@@ -138,6 +143,8 @@ mod tests {
             workspace.default_publish_command(),
             "dotnet pack -c Release && dotnet nuget push"
         );
+        // `dotnet nuget push` has no built-in dry-run mode.
+        assert!(workspace.default_dry_run_publish_command().is_none());
 
         temp_dir.close().unwrap();
     }

@@ -378,6 +378,9 @@ mod tests {
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
         }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
+        }
 
         fn inherits_workspace_version(&self) -> bool {
             self.inherits_ws_version

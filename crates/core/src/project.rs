@@ -309,6 +309,9 @@ mod tests {
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
         }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
+        }
     }
 
     #[derive(Debug)]
@@ -370,6 +373,9 @@ mod tests {
         }
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
         }
     }
 
@@ -577,18 +583,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_project_package_dry_run_publish_unsupported_csharp() {
+    async fn test_project_package_dry_run_publish_propagates_language_override() {
         let temp_dir = std::env::temp_dir();
         let mut package = MockPackage::new(Some("test"), Some("1.0.0"), Language::CSharp);
         package.path = temp_dir.join("Sample.csproj");
         let project = Project::Package(Box::new(package));
-        let config = Config::default();
+        let mut publish_dry_run = std::collections::HashMap::new();
+        publish_dry_run.insert("csharp".to_string(), "echo dry-csharp".to_string());
+        let config = Config {
+            publish_dry_run,
+            ..Config::default()
+        };
 
-        // C# has no built-in --dry-run flag and no override; dry_run_publish
-        // must return Ok(None) so callers can skip with a warning rather than
-        // failing the run.
+        // Even for languages whose crate would return None from
+        // `default_dry_run_publish_command()`, a per-language config override
+        // still resolves to a runnable command.
         let output = project.dry_run_publish(&config).await.unwrap();
-        assert!(output.is_none());
+        assert!(output.is_some());
+        assert!(output.unwrap().success);
     }
 
     #[test]

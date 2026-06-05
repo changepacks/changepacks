@@ -549,7 +549,13 @@ mod tests {
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
         }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
+        }
         async fn publish(&self, _config: &Config) -> anyhow::Result<PublishOutput> {
+            anyhow::bail!("spawn failed: No such file or directory")
+        }
+        async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
             anyhow::bail!("spawn failed: No such file or directory")
         }
     }
@@ -667,6 +673,9 @@ mod tests {
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
         }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
+        }
         async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
             Ok(Some(PublishOutput {
                 success: false,
@@ -750,6 +759,9 @@ mod tests {
         fn set_changed(&mut self, _changed: bool) {}
         fn default_publish_command(&self) -> String {
             "dotnet nuget push".to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            None
         }
         async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
             Ok(None)

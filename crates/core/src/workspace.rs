@@ -46,6 +46,13 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     /// Get the default publish command for this workspace type
     fn default_publish_command(&self) -> String;
 
+    /// Get the default dry-run publish command for this workspace type.
+    ///
+    /// Returns `None` for ecosystems whose default publish tool does not
+    /// support a built-in dry-run mode. Users may still provide an override
+    /// via `config.publish_dry_run`.
+    fn default_dry_run_publish_command(&self) -> Option<String>;
+
     /// Publish the workspace using the configured command or default
     ///
     /// # Errors
@@ -100,12 +107,12 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     }
 
     /// Get the dry-run publish command for this workspace, checking config
-    /// first, then deriving from the resolved publish command + language flag.
+    /// first, then falling back to the workspace's `default_dry_run_publish_command`.
     fn get_dry_run_publish_command(&self, config: &Config) -> Option<String> {
         crate::publish::resolve_dry_run_publish_command(
             self.relative_path(),
             self.language(),
-            &self.default_publish_command(),
+            self.default_dry_run_publish_command().as_deref(),
             config,
         )
     }
@@ -186,6 +193,9 @@ mod tests {
         }
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
         }
     }
 
@@ -330,12 +340,13 @@ mod tests {
     }
 
     #[test]
-    fn test_get_dry_run_publish_command_derived_for_node() {
+    fn test_get_dry_run_publish_command_falls_back_to_workspace_default() {
         let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json")
             .with_language(Language::Node);
         let config = Config::default();
 
-        // Derived from default_publish_command() + Language::Node.dry_run_flag()
+        // With no override, the trait method returns the workspace's own
+        // `default_dry_run_publish_command()` (here, the MockWorkspace stub).
         assert_eq!(
             workspace.get_dry_run_publish_command(&config).as_deref(),
             Some("echo publish --dry-run")
@@ -359,6 +370,7 @@ mod tests {
             ..Default::default()
         };
 
+        // Per-project override wins over the workspace's own default.
         assert_eq!(
             workspace.get_dry_run_publish_command(&config).as_deref(),
             Some("custom dry")
@@ -366,13 +378,24 @@ mod tests {
     }
 
     #[test]
-    fn test_get_dry_run_publish_command_unsupported_csharp_returns_none() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/Sample.csproj", "Sample.csproj")
-            .with_language(Language::CSharp);
-        let config = Config::default();
+    fn test_get_dry_run_publish_command_override_by_language() {
+        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json")
+            .with_language(Language::Node);
+        let mut publish_dry_run = HashMap::new();
+        publish_dry_run.insert(
+            "node".to_string(),
+            "npm publish --dry-run --tag next".to_string(),
+        );
+        let config = Config {
+            publish_dry_run,
+            ..Default::default()
+        };
 
-        // C# has no built-in --dry-run flag and no override is configured.
-        assert!(workspace.get_dry_run_publish_command(&config).is_none());
+        // Per-language override wins over the workspace's own default.
+        assert_eq!(
+            workspace.get_dry_run_publish_command(&config).as_deref(),
+            Some("npm publish --dry-run --tag next")
+        );
     }
 
     #[tokio::test]

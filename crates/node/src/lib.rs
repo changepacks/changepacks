@@ -34,6 +34,24 @@ impl PackageManager {
             Self::Bun => "bun publish",
         }
     }
+
+    /// Returns the dry-run publish command for this package manager.
+    ///
+    /// All four supported managers natively support `--dry-run`, so this
+    /// always returns `Some`. The flag placement matches each tool's CLI:
+    /// - `npm publish --dry-run`
+    /// - `yarn npm publish --dry-run`
+    /// - `pnpm publish --dry-run`
+    /// - `bun publish --dry-run`
+    #[must_use]
+    pub fn dry_run_publish_command(&self) -> &'static str {
+        match self {
+            Self::Npm => "npm publish --dry-run",
+            Self::Yarn => "yarn npm publish --dry-run",
+            Self::Pnpm => "pnpm publish --dry-run",
+            Self::Bun => "bun publish --dry-run",
+        }
+    }
 }
 
 /// Detects the package manager by checking for lock files in the given directory
@@ -153,6 +171,29 @@ mod tests {
         assert_eq!(PackageManager::Yarn.publish_command(), "yarn npm publish");
         assert_eq!(PackageManager::Pnpm.publish_command(), "pnpm publish");
         assert_eq!(PackageManager::Bun.publish_command(), "bun publish");
+    }
+
+    #[test]
+    fn test_dry_run_publish_commands() {
+        // All four supported package managers natively support `--dry-run`.
+        // Source: official CLI docs for npm, pnpm, yarn berry (`yarn npm
+        // publish -n/--dry-run`) and bun publish.
+        assert_eq!(
+            PackageManager::Npm.dry_run_publish_command(),
+            "npm publish --dry-run"
+        );
+        assert_eq!(
+            PackageManager::Yarn.dry_run_publish_command(),
+            "yarn npm publish --dry-run"
+        );
+        assert_eq!(
+            PackageManager::Pnpm.dry_run_publish_command(),
+            "pnpm publish --dry-run"
+        );
+        assert_eq!(
+            PackageManager::Bun.dry_run_publish_command(),
+            "bun publish --dry-run"
+        );
     }
 
     #[test]

@@ -121,6 +121,10 @@ impl Package for RustPackage {
         "cargo publish".to_string()
     }
 
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        Some("cargo publish --dry-run".to_string())
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }
@@ -162,6 +166,10 @@ mod tests {
         assert_eq!(package.language(), Language::Rust);
         assert!(!package.is_changed());
         assert_eq!(package.default_publish_command(), "cargo publish");
+        assert_eq!(
+            package.default_dry_run_publish_command().as_deref(),
+            Some("cargo publish --dry-run")
+        );
     }
 
     #[tokio::test]

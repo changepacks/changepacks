@@ -501,6 +501,9 @@ mod tests {
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
         }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
+        }
     }
 
     #[derive(Debug)]
@@ -571,6 +574,9 @@ mod tests {
         }
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
         }
     }
 

@@ -104,6 +104,17 @@ impl Workspace for GradleWorkspace {
         }
     }
 
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        // See java package impl for rationale: Gradle's `--dry-run` only
+        // previews the task graph, so we run the full publish pipeline
+        // against the local Maven cache (`~/.m2/repository`) instead.
+        if cfg!(windows) {
+            Some(".\\gradlew.bat publishToMavenLocal".to_string())
+        } else {
+            Some("./gradlew publishToMavenLocal".to_string())
+        }
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }
@@ -144,8 +155,16 @@ mod tests {
                 workspace.default_publish_command(),
                 ".\\gradlew.bat publish"
             );
+            assert_eq!(
+                workspace.default_dry_run_publish_command().as_deref(),
+                Some(".\\gradlew.bat publishToMavenLocal")
+            );
         } else {
             assert_eq!(workspace.default_publish_command(), "./gradlew publish");
+            assert_eq!(
+                workspace.default_dry_run_publish_command().as_deref(),
+                Some("./gradlew publishToMavenLocal")
+            );
         }
     }
 

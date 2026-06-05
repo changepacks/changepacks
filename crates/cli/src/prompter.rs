@@ -191,6 +191,9 @@ mod tests {
         fn default_publish_command(&self) -> String {
             "echo test".to_string()
         }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo test --dry-run".to_string())
+        }
     }
 
     #[test]

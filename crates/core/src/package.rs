@@ -44,6 +44,15 @@ pub trait Package: std::fmt::Debug + Send + Sync {
     /// Get the default publish command for this package type
     fn default_publish_command(&self) -> String;
 
+    /// Get the default dry-run publish command for this package type.
+    ///
+    /// Returns `None` for ecosystems whose default publish tool does not
+    /// support a built-in dry-run mode (e.g. `dotnet nuget push`). Callers
+    /// should treat `None` as "dry-run not supported; skip with a warning"
+    /// rather than as a failure. Users may still provide an override via
+    /// `config.publish_dry_run`.
+    fn default_dry_run_publish_command(&self) -> Option<String>;
+
     /// Whether this package inherits its version from the workspace root via `version.workspace = true`
     fn inherits_workspace_version(&self) -> bool {
         false
@@ -107,13 +116,13 @@ pub trait Package: std::fmt::Debug + Send + Sync {
         )
     }
 
-    /// Get the dry-run publish command for this package, checking config first,
-    /// then deriving from the resolved publish command + language flag.
+    /// Get the dry-run publish command for this package, checking config
+    /// first, then falling back to the package's `default_dry_run_publish_command`.
     fn get_dry_run_publish_command(&self, config: &Config) -> Option<String> {
         crate::publish::resolve_dry_run_publish_command(
             self.relative_path(),
             self.language(),
-            &self.default_publish_command(),
+            self.default_dry_run_publish_command().as_deref(),
             config,
         )
     }
@@ -189,6 +198,9 @@ mod tests {
         }
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
         }
     }
 

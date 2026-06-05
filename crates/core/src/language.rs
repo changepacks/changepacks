@@ -33,28 +33,6 @@ impl Language {
             Self::Java => "java",
         }
     }
-
-    /// Returns the flag that converts a publish command into its dry-run form.
-    ///
-    /// Returns `None` for ecosystems whose default publish tooling does not
-    /// support a built-in dry-run mode. In that case the user should configure
-    /// `publishDryRun` in `.changepacks/config.json` to provide a custom dry-run
-    /// command for the affected project or language.
-    ///
-    /// Defaults assume:
-    /// - Node (npm/pnpm/yarn/bun): `--dry-run`
-    /// - Python (uv): `--dry-run`
-    /// - Rust (cargo): `--dry-run`
-    /// - Dart (`dart pub`): `--dry-run`
-    /// - Java (Gradle): `--dry-run`
-    /// - C# (`dotnet nuget push`): unsupported (`None`)
-    #[must_use]
-    pub const fn dry_run_flag(&self) -> Option<&'static str> {
-        match self {
-            Self::Node | Self::Python | Self::Rust | Self::Dart | Self::Java => Some("--dry-run"),
-            Self::CSharp => None,
-        }
-    }
 }
 
 impl Display for Language {
@@ -100,16 +78,5 @@ mod tests {
     #[case(Language::Java, "java")]
     fn test_publish_key(#[case] language: Language, #[case] expected: &str) {
         assert_eq!(language.publish_key(), expected);
-    }
-
-    #[rstest]
-    #[case(Language::Python, Some("--dry-run"))]
-    #[case(Language::Node, Some("--dry-run"))]
-    #[case(Language::Rust, Some("--dry-run"))]
-    #[case(Language::Dart, Some("--dry-run"))]
-    #[case(Language::Java, Some("--dry-run"))]
-    #[case(Language::CSharp, None)]
-    fn test_dry_run_flag(#[case] language: Language, #[case] expected: Option<&str>) {
-        assert_eq!(language.dry_run_flag(), expected);
     }
 }

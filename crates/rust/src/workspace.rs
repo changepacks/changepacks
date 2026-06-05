@@ -150,6 +150,10 @@ impl Workspace for RustWorkspace {
         "cargo publish --workspace".to_string()
     }
 
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        Some("cargo publish --workspace --dry-run".to_string())
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }
@@ -239,6 +243,10 @@ mod tests {
         assert_eq!(
             workspace.default_publish_command(),
             "cargo publish --workspace"
+        );
+        assert_eq!(
+            workspace.default_dry_run_publish_command().as_deref(),
+            Some("cargo publish --workspace --dry-run")
         );
     }
 

@@ -103,6 +103,10 @@ impl Workspace for PythonWorkspace {
         "uv publish".to_string()
     }
 
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        Some("uv publish --dry-run".to_string())
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }
@@ -139,6 +143,10 @@ mod tests {
         assert_eq!(workspace.language(), Language::Python);
         assert!(!workspace.is_changed());
         assert_eq!(workspace.default_publish_command(), "uv publish");
+        assert_eq!(
+            workspace.default_dry_run_publish_command().as_deref(),
+            Some("uv publish --dry-run")
+        );
     }
 
     #[tokio::test]

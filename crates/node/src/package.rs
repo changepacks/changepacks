@@ -108,6 +108,14 @@ impl Package for NodePackage {
             .to_string()
     }
 
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        Some(
+            detect_package_manager_recursive(&self.path)
+                .dry_run_publish_command()
+                .to_string(),
+        )
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }
@@ -141,6 +149,10 @@ mod tests {
         assert_eq!(package.language(), Language::Node);
         assert!(!package.is_changed());
         assert_eq!(package.default_publish_command(), "npm publish");
+        assert_eq!(
+            package.default_dry_run_publish_command().as_deref(),
+            Some("npm publish --dry-run")
+        );
     }
 
     #[tokio::test]
