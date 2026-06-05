@@ -545,6 +545,52 @@ mod tests {
         assert!(output.success);
     }
 
+    #[tokio::test]
+    async fn test_project_workspace_dry_run_publish() {
+        let temp_dir = std::env::temp_dir();
+        let mut workspace = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);
+        workspace.path = temp_dir.join("package.json");
+        let project = Project::Workspace(Box::new(workspace));
+        let config = Config::default();
+
+        // MockWorkspace.default_publish_command() == "echo publish" and
+        // Language::Node.dry_run_flag() == Some("--dry-run"), so the
+        // derived dry-run command is "echo publish --dry-run".
+        let output = project.dry_run_publish(&config).await.unwrap();
+        assert!(output.is_some());
+        let output = output.unwrap();
+        assert!(output.success);
+        assert!(output.stdout.contains("publish"));
+    }
+
+    #[tokio::test]
+    async fn test_project_package_dry_run_publish() {
+        let temp_dir = std::env::temp_dir();
+        let mut package = MockPackage::new(Some("test"), Some("1.0.0"), Language::Rust);
+        package.path = temp_dir.join("Cargo.toml");
+        let project = Project::Package(Box::new(package));
+        let config = Config::default();
+
+        let output = project.dry_run_publish(&config).await.unwrap();
+        assert!(output.is_some());
+        assert!(output.unwrap().success);
+    }
+
+    #[tokio::test]
+    async fn test_project_package_dry_run_publish_unsupported_csharp() {
+        let temp_dir = std::env::temp_dir();
+        let mut package = MockPackage::new(Some("test"), Some("1.0.0"), Language::CSharp);
+        package.path = temp_dir.join("Sample.csproj");
+        let project = Project::Package(Box::new(package));
+        let config = Config::default();
+
+        // C# has no built-in --dry-run flag and no override; dry_run_publish
+        // must return Ok(None) so callers can skip with a warning rather than
+        // failing the run.
+        let output = project.dry_run_publish(&config).await.unwrap();
+        assert!(output.is_none());
+    }
+
     #[test]
     fn test_project_eq_same_workspace() {
         let w1 = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);

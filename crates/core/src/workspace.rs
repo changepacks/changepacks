@@ -329,6 +329,52 @@ mod tests {
         assert_eq!(workspace.get_publish_command(&config), "echo publish");
     }
 
+    #[test]
+    fn test_get_dry_run_publish_command_derived_for_node() {
+        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json")
+            .with_language(Language::Node);
+        let config = Config::default();
+
+        // Derived from default_publish_command() + Language::Node.dry_run_flag()
+        assert_eq!(
+            workspace.get_dry_run_publish_command(&config).as_deref(),
+            Some("echo publish --dry-run")
+        );
+    }
+
+    #[test]
+    fn test_get_dry_run_publish_command_override_by_path() {
+        let workspace = MockWorkspace::new(
+            Some("test"),
+            "/project/package.json",
+            "packages/core/package.json",
+        );
+        let mut publish_dry_run = HashMap::new();
+        publish_dry_run.insert(
+            "packages/core/package.json".to_string(),
+            "custom dry".to_string(),
+        );
+        let config = Config {
+            publish_dry_run,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            workspace.get_dry_run_publish_command(&config).as_deref(),
+            Some("custom dry")
+        );
+    }
+
+    #[test]
+    fn test_get_dry_run_publish_command_unsupported_csharp_returns_none() {
+        let workspace = MockWorkspace::new(Some("test"), "/project/Sample.csproj", "Sample.csproj")
+            .with_language(Language::CSharp);
+        let config = Config::default();
+
+        // C# has no built-in --dry-run flag and no override is configured.
+        assert!(workspace.get_dry_run_publish_command(&config).is_none());
+    }
+
     #[tokio::test]
     async fn test_publish_success() {
         let temp_dir = std::env::temp_dir();

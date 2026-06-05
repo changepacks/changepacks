@@ -140,6 +140,68 @@ async fn test_cli_publish_dry_run() {
     assert!(result.is_ok());
 }
 
+/// Covers the `--dry-run` bail!() path in `handle_publish_with_prompter`:
+/// when the underlying dry-run command exits non-zero, the CLI must surface
+/// an error containing "Dry-run failed" so CI pipelines fail fast before
+/// touching any registry.
+#[tokio::test]
+#[serial]
+async fn test_cli_publish_dry_run_bails_on_failure() {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path();
+
+    init_git_repo(temp_path);
+
+    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
+        .await
+        .unwrap();
+    // Force the dry-run command to exit non-zero so the loop records a failed
+    // project and the handler hits the `Dry-run failed for ...` bail!().
+    let fail_cmd = if cfg!(target_os = "windows") {
+        "cmd /c exit 1"
+    } else {
+        "exit 1"
+    };
+    tokio::fs::write(
+        temp_path.join(".changepacks/config.json"),
+        format!(r#"{{"publishDryRun": {{"node": "{fail_cmd}"}}}}"#),
+    )
+    .await
+    .unwrap();
+
+    tokio::fs::write(
+        temp_path.join("package.json"),
+        r#"{"name": "test", "version": "1.0.0"}"#,
+    )
+    .await
+    .unwrap();
+
+    git_add_and_commit(temp_path, "Initial commit");
+
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp_path).unwrap();
+
+    let args = vec![
+        "changepacks".to_string(),
+        "publish".to_string(),
+        "--dry-run".to_string(),
+    ];
+    let result = changepacks_cli::main(&args).await;
+
+    std::env::set_current_dir(&original_dir).unwrap();
+
+    assert!(result.is_err(), "dry-run should fail when command exits 1");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Dry-run failed for"),
+        "expected bail message, got: {err_msg}"
+    );
+    assert!(
+        err_msg.contains("1 project(s)"),
+        "expected failure count in message, got: {err_msg}"
+    );
+}
+
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_with_echo() {
