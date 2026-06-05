@@ -33,6 +33,37 @@ pub fn resolve_publish_command(
     default_command.to_string()
 }
 
+/// Resolve the dry-run publish command from config or by deriving it from the
+/// regular publish command plus the language's `dry_run_flag`.
+///
+/// Returns `None` when the language has no built-in dry-run flag and the user
+/// has not provided an override in `config.publish_dry_run`. Callers should
+/// treat `None` as "dry-run not supported for this project; skip with a
+/// warning" rather than as a failure.
+#[must_use]
+pub fn resolve_dry_run_publish_command(
+    relative_path: &Path,
+    language: Language,
+    default_command: &str,
+    config: &Config,
+) -> Option<String> {
+    // 1) Per-project override
+    if let Some(cmd) = config
+        .publish_dry_run
+        .get(relative_path.to_string_lossy().as_ref())
+    {
+        return Some(cmd.clone());
+    }
+    // 2) Per-language override
+    if let Some(cmd) = config.publish_dry_run.get(language.publish_key()) {
+        return Some(cmd.clone());
+    }
+    // 3) Derive from the regular publish command + language's dry-run flag
+    let flag = language.dry_run_flag()?;
+    let base = resolve_publish_command(relative_path, language, default_command, config);
+    Some(format!("{base} {flag}"))
+}
+
 /// Build a platform-specific shell command.
 /// Uses compile-time `#[cfg]` so only the active platform's code is compiled,
 /// eliminating coverage gaps from unreachable platform branches.
@@ -127,6 +158,115 @@ mod tests {
             &config,
         );
         assert_eq!(result, "npm publish");
+    }
+
+    #[test]
+    fn test_resolve_dry_run_publish_command_by_path() {
+        let mut publish_dry_run = HashMap::new();
+        publish_dry_run.insert(
+            "packages/core/package.json".to_string(),
+            "custom dry".to_string(),
+        );
+        let config = Config {
+            publish_dry_run,
+            ..Default::default()
+        };
+
+        let result = resolve_dry_run_publish_command(
+            Path::new("packages/core/package.json"),
+            Language::Node,
+            "npm publish",
+            &config,
+        );
+        assert_eq!(result.as_deref(), Some("custom dry"));
+    }
+
+    #[test]
+    fn test_resolve_dry_run_publish_command_by_language() {
+        let mut publish_dry_run = HashMap::new();
+        publish_dry_run.insert("node".to_string(), "npm publish --dry-run -tag".to_string());
+        let config = Config {
+            publish_dry_run,
+            ..Default::default()
+        };
+
+        let result = resolve_dry_run_publish_command(
+            Path::new("package.json"),
+            Language::Node,
+            "npm publish",
+            &config,
+        );
+        assert_eq!(result.as_deref(), Some("npm publish --dry-run -tag"));
+    }
+
+    #[test]
+    fn test_resolve_dry_run_publish_command_derived_from_publish() {
+        let config = Config::default();
+
+        let result = resolve_dry_run_publish_command(
+            Path::new("package.json"),
+            Language::Node,
+            "npm publish",
+            &config,
+        );
+        assert_eq!(result.as_deref(), Some("npm publish --dry-run"));
+    }
+
+    #[test]
+    fn test_resolve_dry_run_publish_command_uses_config_publish_then_appends_flag() {
+        // When config provides a custom `publish` command but no dry-run override,
+        // the dry-run command should append the language flag to the custom command.
+        let mut publish = HashMap::new();
+        publish.insert(
+            "node".to_string(),
+            "npm publish --access public".to_string(),
+        );
+        let config = Config {
+            publish,
+            ..Default::default()
+        };
+
+        let result = resolve_dry_run_publish_command(
+            Path::new("package.json"),
+            Language::Node,
+            "npm publish",
+            &config,
+        );
+        assert_eq!(
+            result.as_deref(),
+            Some("npm publish --access public --dry-run")
+        );
+    }
+
+    #[test]
+    fn test_resolve_dry_run_publish_command_unsupported_language_returns_none() {
+        let config = Config::default();
+
+        let result = resolve_dry_run_publish_command(
+            Path::new("project.csproj"),
+            Language::CSharp,
+            "dotnet nuget push",
+            &config,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_dry_run_publish_command_unsupported_with_override() {
+        let mut publish_dry_run = HashMap::new();
+        publish_dry_run.insert("csharp".to_string(), "dotnet pack -c Release".to_string());
+        let config = Config {
+            publish_dry_run,
+            ..Default::default()
+        };
+
+        let result = resolve_dry_run_publish_command(
+            Path::new("project.csproj"),
+            Language::CSharp,
+            "dotnet nuget push",
+            &config,
+        );
+        assert_eq!(result.as_deref(), Some("dotnet pack -c Release"));
     }
 
     #[tokio::test]

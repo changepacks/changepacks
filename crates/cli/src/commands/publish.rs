@@ -89,8 +89,23 @@ pub async fn handle_publish_with_prompter(
     print_projects_to_publish(&projects, &args.format);
 
     if args.dry_run {
-        args.format
-            .print("Dry run, no packages will be published", "{}");
+        let (result_map, failed_projects) =
+            execute_dry_run_publish_loop(&projects, &ctx.config, &args.format).await;
+
+        print_publish_failure_summary(&failed_projects, projects.len(), &args.format);
+
+        if let FormatOptions::Json = args.format {
+            println!("{}", serde_json::to_string_pretty(&result_map)?);
+        }
+
+        if !failed_projects.is_empty() {
+            anyhow::bail!(
+                "Dry-run failed for {} project(s): {}",
+                failed_projects.len(),
+                failed_projects.join(", ")
+            );
+        }
+
         return Ok(());
     }
 
@@ -154,6 +169,87 @@ fn print_publish_output(output: &PublishOutput) {
     if !output.stderr.is_empty() {
         eprint!("{}", output.stderr);
     }
+}
+
+async fn execute_dry_run_publish_loop(
+    projects: &[&Project],
+    config: &Config,
+    format: &FormatOptions,
+) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
+    let mut result_map = BTreeMap::new();
+    let mut failed_projects: Vec<String> = Vec::new();
+
+    for project in projects {
+        if let FormatOptions::Stdout = format {
+            println!("Dry-run publishing {project}...");
+        }
+        match project.dry_run_publish(config).await {
+            Ok(Some(output)) if output.success => {
+                if let FormatOptions::Stdout = format {
+                    print_publish_output(&output);
+                    println!("Dry-run succeeded for {project}");
+                }
+                if let FormatOptions::Json = format {
+                    result_map.insert(
+                        project.relative_path().to_path_buf(),
+                        PublishResult::new(true, None, output.stdout, output.stderr),
+                    );
+                }
+            }
+            Ok(Some(output)) => {
+                if let FormatOptions::Stdout = format {
+                    print_publish_output(&output);
+                    eprintln!("Dry-run failed for {project}");
+                }
+                if let FormatOptions::Json = format {
+                    result_map.insert(
+                        project.relative_path().to_path_buf(),
+                        PublishResult::new(false, None, output.stdout, output.stderr),
+                    );
+                }
+                failed_projects.push(format!("{project}"));
+            }
+            Ok(None) => {
+                if let FormatOptions::Stdout = format {
+                    eprintln!(
+                        "Dry-run not supported for {project}; skipping. \
+                         Configure `publishDryRun` in .changepacks/config.json \
+                         to provide a custom dry-run command."
+                    );
+                }
+                if let FormatOptions::Json = format {
+                    result_map.insert(
+                        project.relative_path().to_path_buf(),
+                        PublishResult::new(
+                            true,
+                            Some("dry-run not supported; skipped".to_string()),
+                            String::new(),
+                            String::new(),
+                        ),
+                    );
+                }
+            }
+            Err(e) => {
+                if let FormatOptions::Stdout = format {
+                    eprintln!("Dry-run failed for {project}: {e}");
+                }
+                if let FormatOptions::Json = format {
+                    result_map.insert(
+                        project.relative_path().to_path_buf(),
+                        PublishResult::new(
+                            false,
+                            Some(e.to_string()),
+                            String::new(),
+                            String::new(),
+                        ),
+                    );
+                }
+                failed_projects.push(format!("{project}"));
+            }
+        }
+    }
+
+    (result_map, failed_projects)
 }
 
 async fn execute_publish_loop(

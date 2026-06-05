@@ -121,6 +121,23 @@ impl Project {
             Self::Package(package) => package.publish(config).await,
         }
     }
+
+    /// Run the publish command in dry-run mode.
+    ///
+    /// Returns `Ok(None)` when dry-run is not supported for this project's
+    /// language and no override is configured in `config.publish_dry_run`.
+    ///
+    /// # Errors
+    /// Returns error if the underlying dry-run publish call fails to spawn.
+    pub async fn dry_run_publish(
+        &self,
+        config: &Config,
+    ) -> Result<Option<crate::publish::PublishOutput>> {
+        match self {
+            Self::Workspace(workspace) => workspace.dry_run_publish(config).await,
+            Self::Package(package) => package.dry_run_publish(config).await,
+        }
+    }
 }
 
 impl PartialEq for Project {

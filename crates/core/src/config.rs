@@ -24,6 +24,15 @@ pub struct Config {
     #[serde(default)]
     pub publish: HashMap<String, String>,
 
+    /// Custom dry-run publish commands by language key or project path.
+    ///
+    /// Overrides the default dry-run derivation (appending `--dry-run` to the
+    /// resolved publish command). Use this for ecosystems whose publish tool
+    /// does not support `--dry-run` (e.g., `dotnet nuget push`) or when a
+    /// custom verification flow is preferred.
+    #[serde(default)]
+    pub publish_dry_run: HashMap<String, String>,
+
     /// Dependency rules for forced updates.
     /// Key: glob pattern for trigger packages (e.g., "crates/*")
     /// Value: list of package paths that must be updated when trigger matches
@@ -42,6 +51,7 @@ impl Default for Config {
             base_branch: default_base_branch(),
             latest_package: None,
             publish: HashMap::new(),
+            publish_dry_run: HashMap::new(),
             update_on: HashMap::new(),
         }
     }
@@ -58,7 +68,36 @@ mod tests {
         assert_eq!(config.base_branch, "main");
         assert!(config.latest_package.is_none());
         assert!(config.publish.is_empty());
+        assert!(config.publish_dry_run.is_empty());
         assert!(config.update_on.is_empty());
+    }
+
+    #[test]
+    fn test_config_publish_dry_run_map() {
+        let json = r#"{
+            "publishDryRun": {
+                "node": "npm publish --dry-run",
+                "csharp": "dotnet pack -c Release",
+                "bridge/node/package.json": "npm publish --dry-run --access public"
+            }
+        }"#;
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.publish_dry_run.len(), 3);
+        assert_eq!(
+            config.publish_dry_run.get("node").unwrap(),
+            "npm publish --dry-run"
+        );
+        assert_eq!(
+            config.publish_dry_run.get("csharp").unwrap(),
+            "dotnet pack -c Release"
+        );
+        assert_eq!(
+            config
+                .publish_dry_run
+                .get("bridge/node/package.json")
+                .unwrap(),
+            "npm publish --dry-run --access public"
+        );
     }
 
     #[test]

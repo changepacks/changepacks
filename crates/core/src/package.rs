@@ -69,9 +69,48 @@ pub trait Package: std::fmt::Debug + Send + Sync {
         crate::publish::run_publish_command(&command, dir).await
     }
 
+    /// Run the publish command in dry-run mode to verify the pre-release flow
+    /// works without actually publishing.
+    ///
+    /// Returns `Ok(Some(output))` with the captured command output, or
+    /// `Ok(None)` when the language does not support a dry-run mode and the
+    /// user has not provided an override in `config.publish_dry_run`.
+    ///
+    /// # Errors
+    /// Returns error if the dry-run command fails to spawn or the package
+    /// directory is missing. A non-zero exit code is reported via
+    /// `PublishOutput::success = false`.
+    #[cfg(not(tarpaulin_include))]
+    async fn dry_run_publish(
+        &self,
+        config: &Config,
+    ) -> Result<Option<crate::publish::PublishOutput>> {
+        let Some(command) = self.get_dry_run_publish_command(config) else {
+            return Ok(None);
+        };
+        let dir = self
+            .path()
+            .parent()
+            .context("Package directory not found")?;
+        Ok(Some(
+            crate::publish::run_publish_command(&command, dir).await?,
+        ))
+    }
+
     /// Get the publish command for this package, checking config first
     fn get_publish_command(&self, config: &Config) -> String {
         crate::publish::resolve_publish_command(
+            self.relative_path(),
+            self.language(),
+            &self.default_publish_command(),
+            config,
+        )
+    }
+
+    /// Get the dry-run publish command for this package, checking config first,
+    /// then deriving from the resolved publish command + language flag.
+    fn get_dry_run_publish_command(&self, config: &Config) -> Option<String> {
+        crate::publish::resolve_dry_run_publish_command(
             self.relative_path(),
             self.language(),
             &self.default_publish_command(),

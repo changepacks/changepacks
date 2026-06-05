@@ -104,6 +104,18 @@ async fn test_cli_publish_dry_run() {
 
     init_git_repo(temp_path);
 
+    // Override dry-run with `echo` so the test does not depend on a working
+    // npm/registry environment.
+    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
+        .await
+        .unwrap();
+    tokio::fs::write(
+        temp_path.join(".changepacks/config.json"),
+        r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
+    )
+    .await
+    .unwrap();
+
     tokio::fs::write(
         temp_path.join("package.json"),
         r#"{"name": "test", "version": "1.0.0"}"#,
@@ -207,6 +219,18 @@ async fn test_cli_publish_json_format() {
     let temp_path = temp_dir.path();
 
     init_git_repo(temp_path);
+
+    // Override dry-run with `echo` so the test does not depend on a working
+    // npm/registry environment.
+    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
+        .await
+        .unwrap();
+    tokio::fs::write(
+        temp_path.join(".changepacks/config.json"),
+        r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
+    )
+    .await
+    .unwrap();
 
     tokio::fs::write(
         temp_path.join("package.json"),
@@ -1935,6 +1959,15 @@ async fn test_cli_publish_dry_run_json() {
     tokio::fs::create_dir_all(temp_path.join(".changepacks"))
         .await
         .unwrap();
+
+    // Override dry-run with `echo` so the test does not depend on a working
+    // npm/registry environment.
+    tokio::fs::write(
+        temp_path.join(".changepacks/config.json"),
+        r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
+    )
+    .await
+    .unwrap();
 
     tokio::fs::write(
         temp_path.join("package.json"),
