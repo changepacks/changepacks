@@ -897,6 +897,17 @@ async fn test_cli_publish_with_language_filter() {
         .await
         .unwrap();
 
+    // Override dry-run with `echo` so the test does not depend on a working
+    // npm/registry environment (the real `npm publish --dry-run` fails under
+    // tarpaulin / sandboxed CI because the package name conflicts with the
+    // public registry).
+    tokio::fs::write(
+        temp_path.join(".changepacks/config.json"),
+        r#"{"publishDryRun": {"node": "echo dry-run", "rust": "echo dry-run"}}"#,
+    )
+    .await
+    .unwrap();
+
     // Create Node.js package
     tokio::fs::write(
         temp_path.join("package.json"),
@@ -952,6 +963,15 @@ async fn test_cli_publish_with_project_filter() {
     tokio::fs::create_dir_all(temp_path.join(".changepacks"))
         .await
         .unwrap();
+
+    // Override dry-run with `echo` so the test does not depend on a working
+    // npm/registry environment.
+    tokio::fs::write(
+        temp_path.join(".changepacks/config.json"),
+        r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
+    )
+    .await
+    .unwrap();
 
     tokio::fs::write(
         temp_path.join("package.json"),
