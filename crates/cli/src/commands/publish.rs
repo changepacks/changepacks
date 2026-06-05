@@ -667,10 +667,7 @@ mod tests {
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
         }
-        async fn dry_run_publish(
-            &self,
-            _config: &Config,
-        ) -> anyhow::Result<Option<PublishOutput>> {
+        async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
             Ok(Some(PublishOutput {
                 success: false,
                 stdout: "dry-run stdout".to_string(),
@@ -754,10 +751,7 @@ mod tests {
         fn default_publish_command(&self) -> String {
             "dotnet nuget push".to_string()
         }
-        async fn dry_run_publish(
-            &self,
-            _config: &Config,
-        ) -> anyhow::Result<Option<PublishOutput>> {
+        async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
             Ok(None)
         }
     }

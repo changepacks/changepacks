@@ -104,14 +104,14 @@ impl CSharpProjectFinder {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(e) | Event::Start(e)) => {
-                    if e.local_name().as_ref() == b"PackageReference" {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"Include"
-                                && let Ok(value) = attr.unescape_value()
-                            {
-                                packages.push(value.to_string());
-                            }
+                Ok(Event::Empty(e) | Event::Start(e))
+                    if e.local_name().as_ref() == b"PackageReference" =>
+                {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"Include"
+                            && let Ok(value) = attr.unescape_value()
+                        {
+                            packages.push(value.to_string());
                         }
                     }
                 }
@@ -132,17 +132,17 @@ impl CSharpProjectFinder {
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(e) | Event::Start(e)) => {
-                    if e.local_name().as_ref() == b"ProjectReference" {
-                        for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"Include"
-                                && let Ok(value) = attr.unescape_value()
-                            {
-                                // Extract project name from path like "..\CoreLib\CoreLib.csproj"
-                                // Handle both Windows (\) and Unix (/) path separators
-                                if let Some(name) = extract_project_name_from_path(&value) {
-                                    projects.push(name);
-                                }
+                Ok(Event::Empty(e) | Event::Start(e))
+                    if e.local_name().as_ref() == b"ProjectReference" =>
+                {
+                    for attr in e.attributes().flatten() {
+                        if attr.key.as_ref() == b"Include"
+                            && let Ok(value) = attr.unescape_value()
+                        {
+                            // Extract project name from path like "..\CoreLib\CoreLib.csproj"
+                            // Handle both Windows (\) and Unix (/) path separators
+                            if let Some(name) = extract_project_name_from_path(&value) {
+                                projects.push(name);
                             }
                         }
                     }
