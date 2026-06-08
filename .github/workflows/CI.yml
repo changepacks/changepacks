@@ -96,14 +96,6 @@ jobs:
           echo 'use_small_heuristics = "Default"' >> .rustfmt.toml
           cargo fmt
           cargo tarpaulin --out Lcov Stdout --engine llvm --fail-under 100
-      - name: Import Codecov GPG key
-        # codecov-action@v5 runs codecov-cli which verifies its own SHA256SUM
-        # against an RSA-signed .sig file. The CI runner has no GPG keys by
-        # default, so the verification step fails with "No public key" before
-        # the upload even starts. Import the official codecov security
-        # team's public key from keybase so the verification succeeds.
-        run: curl -fsSL https://keybase.io/codecovsecurity/pgp_keys.asc | gpg --import
-        if: github.ref == 'refs/heads/main'
       - name: Upload to codecov.io
         uses: codecov/codecov-action@v5
         with:
