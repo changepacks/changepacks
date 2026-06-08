@@ -327,22 +327,6 @@ jobs:
       - name: List packages
         run: ls -R ./npm
         working-directory: bridge/node
-      - name: Inject publishConfig into platform packages
-        # `napi create-npm-dirs` generates per-platform package.json files but
-        # does NOT propagate the root package.json's `publishConfig`. When
-        # `prepublishOnly` runs `napi prepublish` and the inner `npm publish`
-        # iterates each platform package, npm defaults new scoped packages to
-        # private visibility (paid plan only) and returns a misleading 404:
-        #   "@changepacks/cli-<platform>@<version>" is not in this registry.
-        # Inject `publishConfig.access: "public"` into each platform manifest
-        # so the first publish succeeds as a public package.
-        run: |
-          for pkg in npm/*/package.json; do
-            jq '.publishConfig = { "access": "public", "registry": "https://registry.npmjs.org/" }' \
-               "$pkg" > "$pkg.tmp" && mv "$pkg.tmp" "$pkg"
-            echo "Injected publishConfig into $pkg"
-          done
-        working-directory: bridge/node
       - name: Publish
         run: |
             bun install -g @napi-rs/cli
