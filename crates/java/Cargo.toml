@@ -19,3 +19,6 @@ regex = "1"
 [dev-dependencies]
 tempfile = "3.27"
 tokio = { version = "1.50", features = ["test-util", "macros"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

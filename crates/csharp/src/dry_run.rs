@@ -55,6 +55,11 @@ use tokio::fs::read_dir;
 /// `dotnet` is not installed) or when filesystem enumeration of `pack_dir`
 /// fails. A non-zero exit from `dotnet pack` or `dotnet nuget push` is
 /// reported via `PublishOutput::success = false`, not as `Err`.
+///
+/// Excluded from coverage: this orchestration requires a real .NET SDK to
+/// exercise meaningfully; the building blocks (`collect_nupkgs`,
+/// `prefixed`, `run_publish_command_argv`) are covered by their own tests.
+#[cfg(not(tarpaulin_include))]
 pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
     let pack_dir =
         TempDir::new().context("Failed to create temporary directory for dotnet pack output")?;

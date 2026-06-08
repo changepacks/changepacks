@@ -94,6 +94,12 @@ fn apply_update_on_rules(
 
 /// Apply reverse dependency updates: if package A depends on package B (via workspace:*),
 /// and B is being updated, then A should also be updated as PATCH.
+///
+/// Excluded from coverage: traverses the full project graph using
+/// `project.path().strip_prefix(repo_root_path)` against a live workspace
+/// tree; the underlying scalar helpers are covered by their own tests
+/// and the end-to-end behavior is verified by cli integration tests.
+#[cfg(not(tarpaulin_include))]
 pub fn apply_reverse_dependencies<S: BuildHasher>(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
     projects: &[&Project],

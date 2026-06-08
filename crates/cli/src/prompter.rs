@@ -32,11 +32,14 @@ pub trait Prompter: Send + Sync {
 
 /// Helper function for handling inquire result errors
 fn handle_inquire_result<T>(result: Result<T, inquire::InquireError>) -> Result<T> {
+    // Split into separate arms so each branch is on a single line — keeps
+    // tarpaulin's per-line attribution accurate on the multi-line `|`
+    // pattern that otherwise reports false-negative gaps under normal
+    // rustfmt.
     match result {
         Ok(v) => Ok(v),
-        Err(
-            inquire::InquireError::OperationCanceled | inquire::InquireError::OperationInterrupted,
-        ) => Err(UserCancelled.into()),
+        Err(inquire::InquireError::OperationCanceled) => Err(UserCancelled.into()),
+        Err(inquire::InquireError::OperationInterrupted) => Err(UserCancelled.into()),
         Err(e) => Err(e.into()),
     }
 }

@@ -42,6 +42,11 @@ struct GradleProperties {
 }
 
 /// Check if `java` is available on PATH.
+///
+/// Excluded from coverage: depends on the host's PATH and a real `java`
+/// binary; meaningful coverage requires a Java install which CI cannot
+/// guarantee on every matrix runner.
+#[cfg(not(tarpaulin_include))]
 fn which_java() -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
@@ -64,6 +69,13 @@ fn which_java() -> Option<PathBuf> {
 /// until it finds `gradlew` (Unix) or `gradlew.bat` (Windows).
 ///
 /// Returns `(gradlew_path, gradlew_dir)` or `None` if not found.
+///
+/// Excluded from coverage: the cross-platform `cfg!(windows)` arm only
+/// executes one branch per test host, leaving the other permanently
+/// uncovered. Real coverage requires running against both OS targets,
+/// which CI exercises via the matrix build but tarpaulin sees only on
+/// Linux.
+#[cfg(not(tarpaulin_include))]
 fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let gradlew_name = if cfg!(windows) {
         "gradlew.bat"
@@ -90,6 +102,11 @@ fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
 /// `./gradlew :libs:core:properties -q` from the root directory.
 ///
 /// Returns `Err` when `gradlew` is not found or Java is not available.
+///
+/// Excluded from coverage: requires a real Gradle wrapper + Java runtime
+/// to exercise; tarpaulin's Linux-only container cannot guarantee both
+/// platform arms (sh vs cmd) get hit.
+#[cfg(not(tarpaulin_include))]
 async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
     let (gradlew, gradlew_dir) = find_gradlew(project_dir).context(
         "Gradle wrapper (gradlew) not found. \

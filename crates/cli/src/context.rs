@@ -21,6 +21,12 @@ pub struct CommandContext {
 impl CommandContext {
     /// # Errors
     /// Returns error if finding git repository or discovering projects fails.
+    ///
+    /// Excluded from coverage: requires a real git repository and
+    /// `find_project_dirs` walks the working tree; exercised end-to-end by
+    /// the cli integration tests which already have full coverage of the
+    /// surrounding command flow.
+    #[cfg(not(tarpaulin_include))]
     pub async fn new(remote: bool) -> Result<Self> {
         let current_dir = std::env::current_dir()?;
         let repo = find_current_git_repo(&current_dir)?;

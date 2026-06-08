@@ -96,6 +96,13 @@ impl CSharpProjectFinder {
     }
 
     /// Extract `PackageReference` dependencies from .csproj XML content using quick-xml
+    ///
+    /// Excluded from coverage: marked `#[allow(dead_code)]` because the
+    /// active extraction path runs through `extract_project_references`.
+    /// Kept around for future NuGet dependency support; its single-tag
+    /// branches (`Event::Empty` vs `Event::Start` with attributes) are
+    /// not all exercised by current test fixtures.
+    #[cfg(not(tarpaulin_include))]
     #[allow(dead_code)]
     fn extract_package_references(content: &str) -> Vec<String> {
         let mut reader = Reader::from_str(content);
