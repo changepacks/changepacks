@@ -6,6 +6,7 @@
 //! for parsing with format preservation. Supports `MSBuild` project files with version elements
 //! and handles both single projects and multi-project solutions.
 
+mod dry_run;
 pub mod finder;
 pub mod package;
 pub mod workspace;

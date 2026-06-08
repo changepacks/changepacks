@@ -3,7 +3,7 @@
   "version": "1.0.1",
   "description": "changepacks is a CLI tool that helps you efficiently manage versioning and changelogs in multi-language projects. It provides unified support for various package management systems including Node.js, Python, Rust, and more.",
   "scripts": {
-    "build": "cargo build --release && bun --workspaces run build && cd bridge/python && maturin build --release",
+    "build": "cargo build --release --workspace --exclude python-cli && bun --workspaces run build && cd bridge/python && maturin build --release",
     "lint": "cargo clippy -- -D warnings && cargo fmt --check && bun --workspaces lint",
     "test": "cargo test && bun --workspaces run test",
     "prepare": "husky"

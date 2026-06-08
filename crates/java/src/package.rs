@@ -96,12 +96,30 @@ impl Package for GradlePackage {
         self.name = Some(name);
     }
 
+    #[cfg(windows)]
     fn default_publish_command(&self) -> String {
-        if cfg!(windows) {
-            ".\\gradlew.bat publish".to_string()
-        } else {
-            "./gradlew publish".to_string()
-        }
+        ".\\gradlew.bat publish".to_string()
+    }
+
+    #[cfg(not(windows))]
+    fn default_publish_command(&self) -> String {
+        "./gradlew publish".to_string()
+    }
+
+    // Gradle's `--dry-run` flag only previews the task graph without
+    // executing tasks, so it cannot validate the publishing pipeline.
+    // `publishToMavenLocal` is the closest functional equivalent: it runs
+    // the entire publish flow (configuration, artifact generation, POM
+    // generation) but writes to `~/.m2/repository` instead of uploading
+    // to a remote registry.
+    #[cfg(windows)]
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        Some(".\\gradlew.bat publishToMavenLocal".to_string())
+    }
+
+    #[cfg(not(windows))]
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        Some("./gradlew publishToMavenLocal".to_string())
     }
 
     fn dependencies(&self) -> &HashSet<String> {
@@ -139,10 +157,21 @@ mod tests {
         );
         assert_eq!(package.language(), Language::Java);
         assert!(!package.is_changed());
-        if cfg!(windows) {
+        #[cfg(windows)]
+        {
             assert_eq!(package.default_publish_command(), ".\\gradlew.bat publish");
-        } else {
+            assert_eq!(
+                package.default_dry_run_publish_command().as_deref(),
+                Some(".\\gradlew.bat publishToMavenLocal")
+            );
+        }
+        #[cfg(not(windows))]
+        {
             assert_eq!(package.default_publish_command(), "./gradlew publish");
+            assert_eq!(
+                package.default_dry_run_publish_command().as_deref(),
+                Some("./gradlew publishToMavenLocal")
+            );
         }
     }
 

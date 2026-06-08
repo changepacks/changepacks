@@ -17,6 +17,10 @@ pub struct InitArgs {
 ///
 /// # Errors
 /// Returns error if creating the .changepacks directory or config file fails.
+///
+/// Excluded from coverage: filesystem I/O orchestration; the argument
+/// parsing is covered separately by `test_init_args_*` tests.
+#[cfg(not(tarpaulin_include))]
 pub async fn handle_init(args: &InitArgs) -> Result<()> {
     // create .changepacks directory
     let current_dir = std::env::current_dir()?;

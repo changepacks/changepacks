@@ -117,6 +117,10 @@ impl Workspace for DartWorkspace {
         "dart pub publish".to_string()
     }
 
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        Some("dart pub publish --dry-run".to_string())
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }
@@ -161,6 +165,10 @@ workspace:
         assert!(!workspace.is_changed());
         assert_eq!(workspace.language(), Language::Dart);
         assert_eq!(workspace.default_publish_command(), "dart pub publish");
+        assert_eq!(
+            workspace.default_dry_run_publish_command().as_deref(),
+            Some("dart pub publish --dry-run")
+        );
 
         temp_dir.close().unwrap();
     }

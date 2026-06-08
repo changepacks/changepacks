@@ -24,3 +24,6 @@ rstest = "0.26"
 tempfile = "3.27"
 tokio = { version = "1.50", features = ["test-util", "macros"] }
 changepacks-node = { path = "../node" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

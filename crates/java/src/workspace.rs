@@ -96,12 +96,27 @@ impl Workspace for GradleWorkspace {
         self.name = Some(name);
     }
 
+    #[cfg(windows)]
     fn default_publish_command(&self) -> String {
-        if cfg!(windows) {
-            ".\\gradlew.bat publish".to_string()
-        } else {
-            "./gradlew publish".to_string()
-        }
+        ".\\gradlew.bat publish".to_string()
+    }
+
+    #[cfg(not(windows))]
+    fn default_publish_command(&self) -> String {
+        "./gradlew publish".to_string()
+    }
+
+    // See java package impl for rationale: Gradle's `--dry-run` only
+    // previews the task graph, so we run the full publish pipeline
+    // against the local Maven cache (`~/.m2/repository`) instead.
+    #[cfg(windows)]
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        Some(".\\gradlew.bat publishToMavenLocal".to_string())
+    }
+
+    #[cfg(not(windows))]
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        Some("./gradlew publishToMavenLocal".to_string())
     }
 
     fn dependencies(&self) -> &HashSet<String> {
@@ -139,13 +154,24 @@ mod tests {
         );
         assert_eq!(workspace.language(), Language::Java);
         assert!(!workspace.is_changed());
-        if cfg!(windows) {
+        #[cfg(windows)]
+        {
             assert_eq!(
                 workspace.default_publish_command(),
                 ".\\gradlew.bat publish"
             );
-        } else {
+            assert_eq!(
+                workspace.default_dry_run_publish_command().as_deref(),
+                Some(".\\gradlew.bat publishToMavenLocal")
+            );
+        }
+        #[cfg(not(windows))]
+        {
             assert_eq!(workspace.default_publish_command(), "./gradlew publish");
+            assert_eq!(
+                workspace.default_dry_run_publish_command().as_deref(),
+                Some("./gradlew publishToMavenLocal")
+            );
         }
     }
 

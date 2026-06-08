@@ -1,12 +1,16 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use changepacks_core::{Language, Package, UpdateType};
+use changepacks_core::publish::{
+    PublishOutput, resolve_dry_run_publish_command, run_publish_command,
+};
+use changepacks_core::{Config, Language, Package, UpdateType};
 use changepacks_utils::next_version;
 use tokio::fs::{read_to_string, write};
 
+use crate::dry_run::run_managed_dry_run;
 use crate::xml_utils::update_version_in_xml;
 
 #[derive(Debug)]
@@ -90,6 +94,41 @@ impl Package for CSharpPackage {
         "dotnet pack -c Release && dotnet nuget push".to_string()
     }
 
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        // No single shell one-liner reliably represents the C# dry-run flow
+        // (pack + push to an ephemeral local feed + guaranteed cleanup), so
+        // we return `None` here and override `dry_run_publish` below with a
+        // managed RAII implementation. Returning `None` still lets users
+        // supply a custom shell command via `publishDryRun` in config; that
+        // override is honored first inside the override.
+        None
+    }
+
+    /// Managed dry-run for C#/.NET packages.
+    ///
+    /// Honors `config.publishDryRun` overrides first (existing shell-string
+    /// behavior, matching every other language). When no override is set,
+    /// runs `dotnet pack` + `dotnet nuget push` against ephemeral
+    /// `tempfile::TempDir` directories that are cleaned up via RAII — even
+    /// on error, panic, or future cancellation.
+    #[cfg(not(tarpaulin_include))]
+    async fn dry_run_publish(&self, config: &Config) -> Result<Option<PublishOutput>> {
+        let dir = self
+            .path()
+            .parent()
+            .context("Package directory not found")?;
+
+        // 1) Per-project / per-language override wins (existing semantics).
+        if let Some(user_cmd) =
+            resolve_dry_run_publish_command(self.relative_path(), self.language(), None, config)
+        {
+            return Ok(Some(run_publish_command(&user_cmd, dir).await?));
+        }
+
+        // 2) Managed dry-run with guaranteed cleanup (see `dry_run.rs`).
+        Ok(Some(run_managed_dry_run(dir).await?))
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }
@@ -137,6 +176,9 @@ mod tests {
             package.default_publish_command(),
             "dotnet pack -c Release && dotnet nuget push"
         );
+        // `dotnet nuget push` has no built-in dry-run mode, so the crate
+        // returns None and lets the publish loop skip with a warning.
+        assert!(package.default_dry_run_publish_command().is_none());
 
         temp_dir.close().unwrap();
     }

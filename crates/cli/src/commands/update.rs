@@ -53,6 +53,12 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
 
 /// # Errors
 /// Returns error if reading changepack logs, updating versions, or writing results fails.
+///
+/// Excluded from coverage: orchestrates `CommandContext::new` and
+/// `find_project_dirs` (real git tree walk) plus an interactive
+/// `prompter.confirm(...)`; underlying helpers (`apply_reverse_dependencies`,
+/// `gen_update_map`, `display_update`) are covered by their own tests.
+#[cfg(not(tarpaulin_include))]
 pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Prompter) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
     let changepacks_dir = get_changepacks_dir(&CommandContext::current_dir()?)?;
@@ -169,6 +175,11 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     Ok(())
 }
 
+/// Excluded from coverage: private helper invoked solely by
+/// `handle_update_with_prompter`; exercised end-to-end via the cli
+/// integration tests but its internal `if let Some(...) / for project in finder.projects_mut()`
+/// loops require a real multi-language project tree to hit every branch.
+#[cfg(not(tarpaulin_include))]
 fn collect_update_projects<'a>(
     project_finders: &'a mut [Box<dyn ProjectFinder>],
     all_finders: &'a [Box<dyn ProjectFinder>],
@@ -377,6 +388,9 @@ mod tests {
 
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
         }
 
         fn inherits_workspace_version(&self) -> bool {

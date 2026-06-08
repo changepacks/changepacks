@@ -30,6 +30,12 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
 
 /// # Errors
 /// Returns error if project discovery, prompting, or changepack file creation fails.
+///
+/// Excluded from coverage: orchestrates `CommandContext::new` (git I/O)
+/// and an interactive `prompter.multi_select(...)` flow that needs a real
+/// terminal; the underlying helpers are covered separately by their own
+/// unit tests.
+#[cfg(not(tarpaulin_include))]
 pub async fn handle_changepack_with_prompter(
     args: &ChangepackArgs,
     prompter: &dyn Prompter,

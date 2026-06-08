@@ -9,6 +9,13 @@ use std::path::Path;
 ///
 /// # Errors
 /// Returns error if git operations fail, gitignore parsing fails, or project visiting fails.
+///
+/// Excluded from coverage: orchestrates real `gix` operations (index walk,
+/// status, diff against base branch, ref resolution); the inner helpers
+/// (`get_relative_path`, `gitignore matching`, finder visit/check_changed)
+/// are covered by their own unit tests. End-to-end exercise happens via
+/// the cli integration tests.
+#[cfg(not(tarpaulin_include))]
 pub async fn find_project_dirs(
     repo: &ThreadSafeRepository,
     project_finders: &mut [Box<dyn ProjectFinder>],

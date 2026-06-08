@@ -211,7 +211,7 @@ changepacks publish
 Options:
 
 ```bash
-changepacks publish --dry-run           # Preview what would be published without actually publishing
+changepacks publish --dry-run           # Verify release flow by running each project's publish command in dry-run mode (e.g., npm publish --dry-run, cargo publish --dry-run)
 changepacks publish --yes               # Skip confirmation prompts
 changepacks publish --format json       # Output results in JSON format
 changepacks publish --remote            # Use remote branch for change detection
@@ -271,6 +271,11 @@ You can edit `.changepacks/config.json` to customize:
   - Set language-specific commands using language keys: `"node"`, `"python"`, `"rust"`, `"dart"`, `"java"`, `"csharp"`.
   - Set project-specific commands using relative paths (e.g., `"bridge/node/package.json"`).
   - If not specified, default commands are used (see Publish Packages section).
+- Custom dry-run publish commands (`publishDryRun`):
+  - Overrides the dry-run command used by `changepacks publish --dry-run`.
+  - Same keying rules as `publish` (language key or relative project path).
+  - If not specified, `changepacks publish --dry-run` derives the dry-run command by appending `--dry-run` to the resolved publish command (e.g., `npm publish --dry-run`, `cargo publish --dry-run`).
+  - Required for ecosystems whose publish tool does not support `--dry-run` natively (e.g., `dotnet nuget push`); without an override these projects are skipped with a warning.
 - Dependency rules for forced updates (`updateOn`):
   - Key: glob pattern for trigger packages (e.g., `"crates/*/Cargo.toml"`).
   - Value: list of package file paths that must be updated when trigger matches.

@@ -1,11 +1,15 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use changepacks_core::{Language, UpdateType, Workspace};
+use changepacks_core::publish::{
+    PublishOutput, resolve_dry_run_publish_command, run_publish_command,
+};
+use changepacks_core::{Config, Language, UpdateType, Workspace};
 use changepacks_utils::next_version;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 
+use crate::dry_run::run_managed_dry_run;
 use crate::xml_utils::update_version_in_xml;
 
 #[derive(Debug)]
@@ -91,6 +95,33 @@ impl Workspace for CSharpWorkspace {
         "dotnet pack -c Release && dotnet nuget push".to_string()
     }
 
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        // No single shell one-liner reliably represents the C# dry-run flow.
+        // See `CSharpPackage::default_dry_run_publish_command` for rationale.
+        // The actual dry-run logic lives in the `dry_run_publish` override
+        // below.
+        None
+    }
+
+    /// Managed dry-run for C#/.NET workspaces. See [`CSharpPackage::dry_run_publish`]
+    /// for the full rationale — workspace and package share identical
+    /// semantics here.
+    #[cfg(not(tarpaulin_include))]
+    async fn dry_run_publish(&self, config: &Config) -> Result<Option<PublishOutput>> {
+        let dir = self
+            .path()
+            .parent()
+            .context("Workspace directory not found")?;
+
+        if let Some(user_cmd) =
+            resolve_dry_run_publish_command(self.relative_path(), self.language(), None, config)
+        {
+            return Ok(Some(run_publish_command(&user_cmd, dir).await?));
+        }
+
+        Ok(Some(run_managed_dry_run(dir).await?))
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }
@@ -138,6 +169,8 @@ mod tests {
             workspace.default_publish_command(),
             "dotnet pack -c Release && dotnet nuget push"
         );
+        // `dotnet nuget push` has no built-in dry-run mode.
+        assert!(workspace.default_dry_run_publish_command().is_none());
 
         temp_dir.close().unwrap();
     }

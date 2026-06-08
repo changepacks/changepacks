@@ -121,6 +121,23 @@ impl Project {
             Self::Package(package) => package.publish(config).await,
         }
     }
+
+    /// Run the publish command in dry-run mode.
+    ///
+    /// Returns `Ok(None)` when dry-run is not supported for this project's
+    /// language and no override is configured in `config.publish_dry_run`.
+    ///
+    /// # Errors
+    /// Returns error if the underlying dry-run publish call fails to spawn.
+    pub async fn dry_run_publish(
+        &self,
+        config: &Config,
+    ) -> Result<Option<crate::publish::PublishOutput>> {
+        match self {
+            Self::Workspace(workspace) => workspace.dry_run_publish(config).await,
+            Self::Package(package) => package.dry_run_publish(config).await,
+        }
+    }
 }
 
 impl PartialEq for Project {
@@ -292,6 +309,9 @@ mod tests {
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
         }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
+        }
     }
 
     #[derive(Debug)]
@@ -353,6 +373,9 @@ mod tests {
         }
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("echo publish --dry-run".to_string())
         }
     }
 
@@ -526,6 +549,58 @@ mod tests {
         let config = Config::default();
         let output = project.publish(&config).await.unwrap();
         assert!(output.success);
+    }
+
+    #[tokio::test]
+    async fn test_project_workspace_dry_run_publish() {
+        let temp_dir = std::env::temp_dir();
+        let mut workspace = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);
+        workspace.path = temp_dir.join("package.json");
+        let project = Project::Workspace(Box::new(workspace));
+        let config = Config::default();
+
+        // MockWorkspace.default_publish_command() == "echo publish" and
+        // Language::Node.dry_run_flag() == Some("--dry-run"), so the
+        // derived dry-run command is "echo publish --dry-run".
+        let output = project.dry_run_publish(&config).await.unwrap();
+        assert!(output.is_some());
+        let output = output.unwrap();
+        assert!(output.success);
+        assert!(output.stdout.contains("publish"));
+    }
+
+    #[tokio::test]
+    async fn test_project_package_dry_run_publish() {
+        let temp_dir = std::env::temp_dir();
+        let mut package = MockPackage::new(Some("test"), Some("1.0.0"), Language::Rust);
+        package.path = temp_dir.join("Cargo.toml");
+        let project = Project::Package(Box::new(package));
+        let config = Config::default();
+
+        let output = project.dry_run_publish(&config).await.unwrap();
+        assert!(output.is_some());
+        assert!(output.unwrap().success);
+    }
+
+    #[tokio::test]
+    async fn test_project_package_dry_run_publish_propagates_language_override() {
+        let temp_dir = std::env::temp_dir();
+        let mut package = MockPackage::new(Some("test"), Some("1.0.0"), Language::CSharp);
+        package.path = temp_dir.join("Sample.csproj");
+        let project = Project::Package(Box::new(package));
+        let mut publish_dry_run = std::collections::HashMap::new();
+        publish_dry_run.insert("csharp".to_string(), "echo dry-csharp".to_string());
+        let config = Config {
+            publish_dry_run,
+            ..Config::default()
+        };
+
+        // Even for languages whose crate would return None from
+        // `default_dry_run_publish_command()`, a per-language config override
+        // still resolves to a runnable command.
+        let output = project.dry_run_publish(&config).await.unwrap();
+        assert!(output.is_some());
+        assert!(output.unwrap().success);
     }
 
     #[test]

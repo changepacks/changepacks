@@ -14,3 +14,4 @@ build_rs_cov.profraw
 .claude
 tarpaulin-report.html
 .sisyphus
+.omo
