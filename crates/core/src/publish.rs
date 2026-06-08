@@ -98,6 +98,35 @@ pub async fn run_publish_command(command: &str, working_dir: &Path) -> Result<Pu
     })
 }
 
+/// Execute a command by argv (no shell) with optional `kill_on_drop`.
+///
+/// Use this when callers need cross-platform argument passing without shell
+/// quoting concerns (e.g., paths with spaces, wildcards that should not be
+/// shell-expanded, untrusted user-supplied paths). With `kill_on_drop = true`,
+/// if the returned future is cancelled the child process is terminated before
+/// the `Child` handle is dropped — important when the caller relies on RAII to
+/// clean up temporary directories the child has open.
+///
+/// # Errors
+/// Returns error if the command fails to spawn. A non-zero exit code is
+/// reported via `PublishOutput::success = false`, not as an error.
+pub async fn run_publish_command_argv(
+    program: &str,
+    args: &[&str],
+    working_dir: &Path,
+    kill_on_drop: bool,
+) -> Result<PublishOutput> {
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args).current_dir(working_dir);
+    cmd.kill_on_drop(kill_on_drop);
+    let output = cmd.output().await?;
+    Ok(PublishOutput {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -293,6 +322,49 @@ mod tests {
         };
         let output = run_publish_command(command, &temp_dir).await.unwrap();
         assert!(!output.success);
+    }
+
+    #[tokio::test]
+    async fn test_run_publish_command_argv_success() {
+        let temp_dir = std::env::temp_dir();
+        // `cmd.exe /C echo hi` on Windows; `/bin/echo hi` on Unix.
+        let (program, args): (&str, Vec<&str>) = if cfg!(target_os = "windows") {
+            ("cmd", vec!["/C", "echo", "argv-ok"])
+        } else {
+            ("echo", vec!["argv-ok"])
+        };
+        let output = run_publish_command_argv(program, &args, &temp_dir, true)
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert!(output.stdout.contains("argv-ok"));
+    }
+
+    #[tokio::test]
+    async fn test_run_publish_command_argv_failure() {
+        let temp_dir = std::env::temp_dir();
+        let (program, args): (&str, Vec<&str>) = if cfg!(target_os = "windows") {
+            ("cmd", vec!["/C", "exit", "1"])
+        } else {
+            ("sh", vec!["-c", "exit 1"])
+        };
+        let output = run_publish_command_argv(program, &args, &temp_dir, true)
+            .await
+            .unwrap();
+        assert!(!output.success);
+    }
+
+    #[tokio::test]
+    async fn test_run_publish_command_argv_spawn_error() {
+        let temp_dir = std::env::temp_dir();
+        let result = run_publish_command_argv(
+            "this-binary-does-not-exist-changepacks-test",
+            &[],
+            &temp_dir,
+            true,
+        )
+        .await;
+        assert!(result.is_err());
     }
 
     #[test]
