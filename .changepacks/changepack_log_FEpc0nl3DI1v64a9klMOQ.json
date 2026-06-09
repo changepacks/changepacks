@@ -1,1 +1,0 @@
-{"changes":{"crates/python/Cargo.toml":"Patch","crates/utils/Cargo.toml":"Patch","crates/core/Cargo.toml":"Patch","crates/rust/Cargo.toml":"Patch","crates/cli/Cargo.toml":"Patch","crates/node/Cargo.toml":"Patch","crates/csharp/Cargo.toml":"Patch","crates/dart/Cargo.toml":"Patch","crates/java/Cargo.toml":"Patch"},"note":"revert ci","date":"2026-06-08T08:42:17.469460500Z"}
