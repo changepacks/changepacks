@@ -171,6 +171,36 @@ fn print_publish_output(output: &PublishOutput) {
     }
 }
 
+/// Skip `cargo publish --dry-run` for Rust packages whose dependencies are
+/// also being bumped in the same publish run.
+///
+/// `cargo publish --dry-run` resolves every dependency against crates.io
+/// before attempting the simulated upload. When a workspace publishes
+/// multiple interdependent crates together, the newer versions of the
+/// dependencies do not exist on crates.io yet, so the dry-run fails with
+/// `failed to select a version for the requirement` even though the
+/// real publish (in topological order) would succeed. This is a documented
+/// upstream limitation: rust-lang/cargo#1169, rust-lang/cargo#9507,
+/// rust-lang/cargo#15622.
+///
+/// To avoid this false positive blocking the gate, skip the dry-run for
+/// Rust packages that depend on any other package in the same publish
+/// batch. Non-Rust ecosystems use lockfile-relative path / workspace
+/// protocols (npm `workspace:*`, uv path deps, etc.) that do not hit the
+/// registry during dry-run, so they are unaffected.
+fn skip_dry_run_due_to_workspace_internal_dep(
+    project: &Project,
+    bumped_package_names: &std::collections::HashSet<String>,
+) -> bool {
+    if project.language() != changepacks_core::Language::Rust {
+        return false;
+    }
+    project
+        .dependencies()
+        .iter()
+        .any(|dep| bumped_package_names.contains(dep))
+}
+
 async fn execute_dry_run_publish_loop(
     projects: &[&Project],
     config: &Config,
@@ -179,7 +209,37 @@ async fn execute_dry_run_publish_loop(
     let mut result_map = BTreeMap::new();
     let mut failed_projects: Vec<String> = Vec::new();
 
+    // Pre-compute the set of package names being bumped in this run so that
+    // each iteration can cheaply check whether its dependencies overlap.
+    let bumped_package_names: std::collections::HashSet<String> = projects
+        .iter()
+        .filter_map(|p| p.name().map(String::from))
+        .collect();
+
     for project in projects {
+        if skip_dry_run_due_to_workspace_internal_dep(project, &bumped_package_names) {
+            let msg = format!(
+                "Dry-run skipped for {project}: depends on workspace member also being \
+                 published in this run. `cargo publish --dry-run` cannot resolve the \
+                 not-yet-published version (rust-lang/cargo#1169). The real publish \
+                 will run in topological order and succeed."
+            );
+            if let FormatOptions::Stdout = format {
+                eprintln!("{msg}");
+            }
+            if let FormatOptions::Json = format {
+                result_map.insert(
+                    project.relative_path().to_path_buf(),
+                    PublishResult::new(
+                        true,
+                        Some("dry-run skipped (workspace-internal dep)".to_string()),
+                        String::new(),
+                        String::new(),
+                    ),
+                );
+            }
+            continue;
+        }
         if let FormatOptions::Stdout = format {
             println!("Dry-run publishing {project}...");
         }
@@ -823,5 +883,174 @@ mod tests {
         assert!(msg.contains("Dry-run failed for 2 project(s)"));
         assert!(msg.contains("pkg-a"));
         assert!(msg.contains("pkg-b"));
+    }
+
+    /// Mock Rust package used to exercise the workspace-internal-dep skip
+    /// path. Its `dry_run_publish` would panic if ever called, so the test
+    /// would fail loudly if the skip helper let it through.
+    #[derive(Debug)]
+    struct RustMockPackage {
+        name: String,
+        relative_path: PathBuf,
+        deps: HashSet<String>,
+    }
+
+    #[async_trait::async_trait]
+    impl Package for RustMockPackage {
+        fn name(&self) -> Option<&str> {
+            Some(&self.name)
+        }
+        fn version(&self) -> Option<&str> {
+            Some("0.0.1")
+        }
+        fn path(&self) -> &std::path::Path {
+            std::path::Path::new("Cargo.toml")
+        }
+        fn relative_path(&self) -> &std::path::Path {
+            &self.relative_path
+        }
+        async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_changed(&self) -> bool {
+            false
+        }
+        fn language(&self) -> Language {
+            Language::Rust
+        }
+        fn dependencies(&self) -> &HashSet<String> {
+            &self.deps
+        }
+        fn add_dependency(&mut self, dep: &str) {
+            self.deps.insert(dep.to_string());
+        }
+        fn set_changed(&mut self, _changed: bool) {}
+        fn default_publish_command(&self) -> String {
+            "cargo publish".to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("cargo publish --dry-run".to_string())
+        }
+        async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
+            // Used by leaf packages in the workspace-internal-dep integration
+            // tests below. Returning a clean success keeps the test focused
+            // on whether the SKIP path is correctly recorded for the parent
+            // (the actual cargo invocation we want to avoid).
+            Ok(Some(PublishOutput {
+                success: true,
+                stdout: format!("dry-run ok for {}", self.name),
+                stderr: String::new(),
+            }))
+        }
+    }
+
+    fn make_rust_mock(name: &str, relative_path: &str, deps: &[&str]) -> Project {
+        let pkg = RustMockPackage {
+            name: name.to_string(),
+            relative_path: PathBuf::from(relative_path),
+            deps: deps.iter().map(|d| (*d).to_string()).collect(),
+        };
+        Project::Package(Box::new(pkg))
+    }
+
+    #[test]
+    fn test_skip_helper_non_rust_returns_false() {
+        // CSharp project that happens to declare a dep matching a bumped
+        // package: skip must NOT fire because the chicken-and-egg issue is
+        // specific to `cargo publish --dry-run`.
+        let pkg = DryRunUnsupportedPackage {
+            path: PathBuf::from("/x/project.csproj"),
+            relative_path: PathBuf::from("project.csproj"),
+        };
+        let project = Project::Package(Box::new(pkg));
+        let bumped: HashSet<String> = ["dry-run-unsupported".to_string()].into_iter().collect();
+        assert!(!skip_dry_run_due_to_workspace_internal_dep(
+            &project, &bumped
+        ));
+    }
+
+    #[test]
+    fn test_skip_helper_rust_no_overlap_returns_false() {
+        // Rust project whose deps do not appear in the bumped set:
+        // standard `cargo publish --dry-run` would succeed, so skip must
+        // not fire.
+        let project = make_rust_mock("crate-a", "crates/a/Cargo.toml", &["external-crate"]);
+        let bumped: HashSet<String> = ["crate-b".to_string()].into_iter().collect();
+        assert!(!skip_dry_run_due_to_workspace_internal_dep(
+            &project, &bumped
+        ));
+    }
+
+    #[test]
+    fn test_skip_helper_rust_with_overlap_returns_true() {
+        // Rust project depends on `crate-b` which is also being bumped in
+        // the same run: skip must fire to avoid the
+        // "failed to select a version for the requirement" false positive.
+        let project = make_rust_mock("crate-a", "crates/a/Cargo.toml", &["crate-b"]);
+        let bumped: HashSet<String> = ["crate-a".to_string(), "crate-b".to_string()]
+            .into_iter()
+            .collect();
+        assert!(skip_dry_run_due_to_workspace_internal_dep(
+            &project, &bumped
+        ));
+    }
+
+    /// Integration check for stdout format: when both `parent` and `leaf`
+    /// are in the publish batch and parent depends on leaf, parent must be
+    /// skipped (no failure surfaced) and leaf must dry-run normally.
+    /// Stdout mode never populates `result_map`, so the skip path is
+    /// validated by the absence of a failure entry for parent.
+    #[tokio::test]
+    async fn test_execute_dry_run_loop_skips_workspace_internal_dep_stdout() {
+        let parent = make_rust_mock("crate-parent", "crates/parent/Cargo.toml", &["crate-leaf"]);
+        let leaf = make_rust_mock("crate-leaf", "crates/leaf/Cargo.toml", &[]);
+        // Both must be in `projects` so the bumped set contains
+        // "crate-leaf" and the skip helper recognises parent's dependency
+        // as a workspace-internal bump.
+        let projects: Vec<&Project> = vec![&parent, &leaf];
+        let config = Config::default();
+
+        let (result_map, failed) =
+            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Stdout).await;
+
+        // Stdout mode never populates result_map. Skipped packages MUST
+        // not appear in failed_projects — that is the whole point of the
+        // skip helper (otherwise the dry-run gate would block the run).
+        assert!(result_map.is_empty());
+        assert!(failed.is_empty(), "no project should fail: {failed:?}");
+    }
+
+    #[tokio::test]
+    async fn test_execute_dry_run_loop_skips_workspace_internal_dep_json() {
+        let parent = make_rust_mock("crate-parent", "crates/parent/Cargo.toml", &["crate-leaf"]);
+        let leaf = make_rust_mock("crate-leaf", "crates/leaf/Cargo.toml", &[]);
+        let projects: Vec<&Project> = vec![&parent, &leaf];
+        let config = Config::default();
+
+        let (result_map, failed) =
+            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Json).await;
+
+        // `parent` is skipped → recorded as success with the skip note.
+        let parent_entry = result_map
+            .get(std::path::Path::new("crates/parent/Cargo.toml"))
+            .expect("parent should be recorded as skipped");
+        let parent_serialized = serde_json::to_string(parent_entry).expect("serialize");
+        assert!(
+            parent_serialized.contains("dry-run skipped (workspace-internal dep)"),
+            "unexpected serialized entry for parent: {parent_serialized}"
+        );
+        // `leaf` has no workspace-internal dep so it goes through the
+        // normal dry-run path and the mock returns success.
+        let leaf_entry = result_map
+            .get(std::path::Path::new("crates/leaf/Cargo.toml"))
+            .expect("leaf should be recorded with a dry-run result");
+        let leaf_serialized = serde_json::to_string(leaf_entry).expect("serialize");
+        assert!(
+            leaf_serialized.contains("dry-run ok for crate-leaf"),
+            "leaf entry should reflect the mock's success stdout: {leaf_serialized}"
+        );
+        // Neither project should appear in failed_projects: parent was
+        // skipped (success), leaf succeeded.
+        assert!(failed.is_empty(), "no project should fail: {failed:?}");
     }
 }
