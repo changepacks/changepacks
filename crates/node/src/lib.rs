@@ -38,18 +38,29 @@ impl PackageManager {
     /// Returns the dry-run publish command for this package manager.
     ///
     /// All four supported managers natively support `--dry-run`, so this
-    /// always returns `Some`. The flag placement matches each tool's CLI:
-    /// - `npm publish --dry-run`
-    /// - `yarn npm publish --dry-run`
-    /// - `pnpm publish --dry-run`
-    /// - `bun publish --dry-run`
+    /// always returns `Some`. Each command also prepends a `whoami` auth
+    /// preflight so an invalid/expired registry token fails fast at
+    /// dry-run time instead of hanging mid-upload during the real
+    /// `publish` step.
+    ///
+    /// `npm publish --dry-run` (and the other tools' dry-run modes) skip
+    /// registry auth entirely — they just package the tarball locally.
+    /// Without the `whoami` preflight, a bad `NPM_TOKEN` survives dry-run
+    /// only to hang the actual `publish` until the runner kills the job,
+    /// leaving stale releases behind on retry.
+    ///
+    /// Resulting commands:
+    /// - `npm whoami && npm publish --dry-run`
+    /// - `yarn npm whoami && yarn npm publish --dry-run`
+    /// - `pnpm whoami && pnpm publish --dry-run`
+    /// - `bun pm whoami && bun publish --dry-run`
     #[must_use]
     pub fn dry_run_publish_command(&self) -> &'static str {
         match self {
-            Self::Npm => "npm publish --dry-run",
-            Self::Yarn => "yarn npm publish --dry-run",
-            Self::Pnpm => "pnpm publish --dry-run",
-            Self::Bun => "bun publish --dry-run",
+            Self::Npm => "npm whoami && npm publish --dry-run",
+            Self::Yarn => "yarn npm whoami && yarn npm publish --dry-run",
+            Self::Pnpm => "pnpm whoami && pnpm publish --dry-run",
+            Self::Bun => "bun pm whoami && bun publish --dry-run",
         }
     }
 }
@@ -180,19 +191,19 @@ mod tests {
         // publish -n/--dry-run`) and bun publish.
         assert_eq!(
             PackageManager::Npm.dry_run_publish_command(),
-            "npm publish --dry-run"
+            "npm whoami && npm publish --dry-run"
         );
         assert_eq!(
             PackageManager::Yarn.dry_run_publish_command(),
-            "yarn npm publish --dry-run"
+            "yarn npm whoami && yarn npm publish --dry-run"
         );
         assert_eq!(
             PackageManager::Pnpm.dry_run_publish_command(),
-            "pnpm publish --dry-run"
+            "pnpm whoami && pnpm publish --dry-run"
         );
         assert_eq!(
             PackageManager::Bun.dry_run_publish_command(),
-            "bun publish --dry-run"
+            "bun pm whoami && bun publish --dry-run"
         );
     }
 
