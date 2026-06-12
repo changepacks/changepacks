@@ -156,7 +156,7 @@ mod tests {
         assert_eq!(workspace.default_publish_command(), "npm publish");
         assert_eq!(
             workspace.default_dry_run_publish_command().as_deref(),
-            Some("npm whoami && npm publish --dry-run")
+            Some("npm publish --dry-run")
         );
     }
 
