@@ -9,12 +9,12 @@ repository = "https://github.com/changepacks/changepacks"
 homepage = "https://github.com/changepacks/changepacks"
 
 [workspace.dependencies]
-changepacks-cli = { path = "crates/cli", version = "^0.2.36" }
-changepacks-core = { path = "crates/core", version = "^0.2.21" }
-changepacks-node = { path = "crates/node", version = "^0.2.22" }
-changepacks-rust = { path = "crates/rust", version = "^0.2.24" }
-changepacks-python = { path = "crates/python", version = "^0.2.20" }
-changepacks-dart = { path = "crates/dart", version = "^0.2.20" }
-changepacks-csharp = { path = "crates/csharp", version = "^0.2.20" }
-changepacks-java = { path = "crates/java", version = "^0.2.24" }
-changepacks-utils = { path = "crates/utils", version = "^0.2.21" }
+changepacks-cli = { path = "crates/cli", version = "^0.2.37" }
+changepacks-core = { path = "crates/core", version = "^0.2.22" }
+changepacks-node = { path = "crates/node", version = "^0.2.23" }
+changepacks-rust = { path = "crates/rust", version = "^0.2.25" }
+changepacks-python = { path = "crates/python", version = "^0.2.21" }
+changepacks-dart = { path = "crates/dart", version = "^0.2.21" }
+changepacks-csharp = { path = "crates/csharp", version = "^0.2.21" }
+changepacks-java = { path = "crates/java", version = "^0.2.25" }
+changepacks-utils = { path = "crates/utils", version = "^0.2.22" }
