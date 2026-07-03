@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::{next_version, trailing_newline};
-use tokio::fs::{read_to_string, write};
+use changepacks_utils::next_version;
+
+use crate::write_pubspec_version;
 
 #[derive(Debug)]
 pub struct DartPackage {
@@ -58,26 +59,7 @@ impl Package for DartPackage {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
         let new_version = next_version(current_version, update_type)?;
 
-        let pubspec_yaml_raw = read_to_string(&self.path).await?;
-        write(
-            &self.path,
-            format!(
-                "{}{}",
-                yamlpatch::apply_yaml_patches(
-                    &yamlpath::Document::new(&pubspec_yaml_raw).context("Failed to parse YAML")?,
-                    &[yamlpatch::Patch {
-                        operation: yamlpatch::Op::Replace(yaml_serde::Value::String(
-                            new_version.clone()
-                        )),
-                        route: yamlpath::route!("version")
-                    }],
-                )?
-                .source()
-                .trim_end(),
-                trailing_newline(&pubspec_yaml_raw)
-            ),
-        )
-        .await?;
+        write_pubspec_version(&self.path, &new_version, true).await?;
         self.version = Some(new_version);
         Ok(())
     }

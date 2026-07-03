@@ -58,17 +58,24 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     let mut sorted_indices: Vec<usize> = Vec::new();
     let mut visited = HashSet::new();
 
+    // Kahn's invariant: each node is pushed to the queue at most once, so the
+    // per-pop `visited.contains(&idx)` guard is unreachable. The initial fill
+    // enumerates each index exactly once, and inside the loop each edge is
+    // walked exactly once (deps are stored in a `HashSet<String>` so no
+    // duplicate edges, and `path_to_index.or(name_to_index)` short-circuits
+    // to a single index), so every `in_degree` decrement is unique and the
+    // `== 0` push happens at most once per node.
+    // `visited` still tracks membership so the trailing cyclic-fallback loop
+    // below can append nodes stranded in cycles.
     while let Some(idx) = queue.pop_front() {
-        if !visited.contains(&idx) {
-            visited.insert(idx);
-            sorted_indices.push(idx);
+        visited.insert(idx);
+        sorted_indices.push(idx);
 
-            // Decrease in-degree of dependent projects
-            for &dependent_idx in &graph[idx] {
-                in_degree[dependent_idx] -= 1;
-                if in_degree[dependent_idx] == 0 && !visited.contains(&dependent_idx) {
-                    queue.push_back(dependent_idx);
-                }
+        // Decrease in-degree of dependent projects
+        for &dependent_idx in &graph[idx] {
+            in_degree[dependent_idx] -= 1;
+            if in_degree[dependent_idx] == 0 {
+                queue.push_back(dependent_idx);
             }
         }
     }

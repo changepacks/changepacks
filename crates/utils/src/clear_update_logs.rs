@@ -21,14 +21,13 @@ pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
     }
 
     let results: Vec<_> = futures::future::join_all(update_logs).await;
-    let failures: Vec<_> = results.iter().filter(|r| r.is_err()).collect();
-    if failures.is_empty() {
+    let error_details: Vec<String> = results
+        .iter()
+        .filter_map(|r| r.as_ref().err().map(std::string::ToString::to_string))
+        .collect();
+    if error_details.is_empty() {
         Ok(())
     } else {
-        let error_details: Vec<String> = failures
-            .iter()
-            .filter_map(|r| r.as_ref().err().map(std::string::ToString::to_string))
-            .collect();
         Err(anyhow::anyhow!(
             "Failed to remove {} update log(s): {}",
             error_details.len(),

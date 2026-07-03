@@ -109,15 +109,19 @@ impl ProjectFinder for PythonProjectFinder {
             };
 
             // read tool.uv.sources section
+            //
+            // `[tool.uv.sources]` is a TOML **table** keyed by dependency name
+            // (e.g. `pkg-a = { path = "../pkg-a" }`), not an array of strings.
+            // Iterate it as a table so Python packages actually register their
+            // workspace deps for topological publish ordering.
             if let Some(sources) = pyproject_toml
                 .get("tool")
-                .and_then(|t| t.get("uv").and_then(|u| u.get("sources")))
-                && let Some(sources) = sources.as_array()
+                .and_then(|t| t.get("uv"))
+                .and_then(|u| u.get("sources"))
+                .and_then(toml_edit::Item::as_table_like)
             {
-                for source in sources.iter() {
-                    if let Some(source_str) = source.as_str() {
-                        project.add_dependency(source_str);
-                    }
+                for (dep_name, _) in sources.iter() {
+                    project.add_dependency(dep_name);
                 }
             }
 
@@ -408,6 +412,56 @@ requires = ["setuptools"]
 
         assert!(result.is_err());
         assert_eq!(finder.projects().len(), 0);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_project_finder_visit_registers_uv_sources_dependencies() {
+        // Regression: `[tool.uv.sources]` is a TOML **table** keyed by
+        // dependency name (`pkg-a = { path = "..." }`), not an array of
+        // strings. The finder must iterate it as a table so Python
+        // workspaces feed real deps into `sort_by_dependencies` for
+        // topological publish order.
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+pkg-a = { path = "packages/pkg-a" }
+pkg-b = { workspace = true }
+
+[project]
+name = "test-workspace"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Workspace(ws) => {
+                let deps = ws.dependencies();
+                assert_eq!(
+                    deps.len(),
+                    2,
+                    "expected both tool.uv.sources entries, got {deps:?}"
+                );
+                assert!(deps.contains("pkg-a"), "missing pkg-a in {deps:?}");
+                assert!(deps.contains("pkg-b"), "missing pkg-b in {deps:?}");
+            }
+            _ => panic!("Expected Workspace"),
+        }
 
         temp_dir.close().unwrap();
     }

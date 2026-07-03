@@ -1,11 +1,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::{next_version, trailing_newline};
+use changepacks_utils::next_version;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tokio::fs::{read_to_string, write};
-use toml_edit::DocumentMut;
+
+use crate::write_pyproject_version;
 
 #[derive(Debug)]
 pub struct PythonPackage {
@@ -58,18 +58,7 @@ impl Package for PythonPackage {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
         let new_version = next_version(current_version, update_type)?;
 
-        let pyproject_toml_raw = read_to_string(&self.path).await?;
-        let mut pyproject_toml: DocumentMut = pyproject_toml_raw.parse::<DocumentMut>()?;
-        pyproject_toml["project"]["version"] = new_version.clone().into();
-        write(
-            &self.path,
-            format!(
-                "{}{}",
-                pyproject_toml.to_string().trim_end(),
-                trailing_newline(&pyproject_toml_raw)
-            ),
-        )
-        .await?;
+        write_pyproject_version(&self.path, &new_version, false).await?;
         self.version = Some(new_version);
         Ok(())
     }
