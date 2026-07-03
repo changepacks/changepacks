@@ -12,7 +12,7 @@ pub mod workspace;
 
 pub use finder::NodeProjectFinder;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Represents the detected Node.js package manager
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +52,28 @@ impl PackageManager {
             Self::Bun => "bun publish --dry-run",
         }
     }
+}
+
+/// Collect `node_modules/.bin` directories from `start_dir` up to the
+/// filesystem root, nearest first.
+///
+/// npm, yarn, pnpm, and `bun install` all prepend these directories to `PATH`
+/// when running package scripts, but `bun publish` / `bun pm pack` do not
+/// (oven-sh/bun#16071, #18055, #23594). changepacks runs the publish command
+/// itself, so it replicates that behaviour to keep `prepare` / `prepack`
+/// hooks such as `husky` resolving during publish and dry-run.
+#[must_use]
+pub fn node_modules_bin_dirs(start_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let mut current = Some(start_dir);
+    while let Some(dir) = current {
+        let bin = dir.join("node_modules").join(".bin");
+        if bin.is_dir() {
+            dirs.push(bin);
+        }
+        current = dir.parent();
+    }
+    dirs
 }
 
 /// Detects the package manager by checking for lock files in the given directory
@@ -208,5 +230,68 @@ mod tests {
             detect_package_manager_recursive(&sub_dir.join("package.json")),
             PackageManager::Pnpm
         );
+    }
+
+    #[test]
+    fn test_node_modules_bin_dirs_collects_ancestors_nearest_first() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let root_bin = root.join("node_modules").join(".bin");
+        fs::create_dir_all(&root_bin).unwrap();
+        let pkg_dir = root.join("packages").join("app");
+        let pkg_bin = pkg_dir.join("node_modules").join(".bin");
+        fs::create_dir_all(&pkg_bin).unwrap();
+
+        let dirs = node_modules_bin_dirs(&pkg_dir);
+        // Nearest (package-level) bin dir comes first, ancestor (root) after.
+        assert_eq!(dirs.first(), Some(&pkg_bin));
+        assert!(dirs.contains(&root_bin));
+    }
+
+    #[test]
+    fn test_node_modules_bin_dirs_empty_when_absent() {
+        let temp_dir = TempDir::new().unwrap();
+        assert!(node_modules_bin_dirs(temp_dir.path()).is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_injected_path_resolves_bare_binary() {
+        // End-to-end reproduction of the husky failure: a bare command name is
+        // only resolvable because `node_modules/.bin` was prepended to PATH.
+        // Without the injection, `bun publish` reports "husky: command not
+        // found" (exit 127); this asserts changepacks' injection fixes it.
+        let temp_dir = TempDir::new().unwrap();
+        let bin = temp_dir.path().join("node_modules").join(".bin");
+        fs::create_dir_all(&bin).unwrap();
+
+        let hook = bin.join(if cfg!(target_os = "windows") {
+            "cphook.cmd"
+        } else {
+            "cphook"
+        });
+        if cfg!(target_os = "windows") {
+            fs::write(&hook, "@echo hook-ran\r\n").unwrap();
+        } else {
+            fs::write(&hook, "#!/bin/sh\necho hook-ran\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+
+        let dirs = node_modules_bin_dirs(temp_dir.path());
+        assert!(dirs.contains(&bin));
+
+        // Bare command name; resolvable only via the injected PATH entry.
+        let output = changepacks_core::publish::run_publish_command_with_path_dirs(
+            "cphook",
+            temp_dir.path(),
+            &dirs,
+        )
+        .await
+        .unwrap();
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains("hook-ran"));
     }
 }

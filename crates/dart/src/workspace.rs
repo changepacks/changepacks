@@ -65,11 +65,11 @@ impl Workspace for DartWorkspace {
                     &yamlpath::Document::new(&pubspec_yaml_raw).context("Failed to parse YAML")?,
                     &[yamlpatch::Patch {
                         operation: if self.version.is_some() {
-                            yamlpatch::Op::Replace(serde_yaml::Value::String(next_version.clone()))
+                            yamlpatch::Op::Replace(yaml_serde::Value::String(next_version.clone()))
                         } else {
                             yamlpatch::Op::Add {
                                 key: "version".to_string(),
-                                value: serde_yaml::Value::String(next_version.clone()),
+                                value: yaml_serde::Value::String(next_version.clone()),
                             }
                         },
                         route: if self.version.is_some() {

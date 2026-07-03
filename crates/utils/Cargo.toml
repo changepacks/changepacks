@@ -9,11 +9,10 @@ description = "Shared utilities for changepacks (path handling, version calculat
 readme = "../../README.md"
 
 [dependencies]
-gix = { version = "0.80", default-features = false, features = ["index", "status", "parallel"] }
+gix = { version = "0.85", default-features = false, features = ["index", "status", "parallel", "sha1"] }
 anyhow = "1.0"
 changepacks-core.workspace = true
-colored = "3"
-tokio = { version = "1.50", features = ["fs"] }
+tokio = { version = "1.52", features = ["fs"] }
 futures = "0.3"
 serde_json = "1.0"
 ignore = "0.4"
@@ -22,7 +21,7 @@ glob = "0.3"
 [dev-dependencies]
 rstest = "0.26"
 tempfile = "3.27"
-tokio = { version = "1.50", features = ["test-util", "macros"] }
+tokio = { version = "1.52", features = ["test-util", "macros"] }
 changepacks-node = { path = "../node" }
 
 [lints.rust]

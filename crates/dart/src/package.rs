@@ -66,7 +66,7 @@ impl Package for DartPackage {
                 yamlpatch::apply_yaml_patches(
                     &yamlpath::Document::new(&pubspec_yaml_raw).context("Failed to parse YAML")?,
                     &[yamlpatch::Patch {
-                        operation: yamlpatch::Op::Replace(serde_yaml::Value::String(
+                        operation: yamlpatch::Op::Replace(yaml_serde::Value::String(
                             new_version.clone()
                         )),
                         route: yamlpath::route!("version")

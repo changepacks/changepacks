@@ -60,7 +60,7 @@ impl ProjectFinder for DartProjectFinder {
             }
             // read pubspec.yaml
             let pubspec_yaml = read_to_string(path).await?;
-            let pubspec: serde_yaml::Value = serde_yaml::from_str(&pubspec_yaml)?;
+            let pubspec: yaml_serde::Value = yaml_serde::from_str(&pubspec_yaml)?;
 
             // Check if this is a workspace (melos workspace or similar)
             let is_workspace = pubspec.get("workspace").is_some()

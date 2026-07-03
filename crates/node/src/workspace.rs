@@ -118,6 +118,13 @@ impl Workspace for NodeWorkspace {
         )
     }
 
+    fn publish_path_dirs(&self) -> Vec<PathBuf> {
+        self.path
+            .parent()
+            .map(crate::node_modules_bin_dirs)
+            .unwrap_or_default()
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }

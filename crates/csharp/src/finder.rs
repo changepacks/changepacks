@@ -2,6 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
 use quick_xml::Reader;
+use quick_xml::XmlVersion;
 use quick_xml::events::Event;
 use std::{
     collections::HashMap,
@@ -116,7 +117,7 @@ impl CSharpProjectFinder {
                 {
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"Include"
-                            && let Ok(value) = attr.unescape_value()
+                            && let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0)
                         {
                             packages.push(value.to_string());
                         }
@@ -144,7 +145,7 @@ impl CSharpProjectFinder {
                 {
                     for attr in e.attributes().flatten() {
                         if attr.key.as_ref() == b"Include"
-                            && let Ok(value) = attr.unescape_value()
+                            && let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0)
                         {
                             // Extract project name from path like "..\CoreLib\CoreLib.csproj"
                             // Handle both Windows (\) and Unix (/) path separators

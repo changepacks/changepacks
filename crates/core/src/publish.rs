@@ -1,6 +1,6 @@
 use crate::{Config, Language};
 use anyhow::Result;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Output captured from a publish command execution.
 #[derive(Debug)]
@@ -80,14 +80,58 @@ fn build_shell_command(command: &str) -> tokio::process::Command {
     c
 }
 
+/// Build a `PATH` value with `extra_path_dirs` prepended to the current
+/// process `PATH`, or `None` when there is nothing to prepend.
+///
+/// Package managers (npm, yarn, pnpm, and `bun install`) prepend each
+/// `node_modules/.bin` directory to `PATH` when running package scripts.
+/// `bun publish` / `bun pm pack` fail to do this (oven-sh/bun#16071, #18055,
+/// #23594), so changepacks replicates it when it runs the publish command
+/// itself. Kept generic here; the list of directories is language-specific
+/// and supplied by the caller.
+fn prepend_path_dirs(extra_path_dirs: &[PathBuf]) -> Option<std::ffi::OsString> {
+    if extra_path_dirs.is_empty() {
+        return None;
+    }
+    let mut dirs: Vec<PathBuf> = extra_path_dirs.to_vec();
+    if let Some(existing) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&existing));
+    }
+    std::env::join_paths(dirs).ok()
+}
+
 /// Execute a publish command in the given directory and return captured output.
 ///
 /// # Errors
 /// Returns error if the command fails to spawn (e.g., binary not found).
 /// A non-zero exit code is reported via `PublishOutput::success = false`, not as an error.
 pub async fn run_publish_command(command: &str, working_dir: &Path) -> Result<PublishOutput> {
+    run_publish_command_with_path_dirs(command, working_dir, &[]).await
+}
+
+/// Execute a publish command like [`run_publish_command`], but prepend
+/// `extra_path_dirs` to the child process `PATH`.
+///
+/// Language crates use this to inject their local binary directories (e.g.
+/// `node_modules/.bin`) so lifecycle scripts such as a `prepare: husky` hook
+/// resolve during `bun publish` / `npm publish`, working around bun not
+/// adding them itself (oven-sh/bun#16071, #18055, #23594). When
+/// `extra_path_dirs` is empty the inherited environment is used unchanged, so
+/// this is behaviourally identical to [`run_publish_command`].
+///
+/// # Errors
+/// Returns error if the command fails to spawn (e.g., binary not found).
+/// A non-zero exit code is reported via `PublishOutput::success = false`, not as an error.
+pub async fn run_publish_command_with_path_dirs(
+    command: &str,
+    working_dir: &Path,
+    extra_path_dirs: &[PathBuf],
+) -> Result<PublishOutput> {
     let mut cmd = build_shell_command(command);
     cmd.current_dir(working_dir);
+    if let Some(path) = prepend_path_dirs(extra_path_dirs) {
+        cmd.env("PATH", path);
+    }
     let output = cmd.output().await?;
     // Note: from_utf8_lossy silently replaces invalid UTF-8 with replacement characters.
     // This is acceptable since child processes may produce non-UTF-8 bytes.
@@ -322,6 +366,79 @@ mod tests {
         };
         let output = run_publish_command(command, &temp_dir).await.unwrap();
         assert!(!output.success);
+    }
+
+    #[tokio::test]
+    async fn test_run_publish_command_with_path_dirs_empty_is_noop() {
+        // Empty extra dirs must behave exactly like `run_publish_command`.
+        let temp_dir = std::env::temp_dir();
+        let command = if cfg!(target_os = "windows") {
+            "cmd /c echo publish"
+        } else {
+            "echo publish"
+        };
+        let output = run_publish_command_with_path_dirs(command, &temp_dir, &[])
+            .await
+            .unwrap();
+        assert!(output.success);
+        assert!(output.stdout.contains("publish"));
+    }
+
+    #[tokio::test]
+    async fn test_run_publish_command_with_path_dirs_resolves_bare_binary() {
+        // Reproduces the husky failure at the runner level: a bare command name
+        // resolves ONLY because its directory was prepended to PATH. This is the
+        // exact behaviour `bun publish` fails to provide for node_modules/.bin
+        // (oven-sh/bun#16071, #18055, #23594); the injection restores it.
+        let base = std::env::temp_dir().join(format!("changepacks_pathinj_{}", std::process::id()));
+        let bin = base.join("bin");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&bin).unwrap();
+
+        let hook = bin.join(if cfg!(target_os = "windows") {
+            "cphook.cmd"
+        } else {
+            "cphook"
+        });
+        if cfg!(target_os = "windows") {
+            std::fs::write(&hook, "@echo hook-ran\r\n").unwrap();
+        } else {
+            std::fs::write(&hook, "#!/bin/sh\necho hook-ran\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+
+        // Bare command name; resolvable only via the injected PATH entry.
+        let output =
+            run_publish_command_with_path_dirs("cphook", &base, std::slice::from_ref(&bin))
+                .await
+                .unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains("hook-ran"));
+    }
+
+    #[test]
+    fn test_prepend_path_dirs_empty_returns_none() {
+        assert!(prepend_path_dirs(&[]).is_none());
+    }
+
+    #[test]
+    fn test_prepend_path_dirs_prepends_first_and_preserves_existing() {
+        // The injected directory must be first; pre-existing PATH entries must
+        // remain reachable afterwards (this is what lets a `prepare: husky`
+        // hook resolve during `bun publish`).
+        let dir = PathBuf::from(if cfg!(target_os = "windows") {
+            "C:\\changepacks-path-test-bin"
+        } else {
+            "/changepacks-path-test-bin"
+        });
+        let joined = prepend_path_dirs(std::slice::from_ref(&dir)).expect("some PATH");
+        let parsed: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+        assert_eq!(parsed.first(), Some(&dir));
     }
 
     #[tokio::test]

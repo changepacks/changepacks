@@ -59,7 +59,7 @@ impl ProjectFinder for PythonProjectFinder {
             }
             // read pyproject.toml
             let pyproject_toml = read_to_string(path).await?;
-            let pyproject_toml: toml::Value = toml::from_str(&pyproject_toml)?;
+            let pyproject_toml: toml_edit::DocumentMut = pyproject_toml.parse()?;
             let project = pyproject_toml
                 .get("project")
                 .context(format!("Project not found - {}", path.display()))?;
@@ -114,7 +114,7 @@ impl ProjectFinder for PythonProjectFinder {
                 .and_then(|t| t.get("uv").and_then(|u| u.get("sources")))
                 && let Some(sources) = sources.as_array()
             {
-                for source in sources {
+                for source in sources.iter() {
                     if let Some(source_str) = source.as_str() {
                         project.add_dependency(source_str);
                     }

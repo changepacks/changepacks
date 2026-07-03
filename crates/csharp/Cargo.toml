@@ -13,12 +13,12 @@ changepacks-core.workspace = true
 changepacks-utils.workspace = true
 async-trait = "0.1"
 anyhow = "1.0"
-tokio = { version = "1.50", features = ["fs", "process"] }
-quick-xml = "0.39"
+tokio = { version = "1.52", features = ["fs", "process"] }
+quick-xml = "0.41"
 tempfile = "3.27"
 
 [dev-dependencies]
-tokio = { version = "1.50", features = ["test-util", "macros"] }
+tokio = { version = "1.52", features = ["test-util", "macros"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

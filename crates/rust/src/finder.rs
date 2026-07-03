@@ -74,17 +74,20 @@ impl ProjectFinder for RustProjectFinder {
             }
             // read Cargo.toml
             let cargo_toml = read_to_string(path).await?;
-            let cargo_toml: toml::Value = toml::from_str(&cargo_toml)?;
+            let cargo_toml: toml_edit::DocumentMut = cargo_toml.parse()?;
 
             // Collect workspace dependencies for this file
             let mut dep_names = Vec::new();
-            if let Some(deps) = cargo_toml.get("dependencies").and_then(|d| d.as_table()) {
-                for (dep_name, value) in deps {
-                    if let Some(dep) = value.as_table()
+            if let Some(deps) = cargo_toml
+                .get("dependencies")
+                .and_then(|d| d.as_table_like())
+            {
+                for (dep_name, value) in deps.iter() {
+                    if let Some(dep) = value.as_table_like()
                         && let Some(workspace) = dep.get("workspace")
                         && workspace.as_bool().unwrap_or(false)
                     {
-                        dep_names.push(dep_name.clone());
+                        dep_names.push(dep_name.to_string());
                     }
                 }
             }
@@ -145,7 +148,7 @@ impl ProjectFinder for RustProjectFinder {
                 let inherits_workspace = cargo_toml
                     .get("package")
                     .and_then(|p| p.get("version"))
-                    .and_then(|v| v.as_table())
+                    .and_then(|v| v.as_table_like())
                     .and_then(|t| t.get("workspace"))
                     .and_then(|w| w.as_bool())
                     .unwrap_or(false);
@@ -219,7 +222,7 @@ impl ProjectFinder for RustProjectFinder {
                 let candidate = parent.join("Cargo.toml");
                 if candidate.is_file()
                     && let Ok(content) = read_to_string(&candidate).await
-                    && let Ok(parsed) = toml::from_str::<toml::Value>(&content)
+                    && let Ok(parsed) = content.parse::<toml_edit::DocumentMut>()
                     && let Some(version) = parsed
                         .get("workspace")
                         .and_then(|w| w.get("package"))

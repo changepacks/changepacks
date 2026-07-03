@@ -116,6 +116,13 @@ impl Package for NodePackage {
         )
     }
 
+    fn publish_path_dirs(&self) -> Vec<PathBuf> {
+        self.path
+            .parent()
+            .map(crate::node_modules_bin_dirs)
+            .unwrap_or_default()
+    }
+
     fn dependencies(&self) -> &HashSet<String> {
         &self.dependencies
     }
@@ -332,5 +339,21 @@ mod tests {
         assert_eq!(package.name(), None);
         package.set_name("my-project".to_string());
         assert_eq!(package.name(), Some("my-project"));
+    }
+
+    #[test]
+    fn test_publish_path_dirs_includes_node_modules_bin() {
+        let temp_dir = TempDir::new().unwrap();
+        let bin = temp_dir.path().join("node_modules").join(".bin");
+        fs::create_dir_all(&bin).unwrap();
+        let package = NodePackage::new(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            temp_dir.path().join("package.json"),
+            PathBuf::from("package.json"),
+        );
+        // Wiring check: the Node override surfaces the local node_modules/.bin
+        // so lifecycle hooks (husky) resolve during publish / dry-run.
+        assert!(package.publish_path_dirs().contains(&bin));
     }
 }
