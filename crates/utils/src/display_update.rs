@@ -13,7 +13,7 @@ pub fn display_update(current_version: Option<&str>, update_type: UpdateType) ->
         Ok(format!("v{current_version} → v{next_version}"))
     } else {
         let next_version = next_version("0.0.0", update_type)?;
-        Ok(format!("{} → v{}", "unknown", next_version))
+        Ok(format!("unknown → v{next_version}"))
     }
 }
 

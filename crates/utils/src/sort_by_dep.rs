@@ -6,7 +6,12 @@ use std::collections::{HashMap, VecDeque};
 /// Returns a sorted vector of project references (no cloning, just reordering).
 #[must_use]
 pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
-    if projects.is_empty() {
+    // For 0 or 1 projects the topological ordering is provably identical to
+    // the input slice, and Kahn's machinery would only allocate a HashMap,
+    // two Vecs, a VecDeque, and two more Vecs to arrive at the same answer.
+    // Widen the historical empty-check to skip that work on single-project
+    // repos too (a common shape: monopackage crates with one Cargo.toml).
+    if projects.len() <= 1 {
         return projects;
     }
 

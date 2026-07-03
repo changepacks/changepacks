@@ -128,10 +128,12 @@ fn display_tree(
     repo_root_path: &std::path::Path,
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
 ) -> Result<()> {
-    // Create a map from project relative_path to project
-    let mut path_to_project: HashMap<String, &Project> = HashMap::new();
+    // Create a map from project name (fallback "noname") to project.
+    // Project names — not paths — key this map because both the graph and the
+    // dependency lookups (`project.dependencies()`) speak the *name* namespace.
+    let mut name_to_project: HashMap<String, &Project> = HashMap::new();
     for project in projects {
-        path_to_project.insert(project.name().unwrap_or("noname").to_string(), project);
+        name_to_project.insert(project.name().unwrap_or("noname").to_string(), project);
     }
 
     // Build reverse dependency graph: graph[dep] = list of projects that depend on dep
@@ -145,7 +147,7 @@ fn display_tree(
         // Filter dependencies to only include monorepo projects
         let monorepo_deps: Vec<String> = deps
             .iter()
-            .filter(|dep| path_to_project.contains_key(*dep))
+            .filter(|dep| name_to_project.contains_key(*dep))
             .cloned()
             .collect();
 
@@ -175,12 +177,12 @@ fn display_tree(
     let mut visited: HashSet<String> = HashSet::new();
     let mut ctx = TreeContext {
         graph: &graph,
-        path_to_project: &path_to_project,
+        name_to_project: &name_to_project,
         repo_root_path,
         update_map,
     };
     for (idx, root) in sorted_roots.iter().enumerate() {
-        if let Some(project) = path_to_project.get(root) {
+        if let Some(project) = name_to_project.get(root) {
             let is_last = idx == sorted_roots.len() - 1;
             display_tree_node(project, &mut ctx, "", is_last, &mut visited)?;
         }
@@ -191,7 +193,7 @@ fn display_tree(
         if !visited.contains(project.name().unwrap_or("noname")) {
             println!(
                 "{}",
-                format_project_line(project, repo_root_path, update_map, &path_to_project)?
+                format_project_line(project, repo_root_path, update_map, &name_to_project)?
             );
         }
     }
@@ -202,7 +204,7 @@ fn display_tree(
 /// Context for tree display operations
 struct TreeContext<'a> {
     graph: &'a HashMap<String, Vec<String>>,
-    path_to_project: &'a HashMap<String, &'a Project>,
+    name_to_project: &'a HashMap<String, &'a Project>,
     repo_root_path: &'a Path,
     update_map: &'a HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
 }
@@ -232,7 +234,7 @@ fn display_tree_node(
                 project,
                 ctx.repo_root_path,
                 ctx.update_map,
-                ctx.path_to_project
+                ctx.name_to_project
             )?
         );
     }
@@ -244,7 +246,7 @@ fn display_tree_node(
         sorted_deps.sort();
         let sorted_deps_count = sorted_deps.len();
         for (idx, dep_name) in sorted_deps.iter().enumerate() {
-            if let Some(dep_project) = ctx.path_to_project.get(dep_name) {
+            if let Some(dep_project) = ctx.name_to_project.get(dep_name) {
                 let is_last_dep = idx == sorted_deps_count - 1;
                 let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
                 // Use a separate visited set for dependencies to avoid infinite loops
@@ -264,7 +266,7 @@ fn display_tree_node(
                             dep_project,
                             ctx.repo_root_path,
                             ctx.update_map,
-                            ctx.path_to_project
+                            ctx.name_to_project
                         )?
                     );
                 } else {
@@ -289,7 +291,7 @@ fn format_project_line(
     project: &Project,
     repo_root_path: &std::path::Path,
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-    path_to_project: &HashMap<String, &Project>,
+    name_to_project: &HashMap<String, &Project>,
 ) -> Result<String> {
     use changepacks_utils::get_relative_path;
     use colored::Colorize;
@@ -309,11 +311,11 @@ fn format_project_line(
         "".normal()
     };
 
-    // Only show dependencies that are in the monorepo (in path_to_project)
+    // Only show dependencies that are in the monorepo (in name_to_project)
     let monorepo_deps: Vec<&String> = project
         .dependencies()
         .iter()
-        .filter(|dep| path_to_project.contains_key(*dep))
+        .filter(|dep| name_to_project.contains_key(*dep))
         .collect();
 
     let deps_info = if monorepo_deps.is_empty() {
@@ -592,10 +594,10 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut path_to_project: HashMap<String, &Project> = HashMap::new();
-        path_to_project.insert("my-lib".to_string(), &project);
+        let mut name_to_project: HashMap<String, &Project> = HashMap::new();
+        name_to_project.insert("my-lib".to_string(), &project);
 
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
+        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("my-lib"));
         assert!(line.contains("v1.2.3"));
     }
@@ -612,10 +614,10 @@ mod tests {
         let project = Project::Workspace(Box::new(ws));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut path_to_project: HashMap<String, &Project> = HashMap::new();
-        path_to_project.insert("my-workspace".to_string(), &project);
+        let mut name_to_project: HashMap<String, &Project> = HashMap::new();
+        name_to_project.insert("my-workspace".to_string(), &project);
 
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
+        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("my-workspace"));
         assert!(line.contains("Workspace"));
         assert!(line.contains("v2.0.0"));
@@ -637,9 +639,9 @@ mod tests {
             PathBuf::from("packages/foo/package.json"),
             (UpdateType::Minor, vec![]),
         );
-        let path_to_project: HashMap<String, &Project> = HashMap::new();
+        let name_to_project: HashMap<String, &Project> = HashMap::new();
 
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
+        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("updated-pkg"));
         // The update display should show version transition
         assert!(line.contains("1.1.0") || line.contains("1.0.0"));
@@ -658,9 +660,9 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let path_to_project: HashMap<String, &Project> = HashMap::new();
+        let name_to_project: HashMap<String, &Project> = HashMap::new();
 
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
+        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("changed-pkg"));
         assert!(line.contains("changed"));
     }
@@ -688,11 +690,11 @@ mod tests {
 
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut path_to_project: HashMap<String, &Project> = HashMap::new();
-        path_to_project.insert("app".to_string(), &project);
-        path_to_project.insert("core-lib".to_string(), &dep_project);
+        let mut name_to_project: HashMap<String, &Project> = HashMap::new();
+        name_to_project.insert("app".to_string(), &project);
+        name_to_project.insert("core-lib".to_string(), &dep_project);
 
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
+        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("app"));
         assert!(line.contains("deps:"));
         assert!(line.contains("core-lib"));
@@ -710,9 +712,9 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let path_to_project: HashMap<String, &Project> = HashMap::new();
+        let name_to_project: HashMap<String, &Project> = HashMap::new();
 
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
+        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("standalone"));
         assert!(!line.contains("deps:"));
     }

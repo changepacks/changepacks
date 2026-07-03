@@ -56,6 +56,13 @@ fn apply_update_on_rules(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     config: &Config,
 ) {
+    // Fast path for the dominant case: `.changepacks/config.json` declares
+    // no `updateOn` rules, so the trigger loop below has nothing to iterate
+    // and the `updated_paths` snapshot is pure waste. Skip both up front.
+    if config.update_on.is_empty() {
+        return;
+    }
+
     // Snapshot updated paths as owned strings ONCE — the inner
     // `updated_paths.iter().any(...)` closure runs `N × M` times (N updated
     // paths × M `updateOn` triggers), so precomputing collapses `N × M`
