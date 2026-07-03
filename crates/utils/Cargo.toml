@@ -23,6 +23,11 @@ rstest = "0.26"
 tempfile = "3.27"
 tokio = { version = "1.52", features = ["test-util", "macros"] }
 changepacks-node = { path = "../node" }
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+
+[[bench]]
+name = "utils_bench"
+harness = false
