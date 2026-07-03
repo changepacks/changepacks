@@ -12,6 +12,15 @@ pub mod workspace;
 
 pub use finder::PythonProjectFinder;
 
+/// Default publish command for Python projects. Shared by `PythonPackage`
+/// and `PythonWorkspace` so a single edit here updates both trait impls.
+pub(crate) const PUBLISH_COMMAND: &str = "uv publish";
+
+/// Default dry-run publish command for Python projects.
+/// `uv publish --dry-run` is `uv`'s built-in non-mutating verification;
+/// users can override via `publishDryRun` in `.changepacks/config.json`.
+pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "uv publish --dry-run";
+
 use std::path::Path;
 
 use anyhow::Result;

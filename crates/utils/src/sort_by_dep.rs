@@ -10,14 +10,14 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
         return projects;
     }
 
-    // Create a map from project relative_path to index
-    let mut path_to_index: HashMap<String, usize> = HashMap::new();
-    // Also create a map from project name to index (for dependencies stored as names)
+    // Map from project name to index. Every finder that populates
+    // dependencies stores them as *names* (JSON dep keys / `[tool.uv.sources]`
+    // keys / Cargo `[dependencies]` workspace entries / pubspec dep keys /
+    // `.csproj` filename stems), never as relative paths — so the historical
+    // path-side lookup was dead code and its `to_string_lossy().into_owned()`
+    // per project was pure allocation waste. Name lookup is sufficient.
     let mut name_to_index: HashMap<String, usize> = HashMap::new();
     for (idx, project) in projects.iter().enumerate() {
-        let path = project.relative_path().to_string_lossy().into_owned();
-        path_to_index.insert(path.clone(), idx);
-        // Also map by name if available
         if let Some(name) = project.name() {
             name_to_index.insert(name.to_string(), idx);
         }
@@ -32,13 +32,7 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     for (idx, project) in projects.iter().enumerate() {
         let deps = project.dependencies();
         for dep in deps {
-            // Try to find dependency by path first, then by name
-            let dep_idx = path_to_index
-                .get(dep)
-                .or_else(|| name_to_index.get(dep))
-                .copied();
-
-            if let Some(dep_idx) = dep_idx {
+            if let Some(&dep_idx) = name_to_index.get(dep) {
                 // Project at idx depends on project at dep_idx
                 // So dep_idx should come before idx
                 graph[dep_idx].push(idx);
@@ -64,9 +58,9 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     // per-pop membership guard is unreachable. The initial fill enumerates
     // each index exactly once, and inside the loop each edge is walked
     // exactly once (deps are stored in a `HashSet<String>` so no duplicate
-    // edges, and `path_to_index.or(name_to_index)` short-circuits to a
-    // single index), so every `in_degree` decrement is unique and the
-    // `== 0` push happens at most once per node.
+    // edges, and `name_to_index.get(dep)` resolves each dep to a single
+    // index), so every `in_degree` decrement is unique and the `== 0`
+    // push happens at most once per node.
     // `visited` still tracks membership so the trailing cyclic-fallback loop
     // below can append nodes stranded in cycles.
     while let Some(idx) = queue.pop_front() {

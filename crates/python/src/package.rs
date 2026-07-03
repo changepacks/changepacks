@@ -80,14 +80,14 @@ impl Package for PythonPackage {
     }
 
     fn default_publish_command(&self) -> String {
-        "uv publish".to_string()
+        crate::PUBLISH_COMMAND.to_string()
     }
 
     fn default_dry_run_publish_command(&self) -> Option<String> {
         // `uv publish` supports `--check-url` for non-mutating verification.
         // Users who prefer a different verification flow (e.g. `uv build` or
         // `twine check`) can override via `publishDryRun` in config.
-        Some("uv publish --dry-run".to_string())
+        Some(crate::DRY_RUN_PUBLISH_COMMAND.to_string())
     }
 
     fn dependencies(&self) -> &HashSet<String> {

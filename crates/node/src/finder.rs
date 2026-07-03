@@ -64,13 +64,18 @@ impl ProjectFinder for NodeProjectFinder {
             let path_buf = path.to_path_buf();
             let relative_path_buf = relative_path.to_path_buf();
             // if workspaces
-            let mut project = if package_json.get("workspaces").is_some()
-                || path
-                    .parent()
-                    .with_context(|| format!("Parent not found - {}", path.display()))?
-                    .join("pnpm-workspace.yaml")
-                    .is_file()
-            {
+            // AGENTS.md rule: all file ops via `tokio::fs`. `try_exists`
+            // treats a stat error (broken symlink, permission denied) as
+            // "does not exist", matching the previous sync `is_file()`
+            // fallthrough on error.
+            let pnpm_workspace_yaml = path
+                .parent()
+                .with_context(|| format!("Parent not found - {}", path.display()))?
+                .join("pnpm-workspace.yaml");
+            let has_pnpm_workspace = tokio::fs::try_exists(&pnpm_workspace_yaml)
+                .await
+                .unwrap_or(false);
+            let mut project = if package_json.get("workspaces").is_some() || has_pnpm_workspace {
                 Project::Workspace(Box::new(NodeWorkspace::new(
                     name,
                     version,

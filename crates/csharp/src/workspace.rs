@@ -88,7 +88,7 @@ impl Workspace for CSharpWorkspace {
     }
 
     fn default_publish_command(&self) -> String {
-        "dotnet pack -c Release && dotnet nuget push".to_string()
+        crate::PUBLISH_COMMAND.to_string()
     }
 
     fn default_dry_run_publish_command(&self) -> Option<String> {

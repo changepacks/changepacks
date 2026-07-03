@@ -54,13 +54,17 @@ impl ProjectFinder for DartProjectFinder {
             let pubspec_yaml = read_to_string(path).await?;
             let pubspec: yaml_serde::Value = yaml_serde::from_str(&pubspec_yaml)?;
 
-            // Check if this is a workspace (melos workspace or similar)
-            let is_workspace = pubspec.get("workspace").is_some()
-                || path
-                    .parent()
-                    .context("Parent not found")?
-                    .join("melos.yaml")
-                    .is_file();
+            // Check if this is a workspace (melos workspace or similar).
+            // AGENTS.md rule: all file ops via `tokio::fs`. `try_exists`
+            // treats a stat error (broken symlink, permission denied) as
+            // "does not exist", matching the previous sync `is_file()`
+            // fallthrough on error.
+            let melos_yaml = path
+                .parent()
+                .context("Parent not found")?
+                .join("melos.yaml");
+            let has_melos_yaml = tokio::fs::try_exists(&melos_yaml).await.unwrap_or(false);
+            let is_workspace = pubspec.get("workspace").is_some() || has_melos_yaml;
 
             // Both branches use the same name/version and the same path;
             // hoist so each branch collapses to a single constructor call.

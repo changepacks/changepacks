@@ -212,7 +212,13 @@ impl ProjectFinder for RustProjectFinder {
             let mut dir = first_pkg.abs_path.parent().and_then(Path::parent);
             while let Some(parent) = dir {
                 let candidate = parent.join("Cargo.toml");
-                if candidate.is_file()
+                // AGENTS.md rule: all file ops via `tokio::fs`. A stat error
+                // is treated as "does not exist", matching the previous
+                // sync `is_file()` fallthrough on error.
+                if tokio::fs::metadata(&candidate)
+                    .await
+                    .map(|m| m.is_file())
+                    .unwrap_or(false)
                     && let Ok(content) = read_to_string(&candidate).await
                     && let Ok(parsed) = content.parse::<toml_edit::DocumentMut>()
                     && let Some(version) = parsed

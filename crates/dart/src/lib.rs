@@ -12,6 +12,16 @@ pub mod workspace;
 
 pub use finder::DartProjectFinder;
 
+/// Default publish command for Dart projects. Shared by `DartPackage`
+/// and `DartWorkspace` so a single edit here updates both trait impls.
+pub(crate) const PUBLISH_COMMAND: &str = "dart pub publish";
+
+/// Default dry-run publish command for Dart projects.
+/// `dart pub publish --dry-run` performs the full pre-flight publish
+/// validation (analysis, deps check, LICENSE/CHANGELOG detection) without
+/// uploading. Users can override via `publishDryRun` in config.
+pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "dart pub publish --dry-run";
+
 use std::path::Path;
 
 use anyhow::{Context, Result};

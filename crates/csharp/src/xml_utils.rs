@@ -46,14 +46,20 @@ pub fn update_version_in_xml(
                         && in_property_group
                         && !first_property_group_ended
                     {
-                        // Add Version element before closing PropertyGroup
-                        // Try to detect indentation from content
+                        // Add Version element before closing PropertyGroup.
+                        // `indent` is the file's detected indent unit; both
+                        // the inner element indent AND the trailing
+                        // reindent of `</PropertyGroup>` must use it —
+                        // hardcoding `"\n  "` (as we used to) breaks the
+                        // format-preservation invariant on 4-space and tab
+                        // .csproj files.
                         let indent = detect_indent(content);
+                        let trailing = format!("\n{indent}");
                         writer.write_event(Event::Text(BytesText::new(indent)))?;
                         writer.write_event(Event::Start(BytesStart::new("Version")))?;
                         writer.write_event(Event::Text(BytesText::new(new_version)))?;
                         writer.write_event(Event::End(BytesEnd::new("Version")))?;
-                        writer.write_event(Event::Text(BytesText::new("\n  ")))?;
+                        writer.write_event(Event::Text(BytesText::new(&trailing)))?;
                         version_updated = true;
                     }
                     in_property_group = false;
@@ -270,5 +276,38 @@ mod tests {
         if let Ok(output) = result {
             assert!(output.contains("2.0.0"));
         }
+    }
+
+    #[test]
+    fn test_add_new_version_reindent_matches_4_space_indent() {
+        // Regression: the "no existing <Version>" branch used to hardcode
+        // `"\n  "` for the trailing reindent, so 4-space (and tab) .csproj
+        // files ended up with mixed-indent output. The Version line's
+        // trailing whitespace MUST match the detected indent, not a
+        // hardcoded 2-space value.
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n    <PropertyGroup>\n        <OutputType>Exe</OutputType>\n    </PropertyGroup>\n</Project>";
+        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        // The trailing reindent (`"\n    "` for 4-space files) must not
+        // regress to `"\n  "`.
+        assert!(
+            !result.contains("</Version>\n  </"),
+            "found hardcoded 2-space reindent in 4-space .csproj output:\n{result}",
+        );
+        // Positive assertion: the 4-space reindent is what we expect.
+        assert!(
+            result.contains("</Version>\n    </PropertyGroup>"),
+            "expected 4-space reindent before </PropertyGroup>:\n{result}",
+        );
+    }
+
+    #[test]
+    fn test_add_new_version_reindent_matches_tab_indent() {
+        // Same regression but for tab-indented .csproj files.
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n\t<PropertyGroup>\n\t\t<OutputType>Exe</OutputType>\n\t</PropertyGroup>\n</Project>";
+        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        assert!(
+            result.contains("</Version>\n\t</PropertyGroup>"),
+            "expected tab reindent before </PropertyGroup>:\n{result}",
+        );
     }
 }

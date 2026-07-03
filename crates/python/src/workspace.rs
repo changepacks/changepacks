@@ -80,11 +80,11 @@ impl Workspace for PythonWorkspace {
     }
 
     fn default_publish_command(&self) -> String {
-        "uv publish".to_string()
+        crate::PUBLISH_COMMAND.to_string()
     }
 
     fn default_dry_run_publish_command(&self) -> Option<String> {
-        Some("uv publish --dry-run".to_string())
+        Some(crate::DRY_RUN_PUBLISH_COMMAND.to_string())
     }
 
     fn dependencies(&self) -> &HashSet<String> {

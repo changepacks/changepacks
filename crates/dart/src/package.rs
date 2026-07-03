@@ -80,11 +80,11 @@ impl Package for DartPackage {
     }
 
     fn default_publish_command(&self) -> String {
-        "dart pub publish".to_string()
+        crate::PUBLISH_COMMAND.to_string()
     }
 
     fn default_dry_run_publish_command(&self) -> Option<String> {
-        Some("dart pub publish --dry-run".to_string())
+        Some(crate::DRY_RUN_PUBLISH_COMMAND.to_string())
     }
 
     fn dependencies(&self) -> &HashSet<String> {
