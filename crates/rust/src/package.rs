@@ -1,11 +1,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::{next_version, trailing_newline};
+use changepacks_utils::next_version;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tokio::fs::{read_to_string, write};
-use toml_edit::DocumentMut;
+
+use crate::write_cargo_package_version;
 
 #[derive(Debug)]
 pub struct RustPackage {
@@ -78,21 +78,21 @@ impl Package for RustPackage {
     }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
+        // Members that inherit `version.workspace = true` from the workspace
+        // root MUST NOT rewrite their own `[package].version` here —
+        // `write_cargo_package_version` would clobber the inheritance
+        // marker with a plain string, silently breaking the workspace-wide
+        // version link. The bump for those members is owned by the
+        // workspace root's `RustWorkspace::update_version`, which drives
+        // `[workspace.package].version` (and fans out into workspace
+        // dependencies). For inheriting members, the correct action here
+        // is a no-op.
+        if self.workspace_version_inherited {
+            return Ok(());
+        }
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
         let new_version = next_version(current_version, update_type)?;
-
-        let cargo_toml_raw = read_to_string(&self.path).await?;
-        let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
-        cargo_toml["package"]["version"] = new_version.clone().into();
-        write(
-            &self.path,
-            format!(
-                "{}{}",
-                cargo_toml.to_string().trim_end(),
-                trailing_newline(&cargo_toml_raw)
-            ),
-        )
-        .await?;
+        write_cargo_package_version(&self.path, &new_version).await?;
         self.version = Some(new_version);
         Ok(())
     }
@@ -368,5 +368,52 @@ tokio = "1.0"
         assert_eq!(package.name(), None);
         package.set_name("my-project".to_string());
         assert_eq!(package.name(), Some("my-project"));
+    }
+
+    #[tokio::test]
+    async fn test_rust_package_update_version_preserves_workspace_inheritance() {
+        // Regression: `RustPackage::update_version` used to unconditionally
+        // rewrite `[package].version = "..."`. On a member that inherits its
+        // version from the workspace root (`version.workspace = true`), that
+        // silently clobbered the inheritance marker with a plain string —
+        // permanently detaching the member from the workspace-wide bump.
+        // The correct action for an inheriting member is a no-op here; the
+        // workspace root owns the bump.
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let original_content = r#"[package]
+name = "test-inherited"
+version.workspace = true
+edition = "2024"
+
+[dependencies]
+"#;
+        fs::write(&cargo_toml, original_content).unwrap();
+
+        let mut package = RustPackage::new_with_workspace_version(
+            Some("test-inherited".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("crates/test-inherited/Cargo.toml"),
+            Some(PathBuf::from("/test/Cargo.toml")),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        // The on-disk manifest still declares the workspace-inherited
+        // marker — no rewritten `version = "X.Y.Z"` line.
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert!(
+            content.contains("version.workspace = true"),
+            "inheritance marker was clobbered: {content}"
+        );
+        assert!(
+            !content.contains("version = \""),
+            "member Cargo.toml gained a hardcoded version string: {content}"
+        );
+        // `self.version` remains the originally-observed inherited value —
+        // NOT the bumped `1.0.1` — because the workspace root owns the bump
+        // and will reflect it back through `new_with_workspace_version`.
+        assert_eq!(package.version(), Some("1.0.0"));
     }
 }

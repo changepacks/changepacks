@@ -6,10 +6,9 @@ use async_trait::async_trait;
 use changepacks_core::publish::PublishOutput;
 use changepacks_core::{Config, Language, Package, UpdateType};
 use changepacks_utils::next_version;
-use tokio::fs::{read_to_string, write};
 
 use crate::dry_run::resolve_and_run_dry_run;
-use crate::xml_utils::update_version_in_xml;
+use crate::write_csproj_version;
 
 #[derive(Debug)]
 pub struct CSharpPackage {
@@ -61,13 +60,7 @@ impl Package for CSharpPackage {
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
         let new_version = next_version(current_version, update_type)?;
-
-        let csproj_raw = read_to_string(&self.path).await?;
-        let has_version = self.version.is_some();
-
-        let updated_content = update_version_in_xml(&csproj_raw, &new_version, has_version)?;
-
-        write(&self.path, updated_content).await?;
+        write_csproj_version(&self.path, &new_version, self.version.is_some()).await?;
         self.version = Some(new_version);
         Ok(())
     }

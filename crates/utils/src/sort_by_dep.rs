@@ -49,7 +49,12 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
         }
     }
 
-    let mut sorted_indices: Vec<usize> = Vec::new();
+    // Kahn's traversal + the trailing cyclic-fallback loop below together
+    // push every index in `0..projects.len()` at most once, so the final
+    // length is bounded by `projects.len()`. Preallocating up front removes
+    // the ~log2(N) geometric-doubling reallocations `Vec::new()` would
+    // otherwise incur on every `publish` / `check --tree` invocation.
+    let mut sorted_indices: Vec<usize> = Vec::with_capacity(projects.len());
     // Indices are dense (`0..projects.len()`), so a bit-indexed `Vec<bool>`
     // gives O(1) membership with no hashing overhead vs a `HashSet<usize>`.
     let mut visited: Vec<bool> = vec![false; projects.len()];

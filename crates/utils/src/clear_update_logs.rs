@@ -3,13 +3,15 @@ use std::path::Path;
 use anyhow::Result;
 use tokio::fs::{read_dir, remove_file};
 
+use crate::is_changepack_log_json_name;
+
 /// Remove all update logs without confirmation
 ///
-/// Mirrors [`gen_update_map`](crate::gen_update_map)'s reader filter: skips
-/// `config.json` and any file whose name does NOT have a JSON extension.
-/// This keeps the cleaner and the reader in lock-step — a file the reader
-/// intentionally ignores (`.gitkeep`, `README.md`, etc.) is not silently
-/// destroyed the first time `update` completes.
+/// Uses [`is_changepack_log_json_name`] — the same predicate
+/// [`gen_update_map`](crate::gen_update_map) uses — so the cleaner and the
+/// reader stay in lock-step. A file the reader intentionally ignores
+/// (`.gitkeep`, `README.md`, etc.) is not silently destroyed the first time
+/// `update` completes.
 ///
 /// # Errors
 /// Returns error if any update log file fails to be removed.
@@ -22,11 +24,7 @@ pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
     while let Some(file) = entries.next_entry().await? {
         let file_name = file.file_name();
         let file_name_lossy = file_name.to_string_lossy();
-        if file_name_lossy.as_ref() == "config.json"
-            || !Path::new(file_name_lossy.as_ref())
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-        {
+        if !is_changepack_log_json_name(file_name_lossy.as_ref()) {
             continue;
         }
         update_logs.push(remove_file(file.path()));

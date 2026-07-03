@@ -9,7 +9,7 @@ use changepacks_core::{ChangePackLog, ChangePackResultLog, Config, Project, Upda
 use glob::Pattern;
 use tokio::fs::{read_dir, read_to_string};
 
-use crate::get_changepacks_dir;
+use crate::{get_changepacks_dir, is_changepack_log_json_name};
 
 /// Generate update map from changepack logs
 ///
@@ -26,11 +26,7 @@ pub async fn gen_update_map(
     while let Some(file) = entries.next_entry().await? {
         let file_name = file.file_name();
         let file_name = file_name.to_string_lossy();
-        if file_name.as_ref() == "config.json"
-            || !Path::new(file_name.as_ref())
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
-        {
+        if !is_changepack_log_json_name(file_name.as_ref()) {
             continue;
         }
         let file_json = read_to_string(file.path()).await?;

@@ -16,10 +16,13 @@ mod gen_update_map;
 mod get_changepacks_config;
 mod get_changepacks_dir;
 mod get_relative_path;
+mod is_changepack_log;
 mod next_version;
 mod sort_by_dep;
 mod split_version;
 mod trailing_newline;
+
+pub(crate) use is_changepack_log::is_changepack_log_json_name;
 
 pub use clear_update_logs::clear_update_logs;
 pub use detect_indent::detect_indent;

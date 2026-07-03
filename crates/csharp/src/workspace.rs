@@ -5,10 +5,9 @@ use changepacks_core::{Config, Language, UpdateType, Workspace};
 use changepacks_utils::next_version;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tokio::fs::{read_to_string, write};
 
 use crate::dry_run::resolve_and_run_dry_run;
-use crate::xml_utils::update_version_in_xml;
+use crate::write_csproj_version;
 
 #[derive(Debug)]
 pub struct CSharpWorkspace {
@@ -56,13 +55,7 @@ impl Workspace for CSharpWorkspace {
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
         let next_version = next_version(current_version, update_type)?;
-
-        let csproj_raw = read_to_string(&self.path).await?;
-        let has_version = self.version.is_some();
-
-        let updated_content = update_version_in_xml(&csproj_raw, &next_version, has_version)?;
-
-        write(&self.path, updated_content).await?;
+        write_csproj_version(&self.path, &next_version, self.version.is_some()).await?;
         self.version = Some(next_version);
         Ok(())
     }
