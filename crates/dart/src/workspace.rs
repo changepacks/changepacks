@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
-use changepacks_utils::next_version;
+use changepacks_utils::{next_version, trailing_newline};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
@@ -50,10 +50,8 @@ impl Workspace for DartWorkspace {
     }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(
-            self.version.as_ref().unwrap_or(&String::from("0.0.0")),
-            update_type,
-        )?;
+        let current_version = self.version.as_deref().unwrap_or("0.0.0");
+        let next_version = next_version(current_version, update_type)?;
 
         let pubspec_yaml_raw = read_to_string(&self.path).await?;
 
@@ -81,11 +79,7 @@ impl Workspace for DartWorkspace {
                 )?
                 .source()
                 .trim_end(),
-                if pubspec_yaml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
+                trailing_newline(&pubspec_yaml_raw)
             ),
         )
         .await?;

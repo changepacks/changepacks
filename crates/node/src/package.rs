@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::{detect_indent, next_version};
+use changepacks_utils::{detect_indent, next_version, trailing_newline};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -74,11 +74,7 @@ impl Package for NodePackage {
             format!(
                 "{}{}",
                 String::from_utf8(ser.into_inner())?.trim_end(),
-                if package_json_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
+                trailing_newline(&package_json_raw)
             ),
         )
         .await?;

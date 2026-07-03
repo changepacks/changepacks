@@ -19,6 +19,7 @@ mod get_relative_path;
 mod next_version;
 mod sort_by_dep;
 mod split_version;
+mod trailing_newline;
 
 pub use clear_update_logs::clear_update_logs;
 pub use detect_indent::detect_indent;
@@ -33,3 +34,4 @@ pub use get_relative_path::get_relative_path;
 pub use next_version::next_version;
 pub use sort_by_dep::sort_by_dependencies;
 pub use split_version::split_version;
+pub use trailing_newline::trailing_newline;

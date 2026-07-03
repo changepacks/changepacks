@@ -1,5 +1,10 @@
+use anyhow::Result;
+use changepacks_core::UpdateType;
+use changepacks_utils::next_version;
 use regex::Regex;
+use std::path::Path;
 use std::sync::LazyLock;
+use tokio::fs::{read_to_string, write};
 
 static KTS_SIMPLE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?m)^(version\s*=\s*)"[^"]+""#).expect("hardcoded regex must compile")
@@ -56,6 +61,41 @@ pub fn update_version_in_groovy(content: &str, new_version: &str) -> String {
     }
 
     content.to_string()
+}
+
+/// Read a Gradle build file, compute its next version, apply the right
+/// (`.kts` vs Groovy) rewrite in memory, write it back, and return the new
+/// version string. Shared by both `GradlePackage::update_version` and
+/// `GradleWorkspace::update_version` so a future change (extra file layouts,
+/// error handling for malformed inputs) lives in exactly one place.
+///
+/// # Errors
+/// Returns an error if the file cannot be read, the version cannot be
+/// incremented, or the file cannot be written back.
+pub async fn update_gradle_version_at(
+    path: &Path,
+    current_version: &str,
+    update_type: UpdateType,
+) -> Result<String> {
+    let new_version = next_version(current_version, update_type)?;
+
+    let content = read_to_string(path).await?;
+    let file_name = path
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or_default();
+    let is_kts = Path::new(file_name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("kts"));
+
+    let updated_content = if is_kts {
+        update_version_in_kts(&content, &new_version)
+    } else {
+        update_version_in_groovy(&content, &new_version)
+    };
+
+    write(path, updated_content).await?;
+    Ok(new_version)
 }
 
 #[cfg(test)]

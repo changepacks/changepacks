@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::next_version;
+use changepacks_utils::{next_version, trailing_newline};
 use tokio::fs::{read_to_string, write};
 
 #[derive(Debug)]
@@ -74,11 +74,7 @@ impl Package for DartPackage {
                 )?
                 .source()
                 .trim_end(),
-                if pubspec_yaml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
+                trailing_newline(&pubspec_yaml_raw)
             ),
         )
         .await?;

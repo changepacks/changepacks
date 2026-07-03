@@ -56,10 +56,8 @@ impl Workspace for CSharpWorkspace {
     }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(
-            self.version.as_ref().unwrap_or(&String::from("0.0.0")),
-            update_type,
-        )?;
+        let current_version = self.version.as_deref().unwrap_or("0.0.0");
+        let next_version = next_version(current_version, update_type)?;
 
         let csproj_raw = read_to_string(&self.path).await?;
         let has_version = self.version.is_some();

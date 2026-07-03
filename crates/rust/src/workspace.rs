@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
-use changepacks_utils::{next_version, split_version};
+use changepacks_utils::{next_version, split_version, trailing_newline};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
@@ -51,10 +51,8 @@ impl Workspace for RustWorkspace {
     }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(
-            self.version.as_ref().unwrap_or(&String::from("0.0.0")),
-            update_type,
-        )?;
+        let current_version = self.version.as_deref().unwrap_or("0.0.0");
+        let next_version = next_version(current_version, update_type)?;
 
         let cargo_toml_raw = read_to_string(&self.path).await?;
         let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
@@ -114,11 +112,7 @@ impl Workspace for RustWorkspace {
             format!(
                 "{}{}",
                 cargo_toml.to_string().trim_end(),
-                if cargo_toml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
+                trailing_newline(&cargo_toml_raw)
             ),
         )
         .await?;
@@ -204,11 +198,7 @@ impl Workspace for RustWorkspace {
             format!(
                 "{}{}",
                 cargo_toml.to_string().trim_end(),
-                if cargo_toml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
+                trailing_newline(&cargo_toml_raw)
             ),
         )
         .await?;

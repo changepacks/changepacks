@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::next_version;
+use changepacks_utils::{next_version, trailing_newline};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
@@ -66,11 +66,7 @@ impl Package for PythonPackage {
             format!(
                 "{}{}",
                 pyproject_toml.to_string().trim_end(),
-                if pyproject_toml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
+                trailing_newline(&pyproject_toml_raw)
             ),
         )
         .await?;

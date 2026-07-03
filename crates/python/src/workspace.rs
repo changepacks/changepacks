@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
-use changepacks_utils::next_version;
+use changepacks_utils::{next_version, trailing_newline};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
@@ -51,10 +51,8 @@ impl Workspace for PythonWorkspace {
     }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(
-            self.version.as_ref().unwrap_or(&String::from("0.0.0")),
-            update_type,
-        )?;
+        let current_version = self.version.as_deref().unwrap_or("0.0.0");
+        let next_version = next_version(current_version, update_type)?;
 
         let pyproject_toml_raw = read_to_string(&self.path).await?;
         let mut pyproject_toml: DocumentMut = pyproject_toml_raw.parse::<DocumentMut>()?;
@@ -67,11 +65,7 @@ impl Workspace for PythonWorkspace {
             format!(
                 "{}{}",
                 pyproject_toml.to_string().trim_end(),
-                if pyproject_toml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
+                trailing_newline(&pyproject_toml_raw)
             ),
         )
         .await?;
