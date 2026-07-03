@@ -1,15 +1,13 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
-use changepacks_core::publish::{
-    PublishOutput, resolve_dry_run_publish_command, run_publish_command,
-};
+use changepacks_core::publish::PublishOutput;
 use changepacks_core::{Config, Language, UpdateType, Workspace};
 use changepacks_utils::next_version;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::fs::{read_to_string, write};
 
-use crate::dry_run::run_managed_dry_run;
+use crate::dry_run::resolve_and_run_dry_run;
 use crate::xml_utils::update_version_in_xml;
 
 #[derive(Debug)]
@@ -101,23 +99,18 @@ impl Workspace for CSharpWorkspace {
         None
     }
 
-    /// Managed dry-run for C#/.NET workspaces. See [`CSharpPackage::dry_run_publish`]
+    /// Managed dry-run for C#/.NET workspaces. See [`crate::package::CSharpPackage::dry_run_publish`]
     /// for the full rationale — workspace and package share identical
     /// semantics here.
     #[cfg(not(tarpaulin_include))]
     async fn dry_run_publish(&self, config: &Config) -> Result<Option<PublishOutput>> {
-        let dir = self
-            .path()
-            .parent()
-            .context("Workspace directory not found")?;
-
-        if let Some(user_cmd) =
-            resolve_dry_run_publish_command(self.relative_path(), self.language(), None, config)
-        {
-            return Ok(Some(run_publish_command(&user_cmd, dir).await?));
-        }
-
-        Ok(Some(run_managed_dry_run(dir).await?))
+        resolve_and_run_dry_run(
+            self.path(),
+            self.relative_path(),
+            config,
+            "Workspace directory not found",
+        )
+        .await
     }
 
     fn dependencies(&self) -> &HashSet<String> {

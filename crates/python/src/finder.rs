@@ -49,9 +49,9 @@ impl ProjectFinder for PythonProjectFinder {
             && self.project_files().contains(
                 &path
                     .file_name()
-                    .context(format!("File name not found - {}", path.display()))?
+                    .with_context(|| format!("File name not found - {}", path.display()))?
                     .to_str()
-                    .context(format!("File name not found - {}", path.display()))?,
+                    .with_context(|| format!("File name not found - {}", path.display()))?,
             )
         {
             if self.projects.contains_key(path) {
@@ -62,7 +62,7 @@ impl ProjectFinder for PythonProjectFinder {
             let pyproject_toml: toml_edit::DocumentMut = pyproject_toml.parse()?;
             let project = pyproject_toml
                 .get("project")
-                .context(format!("Project not found - {}", path.display()))?;
+                .with_context(|| format!("Project not found - {}", path.display()))?;
 
             // if workspace
             let (path, mut project) = if pyproject_toml

@@ -1,11 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::{detect_indent, next_version, trailing_newline};
-use serde::Serialize;
+use changepacks_utils::next_version;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use tokio::fs::{read_to_string, write};
 
 use crate::detect_package_manager_recursive;
 
@@ -59,25 +57,7 @@ impl Package for NodePackage {
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
         let new_version = next_version(current_version, update_type)?;
-
-        let package_json_raw = read_to_string(&self.path).await?;
-        let indent = detect_indent(&package_json_raw);
-        let mut package_json: serde_json::Value = serde_json::from_str(&package_json_raw)?;
-        package_json["version"] = serde_json::Value::String(new_version.clone());
-        let ind = &b" ".repeat(indent);
-        let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);
-        let writer = Vec::new();
-        let mut ser = serde_json::Serializer::with_formatter(writer, formatter);
-        package_json.serialize(&mut ser)?;
-        write(
-            &self.path,
-            format!(
-                "{}{}",
-                String::from_utf8(ser.into_inner())?.trim_end(),
-                trailing_newline(&package_json_raw)
-            ),
-        )
-        .await?;
+        crate::write_package_json_version(&self.path, &new_version).await?;
         self.version = Some(new_version);
         Ok(())
     }

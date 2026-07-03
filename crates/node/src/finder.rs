@@ -50,9 +50,9 @@ impl ProjectFinder for NodeProjectFinder {
             && self.project_files().contains(
                 &path
                     .file_name()
-                    .context(format!("File name not found - {}", path.display()))?
+                    .with_context(|| format!("File name not found - {}", path.display()))?
                     .to_str()
-                    .context(format!("File name not found - {}", path.display()))?,
+                    .with_context(|| format!("File name not found - {}", path.display()))?,
             )
         {
             if self.projects.contains_key(path) {
@@ -65,7 +65,7 @@ impl ProjectFinder for NodeProjectFinder {
             let (path, mut project) = if package_json.get("workspaces").is_some()
                 || path
                     .parent()
-                    .context(format!("Parent not found - {}", path.display()))?
+                    .with_context(|| format!("Parent not found - {}", path.display()))?
                     .join("pnpm-workspace.yaml")
                     .is_file()
             {

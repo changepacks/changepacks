@@ -31,10 +31,46 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use changepacks_core::PublishOutput;
-use changepacks_core::publish::run_publish_command_argv;
+use changepacks_core::publish::{
+    resolve_dry_run_publish_command, run_publish_command, run_publish_command_argv,
+};
+use changepacks_core::{Config, Language, PublishOutput};
 use tempfile::TempDir;
 use tokio::fs::read_dir;
+
+/// Shared dry-run publish flow for C#/.NET packages AND workspaces.
+///
+/// Both [`crate::package::CSharpPackage::dry_run_publish`] and
+/// [`crate::workspace::CSharpWorkspace::dry_run_publish`] delegate here so
+/// their bodies stay a single call:
+///
+/// 1. Resolve parent directory of `path`, returning `missing_dir_msg` as
+///    error context if it has none (only difference between the two callers).
+/// 2. Honor any `config.publishDryRun` override (per-project or per-language)
+///    via [`resolve_dry_run_publish_command`] + [`run_publish_command`].
+/// 3. Otherwise fall back to the managed pack+push flow with RAII cleanup
+///    via [`run_managed_dry_run`].
+///
+/// # Errors
+/// Returns error if the parent directory is missing, or if either the user
+/// override command or the managed dry-run fails to spawn / enumerate.
+#[cfg(not(tarpaulin_include))]
+pub(crate) async fn resolve_and_run_dry_run(
+    path: &Path,
+    relative_path: &Path,
+    config: &Config,
+    missing_dir_msg: &'static str,
+) -> Result<Option<PublishOutput>> {
+    let dir = path.parent().context(missing_dir_msg)?;
+
+    if let Some(user_cmd) =
+        resolve_dry_run_publish_command(relative_path, Language::CSharp, None, config)
+    {
+        return Ok(Some(run_publish_command(&user_cmd, dir).await?));
+    }
+
+    Ok(Some(run_managed_dry_run(dir).await?))
+}
 
 /// Run a managed dry-run for a C#/.NET package.
 ///

@@ -1,16 +1,14 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
-use changepacks_core::publish::{
-    PublishOutput, resolve_dry_run_publish_command, run_publish_command,
-};
+use changepacks_core::publish::PublishOutput;
 use changepacks_core::{Config, Language, Package, UpdateType};
 use changepacks_utils::next_version;
 use tokio::fs::{read_to_string, write};
 
-use crate::dry_run::run_managed_dry_run;
+use crate::dry_run::resolve_and_run_dry_run;
 use crate::xml_utils::update_version_in_xml;
 
 #[derive(Debug)]
@@ -113,20 +111,13 @@ impl Package for CSharpPackage {
     /// on error, panic, or future cancellation.
     #[cfg(not(tarpaulin_include))]
     async fn dry_run_publish(&self, config: &Config) -> Result<Option<PublishOutput>> {
-        let dir = self
-            .path()
-            .parent()
-            .context("Package directory not found")?;
-
-        // 1) Per-project / per-language override wins (existing semantics).
-        if let Some(user_cmd) =
-            resolve_dry_run_publish_command(self.relative_path(), self.language(), None, config)
-        {
-            return Ok(Some(run_publish_command(&user_cmd, dir).await?));
-        }
-
-        // 2) Managed dry-run with guaranteed cleanup (see `dry_run.rs`).
-        Ok(Some(run_managed_dry_run(dir).await?))
+        resolve_and_run_dry_run(
+            self.path(),
+            self.relative_path(),
+            config,
+            "Package directory not found",
+        )
+        .await
     }
 
     fn dependencies(&self) -> &HashSet<String> {

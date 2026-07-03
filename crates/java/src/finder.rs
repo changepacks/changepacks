@@ -221,9 +221,9 @@ impl ProjectFinder for GradleProjectFinder {
             && self.project_files().contains(
                 &path
                     .file_name()
-                    .context(format!("File name not found - {}", path.display()))?
+                    .with_context(|| format!("File name not found - {}", path.display()))?
                     .to_str()
-                    .context(format!("File name not found - {}", path.display()))?,
+                    .with_context(|| format!("File name not found - {}", path.display()))?,
             )
         {
             if self.projects.contains_key(path) {
@@ -232,7 +232,7 @@ impl ProjectFinder for GradleProjectFinder {
 
             let project_dir = path
                 .parent()
-                .context(format!("Parent not found - {}", path.display()))?;
+                .with_context(|| format!("Parent not found - {}", path.display()))?;
 
             // Get properties from gradlew command
             let props = get_gradle_properties(project_dir).await?;

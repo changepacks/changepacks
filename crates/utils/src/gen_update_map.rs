@@ -105,31 +105,29 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     projects: &[&Project],
     repo_root_path: &Path,
 ) {
-    // Build a map from package name to its relative file path (e.g., "crates/core/Cargo.toml")
-    let mut name_to_path: HashMap<String, PathBuf> = HashMap::new();
-    for project in projects {
-        if let Some(name) = project.name()
-            && let Ok(rel_path) = project.path().strip_prefix(repo_root_path)
-        {
-            name_to_path.insert(name.to_string(), rel_path.to_path_buf());
-        }
-    }
-
-    // Build reverse dependency map: updated_package_name -> [packages that depend on it]
+    // Single pass over projects to build:
+    //   - path_to_name:   relative file path -> package name (for O(1) reverse lookup)
+    //   - reverse_deps:   dependency name -> [packages that depend on it]
+    let mut path_to_name: HashMap<PathBuf, String> = HashMap::new();
     let mut reverse_deps: HashMap<String, Vec<(PathBuf, String)>> = HashMap::new();
     for project in projects {
-        let dependencies = project.dependencies();
-        if !dependencies.is_empty()
-            && let Ok(rel_path) = project.path().strip_prefix(repo_root_path)
-        {
-            let project_path = rel_path.to_path_buf();
-            let project_name = project.name().unwrap_or("unknown").to_string();
+        let Ok(rel_path) = project.path().strip_prefix(repo_root_path) else {
+            continue;
+        };
+        let rel_path_buf = rel_path.to_path_buf();
 
+        if let Some(name) = project.name() {
+            path_to_name.insert(rel_path_buf.clone(), name.to_string());
+        }
+
+        let dependencies = project.dependencies();
+        if !dependencies.is_empty() {
+            let project_name = project.name().unwrap_or("unknown").to_string();
             for dep_name in dependencies {
                 reverse_deps
                     .entry(dep_name.clone())
                     .or_default()
-                    .push((project_path.clone(), project_name.clone()));
+                    .push((rel_path_buf.clone(), project_name.clone()));
             }
         }
     }
@@ -138,15 +136,10 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     let mut packages_to_add: Vec<(PathBuf, String)> = Vec::new();
     let mut processed: HashSet<PathBuf> = HashSet::new();
 
-    // Initial set of updated package names
+    // Initial set of updated package names via O(1) path -> name lookup
     let updated_names: HashSet<String> = update_map
         .keys()
-        .filter_map(|path| {
-            // Find the package name for this path
-            name_to_path
-                .iter()
-                .find_map(|(name, p)| if p == path { Some(name.clone()) } else { None })
-        })
+        .filter_map(|path| path_to_name.get(path).cloned())
         .collect();
 
     // Process reverse dependencies transitively

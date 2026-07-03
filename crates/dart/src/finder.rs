@@ -50,9 +50,9 @@ impl ProjectFinder for DartProjectFinder {
             && self.project_files().contains(
                 &path
                     .file_name()
-                    .context(format!("File name not found - {}", path.display()))?
+                    .with_context(|| format!("File name not found - {}", path.display()))?
                     .to_str()
-                    .context(format!("File name not found - {}", path.display()))?,
+                    .with_context(|| format!("File name not found - {}", path.display()))?,
             )
         {
             if self.projects.contains_key(path) {

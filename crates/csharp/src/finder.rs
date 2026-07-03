@@ -96,41 +96,6 @@ impl CSharpProjectFinder {
         None
     }
 
-    /// Extract `PackageReference` dependencies from .csproj XML content using quick-xml
-    ///
-    /// Excluded from coverage: marked `#[allow(dead_code)]` because the
-    /// active extraction path runs through `extract_project_references`.
-    /// Kept around for future NuGet dependency support; its single-tag
-    /// branches (`Event::Empty` vs `Event::Start` with attributes) are
-    /// not all exercised by current test fixtures.
-    #[cfg(not(tarpaulin_include))]
-    #[allow(dead_code)]
-    fn extract_package_references(content: &str) -> Vec<String> {
-        let mut reader = Reader::from_str(content);
-        let mut buf = Vec::new();
-        let mut packages = Vec::new();
-
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(e) | Event::Start(e))
-                    if e.local_name().as_ref() == b"PackageReference" =>
-                {
-                    for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"Include"
-                            && let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0)
-                        {
-                            packages.push(value.to_string());
-                        }
-                    }
-                }
-                Ok(Event::Eof) | Err(_) => break,
-                _ => {}
-            }
-            buf.clear();
-        }
-        packages
-    }
-
     /// Extract `ProjectReference` dependencies from .csproj XML content using quick-xml
     /// Returns the project names (extracted from paths)
     fn extract_project_references(content: &str) -> Vec<String> {
@@ -577,20 +542,6 @@ mod tests {
   </PropertyGroup>
 </Project>"#;
         assert_eq!(CSharpProjectFinder::extract_version(no_version), None);
-    }
-
-    #[test]
-    fn test_extract_package_references() {
-        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
-    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
-  </ItemGroup>
-</Project>"#;
-        let refs = CSharpProjectFinder::extract_package_references(content);
-        assert_eq!(refs.len(), 2);
-        assert!(refs.contains(&"Newtonsoft.Json".to_string()));
-        assert!(refs.contains(&"System.CommandLine".to_string()));
     }
 
     #[test]
