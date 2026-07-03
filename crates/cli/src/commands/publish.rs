@@ -190,7 +190,7 @@ fn print_publish_output(output: &PublishOutput) {
 /// registry during dry-run, so they are unaffected.
 fn skip_dry_run_due_to_workspace_internal_dep(
     project: &Project,
-    bumped_package_names: &std::collections::HashSet<String>,
+    bumped_package_names: &std::collections::HashSet<&str>,
 ) -> bool {
     if project.language() != changepacks_core::Language::Rust {
         return false;
@@ -198,7 +198,7 @@ fn skip_dry_run_due_to_workspace_internal_dep(
     project
         .dependencies()
         .iter()
-        .any(|dep| bumped_package_names.contains(dep))
+        .any(|dep| bumped_package_names.contains(dep.as_str()))
 }
 
 async fn execute_dry_run_publish_loop(
@@ -211,10 +211,11 @@ async fn execute_dry_run_publish_loop(
 
     // Pre-compute the set of package names being bumped in this run so that
     // each iteration can cheaply check whether its dependencies overlap.
-    let bumped_package_names: std::collections::HashSet<String> = projects
-        .iter()
-        .filter_map(|p| p.name().map(String::from))
-        .collect();
+    // Borrow the names directly from the projects (which outlive the loop)
+    // to skip the per-name `String` allocation the old `HashSet<String>`
+    // version paid on every publish call.
+    let bumped_package_names: std::collections::HashSet<&str> =
+        projects.iter().filter_map(|p| p.name()).collect();
 
     for project in projects {
         if skip_dry_run_due_to_workspace_internal_dep(project, &bumped_package_names) {
@@ -963,7 +964,7 @@ mod tests {
             relative_path: PathBuf::from("project.csproj"),
         };
         let project = Project::Package(Box::new(pkg));
-        let bumped: HashSet<String> = ["dry-run-unsupported".to_string()].into_iter().collect();
+        let bumped: HashSet<&str> = ["dry-run-unsupported"].into_iter().collect();
         assert!(!skip_dry_run_due_to_workspace_internal_dep(
             &project, &bumped
         ));
@@ -975,7 +976,7 @@ mod tests {
         // standard `cargo publish --dry-run` would succeed, so skip must
         // not fire.
         let project = make_rust_mock("crate-a", "crates/a/Cargo.toml", &["external-crate"]);
-        let bumped: HashSet<String> = ["crate-b".to_string()].into_iter().collect();
+        let bumped: HashSet<&str> = ["crate-b"].into_iter().collect();
         assert!(!skip_dry_run_due_to_workspace_internal_dep(
             &project, &bumped
         ));
@@ -987,9 +988,7 @@ mod tests {
         // the same run: skip must fire to avoid the
         // "failed to select a version for the requirement" false positive.
         let project = make_rust_mock("crate-a", "crates/a/Cargo.toml", &["crate-b"]);
-        let bumped: HashSet<String> = ["crate-a".to_string(), "crate-b".to_string()]
-            .into_iter()
-            .collect();
+        let bumped: HashSet<&str> = ["crate-a", "crate-b"].into_iter().collect();
         assert!(skip_dry_run_due_to_workspace_internal_dep(
             &project, &bumped
         ));

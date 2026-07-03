@@ -1,20 +1,27 @@
-use std::path::Path;
+use std::ffi::OsStr;
+use std::path::{Component, Path};
 
 use anyhow::{Context, Result};
 
 /// Whether a filesystem event on `candidate` should mark the project rooted at
 /// `project_manifest` (its `package.json` / `Cargo.toml` / etc.) as changed.
 ///
-/// Returns `false` for paths inside `.changepacks/` (changepack logs are not
-/// user changes) and paths that fall outside the project's directory. This is
-/// the byte-identical logic used by both `Package::check_changed` and
+/// Returns `false` for paths that traverse a `.changepacks` directory
+/// component (changepack logs are not user changes) and paths that fall
+/// outside the project's directory. The `.changepacks` check matches on a
+/// full path component so sibling names like `.changepacks-backup/` or
+/// `notes-about-.changepacks.md` are NOT swallowed. This is the
+/// byte-identical logic used by both `Package::check_changed` and
 /// `Workspace::check_changed` defaults; extracted here so a future fix stays
 /// applied to both trait defaults in one place.
 ///
 /// # Errors
 /// Returns error if `project_manifest` has no parent directory.
 pub(crate) fn should_mark_changed(candidate: &Path, project_manifest: &Path) -> Result<bool> {
-    if candidate.to_string_lossy().contains(".changepacks") {
+    if candidate
+        .components()
+        .any(|c| matches!(c, Component::Normal(name) if name == OsStr::new(".changepacks")))
+    {
         return Ok(false);
     }
     let project_dir = project_manifest.parent().context("Parent not found")?;
@@ -52,5 +59,31 @@ mod tests {
         let manifest = Path::new("");
         let err = should_mark_changed(candidate, manifest).unwrap_err();
         assert!(err.to_string().contains("Parent not found"));
+    }
+
+    #[test]
+    fn test_should_mark_changed_ignores_sibling_dot_prefixed_dirs() {
+        // Sibling directory whose name only *contains* ".changepacks" as a
+        // substring must NOT be swallowed by the guard. The old substring
+        // check treated any of these as "changepack log — do not mark
+        // changed", silently dropping legitimate source edits.
+        let manifest = Path::new("/project/package.json");
+
+        // A file inside a sibling `.changepacks-backup/` directory: this
+        // is user data, not a changepack log, so the project should be
+        // marked changed.
+        let backup_candidate = Path::new("/project/.changepacks-backup/pinned.json");
+        assert!(should_mark_changed(backup_candidate, manifest).unwrap());
+
+        // A file whose name literally contains `.changepacks` — again
+        // real user data, should be marked changed.
+        let named_candidate = Path::new("/project/notes-about-.changepacks.md");
+        assert!(should_mark_changed(named_candidate, manifest).unwrap());
+
+        // Regression: the true `.changepacks/` directory case still
+        // returns `false`, so the fix is a strict widening — nothing that
+        // previously passed silently now leaks through.
+        let real_log = Path::new("/project/.changepacks/change.json");
+        assert!(!should_mark_changed(real_log, manifest).unwrap());
     }
 }

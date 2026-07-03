@@ -53,7 +53,7 @@ pub fn update_version_in_xml(
                         // hardcoding `"\n  "` (as we used to) breaks the
                         // format-preservation invariant on 4-space and tab
                         // .csproj files.
-                        let indent = detect_indent(content);
+                        let indent = detect_xml_indent_unit(content);
                         let trailing = format!("\n{indent}");
                         writer.write_event(Event::Text(BytesText::new(indent)))?;
                         writer.write_event(Event::Start(BytesStart::new("Version")))?;
@@ -109,8 +109,16 @@ pub fn update_version_in_xml(
     String::from_utf8(result).context("Failed to convert XML to UTF-8")
 }
 
-/// Detect indentation style from XML content
-pub fn detect_indent(content: &str) -> &'static str {
+/// Detect the indentation UNIT used in XML content (returns the indent string
+/// itself, e.g. `"    "` / `"  "` / `"\t"`).
+///
+/// Renamed from `detect_indent` to avoid shadowing the workspace-wide
+/// `changepacks_utils::detect_indent`, which has a different signature
+/// (`fn(&str) -> usize`) and returns the indent WIDTH, not the unit. A
+/// reader jumping into `update_version_in_xml` used to reasonably assume
+/// the local `detect_indent` was the shared helper; the more precise name
+/// removes that trap.
+pub fn detect_xml_indent_unit(content: &str) -> &'static str {
     for line in content.lines() {
         if line.starts_with("    ") {
             return "    ";
@@ -152,27 +160,27 @@ mod tests {
     }
 
     #[test]
-    fn test_detect_indent_two_spaces() {
+    fn test_detect_xml_indent_unit_two_spaces() {
         let content = "  <PropertyGroup>";
-        assert_eq!(detect_indent(content), "  ");
+        assert_eq!(detect_xml_indent_unit(content), "  ");
     }
 
     #[test]
-    fn test_detect_indent_four_spaces() {
+    fn test_detect_xml_indent_unit_four_spaces() {
         let content = "    <PropertyGroup>";
-        assert_eq!(detect_indent(content), "    ");
+        assert_eq!(detect_xml_indent_unit(content), "    ");
     }
 
     #[test]
-    fn test_detect_indent_tab() {
+    fn test_detect_xml_indent_unit_tab() {
         let content = "\t<PropertyGroup>";
-        assert_eq!(detect_indent(content), "\t");
+        assert_eq!(detect_xml_indent_unit(content), "\t");
     }
 
     #[test]
-    fn test_detect_indent_default() {
+    fn test_detect_xml_indent_unit_default() {
         let content = "<PropertyGroup>";
-        assert_eq!(detect_indent(content), "    ");
+        assert_eq!(detect_xml_indent_unit(content), "    ");
     }
 
     #[test]
