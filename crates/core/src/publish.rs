@@ -62,6 +62,23 @@ pub fn resolve_dry_run_publish_command(
     default_dry_run_command.map(str::to_string)
 }
 
+/// Convert a completed child-process `Output` into a `PublishOutput`.
+///
+/// Shared by both `run_publish_command_with_path_dirs` and
+/// `run_publish_command_argv` so a future change to output handling (e.g.
+/// lossy → strict UTF-8, extra logging) touches ONE place.
+///
+/// Note: `from_utf8_lossy` silently replaces invalid UTF-8 with replacement
+/// characters. This is acceptable since child processes may produce non-UTF-8
+/// bytes.
+fn build_publish_output(output: std::process::Output) -> PublishOutput {
+    PublishOutput {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
+}
+
 /// Build a platform-specific shell command.
 /// Uses compile-time `#[cfg]` so only the active platform's code is compiled,
 /// eliminating coverage gaps from unreachable platform branches.
@@ -133,13 +150,7 @@ pub async fn run_publish_command_with_path_dirs(
         cmd.env("PATH", path);
     }
     let output = cmd.output().await?;
-    // Note: from_utf8_lossy silently replaces invalid UTF-8 with replacement characters.
-    // This is acceptable since child processes may produce non-UTF-8 bytes.
-    Ok(PublishOutput {
-        success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
+    Ok(build_publish_output(output))
 }
 
 /// Resolve the parent directory of `manifest_path` and run `command` there.
@@ -211,11 +222,7 @@ pub async fn run_publish_command_argv(
     cmd.args(args).current_dir(working_dir);
     cmd.kill_on_drop(kill_on_drop);
     let output = cmd.output().await?;
-    Ok(PublishOutput {
-        success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
+    Ok(build_publish_output(output))
 }
 
 #[cfg(test)]

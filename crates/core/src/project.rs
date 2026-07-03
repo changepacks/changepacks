@@ -149,50 +149,32 @@ impl Project {
     /// `check.rs::format_project_line` reuses the exact same base formatting.
     #[must_use]
     pub fn format_line(&self, version_override: Option<&str>) -> String {
-        match self {
-            Self::Workspace(workspace) => {
-                let version = version_override.map_or_else(
-                    || {
-                        workspace
-                            .version()
-                            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
-                    },
-                    ToString::to_string,
-                );
-                format!(
-                    "{} {} {} {} {}",
-                    format!("[Workspace - {}]", workspace.language())
-                        .bright_blue()
-                        .bold(),
-                    workspace.name().unwrap_or("noname").bright_white().bold(),
-                    format!("({version})").bright_green(),
-                    "-".bright_cyan(),
-                    workspace
-                        .relative_path()
-                        .display()
-                        .to_string()
-                        .bright_black()
-                )
-            }
-            Self::Package(package) => {
-                let version = version_override.map_or_else(
-                    || {
-                        package
-                            .version()
-                            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
-                    },
-                    ToString::to_string,
-                );
-                format!(
-                    "{} {} {} {} {}",
-                    format!("[{}]", package.language()).bright_blue().bold(),
-                    package.name().unwrap_or("noname").bright_white().bold(),
-                    format!("({version})").bright_green(),
-                    "-".bright_cyan(),
-                    package.relative_path().display().to_string().bright_black()
-                )
-            }
-        }
+        // Both variants render identical bytes except for the header prefix:
+        // Workspace → "[Workspace - {lang}]", Package → "[{lang}]". Destructure
+        // once so a future label/formatting change only needs to be applied in
+        // one place.
+        let (label_prefix, lang, name, ver, rel_path) = match self {
+            Self::Workspace(w) => (
+                "Workspace - ",
+                w.language(),
+                w.name(),
+                w.version(),
+                w.relative_path(),
+            ),
+            Self::Package(p) => ("", p.language(), p.name(), p.version(), p.relative_path()),
+        };
+        let version = version_override.map_or_else(
+            || ver.map_or_else(|| "unknown".to_string(), |v| format!("v{v}")),
+            ToString::to_string,
+        );
+        format!(
+            "{} {} {} {} {}",
+            format!("[{label_prefix}{lang}]").bright_blue().bold(),
+            name.unwrap_or("noname").bright_white().bold(),
+            format!("({version})").bright_green(),
+            "-".bright_cyan(),
+            rel_path.display().to_string().bright_black(),
+        )
     }
 }
 

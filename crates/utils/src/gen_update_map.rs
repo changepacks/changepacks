@@ -56,7 +56,14 @@ fn apply_update_on_rules(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     config: &Config,
 ) {
-    let updated_paths: Vec<PathBuf> = update_map.keys().cloned().collect();
+    // Snapshot updated paths as owned strings ONCE — the inner
+    // `updated_paths.iter().any(...)` closure runs `N × M` times (N updated
+    // paths × M `updateOn` triggers), so precomputing collapses `N × M`
+    // `to_string_lossy()` calls to `N` and keeps the closure body one line.
+    let updated_paths: Vec<String> = update_map
+        .keys()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
 
     for (trigger_pattern, dependents) in &config.update_on {
         let Ok(pattern) = Pattern::new(trigger_pattern) else {
@@ -65,10 +72,7 @@ fn apply_update_on_rules(
         };
 
         // Check if any updated package matches the trigger pattern
-        let has_trigger = updated_paths.iter().any(|path| {
-            let path_str = path.to_string_lossy();
-            pattern.matches(&path_str)
-        });
+        let has_trigger = updated_paths.iter().any(|s| pattern.matches(s));
 
         if has_trigger {
             // Add dependent packages as PATCH updates if not already in update_map

@@ -38,7 +38,9 @@ pub fn gen_changepack_result_map<S: BuildHasher>(
             }
             None => ChangePackResult::new(vec![], version, None, name, changed, key.clone()),
         };
-        map.insert(key.clone(), result);
+        // `key` is not used past this insert, so move it in — the two match
+        // arms above already own their own `key.clone()` copy.
+        map.insert(key, result);
     }
     Ok(map)
 }
