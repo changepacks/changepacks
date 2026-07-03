@@ -330,27 +330,9 @@ fn format_project_line(
         format!(" [deps:\n        {deps_str}]").bright_black()
     };
 
-    // Format similar to Project::Display but with version update and dependencies
-    let base_format = match project {
-        Project::Workspace(w) => format!(
-            "{} {} {} {} {}",
-            format!("[Workspace - {}]", w.language())
-                .bright_blue()
-                .bold(),
-            w.name().unwrap_or("noname").bright_white().bold(),
-            format!("({version})").bright_green(),
-            "-".bright_cyan(),
-            w.relative_path().display().to_string().bright_black()
-        ),
-        Project::Package(p) => format!(
-            "{} {} {} {} {}",
-            format!("[{}]", p.language()).bright_blue().bold(),
-            p.name().unwrap_or("noname").bright_white().bold(),
-            format!("({version})").bright_green(),
-            "-".bright_cyan(),
-            p.relative_path().display().to_string().bright_black()
-        ),
-    };
+    // Reuse `Project::format_line` so the base label stays in sync with
+    // `Project::Display`; then append the CLI-only `deps` info + changed marker.
+    let base_format = project.format_line(Some(&version));
 
     Ok(format!("{base_format}{changed_marker}{deps_info}"))
 }

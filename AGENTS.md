@@ -85,4 +85,3 @@ bun run lint             # cargo clippy + cargo fmt --check + bun workspaces lin
 - **No CI workflows** in repo - builds/tests run locally
 - **Bridge packages** auto-update when core crates change (see `updateOn` in config)
 - **Examples** are test fixtures, not production code
-- **Typo**: `crates/core/src/proejct_finder.rs` (project misspelled)

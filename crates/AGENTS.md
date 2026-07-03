@@ -9,7 +9,7 @@ Rust workspace crates implementing the changepacks CLI.
 | Add CLI command | `cli` | `src/commands/{name}.rs`, update `mod.rs` |
 | Add CLI option | `cli` | `src/options/{name}_options.rs` |
 | Add language support | `{lang}` | `finder.rs`, `package.rs`, `workspace.rs`, `lib.rs` |
-| Modify core traits | `core` | `package.rs`, `workspace.rs`, `proejct_finder.rs` |
+| Modify core traits | `core` | `package.rs`, `workspace.rs`, `project_finder.rs` |
 | Add utility function | `utils` | New file in `src/`, export in `lib.rs` |
 | Version calculation | `utils` | `next_version.rs`, `split_version.rs` |
 | Dependency ordering | `utils` | `sort_by_dep.rs` |

@@ -138,6 +138,62 @@ impl Project {
             Self::Package(package) => package.dry_run_publish(config).await,
         }
     }
+
+    /// Render the project's canonical one-line label (`[Workspace - Node] name
+    /// (v1.0.0) - path`) with optional version override.
+    ///
+    /// `version_override` is used verbatim when supplied (typically a
+    /// pre-formatted "v1.0.0 -> v1.1.0 (minor)" upgrade string from
+    /// `changepacks_utils::display_update`); when `None`, the current version
+    /// is rendered as `v{version}` or `unknown`. Extracted from `Display` so
+    /// `check.rs::format_project_line` reuses the exact same base formatting.
+    #[must_use]
+    pub fn format_line(&self, version_override: Option<&str>) -> String {
+        match self {
+            Self::Workspace(workspace) => {
+                let version = version_override.map_or_else(
+                    || {
+                        workspace
+                            .version()
+                            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
+                    },
+                    ToString::to_string,
+                );
+                format!(
+                    "{} {} {} {} {}",
+                    format!("[Workspace - {}]", workspace.language())
+                        .bright_blue()
+                        .bold(),
+                    workspace.name().unwrap_or("noname").bright_white().bold(),
+                    format!("({version})").bright_green(),
+                    "-".bright_cyan(),
+                    workspace
+                        .relative_path()
+                        .display()
+                        .to_string()
+                        .bright_black()
+                )
+            }
+            Self::Package(package) => {
+                let version = version_override.map_or_else(
+                    || {
+                        package
+                            .version()
+                            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
+                    },
+                    ToString::to_string,
+                );
+                format!(
+                    "{} {} {} {} {}",
+                    format!("[{}]", package.language()).bright_blue().bold(),
+                    package.name().unwrap_or("noname").bright_white().bold(),
+                    format!("({version})").bright_green(),
+                    "-".bright_cyan(),
+                    package.relative_path().display().to_string().bright_black()
+                )
+            }
+        }
+    }
 }
 
 impl PartialEq for Project {
@@ -197,48 +253,7 @@ impl Ord for Project {
 
 impl Display for Project {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Workspace(workspace) => {
-                write!(
-                    f,
-                    "{} {} {} {} {}",
-                    format!("[Workspace - {}]", workspace.language())
-                        .bright_blue()
-                        .bold(),
-                    workspace.name().unwrap_or("noname").bright_white().bold(),
-                    format!(
-                        "({})",
-                        workspace
-                            .version()
-                            .map_or("unknown".to_string(), |v| format!("v{v}")),
-                    )
-                    .bright_green(),
-                    "-".bright_cyan(),
-                    workspace
-                        .relative_path()
-                        .display()
-                        .to_string()
-                        .bright_black()
-                )
-            }
-            Self::Package(package) => {
-                write!(
-                    f,
-                    "{} {} {} {} {}",
-                    format!("[{}]", package.language()).bright_blue().bold(),
-                    package.name().unwrap_or("noname").bright_white().bold(),
-                    format!(
-                        "({})",
-                        package
-                            .version()
-                            .map_or("unknown".to_string(), |v| format!("v{v}"))
-                    )
-                    .bright_green(),
-                    "-".bright_cyan(),
-                    package.relative_path().display().to_string().bright_black()
-                )
-            }
-        }
+        write!(f, "{}", self.format_line(None))
     }
 }
 

@@ -1,5 +1,5 @@
 use crate::{Config, Language};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Output captured from a publish command execution.
@@ -140,6 +140,53 @@ pub async fn run_publish_command_with_path_dirs(
         stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     })
+}
+
+/// Resolve the parent directory of `manifest_path` and run `command` there.
+///
+/// Extracted so `Package::publish` and `Workspace::publish` share a single
+/// implementation. Callers pass their own `missing_dir_ctx` message
+/// (`"Package directory not found"` vs `"Workspace directory not found"`) so
+/// error messages match the caller's role exactly.
+///
+/// # Errors
+/// Returns error if the command fails to spawn or `manifest_path` has no
+/// parent directory.
+#[cfg(not(tarpaulin_include))]
+pub async fn run_publish_flow(
+    command: &str,
+    manifest_path: &Path,
+    extra_path_dirs: &[PathBuf],
+    missing_dir_ctx: &'static str,
+) -> Result<PublishOutput> {
+    let dir = manifest_path.parent().context(missing_dir_ctx)?;
+    run_publish_command_with_path_dirs(command, dir, extra_path_dirs).await
+}
+
+/// Resolve the parent directory of `manifest_path` and run the dry-run
+/// `command` there. Returns `Ok(None)` when no command is supplied, matching
+/// the "dry-run not supported for this project" convention.
+///
+/// Extracted so `Package::dry_run_publish` and `Workspace::dry_run_publish`
+/// share a single implementation.
+///
+/// # Errors
+/// Returns error if the command fails to spawn or `manifest_path` has no
+/// parent directory.
+#[cfg(not(tarpaulin_include))]
+pub async fn run_dry_run_publish_flow(
+    command: Option<&str>,
+    manifest_path: &Path,
+    extra_path_dirs: &[PathBuf],
+    missing_dir_ctx: &'static str,
+) -> Result<Option<PublishOutput>> {
+    let Some(cmd) = command else {
+        return Ok(None);
+    };
+    let dir = manifest_path.parent().context(missing_dir_ctx)?;
+    Ok(Some(
+        run_publish_command_with_path_dirs(cmd, dir, extra_path_dirs).await?,
+    ))
 }
 
 /// Execute a command by argv (no shell) with optional `kill_on_drop`.

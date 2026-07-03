@@ -1,7 +1,7 @@
 use std::{collections::HashSet, path::Path};
 
-use crate::{Config, Language, update_type::UpdateType};
-use anyhow::{Context, Result};
+use crate::{Config, Language, change_detection::should_mark_changed, update_type::UpdateType};
+use anyhow::Result;
 use async_trait::async_trait;
 
 /// Interface for single versioned packages.
@@ -29,9 +29,7 @@ pub trait Package: std::fmt::Debug + Send + Sync {
         if self.is_changed() {
             return Ok(());
         }
-        if !path.to_string_lossy().contains(".changepacks")
-            && path.starts_with(self.path().parent().context("Parent not found")?)
-        {
+        if should_mark_changed(path, self.path())? {
             self.set_changed(true);
         }
         Ok(())
@@ -88,12 +86,13 @@ pub trait Package: std::fmt::Debug + Send + Sync {
     #[cfg(not(tarpaulin_include))]
     async fn publish(&self, config: &Config) -> Result<crate::publish::PublishOutput> {
         let command = self.get_publish_command(config);
-        let dir = self
-            .path()
-            .parent()
-            .context("Package directory not found")?;
-        crate::publish::run_publish_command_with_path_dirs(&command, dir, &self.publish_path_dirs())
-            .await
+        crate::publish::run_publish_flow(
+            &command,
+            self.path(),
+            &self.publish_path_dirs(),
+            "Package directory not found",
+        )
+        .await
     }
 
     /// Run the publish command in dry-run mode to verify the pre-release flow
@@ -112,21 +111,14 @@ pub trait Package: std::fmt::Debug + Send + Sync {
         &self,
         config: &Config,
     ) -> Result<Option<crate::publish::PublishOutput>> {
-        let Some(command) = self.get_dry_run_publish_command(config) else {
-            return Ok(None);
-        };
-        let dir = self
-            .path()
-            .parent()
-            .context("Package directory not found")?;
-        Ok(Some(
-            crate::publish::run_publish_command_with_path_dirs(
-                &command,
-                dir,
-                &self.publish_path_dirs(),
-            )
-            .await?,
-        ))
+        let command = self.get_dry_run_publish_command(config);
+        crate::publish::run_dry_run_publish_flow(
+            command.as_deref(),
+            self.path(),
+            &self.publish_path_dirs(),
+            "Package directory not found",
+        )
+        .await
     }
 
     /// Get the publish command for this package, checking config first

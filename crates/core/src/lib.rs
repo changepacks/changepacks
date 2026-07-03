@@ -6,6 +6,7 @@
 //! implementations. The main traits are `Package` for single projects, `Workspace` for
 //! monorepo roots, and `ProjectFinder` for discovering projects in a git tree.
 
+mod change_detection;
 mod changepack_result;
 mod config;
 mod language;

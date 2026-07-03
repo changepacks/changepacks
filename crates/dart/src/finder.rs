@@ -46,15 +46,7 @@ impl ProjectFinder for DartProjectFinder {
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
         // glob all the pubspec.yaml in the root without .gitignore
-        if path.is_file()
-            && self.project_files().contains(
-                &path
-                    .file_name()
-                    .with_context(|| format!("File name not found - {}", path.display()))?
-                    .to_str()
-                    .with_context(|| format!("File name not found - {}", path.display()))?,
-            )
-        {
+        if self.matches_project_file(path)? {
             if self.projects.contains_key(path) {
                 return Ok(());
             }

@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::project::Project;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 
 /// Visitor pattern for discovering projects by walking the git tree.
@@ -16,6 +16,28 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// # Errors
     /// Returns error if the file visitation fails.
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()>;
+    /// Whether `path` is a project manifest file recognized by this finder.
+    ///
+    /// Returns `Ok(false)` for directories and files whose name is not in
+    /// `project_files()`. Used by language-specific `visit()` implementations
+    /// to gate manifest parsing on file-name matching. `CSharpProjectFinder`
+    /// intentionally uses `.extension()` matching instead and does not call
+    /// this method.
+    ///
+    /// # Errors
+    /// Returns error if the path has no file name component or the file name
+    /// is not valid UTF-8.
+    fn matches_project_file(&self, path: &Path) -> Result<bool> {
+        if !path.is_file() {
+            return Ok(false);
+        }
+        let name = path
+            .file_name()
+            .with_context(|| format!("File name not found - {}", path.display()))?
+            .to_str()
+            .with_context(|| format!("File name not found - {}", path.display()))?;
+        Ok(self.project_files().contains(&name))
+    }
     /// # Errors
     /// Returns error if checking changed status fails for any project.
     fn check_changed(&mut self, path: &Path) -> Result<()> {

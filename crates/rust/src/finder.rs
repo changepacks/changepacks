@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Package, Project, ProjectFinder};
 use std::{
@@ -60,15 +60,7 @@ impl ProjectFinder for RustProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        if path.is_file()
-            && self.project_files().contains(
-                &path
-                    .file_name()
-                    .with_context(|| format!("File name not found - {}", path.display()))?
-                    .to_str()
-                    .with_context(|| format!("File name not found - {}", path.display()))?,
-            )
-        {
+        if self.matches_project_file(path)? {
             if self.projects.contains_key(path) {
                 return Ok(());
             }
