@@ -64,48 +64,38 @@ impl ProjectFinder for PythonProjectFinder {
                 .get("project")
                 .with_context(|| format!("Project not found - {}", path.display()))?;
 
+            // Both branches use the same name/version and the same path;
+            // hoist so each branch collapses to a single constructor call.
+            let version = project
+                .get("version")
+                .and_then(|v| v.as_str())
+                .map(std::string::ToString::to_string);
+            let name = project
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(std::string::ToString::to_string);
+            let path_buf = path.to_path_buf();
+            let relative_path_buf = relative_path.to_path_buf();
+
             // if workspace
-            let (path, mut project) = if pyproject_toml
+            let mut project = if pyproject_toml
                 .get("tool")
                 .and_then(|t| t.get("uv").and_then(|u| u.get("workspace")))
                 .is_some()
             {
-                let version = project
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .map(std::string::ToString::to_string);
-                let name = project
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .map(std::string::ToString::to_string);
-                (
-                    path.to_path_buf(),
-                    Project::Workspace(Box::new(PythonWorkspace::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
+                Project::Workspace(Box::new(PythonWorkspace::new(
+                    name,
+                    version,
+                    path_buf.clone(),
+                    relative_path_buf,
+                )))
             } else {
-                let version = project
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .map(std::string::ToString::to_string);
-                let name = project
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .map(std::string::ToString::to_string);
-
-                (
-                    path.to_path_buf(),
-                    Project::Package(Box::new(PythonPackage::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
+                Project::Package(Box::new(PythonPackage::new(
+                    name,
+                    version,
+                    path_buf.clone(),
+                    relative_path_buf,
+                )))
             };
 
             // read tool.uv.sources section
@@ -125,7 +115,7 @@ impl ProjectFinder for PythonProjectFinder {
                 }
             }
 
-            self.projects.insert(path, project);
+            self.projects.insert(path_buf, project);
         }
         Ok(())
     }

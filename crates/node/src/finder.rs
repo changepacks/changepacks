@@ -61,45 +61,37 @@ impl ProjectFinder for NodeProjectFinder {
             // read package.json
             let package_json = read_to_string(path).await?;
             let package_json: serde_json::Value = serde_json::from_str(&package_json)?;
+            // Both branches use the same name/version and the same path;
+            // hoist so each branch collapses to a single constructor call.
+            let version = package_json["version"]
+                .as_str()
+                .map(std::string::ToString::to_string);
+            let name = package_json["name"]
+                .as_str()
+                .map(std::string::ToString::to_string);
+            let path_buf = path.to_path_buf();
+            let relative_path_buf = relative_path.to_path_buf();
             // if workspaces
-            let (path, mut project) = if package_json.get("workspaces").is_some()
+            let mut project = if package_json.get("workspaces").is_some()
                 || path
                     .parent()
                     .with_context(|| format!("Parent not found - {}", path.display()))?
                     .join("pnpm-workspace.yaml")
                     .is_file()
             {
-                let version = package_json["version"]
-                    .as_str()
-                    .map(std::string::ToString::to_string);
-                let name = package_json["name"]
-                    .as_str()
-                    .map(std::string::ToString::to_string);
-                (
-                    path.to_path_buf(),
-                    Project::Workspace(Box::new(NodeWorkspace::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
+                Project::Workspace(Box::new(NodeWorkspace::new(
+                    name,
+                    version,
+                    path_buf.clone(),
+                    relative_path_buf,
+                )))
             } else {
-                let version = package_json["version"]
-                    .as_str()
-                    .map(std::string::ToString::to_string);
-                let name = package_json["name"]
-                    .as_str()
-                    .map(std::string::ToString::to_string);
-                (
-                    path.to_path_buf(),
-                    Project::Package(Box::new(NodePackage::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
+                Project::Package(Box::new(NodePackage::new(
+                    name,
+                    version,
+                    path_buf.clone(),
+                    relative_path_buf,
+                )))
             };
 
             if let Some(deps) = package_json.get("dependencies").and_then(|d| d.as_object()) {
@@ -112,7 +104,7 @@ impl ProjectFinder for NodeProjectFinder {
                 }
             }
 
-            self.projects.insert(path, project);
+            self.projects.insert(path_buf, project);
         }
         Ok(())
     }

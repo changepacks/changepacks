@@ -28,7 +28,7 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
 
     let version_part = (version_parts[version_index]
         .parse::<usize>()
-        .context(format!("Invalid version: {version}"))?
+        .with_context(|| format!("Invalid version: {version}"))?
         + 1)
     .to_string();
     version_parts[version_index] = version_part.as_str();

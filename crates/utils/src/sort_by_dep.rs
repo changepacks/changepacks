@@ -1,5 +1,5 @@
 use changepacks_core::Project;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 /// Sort projects by their dependencies using topological sort.
 /// Projects with no dependencies or whose dependencies are already published will come first.
@@ -56,19 +56,21 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     }
 
     let mut sorted_indices: Vec<usize> = Vec::new();
-    let mut visited = HashSet::new();
+    // Indices are dense (`0..projects.len()`), so a bit-indexed `Vec<bool>`
+    // gives O(1) membership with no hashing overhead vs a `HashSet<usize>`.
+    let mut visited: Vec<bool> = vec![false; projects.len()];
 
     // Kahn's invariant: each node is pushed to the queue at most once, so the
-    // per-pop `visited.contains(&idx)` guard is unreachable. The initial fill
-    // enumerates each index exactly once, and inside the loop each edge is
-    // walked exactly once (deps are stored in a `HashSet<String>` so no
-    // duplicate edges, and `path_to_index.or(name_to_index)` short-circuits
-    // to a single index), so every `in_degree` decrement is unique and the
+    // per-pop membership guard is unreachable. The initial fill enumerates
+    // each index exactly once, and inside the loop each edge is walked
+    // exactly once (deps are stored in a `HashSet<String>` so no duplicate
+    // edges, and `path_to_index.or(name_to_index)` short-circuits to a
+    // single index), so every `in_degree` decrement is unique and the
     // `== 0` push happens at most once per node.
     // `visited` still tracks membership so the trailing cyclic-fallback loop
     // below can append nodes stranded in cycles.
     while let Some(idx) = queue.pop_front() {
-        visited.insert(idx);
+        visited[idx] = true;
         sorted_indices.push(idx);
 
         // Decrease in-degree of dependent projects
@@ -82,7 +84,7 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
 
     // Add any remaining projects that weren't part of the dependency graph
     for (idx, _) in projects.iter().enumerate() {
-        if !visited.contains(&idx) {
+        if !visited[idx] {
             sorted_indices.push(idx);
         }
     }
