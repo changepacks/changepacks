@@ -184,7 +184,14 @@ pub async fn find_project_dirs(
     // Collecting into a `HashSet<PathBuf>` collapses that to exactly one
     // traversal per unique file. Also keeps the `git_root_path.join(file)`
     // hoist from a previous iteration intact.
-    let unique_files: HashSet<PathBuf> = changed_files.into_iter().chain(diff).collect();
+    // Preallocate: `HashSet::from_iter` (via `collect`) does NOT use
+    // `size_hint` to reserve capacity (unlike `Vec`), so it incurs
+    // geometric-doubling reallocations. `changed_files.len() + diff.len()`
+    // is a tight upper bound (dedup can only shrink it).
+    let mut unique_files: HashSet<PathBuf> =
+        HashSet::with_capacity(changed_files.len() + diff.len());
+    unique_files.extend(changed_files);
+    unique_files.extend(diff);
     for file in &unique_files {
         let abs_path = git_root_path.join(file);
         for finder in project_finders.iter_mut() {

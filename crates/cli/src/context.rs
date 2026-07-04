@@ -73,10 +73,4 @@ impl CommandContext {
             changepacks_dir,
         })
     }
-
-    /// # Errors
-    /// Returns error if retrieving the current directory fails.
-    pub fn current_dir() -> Result<PathBuf> {
-        Ok(std::env::current_dir()?)
-    }
 }

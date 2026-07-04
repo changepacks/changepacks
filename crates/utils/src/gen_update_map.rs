@@ -201,7 +201,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // single `HashMap` allocation and cuts per-edge clones from 2 to 1
     // (`dep_path` is cloned once as the map key, vs. once for the set
     // insert and once again for the vec push in the old shape).
-    let mut packages_to_add: HashMap<PathBuf, String> = HashMap::new();
+    let mut packages_to_add: HashMap<PathBuf, String> = HashMap::with_capacity(projects.len());
 
     // Initial set of updated package names via O(1) path -> name lookup.
     // Collect straight into the DFS work queue: dedup at THIS step is

@@ -188,13 +188,12 @@ async fn collect_nupkgs(dir: &Path) -> Result<Vec<String>> {
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("nupkg"));
-        // Skip symbol packages — `dotnet nuget push` rejects pushing them as
-        // primary packages.
-        let is_snupkg = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.to_ascii_lowercase().ends_with(".snupkg"));
-        if is_nupkg && !is_snupkg {
+        // Symbol packages (`.snupkg`) never satisfy the `is_nupkg` extension
+        // check above — the extension is literally `"snupkg"`, which is never
+        // equal-ignore-case to `"nupkg"` (different lengths). So the extension
+        // filter alone is sufficient; no explicit `is_snupkg` guard needed.
+        // `dotnet nuget push` would otherwise reject them as primary packages.
+        if is_nupkg {
             out.push(path.to_string_lossy().into_owned());
         }
     }

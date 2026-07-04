@@ -4,7 +4,7 @@ use thiserror::Error;
 
 /// Error type for user cancellation (Ctrl+C or ESC)
 #[derive(Debug, Error)]
-#[error("")]
+#[error("operation cancelled by user")]
 pub struct UserCancelled;
 
 /// Dependency injection interface for interactive prompts.

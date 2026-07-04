@@ -207,8 +207,17 @@ async fn execute_dry_run_publish_loop(
     // Borrow the names directly from the projects (which outlive the loop)
     // to skip the per-name `String` allocation the old `HashSet<String>`
     // version paid on every publish call.
-    let bumped_package_names: std::collections::HashSet<&str> =
-        projects.iter().filter_map(|p| p.name()).collect();
+    // Preallocate: `HashSet::from_iter` (via `collect`) does NOT use
+    // `size_hint` to reserve capacity (unlike `Vec`), so it incurs
+    // geometric-doubling reallocations. `projects.len()` is a tight upper
+    // bound (the `filter_map` only drops nameless projects).
+    let mut bumped_package_names: std::collections::HashSet<&str> =
+        std::collections::HashSet::with_capacity(projects.len());
+    for p in projects {
+        if let Some(name) = p.name() {
+            bumped_package_names.insert(name);
+        }
+    }
 
     for project in projects {
         if skip_dry_run_due_to_workspace_internal_dep(project, &bumped_package_names) {

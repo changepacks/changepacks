@@ -193,7 +193,13 @@ fn collect_update_projects<'a>(
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
 ) -> Result<(Vec<UpdateProjectMut<'a>>, Vec<WorkspaceRef<'a>>)> {
-    let mut update_projects = Vec::new();
+    // Preallocate: `update_map.len()` is a tight upper bound for
+    // `update_projects` (only projects matching the update_map are pushed).
+    // Matches the preallocation policy applied throughout `sort_by_dep.rs`
+    // and `apply_reverse_dependencies`. `workspace_projects` is left as
+    // `Vec::new()` because its true upper bound requires a walk of every
+    // finder's projects — a modest default doesn't beat lazy allocation.
+    let mut update_projects = Vec::with_capacity(update_map.len());
     let mut workspace_projects = Vec::new();
 
     for finder in project_finders {

@@ -34,6 +34,17 @@ pub struct CheckArgs {
     pub language: Vec<CliLanguage>,
 }
 
+/// Format a project's version as `v{version}` or `"unknown"` when absent.
+///
+/// Extracted so `handle_check` and `format_project_line` share ONE
+/// definition — the two display paths must stay in lock-step for any
+/// future format tweak (e.g. adding a suffix, changing "unknown" wording).
+fn version_display(project: &Project) -> String {
+    project
+        .version()
+        .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
+}
+
 /// Check project status
 ///
 /// # Errors
@@ -86,19 +97,14 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                     } else {
                         "".normal()
                     };
-                    let unknown_or_versioned = || {
-                        project
-                            .version()
-                            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
-                    };
                     let version_str = if update_map_empty {
-                        unknown_or_versioned()
+                        version_display(project)
                     } else if let Some(update_type) =
                         update_map.get(&get_relative_path(&ctx.repo_root_path, project.path())?)
                     {
                         display_update(project.version(), update_type.0)?
                     } else {
-                        unknown_or_versioned()
+                        version_display(project)
                     };
                     println!(
                         "{}{}",
@@ -135,15 +141,18 @@ fn display_tree(
     // Create a map from project name (fallback "noname") to project.
     // Project names — not paths — key this map because both the graph and the
     // dependency lookups (`project.dependencies()`) speak the *name* namespace.
-    let mut name_to_project: HashMap<String, &Project> = HashMap::new();
+    let mut name_to_project: HashMap<String, &Project> = HashMap::with_capacity(projects.len());
     for project in projects {
         name_to_project.insert(project.name().unwrap_or("noname").to_string(), project);
     }
 
     // Build reverse dependency graph: graph[dep] = list of projects that depend on dep
     // This way, dependencies appear as children in the tree
-    let mut graph: HashMap<String, Vec<String>> = HashMap::new();
-    let mut roots: HashSet<String> = HashSet::new();
+    // Preallocate: `projects.len()` is a tight upper bound for every map/set built
+    // below by a single pass over `projects`. Matches the preallocation policy
+    // already applied in `sort_by_dep.rs` and `apply_reverse_dependencies`.
+    let mut graph: HashMap<String, Vec<String>> = HashMap::with_capacity(projects.len());
+    let mut roots: HashSet<String> = HashSet::with_capacity(projects.len());
 
     for project in projects {
         let deps = project.dependencies();
@@ -324,9 +333,7 @@ fn format_project_line(
     let version = if let Some(update_entry) = update_map.get(&relative_path) {
         changepacks_utils::display_update(project.version(), update_entry.0)?
     } else {
-        project
-            .version()
-            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
+        version_display(project)
     };
 
     let changed_marker = if project.is_changed() {
