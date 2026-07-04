@@ -27,8 +27,18 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// # Errors
     /// Returns error if the path has no file name component or the file name
     /// is not valid UTF-8.
-    fn matches_project_file(&self, path: &Path) -> Result<bool> {
-        if !path.is_file() {
+    ///
+    /// AGENTS.md rule: never blocking I/O in async — use tokio::fs::metadata.
+    /// `unwrap_or(false)` matches the previous sync `is_file()` semantics on
+    /// stat errors (broken symlink, permission denied): treat as "not a file"
+    /// and short-circuit, rather than propagating an error the caller would
+    /// silently ignore.
+    async fn matches_project_file(&self, path: &Path) -> Result<bool> {
+        let is_file = tokio::fs::metadata(path)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false);
+        if !is_file {
             return Ok(false);
         }
         let name = path

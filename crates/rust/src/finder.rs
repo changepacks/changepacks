@@ -60,7 +60,7 @@ impl ProjectFinder for RustProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        if self.matches_project_file(path)? {
+        if self.matches_project_file(path).await? {
             if self.projects.contains_key(path) {
                 return Ok(());
             }

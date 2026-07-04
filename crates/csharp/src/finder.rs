@@ -163,7 +163,16 @@ impl ProjectFinder for CSharpProjectFinder {
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
         // Check if this is a .csproj file
-        if path.is_file() {
+        // AGENTS.md rule: never blocking I/O in async — use tokio::fs::metadata.
+        // `unwrap_or(false)` matches the previous sync `is_file()` semantics on
+        // stat errors (broken symlink, permission denied): treat as "not a
+        // file" and short-circuit, rather than propagating an error the caller
+        // would silently ignore.
+        let is_file = tokio::fs::metadata(path)
+            .await
+            .map(|m| m.is_file())
+            .unwrap_or(false);
+        if is_file {
             let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
             if extension != "csproj" {

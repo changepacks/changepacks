@@ -46,7 +46,7 @@ impl ProjectFinder for NodeProjectFinder {
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
         // glob all the package.json in the root without .gitignore
-        if self.matches_project_file(path)? {
+        if self.matches_project_file(path).await? {
             if self.projects.contains_key(path) {
                 return Ok(());
             }

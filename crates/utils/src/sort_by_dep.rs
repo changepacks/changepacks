@@ -69,9 +69,6 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     // the ~log2(N) geometric-doubling reallocations `Vec::new()` would
     // otherwise incur on every `publish` / `check --tree` invocation.
     let mut sorted_indices: Vec<usize> = Vec::with_capacity(projects.len());
-    // Indices are dense (`0..projects.len()`), so a bit-indexed `Vec<bool>`
-    // gives O(1) membership with no hashing overhead vs a `HashSet<usize>`.
-    let mut visited: Vec<bool> = vec![false; projects.len()];
 
     // Kahn's invariant: each node is pushed to the queue at most once, so the
     // per-pop membership guard is unreachable. The initial fill enumerates
@@ -80,10 +77,14 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     // edges, and `name_to_index.get(dep)` resolves each dep to a single
     // index), so every `in_degree` decrement is unique and the `== 0`
     // push happens at most once per node.
-    // `visited` still tracks membership so the trailing cyclic-fallback loop
-    // below can append nodes stranded in cycles.
+    // After the loop drains, `in_degree[idx] == 0` iff `idx` was popped and
+    // its outgoing edges walked — i.e. it is on the acyclic frontier and
+    // already in `sorted_indices`. Any `in_degree[idx] > 0` node is exactly
+    // a cyclic node whose remaining dependency was never decremented to 0;
+    // the trailing cyclic-fallback loop appends those. This makes the
+    // dedicated `visited: Vec<bool>` redundant with `in_degree`, so we drop
+    // its allocation + per-pop write and reuse Kahn's canonical marker.
     while let Some(idx) = queue.pop_front() {
-        visited[idx] = true;
         sorted_indices.push(idx);
 
         // Decrease in-degree of dependent projects
@@ -95,9 +96,10 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
         }
     }
 
-    // Add any remaining projects that weren't part of the dependency graph
-    for (idx, _) in projects.iter().enumerate() {
-        if !visited[idx] {
+    // Add any remaining projects that weren't part of the dependency graph.
+    // Cyclic nodes are exactly those whose `in_degree` never reached 0.
+    for (idx, &degree) in in_degree.iter().enumerate() {
+        if degree > 0 {
             sorted_indices.push(idx);
         }
     }

@@ -76,7 +76,7 @@ fn which_java() -> Option<PathBuf> {
 /// which CI exercises via the matrix build but tarpaulin sees only on
 /// Linux.
 #[cfg(not(tarpaulin_include))]
-fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+async fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let gradlew_name = if cfg!(windows) {
         "gradlew.bat"
     } else {
@@ -86,7 +86,12 @@ fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut current = start_dir.to_path_buf();
     loop {
         let gradlew = current.join(gradlew_name);
-        if gradlew.exists() {
+        // AGENTS.md rule: never blocking I/O in async — use tokio::fs::try_exists.
+        // `unwrap_or(false)` matches the previous sync `.exists()` semantics on
+        // stat errors (permission denied, broken symlink): treat as "does not
+        // exist" and keep walking up rather than aborting the search.
+        let exists = tokio::fs::try_exists(&gradlew).await.unwrap_or(false);
+        if exists {
             return Some((gradlew, current));
         }
         if !current.pop() {
@@ -108,7 +113,7 @@ fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
 /// platform arms (sh vs cmd) get hit.
 #[cfg(not(tarpaulin_include))]
 async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
-    let (gradlew, gradlew_dir) = find_gradlew(project_dir).context(
+    let (gradlew, gradlew_dir) = find_gradlew(project_dir).await.context(
         "Gradle wrapper (gradlew) not found. \
          Ensure the project root contains gradlew or gradlew.bat.",
     )?;
@@ -217,7 +222,7 @@ impl ProjectFinder for GradleProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        if self.matches_project_file(path)? {
+        if self.matches_project_file(path).await? {
             if self.projects.contains_key(path) {
                 return Ok(());
             }
@@ -607,8 +612,8 @@ version = "1.0.0"
         temp_dir.close().unwrap();
     }
 
-    #[test]
-    fn test_find_gradlew_in_same_dir() {
+    #[tokio::test]
+    async fn test_find_gradlew_in_same_dir() {
         let temp_dir = TempDir::new().unwrap();
 
         if cfg!(windows) {
@@ -617,7 +622,7 @@ version = "1.0.0"
             fs::write(temp_dir.path().join("gradlew"), "#!/bin/sh").unwrap();
         }
 
-        let result = find_gradlew(temp_dir.path());
+        let result = find_gradlew(temp_dir.path()).await;
         assert!(result.is_some());
         let (_, gradlew_dir) = result.unwrap();
         assert_eq!(gradlew_dir, temp_dir.path());
@@ -625,8 +630,8 @@ version = "1.0.0"
         temp_dir.close().unwrap();
     }
 
-    #[test]
-    fn test_find_gradlew_in_parent_dir() {
+    #[tokio::test]
+    async fn test_find_gradlew_in_parent_dir() {
         let temp_dir = TempDir::new().unwrap();
         let subproject = temp_dir.path().join("libs").join("core");
         fs::create_dir_all(&subproject).unwrap();
@@ -638,7 +643,7 @@ version = "1.0.0"
             fs::write(temp_dir.path().join("gradlew"), "#!/bin/sh").unwrap();
         }
 
-        let result = find_gradlew(&subproject);
+        let result = find_gradlew(&subproject).await;
         assert!(result.is_some());
         let (_, gradlew_dir) = result.unwrap();
         assert_eq!(gradlew_dir, temp_dir.path().to_path_buf());
@@ -646,8 +651,8 @@ version = "1.0.0"
         temp_dir.close().unwrap();
     }
 
-    #[test]
-    fn test_find_gradlew_not_found() {
+    #[tokio::test]
+    async fn test_find_gradlew_not_found() {
         let temp_dir = TempDir::new().unwrap();
         let subdir = temp_dir.path().join("no_gradlew_here");
         fs::create_dir_all(&subdir).unwrap();
@@ -656,7 +661,7 @@ version = "1.0.0"
         // root, so this test just verifies it doesn't panic. In practice it
         // returns None only when no gradlew exists anywhere up the tree.
         // For a reliable "not found" test, we rely on the no-gradlew properties test below.
-        let _ = find_gradlew(&subdir);
+        let _ = find_gradlew(&subdir).await;
 
         temp_dir.close().unwrap();
     }
