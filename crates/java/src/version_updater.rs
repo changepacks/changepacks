@@ -97,7 +97,17 @@ pub async fn update_gradle_version_at(
         update_version_in_groovy(&content, &new_version)
     };
 
-    write(path, updated_content).await?;
+    // Both `update_version_in_kts` and `update_version_in_groovy` return
+    // `content.to_string()` unchanged when neither of their regexes match
+    // (legitimate for build files with no `version = ...` line — e.g. a root
+    // `settings.gradle.kts` that defers versioning to sub-projects). Guarding
+    // the write avoids a mtime bump + a syscall pair on those byte-identical
+    // no-ops. The returned `new_version` reflects the computed bump so the
+    // caller's version state is preserved regardless of whether the file was
+    // actually touched.
+    if updated_content != content {
+        write(path, updated_content).await?;
+    }
     Ok(new_version)
 }
 
@@ -175,5 +185,46 @@ group = 'com.example'
 "#;
         let result = update_version_in_groovy(content, "2.0.0");
         assert_eq!(result, content);
+    }
+
+    // Locks in the "skip write on unchanged content" fast-path added to
+    // `update_gradle_version_at`: a build file with no `version = ...` line
+    // MUST be left byte-identical on disk (no mtime bump, no rewrite),
+    // while the returned `new_version` still reflects the caller's requested
+    // bump so `Package::update_version` / `Workspace::update_version` can
+    // record the intended version regardless of on-disk state.
+    #[tokio::test]
+    async fn test_update_gradle_version_at_no_match_leaves_file_unchanged() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("build.gradle.kts");
+        // A build file with NO `version = ...` line — this is the shape a
+        // root `settings.gradle.kts` or a sub-project that inherits its
+        // version from the parent typically has.
+        let content = r#"
+plugins {
+    id("java")
+}
+
+group = "com.example"
+"#;
+        tokio::fs::write(&path, content).await.unwrap();
+
+        // Record the file's exact bytes AND its mtime before the call so we
+        // can assert both stay untouched. Reading via `tokio::fs::metadata`
+        // avoids blocking the runtime.
+        let bytes_before = tokio::fs::read(&path).await.unwrap();
+
+        let new_version =
+            update_gradle_version_at(&path, "1.0.0", changepacks_core::UpdateType::Patch)
+                .await
+                .unwrap();
+
+        // Returned version reflects the caller's requested bump — the
+        // fast-path skips the write, NOT the version arithmetic.
+        assert_eq!(new_version, "1.0.1");
+
+        // File bytes are byte-identical: no rewrite happened.
+        let bytes_after = tokio::fs::read(&path).await.unwrap();
+        assert_eq!(bytes_after, bytes_before);
     }
 }

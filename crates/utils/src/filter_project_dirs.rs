@@ -1,4 +1,3 @@
-use crate::get_relative_path;
 use anyhow::{Context, Result};
 use changepacks_core::{Config, ProjectFinder};
 use gix::{ThreadSafeRepository, bstr::ByteSlice, features::progress};
@@ -69,11 +68,15 @@ pub async fn find_project_dirs(
         // Check if this file matches any of the project files
         // Insert absolute path using git_root_path.join(parent)
         let abs_path = git_root_path.join(path);
-        let rel_path = get_relative_path(git_root_path, &abs_path)?;
+        // `path` is ALREADY the git-relative path from the gix index entry, so
+        // the previous `get_relative_path(git_root_path, git_root_path.join(path))`
+        // trip was strip_prefix over the same prefix we just joined — a
+        // guaranteed round-trip that allocated a fresh `PathBuf` per tracked
+        // file. Pass `path` (which is `&Path`) directly to both call sites.
 
         // Skip if path matches ignore patterns (gitignore supports ! negation)
         if let Some(ref gitignore) = gitignore
-            && gitignore.matched(&rel_path, false).is_ignore()
+            && gitignore.matched(path, false).is_ignore()
         {
             continue;
         }
@@ -81,7 +84,7 @@ pub async fn find_project_dirs(
         futures::future::join_all(
             project_finders
                 .iter_mut()
-                .map(async |finder| finder.visit(&abs_path, &rel_path).await),
+                .map(async |finder| finder.visit(&abs_path, path).await),
         )
         .await
         .into_iter()
@@ -125,20 +128,9 @@ pub async fn find_project_dirs(
         }
     }
 
-    let changed_files = repo
-        .status(progress::Discard)?
-        .into_index_worktree_iter(Vec::new())?
-        .filter_map(|entry| {
-            entry.ok().and_then(|entry| {
-                entry
-                    .rela_path()
-                    .to_path()
-                    .ok()
-                    .map(std::path::Path::to_path_buf)
-            })
-        })
-        .collect::<Vec<_>>();
-    // diff from main branch
+    // diff from main branch — compute FIRST so `diff.len()` can seed the
+    // `unique_files` capacity below without an intermediate
+    // `changed_files: Vec<PathBuf>` allocation for the status entries.
     let main_tree = if remote {
         peel_to_tree(
             repo.find_remote("origin")?
@@ -179,7 +171,7 @@ pub async fn find_project_dirs(
         })
         .collect::<Vec<_>>();
 
-    // Dedupe changed_files ∪ diff before dispatching to `check_changed`.
+    // Dedupe status ∪ diff before dispatching to `check_changed`.
     // The common case during a live edit against `main` is a file that has
     // both an uncommitted local edit AND appears in the base-branch diff, so
     // the previous `chain(...)` walked it twice — once per list — and each
@@ -190,13 +182,31 @@ pub async fn find_project_dirs(
     // Collecting into a `HashSet<PathBuf>` collapses that to exactly one
     // traversal per unique file. Also keeps the `git_root_path.join(file)`
     // hoist from a previous iteration intact.
+    //
     // Preallocate: `HashSet::from_iter` (via `collect`) does NOT use
     // `size_hint` to reserve capacity (unlike `Vec`), so it incurs
-    // geometric-doubling reallocations. `changed_files.len() + diff.len()`
-    // is a tight upper bound (dedup can only shrink it).
-    let mut unique_files: HashSet<PathBuf> =
-        HashSet::with_capacity(changed_files.len() + diff.len());
-    unique_files.extend(changed_files);
+    // geometric-doubling reallocations. The intermediate
+    // `changed_files: Vec<PathBuf>` from the status iterator was pure
+    // waste — its sole consumer was `unique_files.extend(changed_files)`,
+    // so we skip the Vec entirely and extend the HashSet directly from
+    // the status iterator. `diff.len() * 2` is a conservative estimate
+    // (typical live-edit repos have status entries in the same order of
+    // magnitude as base-branch diff entries) that avoids reserving too
+    // little without unbounded over-allocation.
+    let mut unique_files: HashSet<PathBuf> = HashSet::with_capacity(diff.len() * 2);
+    unique_files.extend(
+        repo.status(progress::Discard)?
+            .into_index_worktree_iter(Vec::new())?
+            .filter_map(|entry| {
+                entry.ok().and_then(|entry| {
+                    entry
+                        .rela_path()
+                        .to_path()
+                        .ok()
+                        .map(std::path::Path::to_path_buf)
+                })
+            }),
+    );
     unique_files.extend(diff);
     for file in &unique_files {
         let abs_path = git_root_path.join(file);

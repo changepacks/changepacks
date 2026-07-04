@@ -1,5 +1,6 @@
 use anyhow::Result;
 use changepacks_core::Project;
+use std::fmt::Write as _;
 use thiserror::Error;
 
 /// Error type for user cancellation (Ctrl+C or ESC)
@@ -54,12 +55,25 @@ pub(crate) fn score_project(project: &Project) -> Option<i64> {
 }
 
 /// Format selected projects as a newline-separated display string.
+///
+/// Builds the output via a single running `String` (`fmt::Write::write!` per
+/// item, `push('\n')` between items) instead of the previous
+/// `.map(|p| format!(...)).collect::<Vec<_>>().join("\n")` chain, which
+/// allocated N `String`s (one per project), a `Vec<String>` of N entries, and
+/// the final joined `String`. Called on every redraw inside the
+/// `inquire::MultiSelect` formatter closure, so the savings compound with UI
+/// updates.
 pub(crate) fn format_selected_projects(projects: &[&Project]) -> String {
-    projects
-        .iter()
-        .map(|p| format!("{p}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = String::new();
+    for (i, p) in projects.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        // Writing into a `String` via `fmt::Write` never returns `Err`, so
+        // the discarded `Result` is `Ok(())` in practice.
+        let _ = write!(&mut out, "{p}");
+    }
+    out
 }
 
 /// Real implementation using inquire crate

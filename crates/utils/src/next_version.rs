@@ -39,8 +39,14 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
         None => (patch, None),
     };
 
-    let parse = |s: &str| -> Result<usize> {
-        s.parse::<usize>()
+    // Version components are semver-scoped (spec: 32-bit safe), so `usize`
+    // was the wrong type for a serialized format: platform-dependent (32 vs
+    // 64 bit). `u64` matches semver's practical upper bound and gives us
+    // cross-platform determinism for edge inputs. `Display` for `u64` is
+    // byte-identical to `Display` for `usize` at the values real semver
+    // components hit, so the `format!` outputs stay unchanged.
+    let parse = |s: &str| -> Result<u64> {
+        s.parse::<u64>()
             .with_context(|| format!("Invalid version: {version}"))
     };
 

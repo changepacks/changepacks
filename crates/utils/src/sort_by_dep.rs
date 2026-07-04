@@ -110,8 +110,16 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
         }
     }
 
-    // Reorder projects based on sorted indices (no cloning, just reordering references)
-    sorted_indices.iter().map(|&idx| projects[idx]).collect()
+    // Reorder projects based on sorted indices (no cloning, just reordering references).
+    // `sorted_indices` is dropped immediately after this expression, so
+    // consuming it via `into_iter()` yields `usize` (Copy) values directly
+    // and drops the `|&idx|` pattern. Zero perf change (compiler already
+    // elides), but the intent — "consume the vector" — reads clearer than
+    // "borrow every element then drop the borrow".
+    sorted_indices
+        .into_iter()
+        .map(|idx| projects[idx])
+        .collect()
 }
 
 #[cfg(test)]
