@@ -260,13 +260,24 @@ impl ProjectFinder for RustProjectFinder {
                     && let Ok(parsed) = content.parse::<toml_edit::DocumentMut>()
                     && let Some(version) = workspace_package_str(&parsed, "version")
                 {
+                    // Hoist `candidate` into a `root_path` local so both the
+                    // `self.workspace_root_path` write and the `self.projects`
+                    // insert key resolve to the same value without re-`clone()
+                    // .unwrap()`ing back out of `workspace_root_path`. Retires
+                    // one `.unwrap()` — the insert key was previously
+                    // `self.workspace_root_path.clone().unwrap()` on the value
+                    // we already have in hand as `candidate`. Byte-identical
+                    // semantics: the map key inserted into `self.projects` and
+                    // the path stored in `self.workspace_root_path` remain the
+                    // same `candidate` value.
+                    let root_path = candidate;
                     self.workspace_package_version = Some(version);
-                    self.workspace_root_path = Some(candidate.clone());
+                    self.workspace_root_path = Some(root_path.clone());
 
                     // Insert synthetic workspace project so apply_updates() can find it
                     let ws_name = package_str(&parsed, "name");
                     let ws_pkg_version = package_str(&parsed, "version");
-                    let ws_relative_path = candidate
+                    let ws_relative_path = root_path
                         .strip_prefix(&git_root)
                         .unwrap_or(Path::new("Cargo.toml"))
                         .to_path_buf();
@@ -275,13 +286,11 @@ impl ProjectFinder for RustProjectFinder {
                         ws_name,
                         // For virtual workspaces (no [package]), use [workspace.package].version
                         ws_pkg_version.or_else(|| self.workspace_package_version.clone()),
-                        candidate,
+                        root_path.clone(),
                         ws_relative_path,
                     );
-                    self.projects.insert(
-                        self.workspace_root_path.clone().unwrap(),
-                        Project::Workspace(Box::new(workspace)),
-                    );
+                    self.projects
+                        .insert(root_path, Project::Workspace(Box::new(workspace)));
                     break;
                 }
             }

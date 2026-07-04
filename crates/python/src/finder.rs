@@ -79,7 +79,12 @@ impl ProjectFinder for PythonProjectFinder {
             // hoist so each branch collapses to a single constructor call.
             let version = project_str(project, "version");
             let name = project_str(project, "name");
-            let path_buf = path.to_path_buf();
+            // Rename `path_buf` → `path_key` to align with the Java and
+            // CSharp finders' local naming convention: the value is used
+            // once as the `HashMap` insert key (the "key" role), while
+            // the branch constructors take their own owned `PathBuf` via
+            // `.clone()`. Pure rename — clone count is unchanged.
+            let path_key = path.to_path_buf();
             let relative_path_buf = relative_path.to_path_buf();
 
             // if workspace
@@ -91,14 +96,14 @@ impl ProjectFinder for PythonProjectFinder {
                 Project::Workspace(Box::new(PythonWorkspace::new(
                     name,
                     version,
-                    path_buf.clone(),
+                    path_key.clone(),
                     relative_path_buf,
                 )))
             } else {
                 Project::Package(Box::new(PythonPackage::new(
                     name,
                     version,
-                    path_buf.clone(),
+                    path_key.clone(),
                     relative_path_buf,
                 )))
             };
@@ -120,7 +125,7 @@ impl ProjectFinder for PythonProjectFinder {
                 }
             }
 
-            self.projects.insert(path_buf, project);
+            self.projects.insert(path_key, project);
         }
         Ok(())
     }

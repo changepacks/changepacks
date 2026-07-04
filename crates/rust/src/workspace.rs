@@ -160,6 +160,22 @@ impl Workspace for RustWorkspace {
     changepacks_core::impl_dependencies_accessors!();
 
     async fn update_workspace_dependencies(&self, packages: &[&dyn Package]) -> Result<()> {
+        // Fast-path: if the caller feeds a cross-language `packages` slice
+        // with zero eligible Rust entries (a common shape when the Node /
+        // Python / Dart workspaces of a polyglot monorepo are updated in the
+        // same `changepacks update` invocation), the per-package guard
+        // (`package.language() != Language::Rust { continue }`) below would
+        // drop every entry, `any_updated` would stay `false`, and the write
+        // branch would already never run — but the `read_to_string` + full
+        // `DocumentMut` parse would have already happened. Mirrors the
+        // "no scheduled work → skip" shape `apply_update_on_rules` and
+        // `apply_reverse_dependencies` already use in `changepacks-utils`.
+        if !packages
+            .iter()
+            .any(|p| p.language() == Language::Rust && p.name().is_some())
+        {
+            return Ok(());
+        }
         let cargo_toml_raw = read_to_string(&self.path).await?;
         let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
 

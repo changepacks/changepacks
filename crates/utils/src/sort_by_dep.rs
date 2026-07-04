@@ -104,9 +104,23 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
 
     // Add any remaining projects that weren't part of the dependency graph.
     // Cyclic nodes are exactly those whose `in_degree` never reached 0.
-    for (idx, &degree) in in_degree.iter().enumerate() {
-        if degree > 0 {
-            sorted_indices.push(idx);
+    //
+    // Fast-path: on an acyclic DAG (the always-taken case for well-formed
+    // monorepos on `changepacks publish` / `check --tree`), Kahn's loop
+    // above already drained every node into `sorted_indices`, so
+    // `sorted_indices.len() == projects.len()`. In that case the walk
+    // below would iterate all N indices only to find `degree == 0`
+    // everywhere and push nothing. Guarding on the length check skips the
+    // N-length walk on the common path — cyclic runs (rare, and hit at
+    // most once per invocation) still fall through and pick up any nodes
+    // whose `in_degree` never reached 0. Byte-identical output: Kahn's
+    // invariant guarantees `sorted_indices.len() < projects.len()` iff
+    // at least one node has `in_degree > 0`.
+    if sorted_indices.len() < projects.len() {
+        for (idx, &degree) in in_degree.iter().enumerate() {
+            if degree > 0 {
+                sorted_indices.push(idx);
+            }
         }
     }
 

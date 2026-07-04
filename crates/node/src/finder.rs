@@ -60,7 +60,13 @@ impl ProjectFinder for NodeProjectFinder {
             let name = package_json["name"]
                 .as_str()
                 .map(std::string::ToString::to_string);
-            let path_buf = path.to_path_buf();
+            // Rename `path_buf` → `path_key` to align with the Java, CSharp,
+            // and (post-#4) Python finders' local naming convention: the
+            // value is used once as the `HashMap` insert key (the "key"
+            // role), while the branch constructors take their own owned
+            // `PathBuf` via `.clone()`. Pure rename — clone count is
+            // unchanged.
+            let path_key = path.to_path_buf();
             let relative_path_buf = relative_path.to_path_buf();
             // Workspace detection is short-circuited: a `workspaces` field in
             // `package.json` (npm / yarn / bun monorepos — the common case)
@@ -86,14 +92,14 @@ impl ProjectFinder for NodeProjectFinder {
                 Project::Workspace(Box::new(NodeWorkspace::new(
                     name,
                     version,
-                    path_buf.clone(),
+                    path_key.clone(),
                     relative_path_buf,
                 )))
             } else {
                 Project::Package(Box::new(NodePackage::new(
                     name,
                     version,
-                    path_buf.clone(),
+                    path_key.clone(),
                     relative_path_buf,
                 )))
             };
@@ -108,7 +114,7 @@ impl ProjectFinder for NodeProjectFinder {
                 }
             }
 
-            self.projects.insert(path_buf, project);
+            self.projects.insert(path_key, project);
         }
         Ok(())
     }
