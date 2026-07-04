@@ -175,16 +175,25 @@ fn display_tree(
 
     for project in projects {
         let deps = project.dependencies();
-        // Filter dependencies to only include monorepo projects
+        // Filter dependencies to only include monorepo projects.
         // `name_to_project` now keys on `&str` (see the map's declaration
         // above); the lookup uses `dep.as_str()` because
         // `HashMap<&str, _>::contains_key(&Q)` resolves with `Q = str`
         // (via `&str: Borrow<str>`), not `Q = String`.
-        let monorepo_deps: Vec<String> = deps
-            .iter()
-            .filter(|dep| name_to_project.contains_key(dep.as_str()))
-            .cloned()
-            .collect();
+        //
+        // Preallocate: `.filter().cloned().collect::<Vec<_>>()` cannot
+        // preallocate because `Filter::size_hint` only reports
+        // `(0, Some(deps.len()))` and `Vec::from_iter` uses the LOWER
+        // bound, incurring geometric-doubling reallocations on wide dep
+        // lists. `deps.len()` is the tight upper bound. Matches the
+        // preallocation policy already applied at lines 159, 169, 174,
+        // 225, and 256 of the same function.
+        let mut monorepo_deps: Vec<String> = Vec::with_capacity(deps.len());
+        for dep in deps {
+            if name_to_project.contains_key(dep.as_str()) {
+                monorepo_deps.push(dep.clone());
+            }
+        }
 
         if !monorepo_deps.is_empty() {
             graph.insert(

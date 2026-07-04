@@ -31,6 +31,12 @@ pub fn gen_changepack_result_map<S: BuildHasher>(
         let version = project.version().map(std::string::ToString::to_string);
         let name = project.name().map(std::string::ToString::to_string);
         let changed = project.is_changed();
+        // Hoist the `ChangePackResult` key out of the two match arms — the
+        // arms are alternatives (only ONE runs per project), so cloning
+        // inside each arm forced 2 `PathBuf` clones per project when only 1
+        // was ever kept. Now we clone once here and move the copy into
+        // whichever arm executes; `key` itself still moves into `map.insert`.
+        let key_for_result = key.clone();
         let result = match update_result.remove(&key) {
             Some((update_type, notes)) => {
                 // Reuse the already-materialized `version` string above instead
@@ -39,12 +45,12 @@ pub fn gen_changepack_result_map<S: BuildHasher>(
                 // when the project has no version) but avoids the second
                 // trait-object hop per project on every `update`/`check`.
                 let next = next_version(version.as_deref().unwrap_or("0.0.0"), update_type)?;
-                ChangePackResult::new(notes, version, Some(next), name, changed, key.clone())
+                ChangePackResult::new(notes, version, Some(next), name, changed, key_for_result)
             }
-            None => ChangePackResult::new(vec![], version, None, name, changed, key.clone()),
+            None => ChangePackResult::new(vec![], version, None, name, changed, key_for_result),
         };
         // `key` is not used past this insert, so move it in — the two match
-        // arms above already own their own `key.clone()` copy.
+        // arms above share the single `key_for_result` clone.
         map.insert(key, result);
     }
     Ok(map)

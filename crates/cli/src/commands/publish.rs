@@ -68,8 +68,16 @@ pub async fn handle_publish_with_prompter(
     // `.contains(&normalized_path)` call site (`HashSet<String>` accepts it
     // identically to `Vec<String>`).
     if !args.project.is_empty() {
-        let normalized_args: std::collections::HashSet<String> =
-            args.project.iter().map(|p| p.replace('\\', "/")).collect();
+        // Preallocate: `HashSet::from_iter` (via `collect`) does NOT use
+        // `size_hint` to reserve capacity, so it incurs geometric-doubling
+        // reallocations. `args.project.len()` is the exact upper bound
+        // (each `--project` flag produces exactly one entry).
+        // Matches the preallocation policy already applied to
+        // `bumped_package_names` a few lines below and to every other
+        // `HashSet` preallocation site in the workspace.
+        let mut normalized_args: std::collections::HashSet<String> =
+            std::collections::HashSet::with_capacity(args.project.len());
+        normalized_args.extend(args.project.iter().map(|p| p.replace('\\', "/")));
         projects.retain(|project| {
             let relative_path = project.relative_path().to_string_lossy();
             let normalized_path = relative_path.replace('\\', "/");

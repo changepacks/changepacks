@@ -105,27 +105,39 @@ pub async fn find_project_dirs(
 
     // Fallback: set git repo name for projects with no name
     // Priority: remote origin repo name > directory name
-    let repo_name = repo
-        .try_find_remote("origin")
-        .and_then(|r| r.ok())
-        .and_then(|remote| {
-            let url = remote.url(gix::remote::Direction::Fetch)?;
-            let path = url.path.to_string();
-            let name = path.rsplit('/').next()?;
-            let name = name.strip_suffix(".git").unwrap_or(name);
-            if name.is_empty() {
-                None
-            } else {
-                Some(name.to_string())
-            }
-        })
-        .or_else(|| {
-            git_root_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(String::from)
-        });
-    if let Some(repo_name) = repo_name {
+    //
+    // Collect `targets` FIRST — a cheap immutable walk over finders — and
+    // defer the entire `repo_name` computation until we know at least one
+    // no-name project actually needs it. On the dominant case (every
+    // package.json / Cargo.toml / pyproject.toml carries a `name` field),
+    // `targets` is empty and we skip the `try_find_remote("origin")` git
+    // config walk + URL parsing chain entirely.
+    let mut targets: Vec<&mut changepacks_core::Project> = project_finders
+        .iter_mut()
+        .flat_map(|f| f.projects_mut())
+        .filter(|p| p.name().is_none())
+        .collect();
+    if !targets.is_empty() {
+        let repo_name = repo
+            .try_find_remote("origin")
+            .and_then(|r| r.ok())
+            .and_then(|remote| {
+                let url = remote.url(gix::remote::Direction::Fetch)?;
+                let path = url.path.to_string();
+                let name = path.rsplit('/').next()?;
+                let name = name.strip_suffix(".git").unwrap_or(name);
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name.to_string())
+                }
+            })
+            .or_else(|| {
+                git_root_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .map(String::from)
+            });
         // Move the owned `String` into the LAST no-name project instead of
         // cloning it for every no-name project. On repos where multiple
         // projects lack an explicit name (Node workspaces without `"name"`
@@ -133,12 +145,9 @@ pub async fn find_project_dirs(
         // Behavior is byte-identical: every no-name project still ends up
         // with the same `repo_name` string; only the last one moves rather
         // than clones.
-        let mut targets: Vec<&mut changepacks_core::Project> = project_finders
-            .iter_mut()
-            .flat_map(|f| f.projects_mut())
-            .filter(|p| p.name().is_none())
-            .collect();
-        if let Some((last, rest)) = targets.split_last_mut() {
+        if let Some(repo_name) = repo_name
+            && let Some((last, rest)) = targets.split_last_mut()
+        {
             for project in rest {
                 project.set_name(repo_name.clone());
             }

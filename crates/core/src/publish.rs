@@ -126,22 +126,24 @@ fn prepend_path_dirs(extra_path_dirs: &[PathBuf]) -> Option<std::ffi::OsString> 
     // `std::env::split_paths` yields owned `PathBuf`s that must live for the
     // duration of the borrow below. The caller-supplied `extra_path_dirs`
     // slice already holds owned `PathBuf`s we can borrow from directly, so
-    // building the intermediate as `Vec<&Path>` skips the per-entry
-    // `PathBuf::clone` the previous shape paid on every publish/dry-run
-    // (Node projects can carry several `node_modules/.bin` ancestors from
-    // `node_modules_bin_dirs`). `std::env::join_paths` accepts anything
-    // `AsRef<OsStr>`, and `&Path` satisfies that just like `PathBuf` did,
-    // so the joined output stays byte-identical.
+    // borrowing skips the per-entry `PathBuf::clone` the previous shape paid
+    // on every publish/dry-run (Node projects can carry several
+    // `node_modules/.bin` ancestors from `node_modules_bin_dirs`).
+    // `std::env::join_paths` accepts `IntoIterator<Item: AsRef<OsStr>>`, and
+    // `&Path` satisfies `AsRef<OsStr>` directly — so the chained iterator
+    // goes straight in without the previous intermediate `Vec<&Path>`
+    // allocation. Joined output stays byte-identical.
     let existing_paths: Vec<PathBuf> = std::env::var_os("PATH")
         .as_ref()
         .map(|e| std::env::split_paths(e).collect())
         .unwrap_or_default();
-    let dirs: Vec<&Path> = extra_path_dirs
-        .iter()
-        .map(PathBuf::as_path)
-        .chain(existing_paths.iter().map(PathBuf::as_path))
-        .collect();
-    std::env::join_paths(dirs).ok()
+    std::env::join_paths(
+        extra_path_dirs
+            .iter()
+            .map(PathBuf::as_path)
+            .chain(existing_paths.iter().map(PathBuf::as_path)),
+    )
+    .ok()
 }
 
 /// Execute a publish command in the given directory and return captured output.
