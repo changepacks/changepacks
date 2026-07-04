@@ -15,6 +15,20 @@ use crate::{package::DartPackage, workspace::DartWorkspace};
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["pubspec.yaml"];
 
+/// Look up `<field>` on a parsed pubspec as an owned string, mirroring the
+/// `pubspec.get(field).and_then(|v| v.as_str()).map(String::from)` chain
+/// that used to be open-coded twice inside `visit`. Extracted so the
+/// manifest-shape assumption ("top-level key, string value") lives in one
+/// place — matches the `project_str` / `package_str` sibling helpers
+/// already established in `crates/python/src/finder.rs` and
+/// `crates/rust/src/finder.rs`, closing the last workspace-wide gap.
+fn pubspec_str(pubspec: &yaml_serde::Value, field: &str) -> Option<String> {
+    pubspec
+        .get(field)
+        .and_then(|v| v.as_str())
+        .map(std::string::ToString::to_string)
+}
+
 #[derive(Debug, Default)]
 pub struct DartProjectFinder {
     projects: HashMap<PathBuf, Project>,
@@ -77,25 +91,18 @@ impl ProjectFinder for DartProjectFinder {
             // Both branches use the same name/version and the same path;
             // hoist so each branch collapses to a single constructor call.
             //
-            // Use `.get(...).and_then(as_str)` here rather than the direct
-            // `pubspec["version"].as_str()` / `pubspec["name"].as_str()`
-            // indexing: every other finder (`crates/rust/src/finder.rs`,
-            // `crates/node/src/finder.rs`, `crates/python/src/finder.rs`)
-            // reads name/version via `.get(...).and_then(...)`, so this
-            // matches the workspace-wide convention and drops the
-            // "does `[]` panic on missing keys?" question a reader has
-            // to answer to trust this file. Semantically identical:
-            // `yaml_serde::Value`'s `Index` impl already returns
-            // `Value::Null` for missing keys, and `Value::Null.as_str()`
-            // is `None`.
-            let version = pubspec
-                .get("version")
-                .and_then(|v| v.as_str())
-                .map(std::string::ToString::to_string);
-            let name = pubspec
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(std::string::ToString::to_string);
+            // Delegate the `.get(...).and_then(as_str).map(...)` chain to
+            // the module-private `pubspec_str` helper — mirrors the
+            // `project_str` / `package_str` sibling helpers in
+            // `crates/python/src/finder.rs` and `crates/rust/src/finder.rs`
+            // so the manifest-shape assumption lives in exactly one place
+            // per finder. Semantically identical to the inline chain:
+            // `yaml_serde::Value`'s `Index` impl returns `Value::Null` for
+            // missing keys, and `Value::Null.as_str()` is `None`, so both
+            // present-string and missing-field shapes round-trip
+            // unchanged.
+            let version = pubspec_str(&pubspec, "version");
+            let name = pubspec_str(&pubspec, "name");
             let path_buf = path.to_path_buf();
             let relative_path_buf = relative_path.to_path_buf();
 

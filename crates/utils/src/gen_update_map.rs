@@ -208,13 +208,28 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         };
         let rel_path_buf = rel_path.to_path_buf();
 
-        if let Some(name) = project.name() {
-            path_to_name.insert(rel_path_buf.clone(), name.to_string());
+        // Hoist the name lookup ONCE per project. Previously this loop
+        // called `project.name()` twice (once via `if let Some(name)` for
+        // the `path_to_name` insert, again via `.unwrap_or("unknown").
+        // to_string()` inside the has-deps block) and paid two independent
+        // `String` allocations on the has-name has-deps path. Reuse a
+        // single owned `project_name` in both spots via `.clone()`
+        // (memcpy on already-owned UTF-8 bytes) instead of re-hitting the
+        // trait method + `.to_string()` chain. Semantics stay byte-
+        // identical: the `name_opt.is_some()` gate preserves the
+        // "`path_to_name` only carries real names" invariant, and the
+        // "unknown" fallback still only surfaces in the reverse-dep log
+        // message text (never in `path_to_name`) — matching the pre-change
+        // behaviour.
+        let name_opt = project.name();
+        let project_name: String = name_opt.map_or_else(|| "unknown".to_string(), str::to_string);
+
+        if name_opt.is_some() {
+            path_to_name.insert(rel_path_buf.clone(), project_name.clone());
         }
 
         let dependencies = project.dependencies();
         if !dependencies.is_empty() {
-            let project_name = project.name().unwrap_or("unknown").to_string();
             for dep_name in dependencies {
                 reverse_deps
                     .entry(dep_name.clone())

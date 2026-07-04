@@ -147,9 +147,18 @@ fn display_tree(
     // Create a map from project name (fallback "noname") to project.
     // Project names — not paths — key this map because both the graph and the
     // dependency lookups (`project.dependencies()`) speak the *name* namespace.
-    let mut name_to_project: HashMap<String, &Project> = HashMap::with_capacity(projects.len());
+    //
+    // Keys are borrowed `&str` from `project.name()` (or the `"noname"`
+    // static fallback), matching the same pattern the sibling `roots`
+    // and `has_dependencies` HashSet<&str> collections use in this
+    // function. The `Project` refs already outlive `handle_check`'s
+    // scope, so the borrowed name slices they own outlive every
+    // downstream tree traversal below — no lifetime cascade to plumb.
+    // Cuts N `String::from_str` allocations per `check --tree` invocation
+    // (one per project name) with byte-identical map contents.
+    let mut name_to_project: HashMap<&str, &Project> = HashMap::with_capacity(projects.len());
     for project in projects {
-        name_to_project.insert(project.name().unwrap_or("noname").to_string(), project);
+        name_to_project.insert(project.name().unwrap_or("noname"), project);
     }
 
     // Build reverse dependency graph: graph[dep] = list of projects that depend on dep
@@ -167,9 +176,13 @@ fn display_tree(
     for project in projects {
         let deps = project.dependencies();
         // Filter dependencies to only include monorepo projects
+        // `name_to_project` now keys on `&str` (see the map's declaration
+        // above); the lookup uses `dep.as_str()` because
+        // `HashMap<&str, _>::contains_key(&Q)` resolves with `Q = str`
+        // (via `&str: Borrow<str>`), not `Q = String`.
         let monorepo_deps: Vec<String> = deps
             .iter()
-            .filter(|dep| name_to_project.contains_key(*dep))
+            .filter(|dep| name_to_project.contains_key(dep.as_str()))
             .cloned()
             .collect();
 
@@ -235,7 +248,12 @@ fn display_tree(
     // nodes. Matches the preallocation policy already applied to
     // `name_to_project`, `graph`, and `roots` above in this same
     // function.
-    let mut visited: HashSet<String> = HashSet::with_capacity(projects.len());
+    //
+    // Borrow the `&str` name that already lives inside each `Project` —
+    // the same borrowing pattern the sibling `roots` and
+    // `has_dependencies` sets use above. Cuts N `String::clone()` calls
+    // (one per tree-node visit) with byte-identical membership.
+    let mut visited: HashSet<&str> = HashSet::with_capacity(projects.len());
     let mut ctx = TreeContext {
         graph: &graph,
         name_to_project: &name_to_project,
@@ -267,23 +285,31 @@ fn display_tree(
 /// Context for tree display operations
 struct TreeContext<'a> {
     graph: &'a HashMap<String, Vec<String>>,
-    name_to_project: &'a HashMap<String, &'a Project>,
+    name_to_project: &'a HashMap<&'a str, &'a Project>,
     repo_root_path: &'a Path,
     update_map: &'a HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
 }
 
 /// Display a single node in the tree
-fn display_tree_node(
-    project: &Project,
-    ctx: &mut TreeContext,
+fn display_tree_node<'a>(
+    project: &'a Project,
+    ctx: &mut TreeContext<'a>,
     prefix: &str,
     is_last: bool,
-    visited: &mut HashSet<String>,
+    visited: &mut HashSet<&'a str>,
 ) -> Result<()> {
-    let project_name = project.name().unwrap_or("noname").to_string();
-    let is_first_visit = !visited.contains(&project_name);
+    // Borrow the name out of the project rather than allocating a fresh
+    // `String` per visit — the `Project` outlives every downstream
+    // borrow (`visited`, `ctx.graph`, `ctx.name_to_project` all live for
+    // `handle_check`'s scope), so the name slice is safe to thread
+    // through the recursion. Diamond graphs re-descend the same subtree
+    // under multiple parents, so retiring the per-visit `String::from`
+    // + `.clone()` pair collapses two heap ops per tree node down to a
+    // pointer copy.
+    let project_name: &'a str = project.name().unwrap_or("noname");
+    let is_first_visit = !visited.contains(project_name);
     if is_first_visit {
-        visited.insert(project_name.clone());
+        visited.insert(project_name);
     }
 
     // Only print the project line if this is the first time visiting it
@@ -308,9 +334,9 @@ fn display_tree_node(
     // there); borrowing here avoids the per-visit `deps.clone()` +
     // `.sort()` — meaningful on diamond graphs where the same subtree is
     // re-descended under multiple parents.
-    if let Some(deps) = ctx.graph.get(&project_name) {
+    if let Some(deps) = ctx.graph.get(project_name) {
         for (idx, dep_name) in deps.iter().enumerate() {
-            if let Some(dep_project) = ctx.name_to_project.get(dep_name) {
+            if let Some(dep_project) = ctx.name_to_project.get(dep_name.as_str()) {
                 // `deps.iter().enumerate()` guarantees `deps.len() >= 1`
                 // inside the loop, so plain subtraction is safe. `Vec::len()`
                 // is O(1); the vestigial `sorted_deps_count` binding just
@@ -319,7 +345,7 @@ fn display_tree_node(
                 let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
                 // Use a separate visited set for dependencies to avoid infinite loops
                 // but still show all dependencies
-                if visited.contains(dep_name) {
+                if visited.contains(dep_name.as_str()) {
                     // If already visited, just print it without recursion to avoid loops
                     let dep_connector = if is_last_dep {
                         "└── "
@@ -359,7 +385,7 @@ fn format_project_line(
     project: &Project,
     repo_root_path: &std::path::Path,
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-    name_to_project: &HashMap<String, &Project>,
+    name_to_project: &HashMap<&str, &Project>,
 ) -> Result<String> {
     use changepacks_utils::get_relative_path;
     use colored::Colorize;
@@ -384,9 +410,13 @@ fn format_project_line(
     // per project displayed and multiplied through `display_tree_node` on
     // wide/deep trees. Empty-guard shape preserved: `deps_info` still degrades
     // to `"".normal()` when no monorepo-local dep survives the filter.
+    //
+    // `name_to_project` now keys on `&str` (see `display_tree`); the lookup
+    // uses `dep.as_str()` because `HashMap<&str, _>::contains_key(&Q)`
+    // needs `Q = str` (via `&str: Borrow<str>`), not `Q = String`.
     let mut deps_str = String::new();
     for dep in project.dependencies() {
-        if !name_to_project.contains_key(dep) {
+        if !name_to_project.contains_key(dep.as_str()) {
             continue;
         }
         if !deps_str.is_empty() {
@@ -667,8 +697,8 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut name_to_project: HashMap<String, &Project> = HashMap::new();
-        name_to_project.insert("my-lib".to_string(), &project);
+        let mut name_to_project: HashMap<&str, &Project> = HashMap::new();
+        name_to_project.insert("my-lib", &project);
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("my-lib"));
@@ -687,8 +717,8 @@ mod tests {
         let project = Project::Workspace(Box::new(ws));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut name_to_project: HashMap<String, &Project> = HashMap::new();
-        name_to_project.insert("my-workspace".to_string(), &project);
+        let mut name_to_project: HashMap<&str, &Project> = HashMap::new();
+        name_to_project.insert("my-workspace", &project);
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("my-workspace"));
@@ -712,7 +742,7 @@ mod tests {
             PathBuf::from("packages/foo/package.json"),
             (UpdateType::Minor, vec![]),
         );
-        let name_to_project: HashMap<String, &Project> = HashMap::new();
+        let name_to_project: HashMap<&str, &Project> = HashMap::new();
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("updated-pkg"));
@@ -733,7 +763,7 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let name_to_project: HashMap<String, &Project> = HashMap::new();
+        let name_to_project: HashMap<&str, &Project> = HashMap::new();
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("changed-pkg"));
@@ -763,9 +793,9 @@ mod tests {
 
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut name_to_project: HashMap<String, &Project> = HashMap::new();
-        name_to_project.insert("app".to_string(), &project);
-        name_to_project.insert("core-lib".to_string(), &dep_project);
+        let mut name_to_project: HashMap<&str, &Project> = HashMap::new();
+        name_to_project.insert("app", &project);
+        name_to_project.insert("core-lib", &dep_project);
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("app"));
@@ -785,7 +815,7 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let name_to_project: HashMap<String, &Project> = HashMap::new();
+        let name_to_project: HashMap<&str, &Project> = HashMap::new();
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("standalone"));

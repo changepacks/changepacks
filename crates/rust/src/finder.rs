@@ -133,16 +133,27 @@ impl ProjectFinder for RustProjectFinder {
 
                 let version = package_str(&cargo_toml, "version");
                 let name = package_str(&cargo_toml, "name");
+                // Hoist the shared `PathBuf` into one binding: `path_key` seeds
+                // both the `RustWorkspace::new(...)` constructor slot and the
+                // `self.projects.insert(...)` map key. Mirror of the same
+                // pattern already used by the `inherits_workspace` and
+                // plain-package `else` arms below, and by
+                // `crates/csharp/src/finder.rs::visit` /
+                // `crates/java/src/finder.rs::visit`. Byte-identical
+                // semantics — the same `PathBuf` bytes flow into
+                // `RustWorkspace::new` and the map key, just materialized
+                // once up front.
+                let path_key = path.to_path_buf();
                 let mut project = Project::Workspace(Box::new(RustWorkspace::new(
                     name,
                     version,
-                    path.to_path_buf(),
+                    path_key.clone(),
                     relative_path.to_path_buf(),
                 )));
                 for dep_name in &dep_names {
                     project.add_dependency(dep_name);
                 }
-                self.projects.insert(path.to_path_buf(), project);
+                self.projects.insert(path_key, project);
 
                 // Resolve any pending packages that were visited before this workspace
                 let pending = std::mem::take(&mut self.pending_workspace_packages);

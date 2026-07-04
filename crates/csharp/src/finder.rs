@@ -118,31 +118,6 @@ impl CSharpProjectFinder {
         (version, projects)
     }
 
-    /// Extract version from .csproj XML content using quick-xml.
-    ///
-    /// Thin wrapper around `parse_csproj_metadata` — kept so the existing
-    /// `test_extract_version` rstest table stays green untouched. Gated
-    /// behind `cfg(test)` because production code now calls
-    /// `parse_csproj_metadata` directly; without the gate clippy's
-    /// dead_code lint (elevated to `-D warnings` by `bun run lint`)
-    /// would fail the build.
-    #[cfg(test)]
-    fn extract_version(content: &str) -> Option<String> {
-        Self::parse_csproj_metadata(content).0
-    }
-
-    /// Extract `ProjectReference` dependencies from .csproj XML content
-    /// using quick-xml. Returns the project names (extracted from paths).
-    ///
-    /// Thin wrapper around `parse_csproj_metadata` — kept so the existing
-    /// `test_extract_project_references` unit test stays green untouched.
-    /// Gated behind `cfg(test)` for the same dead_code reason as
-    /// `extract_version` above.
-    #[cfg(test)]
-    fn extract_project_references(content: &str) -> Vec<String> {
-        Self::parse_csproj_metadata(content).1
-    }
-
     /// Check if this project is part of a solution (workspace)
     /// A project is considered a workspace if there's a .sln file in the same directory.
     ///
@@ -738,7 +713,7 @@ mod tests {
     #[case(XML_VERSION_AFTER_COMMENT, Some("4.0.0"))]
     fn test_extract_version(#[case] content: &str, #[case] expected: Option<&str>) {
         assert_eq!(
-            CSharpProjectFinder::extract_version(content),
+            CSharpProjectFinder::parse_csproj_metadata(content).0,
             expected.map(std::string::ToString::to_string)
         );
     }
@@ -747,7 +722,7 @@ mod tests {
     fn test_extract_version_malformed_xml() {
         let content = "<Project><PropertyGroup><Version>1.0.0";
         // Should not panic - either returns Some or None
-        let _ = CSharpProjectFinder::extract_version(content);
+        let _ = CSharpProjectFinder::parse_csproj_metadata(content).0;
     }
 
     #[test]
@@ -758,7 +733,7 @@ mod tests {
     <ProjectReference Include="..\Utils\Utils.csproj" />
   </ItemGroup>
 </Project>"#;
-        let refs = CSharpProjectFinder::extract_project_references(content);
+        let refs = CSharpProjectFinder::parse_csproj_metadata(content).1;
         assert_eq!(refs.len(), 2);
         assert!(refs.contains(&"CoreLib".to_string()));
         assert!(refs.contains(&"Utils".to_string()));
