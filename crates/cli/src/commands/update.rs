@@ -108,15 +108,21 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
             .iter()
             .map(|&lang| Language::from(lang))
             .collect();
-        let path_to_language: HashMap<PathBuf, Language> = project_finders
-            .iter()
-            .flat_map(|finder| finder.projects())
-            .filter_map(|p| {
-                get_relative_path(&ctx.repo_root_path, p.path())
-                    .ok()
-                    .map(|rel| (rel, p.language()))
-            })
-            .collect();
+        // Preallocate: `HashMap::from_iter` (via `collect`) does NOT use
+        // `size_hint` to reserve capacity (unlike `Vec`), so on a
+        // language-filtered `changepacks update -l rust` against a large
+        // monorepo the map hits geometric-doubling reallocations. Summing
+        // `finder.projects().len()` yields a tight upper bound (the
+        // `filter_map` below can only shrink it when a project path lies
+        // outside the repo root). Matches the preallocation policy already
+        // applied in `sort_by_dep.rs` and `filter_project_dirs.rs`.
+        let cap: usize = project_finders.iter().map(|f| f.projects().len()).sum();
+        let mut path_to_language: HashMap<PathBuf, Language> = HashMap::with_capacity(cap);
+        for project in project_finders.iter().flat_map(|finder| finder.projects()) {
+            if let Ok(rel) = get_relative_path(&ctx.repo_root_path, project.path()) {
+                path_to_language.insert(rel, project.language());
+            }
+        }
         update_map.retain(|path, _| {
             path_to_language
                 .get(path)
@@ -269,8 +275,16 @@ fn merge_workspace_inherited_updates(
     project_finders: &[Box<dyn ProjectFinder>],
     repo_root_path: &Path,
 ) {
-    // Collect (pkg_rel_path, ws_rel_path) pairs to merge
-    let mut merge_targets: Vec<(PathBuf, PathBuf)> = Vec::new();
+    // Collect (pkg_rel_path, ws_rel_path) pairs to merge.
+    // Preallocate: the loop below pushes AT MOST one entry per project
+    // across every finder. Summing `finder.projects().len()` yields a
+    // tight upper bound that avoids `Vec`'s geometric-doubling
+    // reallocations on vespera-shaped monorepos with many
+    // workspace-inheriting members. Matches the preallocation policy
+    // already applied throughout `sort_by_dep.rs`, `filter_project_dirs`,
+    // and the sibling `apply_reverse_dependencies`.
+    let cap: usize = project_finders.iter().map(|f| f.projects().len()).sum();
+    let mut merge_targets: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(cap);
 
     for finder in project_finders {
         for project in finder.projects() {

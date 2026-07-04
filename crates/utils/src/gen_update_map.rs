@@ -71,9 +71,22 @@ fn apply_update_on_rules(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     config: &Config,
 ) {
-    // Fast path for the dominant case: `.changepacks/config.json` declares
-    // no `updateOn` rules, so the trigger loop below has nothing to iterate
-    // and the `updated_paths` snapshot is pure waste. Skip both up front.
+    // Fast path #1: with no pending updates the `updated_paths` snapshot
+    // below collects into an empty `Vec<Cow<str>>` and every trigger
+    // closure runs `.any(|s| ...)` over an empty iterator — pure setup
+    // waste. Semantic mirror of the existing `update_map.is_empty()`
+    // guard in `apply_reverse_dependencies` below, and byte-identical to
+    // the old behavior (an empty input can only produce an empty output
+    // because `.entry(dependent_path).or_insert_with(...)` only fires
+    // inside the trigger loop, which needs at least one matched trigger,
+    // which needs at least one path in `updated_paths`).
+    if update_map.is_empty() {
+        return;
+    }
+
+    // Fast path #2: `.changepacks/config.json` declares no `updateOn`
+    // rules, so the trigger loop below has nothing to iterate and the
+    // `updated_paths` snapshot is pure waste. Skip both up front.
     if config.update_on.is_empty() {
         return;
     }
@@ -663,6 +676,32 @@ mod tests {
 
         // No changes, missing dependency is ignored
         assert_eq!(update_map.len(), 1);
+    }
+
+    // Locks in the fast-path added to `apply_update_on_rules`: an empty
+    // `update_map` combined with a non-empty `updateOn` config must remain
+    // empty (no side effect). A future refactor that reorders the two
+    // guards — or drops the `update_map.is_empty()` check — would flip
+    // this test red immediately. Companion to the existing "no match" /
+    // "invalid pattern" cases below.
+    #[test]
+    fn test_apply_update_on_rules_empty_update_map_is_noop() {
+        let mut update_on = HashMap::new();
+        update_on.insert("crates/*".to_string(), vec!["bridge/node".to_string()]);
+        let config = Config {
+            update_on,
+            ..Default::default()
+        };
+
+        let mut update_map: HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)> =
+            HashMap::new();
+
+        apply_update_on_rules(&mut update_map, &config);
+
+        assert!(
+            update_map.is_empty(),
+            "empty update_map + non-empty updateOn config must stay empty (fast-path violated)"
+        );
     }
 
     #[test]

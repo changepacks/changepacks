@@ -211,8 +211,15 @@ fn display_tree(
     let mut sorted_roots: Vec<&str> = roots.into_iter().collect();
     sorted_roots.sort();
 
-    // Display tree starting from roots
-    let mut visited: HashSet<String> = HashSet::new();
+    // Display tree starting from roots.
+    // Preallocate: `visited.insert(project_name)` fires at most once per
+    // unique project (up to `projects.len()`), so seeding the HashSet with
+    // that capacity avoids the geometric-doubling reallocations the
+    // default `HashSet::new()` would trigger on trees with dozens of
+    // nodes. Matches the preallocation policy already applied to
+    // `name_to_project`, `graph`, and `roots` above in this same
+    // function.
+    let mut visited: HashSet<String> = HashSet::with_capacity(projects.len());
     let mut ctx = TreeContext {
         graph: &graph,
         name_to_project: &name_to_project,

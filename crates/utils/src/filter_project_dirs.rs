@@ -143,7 +143,13 @@ pub async fn find_project_dirs(
         peel_to_tree(
             repo.find_remote("origin")?
                 .repo
-                .find_reference(&format!("refs/remotes/origin/{}", config.base_branch))?,
+                .find_reference(&format!("refs/remotes/origin/{}", config.base_branch))
+                .with_context(|| {
+                    format!(
+                        "remote base branch 'origin/{}' not found. Did you fetch first?",
+                        config.base_branch
+                    )
+                })?,
         )?
     } else {
         peel_to_tree(
@@ -582,6 +588,65 @@ mod tests {
 
         local_dir.close().unwrap();
         remote_dir.close().unwrap();
+    }
+
+    // Symmetry gate for the local vs. remote base-branch error message.
+    // The local (`refs/heads/<base>`) arm already wraps its `find_reference`
+    // with `.with_context(|| ...)` so users get "base branch 'main' not
+    // found in local refs". Historically the remote arm surfaced the raw
+    // gix error and left users guessing whether they simply forgot to
+    // `git fetch`. This test locks in the mirrored context on the remote
+    // arm: a repo that has an `origin` remote configured but no
+    // `refs/remotes/origin/<base>` ref (never fetched) MUST surface an
+    // anyhow error chain whose text contains both "remote base branch" and
+    // the base branch name so `--remote` failures are self-diagnosing.
+    #[tokio::test]
+    async fn test_find_project_dirs_remote_branch_missing_ref_has_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        init_git_repo(temp_path);
+
+        // Add an origin remote URL but never fetch — so refs/remotes/origin/main
+        // stays absent and the `find_reference` call is the failure surface.
+        std::process::Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/no-such-repo.git",
+            ])
+            .current_dir(temp_path)
+            .output()
+            .unwrap();
+
+        fs::write(
+            temp_path.join("package.json"),
+            r#"{"name": "test", "version": "1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let config = Config::default(); // base_branch defaults to "main"
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        let result = find_project_dirs(&repo, &mut finders, &config, true).await;
+        let err = result.expect_err("expected remote base branch lookup to fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("remote base branch"),
+            "expected error to mention 'remote base branch', got: {msg}"
+        );
+        assert!(
+            msg.contains(&config.base_branch),
+            "expected error to mention the base branch name '{}', got: {msg}",
+            config.base_branch
+        );
+
+        temp_dir.close().unwrap();
     }
 
     #[tokio::test]

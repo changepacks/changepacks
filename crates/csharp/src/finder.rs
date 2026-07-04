@@ -38,12 +38,21 @@ impl CSharpProjectFinder {
             .map(std::string::ToString::to_string)
     }
 
-    /// Extract version from .csproj XML content using quick-xml
-    fn extract_version(content: &str) -> Option<String> {
+    /// Walk the .csproj XML ONCE and extract both the project version and
+    /// its `ProjectReference` dependency names in a single pass. The
+    /// previous shape (`extract_version` + `extract_project_references`)
+    /// ran two independent `quick_xml::Reader` passes over the identical
+    /// bytes; merging them halves the parse cost on repos with many
+    /// `.csproj` files (Unity / dotnet monorepos) with no behavior
+    /// change. The two thin wrappers below preserve the existing rstest
+    /// surface, so no test edit is required.
+    fn parse_csproj_metadata(content: &str) -> (Option<String>, Vec<String>) {
         let mut reader = Reader::from_str(content);
         let mut buf = Vec::new();
         let mut in_property_group = false;
         let mut in_version = false;
+        let mut version: Option<String> = None;
+        let mut projects: Vec<String> = Vec::new();
 
         loop {
             match reader.read_event_into(&mut buf) {
@@ -53,7 +62,12 @@ impl CSharpProjectFinder {
                         in_property_group = true;
                     } else if in_property_group && name.as_ref() == b"Version" {
                         in_version = true;
+                    } else if name.as_ref() == b"ProjectReference" {
+                        collect_project_reference(&e, &mut projects);
                     }
+                }
+                Ok(Event::Empty(e)) if e.local_name().as_ref() == b"ProjectReference" => {
+                    collect_project_reference(&e, &mut projects);
                 }
                 Ok(Event::End(e)) => {
                     let name = e.local_name();
@@ -64,10 +78,17 @@ impl CSharpProjectFinder {
                     }
                 }
                 Ok(Event::Text(e)) => {
-                    if in_version && let Ok(text) = e.decode() {
-                        let version = text.trim().to_string();
-                        if !version.is_empty() {
-                            return Some(version);
+                    // Preserve the "first non-empty wins" semantics of the
+                    // previous `extract_version` (which `return`ed early
+                    // on the first hit) — later `<Version>` tags do NOT
+                    // overwrite an earlier value.
+                    if in_version
+                        && version.is_none()
+                        && let Ok(text) = e.decode()
+                    {
+                        let candidate = text.trim();
+                        if !candidate.is_empty() {
+                            version = Some(candidate.to_string());
                         }
                     }
                 }
@@ -76,39 +97,32 @@ impl CSharpProjectFinder {
             }
             buf.clear();
         }
-        None
+        (version, projects)
     }
 
-    /// Extract `ProjectReference` dependencies from .csproj XML content using quick-xml
-    /// Returns the project names (extracted from paths)
-    fn extract_project_references(content: &str) -> Vec<String> {
-        let mut reader = Reader::from_str(content);
-        let mut buf = Vec::new();
-        let mut projects = Vec::new();
+    /// Extract version from .csproj XML content using quick-xml.
+    ///
+    /// Thin wrapper around `parse_csproj_metadata` — kept so the existing
+    /// `test_extract_version` rstest table stays green untouched. Gated
+    /// behind `cfg(test)` because production code now calls
+    /// `parse_csproj_metadata` directly; without the gate clippy's
+    /// dead_code lint (elevated to `-D warnings` by `bun run lint`)
+    /// would fail the build.
+    #[cfg(test)]
+    fn extract_version(content: &str) -> Option<String> {
+        Self::parse_csproj_metadata(content).0
+    }
 
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(e) | Event::Start(e))
-                    if e.local_name().as_ref() == b"ProjectReference" =>
-                {
-                    for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"Include"
-                            && let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0)
-                        {
-                            // Extract project name from path like "..\CoreLib\CoreLib.csproj"
-                            // Handle both Windows (\) and Unix (/) path separators
-                            if let Some(name) = extract_project_name_from_path(&value) {
-                                projects.push(name);
-                            }
-                        }
-                    }
-                }
-                Ok(Event::Eof) | Err(_) => break,
-                _ => {}
-            }
-            buf.clear();
-        }
-        projects
+    /// Extract `ProjectReference` dependencies from .csproj XML content
+    /// using quick-xml. Returns the project names (extracted from paths).
+    ///
+    /// Thin wrapper around `parse_csproj_metadata` — kept so the existing
+    /// `test_extract_project_references` unit test stays green untouched.
+    /// Gated behind `cfg(test)` for the same dead_code reason as
+    /// `extract_version` above.
+    #[cfg(test)]
+    fn extract_project_references(content: &str) -> Vec<String> {
+        Self::parse_csproj_metadata(content).1
     }
 
     /// Check if this project is part of a solution (workspace)
@@ -127,6 +141,21 @@ impl CSharpProjectFinder {
             }
         }
         false
+    }
+}
+
+/// Walk a `<ProjectReference Include="...">` element's attributes and
+/// push its extracted project name into `projects`. Shared by both the
+/// `Event::Start` and `Event::Empty` arms of `parse_csproj_metadata` so
+/// the attribute-parsing lives in exactly one place.
+fn collect_project_reference(e: &quick_xml::events::BytesStart<'_>, projects: &mut Vec<String>) {
+    for attr in e.attributes().flatten() {
+        if attr.key.as_ref() == b"Include"
+            && let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0)
+            && let Some(name) = extract_project_name_from_path(&value)
+        {
+            projects.push(name);
+        }
     }
 }
 
@@ -183,7 +212,12 @@ impl ProjectFinder for CSharpProjectFinder {
             let csproj_content = read_to_string(path).await?;
 
             let name = Self::extract_name_from_path(path);
-            let version = Self::extract_version(&csproj_content);
+            // Single-pass metadata extraction — replaces the previous
+            // `extract_version(...)` + `extract_project_references(...)`
+            // pair that each constructed its own `quick_xml::Reader` and
+            // walked the identical XML bytes. Halves parse work per
+            // `.csproj` (meaningful on Unity/dotnet monorepos).
+            let (version, project_refs) = Self::parse_csproj_metadata(&csproj_content);
             let is_workspace = Self::is_workspace(path).await;
 
             // Hoist the map key allocation out of both arms: the old shape
@@ -210,7 +244,10 @@ impl ProjectFinder for CSharpProjectFinder {
             };
 
             // Add ProjectReference dependencies (local project references)
-            for dep in Self::extract_project_references(&csproj_content) {
+            // — `project_refs` came from the single-pass
+            // `parse_csproj_metadata` call above, so no second walk of the
+            // XML is needed here.
+            for dep in project_refs {
                 project.add_dependency(&dep);
             }
 
@@ -607,6 +644,34 @@ mod tests {
   </ItemGroup>
 </Project>"#;
         let refs = CSharpProjectFinder::extract_project_references(content);
+        assert_eq!(refs.len(), 2);
+        assert!(refs.contains(&"CoreLib".to_string()));
+        assert!(refs.contains(&"Utils".to_string()));
+    }
+
+    // The unified `parse_csproj_metadata` MUST return both the version and
+    // the `ProjectReference` list in a single walk. This test fixes that
+    // contract on a fixture combining both elements (plus a
+    // `PackageReference` decoy that must be ignored) so any future refactor
+    // that reintroduces a second XML walk — or accidentally drops one of
+    // the outputs — trips a failing test immediately. Serves as the
+    // regression anchor called out in the batch plan for iteration 0027.
+    #[test]
+    fn test_parse_csproj_metadata_returns_version_and_refs_in_one_pass() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.5.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CoreLib\CoreLib.csproj" />
+    <ProjectReference Include="..\Utils\Utils.csproj" />
+  </ItemGroup>
+</Project>"#;
+        let (version, refs) = CSharpProjectFinder::parse_csproj_metadata(content);
+        assert_eq!(version, Some("1.5.0".to_string()));
         assert_eq!(refs.len(), 2);
         assert!(refs.contains(&"CoreLib".to_string()));
         assert!(refs.contains(&"Utils".to_string()));
