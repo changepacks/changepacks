@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     hash::BuildHasher,
     path::{Path, PathBuf},
 };
@@ -175,14 +175,20 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // insert and once again for the vec push in the old shape).
     let mut packages_to_add: HashMap<PathBuf, String> = HashMap::new();
 
-    // Initial set of updated package names via O(1) path -> name lookup
-    let updated_names: HashSet<String> = update_map
+    // Initial set of updated package names via O(1) path -> name lookup.
+    // Collect straight into the BFS work queue: dedup at THIS step is
+    // unnecessary (update_map keys are unique, path_to_name is 1-to-1
+    // PathBuf -> String, so filter_map yields each name at most once) AND
+    // the BFS loop below already guards against reprocessing via the
+    // `!update_map.contains_key(dep_path) && !packages_to_add.contains_key(dep_path)`
+    // check. Skipping the intermediate `HashSet<String>` -> `Vec<String>`
+    // hop removes one HashMap-backed allocation per call
+    // (`apply_reverse_dependencies` runs on every `changepacks update` and
+    // every `changepacks check`).
+    let mut to_process: Vec<String> = update_map
         .keys()
         .filter_map(|path| path_to_name.get(path).cloned())
         .collect();
-
-    // Process reverse dependencies transitively
-    let mut to_process: Vec<String> = updated_names.into_iter().collect();
     while let Some(pkg_name) = to_process.pop() {
         if let Some(dependents) = reverse_deps.get(&pkg_name) {
             for (dep_path, dep_name) in dependents {

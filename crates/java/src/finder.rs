@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::LazyLock,
 };
 use tokio::process::Command;
 
@@ -16,6 +17,22 @@ use crate::{package::GradlePackage, workspace::GradleWorkspace};
 /// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["build.gradle.kts", "build.gradle"];
+
+/// Cached regexes for parsing gradlew `properties -q` output. `LazyLock`
+/// mirrors the idiom already used in `crates/java/src/version_updater.rs`
+/// (`KTS_SIMPLE_PATTERN` et al.) — the pattern strings are compile-time
+/// constants, so re-compiling them on every `get_gradle_properties` call
+/// (once per Gradle project per `check` / `update` / `publish`) was pure
+/// per-call waste that this now avoids.
+static NAME_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^name:\s*(.+)$").expect("hardcoded regex must compile"));
+
+static VERSION_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^version:\s*(.+)$").expect("hardcoded regex must compile"));
+
+static SUBPROJECTS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^subprojects:\s*(.+)$").expect("hardcoded regex must compile")
+});
 
 #[derive(Debug)]
 pub struct GradleProjectFinder {
@@ -182,20 +199,18 @@ async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut props = GradleProperties::default();
 
-    // Parse properties output
+    // Parse properties output. Regexes are cached via module-level
+    // `LazyLock<Regex>` (see `NAME_PATTERN` et al. above) so this hot path
+    // no longer re-compiles the three patterns on every visit.
     // Format: "propertyName: value"
-    let name_pattern = Regex::new(r"(?m)^name:\s*(.+)$").context("regex")?;
-    let version_pattern = Regex::new(r"(?m)^version:\s*(.+)$").context("regex")?;
-    let subprojects_pattern = Regex::new(r"(?m)^subprojects:\s*(.+)$").context("regex")?;
-
-    if let Some(caps) = name_pattern.captures(&stdout) {
+    if let Some(caps) = NAME_PATTERN.captures(&stdout) {
         let name = caps.get(1).map(|m| m.as_str().trim().to_string());
         if name.as_deref() != Some("unspecified") {
             props.name = name;
         }
     }
 
-    if let Some(caps) = version_pattern.captures(&stdout) {
+    if let Some(caps) = VERSION_PATTERN.captures(&stdout) {
         let version = caps.get(1).map(|m| m.as_str().trim().to_string());
         if version.as_deref() != Some("unspecified") {
             props.version = version;
@@ -203,7 +218,7 @@ async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
     }
 
     // Detect workspace: subprojects is non-empty (e.g. "[project ':sub1', project ':sub2']")
-    if let Some(caps) = subprojects_pattern.captures(&stdout) {
+    if let Some(caps) = SUBPROJECTS_PATTERN.captures(&stdout) {
         let value = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
         props.has_subprojects = value != "[]";
     }
@@ -253,29 +268,29 @@ impl ProjectFinder for GradleProjectFinder {
             // false positives in composite builds and subprojects with IDE-generated files.
             let is_workspace = props.has_subprojects;
 
-            let (path, project) = if is_workspace {
-                (
-                    path.to_path_buf(),
-                    Project::Workspace(Box::new(GradleWorkspace::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
+            // Hoist the map key allocation out of both arms: the old shape
+            // built a `(PathBuf, Project)` tuple, which forced each branch
+            // to call `path.to_path_buf()` TWICE (once for the tuple slot,
+            // once again for `*::new`). One shared `path_key` + one
+            // `.clone()` into the constructor cuts 4 `PathBuf` allocs to 2.
+            let path_key = path.to_path_buf();
+            let project = if is_workspace {
+                Project::Workspace(Box::new(GradleWorkspace::new(
+                    name,
+                    version,
+                    path_key.clone(),
+                    relative_path.to_path_buf(),
+                )))
             } else {
-                (
-                    path.to_path_buf(),
-                    Project::Package(Box::new(GradlePackage::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
+                Project::Package(Box::new(GradlePackage::new(
+                    name,
+                    version,
+                    path_key.clone(),
+                    relative_path.to_path_buf(),
+                )))
             };
 
-            self.projects.insert(path, project);
+            self.projects.insert(path_key, project);
         }
         Ok(())
     }

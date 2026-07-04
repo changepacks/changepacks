@@ -43,22 +43,7 @@ impl CSharpProjectFinder {
             .and_then(|s| s.to_str())
             .map(std::string::ToString::to_string)
     }
-}
 
-/// Extract project name from a path string, handling both Windows and Unix separators
-/// Input: `"..\CoreLib\CoreLib.csproj"` or `"../CoreLib/CoreLib.csproj"`
-/// Output: `"CoreLib"`
-fn extract_project_name_from_path(path_str: &str) -> Option<String> {
-    // Split by both Windows (\) and Unix (/) separators
-    let filename = path_str.rsplit(['\\', '/']).next()?;
-
-    // Remove .csproj extension
-    filename
-        .strip_suffix(".csproj")
-        .map(std::string::ToString::to_string)
-}
-
-impl CSharpProjectFinder {
     /// Extract version from .csproj XML content using quick-xml
     fn extract_version(content: &str) -> Option<String> {
         let mut reader = Reader::from_str(content);
@@ -151,6 +136,19 @@ impl CSharpProjectFinder {
     }
 }
 
+/// Extract project name from a path string, handling both Windows and Unix separators
+/// Input: `"..\CoreLib\CoreLib.csproj"` or `"../CoreLib/CoreLib.csproj"`
+/// Output: `"CoreLib"`
+fn extract_project_name_from_path(path_str: &str) -> Option<String> {
+    // Split by both Windows (\) and Unix (/) separators
+    let filename = path_str.rsplit(['\\', '/']).next()?;
+
+    // Remove .csproj extension
+    filename
+        .strip_suffix(".csproj")
+        .map(std::string::ToString::to_string)
+}
+
 #[async_trait]
 impl ProjectFinder for CSharpProjectFinder {
     fn projects(&self) -> Vec<&Project> {
@@ -194,26 +192,27 @@ impl ProjectFinder for CSharpProjectFinder {
             let version = Self::extract_version(&csproj_content);
             let is_workspace = Self::is_workspace(path).await;
 
-            let (path_key, mut project) = if is_workspace {
-                (
-                    path.to_path_buf(),
-                    Project::Workspace(Box::new(CSharpWorkspace::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
+            // Hoist the map key allocation out of both arms: the old shape
+            // built a `(PathBuf, Project)` tuple, which forced each branch
+            // to call `path.to_path_buf()` TWICE (once for the tuple slot,
+            // once again for `*::new`). One shared `path_key` + one
+            // `.clone()` into the constructor cuts 4 `PathBuf` allocs to 2.
+            // Mirror of the same fix in `crates/java/src/finder.rs::visit`.
+            let path_key = path.to_path_buf();
+            let mut project = if is_workspace {
+                Project::Workspace(Box::new(CSharpWorkspace::new(
+                    name,
+                    version,
+                    path_key.clone(),
+                    relative_path.to_path_buf(),
+                )))
             } else {
-                (
-                    path.to_path_buf(),
-                    Project::Package(Box::new(CSharpPackage::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
+                Project::Package(Box::new(CSharpPackage::new(
+                    name,
+                    version,
+                    path_key.clone(),
+                    relative_path.to_path_buf(),
+                )))
             };
 
             // Add ProjectReference dependencies (local project references)
