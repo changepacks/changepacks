@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use changepacks_core::UpdateType;
-use changepacks_utils::{detect_indent_str, finalize_content, next_version};
+use changepacks_utils::{detect_indent_str, finalize_content, next_version_or_default};
 use serde::Serialize;
 use tokio::fs::{read_to_string, write};
 
@@ -42,8 +42,11 @@ pub(crate) async fn update_version_from_fields(
     path: &Path,
     update_type: UpdateType,
 ) -> Result<()> {
-    let current_version = version.as_deref().unwrap_or("0.0.0");
-    let new_version = next_version(current_version, update_type)?;
+    // Two-line "reserve `0.0.0` when unversioned" prelude consolidated
+    // into `changepacks_utils::next_version_or_default` so the fallback
+    // policy lives in ONE place across every language crate. See that
+    // helper's doc for the Java/Rust carve-outs.
+    let new_version = next_version_or_default(version.as_deref(), update_type)?;
     write_package_json_version(path, &new_version).await?;
     *version = Some(new_version);
     Ok(())

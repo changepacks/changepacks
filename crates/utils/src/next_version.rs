@@ -13,6 +13,34 @@ fn invalid_version(v: &str) -> anyhow::Error {
     anyhow::anyhow!("Invalid version format: {v}")
 }
 
+/// Compute the next version with the shared "reserve `0.0.0` when
+/// unversioned" fallback used by every language crate's
+/// `update_version_from_fields` helper (Node, Python, Dart, CSharp).
+///
+/// Thin wrapper over [`next_version`] that folds the previously duplicated
+/// two-line prelude
+///
+/// ```ignore
+/// let current_version = version.as_deref().unwrap_or("0.0.0");
+/// let new_version = next_version(current_version, update_type)?;
+/// ```
+///
+/// into a single call site. Java's `update_version_from_fields` continues
+/// to call `next_version` directly through `update_gradle_version_at`
+/// because the version prelude is spread across the file lifecycle there.
+/// Rust's `Package` / `Workspace` also stay on `next_version` because
+/// their `update_version` bodies do more than the plain prelude
+/// (workspace-inheritance guard, workspace-package fan-out).
+///
+/// # Errors
+/// Propagates [`next_version`]'s error when the resolved version string
+/// (either `current` unwrapped or the `"0.0.0"` fallback) is not valid
+/// semver — the fallback string is a fixed valid semver, so the error
+/// arm can only trip on a malformed `current`.
+pub fn next_version_or_default(current: Option<&str>, update_type: UpdateType) -> Result<String> {
+    next_version(current.unwrap_or("0.0.0"), update_type)
+}
+
 /// Calculate the next version based on semver and update type
 ///
 /// # Errors

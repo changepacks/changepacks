@@ -40,7 +40,7 @@ pub use gen_update_map::{apply_reverse_dependencies, gen_update_map};
 pub use get_changepacks_config::{get_changepacks_config, get_changepacks_config_at};
 pub use get_changepacks_dir::get_changepacks_dir;
 pub use get_relative_path::get_relative_path;
-pub use next_version::next_version;
+pub use next_version::{next_version, next_version_or_default};
 pub use sort_by_dep::sort_by_dependencies;
 pub use split_version::split_version;
 pub use trailing_newline::{finalize_content, trailing_newline};

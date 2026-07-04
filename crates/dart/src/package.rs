@@ -16,22 +16,12 @@ pub struct DartPackage {
 }
 
 impl DartPackage {
-    #[must_use]
-    pub fn new(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-    ) -> Self {
-        Self {
-            name,
-            version,
-            path,
-            relative_path,
-            is_changed: false,
-            dependencies: HashSet::new(),
-        }
-    }
+    // Byte-identical `#[must_use] pub fn new(name, version, path,
+    // relative_path)` constructor body shared with every other
+    // "plain 5-basic-field" language crate's `Package` / `Workspace`.
+    // Consolidated via `impl_default_new!()` in `changepacks-core` — see
+    // that macro's doc for the exact struct-field contract.
+    changepacks_core::impl_default_new!();
 }
 
 #[async_trait]
@@ -54,9 +44,11 @@ impl Package for DartPackage {
         crate::update_version_from_fields(&mut self.version, &self.path, update_type).await
     }
 
-    fn language(&self) -> Language {
-        Language::Dart
-    }
+    // Byte-identical `fn language(&self) -> Language { Language::Dart }`
+    // one-liner shared with every other language crate's `Package` /
+    // `Workspace` impl. Consolidated via `impl_language!()` in
+    // `changepacks-core` alongside the other accessor macros.
+    changepacks_core::impl_language!(Language::Dart);
 
     // `default_publish_command` / `default_dry_run_publish_command` share
     // their const-based shape with every other const-driven language

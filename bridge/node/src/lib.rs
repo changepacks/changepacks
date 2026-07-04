@@ -18,7 +18,10 @@ pub async fn main() -> Result<()> {
   changepacks_cli::main(&std::env::args().skip(1).collect::<Vec<String>>())
     .await
     .map_err(|e| {
-      if e.downcast_ref::<changepacks_cli::UserCancelled>().is_some() {
+      // Consolidated "graceful cancellation → exit(0)" check via the
+      // shared `changepacks_cli::is_user_cancelled` helper (see its doc
+      // for the three call sites this one-liner replaces).
+      if changepacks_cli::is_user_cancelled(&e) {
         std::process::exit(0);
       }
       Error::from_reason(e.to_string())

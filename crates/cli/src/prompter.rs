@@ -8,6 +8,23 @@ use thiserror::Error;
 #[error("operation cancelled by user")]
 pub struct UserCancelled;
 
+/// Return `true` when `err` was raised by a graceful user cancellation
+/// (Ctrl+C or ESC — anything the prompter maps to [`UserCancelled`]).
+///
+/// Consolidates the "if the error is a graceful cancellation, exit 0;
+/// otherwise propagate" contract shared by three FFI/binary entry
+/// points — `bridge/node/src/lib.rs`, `bridge/python/src/main.rs`, and
+/// `crates/changepacks/src/main.rs` — each of which previously carried
+/// its own inline `err.downcast_ref::<changepacks_cli::UserCancelled>().is_some()`
+/// check. Extracting the helper next to `UserCancelled` itself puts the
+/// exit-code policy in one place: any future addition of "graceful
+/// cancellation" shapes (e.g. an inquire timeout, an SIGTERM handler)
+/// lands here and every entry point picks it up automatically.
+#[must_use]
+pub fn is_user_cancelled(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<UserCancelled>().is_some()
+}
+
 /// Dependency injection interface for interactive prompts.
 ///
 /// Allows commands to accept `&dyn Prompter` for testability. Production code uses

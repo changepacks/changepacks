@@ -16,7 +16,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use changepacks_core::UpdateType;
-use changepacks_utils::next_version;
+use changepacks_utils::next_version_or_default;
 use tokio::fs::{read_to_string, write};
 
 pub use finder::CSharpProjectFinder;
@@ -52,8 +52,11 @@ pub(crate) async fn update_version_from_fields(
     path: &Path,
     update_type: UpdateType,
 ) -> Result<()> {
-    let current_version = version.as_deref().unwrap_or("0.0.0");
-    let new_version = next_version(current_version, update_type)?;
+    // Two-line "reserve `0.0.0` when unversioned" prelude consolidated
+    // into `changepacks_utils::next_version_or_default` so the fallback
+    // policy lives in ONE place across every language crate. See that
+    // helper's doc for the Java/Rust carve-outs.
+    let new_version = next_version_or_default(version.as_deref(), update_type)?;
     write_csproj_version(path, &new_version, version.is_some()).await?;
     *version = Some(new_version);
     Ok(())

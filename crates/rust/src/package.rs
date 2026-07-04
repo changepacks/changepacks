@@ -91,9 +91,11 @@ impl Package for RustPackage {
         Ok(())
     }
 
-    fn language(&self) -> Language {
-        Language::Rust
-    }
+    // Byte-identical `fn language(&self) -> Language { Language::Rust }`
+    // one-liner shared with every other language crate's `Package` /
+    // `Workspace` impl. Consolidated via `impl_language!()` in
+    // `changepacks-core` alongside the other accessor macros.
+    changepacks_core::impl_language!(Language::Rust);
 
     // `default_publish_command` / `default_dry_run_publish_command` share
     // their const-based shape with every other const-driven language

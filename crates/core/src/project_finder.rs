@@ -218,6 +218,112 @@ macro_rules! impl_basic_accessors {
     };
 }
 
+/// Expand to the identical `pub fn new(name, version, path, relative_path)`
+/// constructor body used by every "plain 5-basic-field" language crate's
+/// `Package` / `Workspace` inherent-impl — currently Node, Python, Dart,
+/// CSharp, Java (10 impls, all with byte-identical 7-line struct-literal
+/// bodies before this macro).
+///
+/// Invoked from inside an `impl XxxPackage { ... }` or `impl XxxWorkspace
+/// { ... }` block; expands to the byte-identical constructor:
+///
+/// ```ignore
+/// #[must_use]
+/// pub fn new(
+///     name: Option<String>,
+///     version: Option<String>,
+///     path: PathBuf,
+///     relative_path: PathBuf,
+/// ) -> Self {
+///     Self {
+///         name,
+///         version,
+///         path,
+///         relative_path,
+///         is_changed: false,
+///         dependencies: HashSet::new(),
+///     }
+/// }
+/// ```
+///
+/// Consumer requirement: the struct must have `name: Option<String>`,
+/// `version: Option<String>`, `path: PathBuf`, `relative_path: PathBuf`,
+/// `is_changed: bool`, and `dependencies: HashSet<String>` fields with
+/// those exact spellings — the same "struct-field contract"
+/// `impl_basic_accessors!()` already pins. `RustPackage` /
+/// `RustWorkspace` intentionally stay hand-rolled because `RustPackage`
+/// carries two extra fields (`workspace_version_inherited`,
+/// `workspace_root`) and takes a distinct constructor signature; the
+/// macro is fully backward-compatible with the existing import shape
+/// because all types are fully-qualified.
+///
+/// Fully-qualified `::std::option::Option`, `::std::string::String`,
+/// `::std::path::PathBuf`, `::std::collections::HashSet` make the macro
+/// hygienic — callers do not need those types in scope at the invocation
+/// site (though every current caller already has
+/// `use std::path::PathBuf;` and `use std::collections::HashSet;`, so the
+/// macro is fully backward-compatible with the existing import shape).
+///
+/// The `#[must_use]` attribute is baked into the expansion so downstream
+/// lint parity with the previously hand-rolled `#[must_use] pub fn new`
+/// bodies is preserved — a caller that discards the returned `Self` will
+/// still trip clippy's `unused_must_use` at the call site.
+#[macro_export]
+macro_rules! impl_default_new {
+    () => {
+        #[must_use]
+        pub fn new(
+            name: ::std::option::Option<::std::string::String>,
+            version: ::std::option::Option<::std::string::String>,
+            path: ::std::path::PathBuf,
+            relative_path: ::std::path::PathBuf,
+        ) -> Self {
+            Self {
+                name,
+                version,
+                path,
+                relative_path,
+                is_changed: false,
+                dependencies: ::std::collections::HashSet::new(),
+            }
+        }
+    };
+}
+
+/// Expand to the identical `fn language(&self) -> Language { Language::X }`
+/// single-line accessor used by every `Package` / `Workspace` impl in every
+/// language crate (Node, Python, Rust, Dart, CSharp, Java — 12 impls, all
+/// three-line bodies before this macro).
+///
+/// Invoked from inside an `impl Package for XxxPackage` or `impl Workspace
+/// for XxxWorkspace` block with the specific `Language` variant for that
+/// crate; expands to the one method body:
+///
+/// ```ignore
+/// fn language(&self) -> Language { Language::Node }
+/// ```
+///
+/// (etc. for Python, Rust, Dart, CSharp, Java). `$crate::Language` is used
+/// so callers do not have to have `Language` in scope at the invocation
+/// site — though every current caller already does via
+/// `use changepacks_core::{Language, ...};`, so the macro is fully
+/// backward-compatible with the existing import shape.
+///
+/// Consolidated alongside `impl_basic_accessors!()` /
+/// `impl_dependencies_accessors!()` /
+/// `impl_const_publish_commands!()` /
+/// `impl_projects_hashmap_accessors!()` because this was the last obvious
+/// byte-identical accessor that had escaped the macro-consolidation
+/// sweeps in prior iterations.
+#[macro_export]
+macro_rules! impl_language {
+    ($lang:expr) => {
+        fn language(&self) -> $crate::Language {
+            $lang
+        }
+    };
+}
+
 /// Returns `true` when `path` refers to an existing regular file.
 ///
 /// AGENTS.md rule: never blocking I/O in async — use `tokio::fs::metadata`.

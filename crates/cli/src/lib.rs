@@ -25,7 +25,7 @@ mod finders;
 pub mod options;
 pub mod prompter;
 
-pub use prompter::UserCancelled;
+pub use prompter::{UserCancelled, is_user_cancelled};
 
 #[derive(ValueEnum, Debug, Clone)]
 enum CliUpdateType {
