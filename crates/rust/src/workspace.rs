@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
-use changepacks_utils::{next_version, split_version, trailing_newline};
+use changepacks_utils::{finalize_content, next_version, split_version};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tokio::fs::{read_to_string, write};
@@ -105,11 +105,7 @@ impl Workspace for RustWorkspace {
 
         write(
             &self.path,
-            format!(
-                "{}{}",
-                cargo_toml.to_string().trim_end(),
-                trailing_newline(&cargo_toml_raw)
-            ),
+            finalize_content(&cargo_toml.to_string(), &cargo_toml_raw),
         )
         .await?;
         self.version = Some(new_version);
@@ -209,11 +205,7 @@ impl Workspace for RustWorkspace {
 
         write(
             &self.path,
-            format!(
-                "{}{}",
-                cargo_toml.to_string().trim_end(),
-                trailing_newline(&cargo_toml_raw)
-            ),
+            finalize_content(&cargo_toml.to_string(), &cargo_toml_raw),
         )
         .await?;
 

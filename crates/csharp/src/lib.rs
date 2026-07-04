@@ -15,6 +15,8 @@ mod xml_utils;
 use std::path::Path;
 
 use anyhow::Result;
+use changepacks_core::UpdateType;
+use changepacks_utils::next_version;
 use tokio::fs::{read_to_string, write};
 
 pub use finder::CSharpProjectFinder;
@@ -27,6 +29,35 @@ pub use finder::CSharpProjectFinder;
 /// actual dry-run flow lives in the RAII-managed `dry_run_publish`
 /// override (`crate::dry_run::resolve_and_run_dry_run`).
 pub(crate) const PUBLISH_COMMAND: &str = "dotnet pack -c Release && dotnet nuget push";
+
+/// Shared body for `CSharpPackage::update_version` and
+/// `CSharpWorkspace::update_version`.
+///
+/// Consolidates the "read current version, compute next, write csproj,
+/// stash new version on `self`" 5-line sequence — previously duplicated
+/// byte-for-byte between `CSharpPackage` and `CSharpWorkspace` — into ONE
+/// source of truth. Both trait impls now delegate here so a future
+/// rewording of the "reserve `0.0.0` when unversioned" fallback or the
+/// `has_version` derivation lands in exactly one place.
+///
+/// A shared helper (rather than a `macro_rules!` mirroring
+/// `impl_node_publish_wiring!()`) is required because `#[async_trait]`
+/// runs BEFORE declarative-macro expansion — see the twin helper in
+/// `crates/dart/src/lib.rs` for the full E0195 rationale.
+///
+/// # Errors
+/// Returns error if the version update or csproj write fails.
+pub(crate) async fn update_version_from_fields(
+    version: &mut Option<String>,
+    path: &Path,
+    update_type: UpdateType,
+) -> Result<()> {
+    let current_version = version.as_deref().unwrap_or("0.0.0");
+    let new_version = next_version(current_version, update_type)?;
+    write_csproj_version(path, &new_version, version.is_some()).await?;
+    *version = Some(new_version);
+    Ok(())
+}
 
 /// Update the `<Version>` element of the `.csproj` XML at `path` to
 /// `new_version`, delegating to [`xml_utils::update_version_in_xml`] to

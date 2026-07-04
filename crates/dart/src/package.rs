@@ -4,9 +4,6 @@ use std::path::PathBuf;
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::next_version;
-
-use crate::write_pubspec_version;
 
 #[derive(Debug)]
 pub struct DartPackage {
@@ -46,14 +43,15 @@ impl Package for DartPackage {
     // — expansion is byte-identical to the previous hand-rolled bodies.
     changepacks_core::impl_basic_accessors!();
 
+    // `update_version` shares its byte-identical body with `DartWorkspace`.
+    // Consolidated via the shared `update_version_from_fields` helper in
+    // `crates/dart/src/lib.rs` so the "reserve `0.0.0`" fallback and the
+    // `existing_version` derivation live in ONE place. A `macro_rules!`
+    // producing an `async fn` (mirroring `impl_node_publish_wiring!()`)
+    // would trip E0195 because `#[async_trait]` runs BEFORE declarative
+    // macro expansion — see `update_version_from_fields`'s doc comment.
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let current_version = self.version.as_deref().unwrap_or("0.0.0");
-        let new_version = next_version(current_version, update_type)?;
-
-        let existing_version = self.version.is_some();
-        write_pubspec_version(&self.path, &new_version, existing_version).await?;
-        self.version = Some(new_version);
-        Ok(())
+        crate::update_version_from_fields(&mut self.version, &self.path, update_type).await
     }
 
     fn language(&self) -> Language {

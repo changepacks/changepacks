@@ -1,11 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::next_version;
 use std::collections::HashSet;
 use std::path::PathBuf;
-
-use crate::write_pyproject_version;
 
 #[derive(Debug)]
 pub struct PythonPackage {
@@ -45,13 +42,16 @@ impl Package for PythonPackage {
     // — expansion is byte-identical to the previous hand-rolled bodies.
     changepacks_core::impl_basic_accessors!();
 
+    // `update_version` shares its body with `PythonWorkspace` — only the
+    // `ensure_project_table` bool passed to `write_pyproject_version`
+    // differs (`false` here, `true` in `PythonWorkspace`). Consolidated
+    // via the shared `update_version_from_fields` helper in
+    // `crates/python/src/lib.rs` so the "reserve `0.0.0`" fallback and
+    // `next_version` computation live in ONE place. See the helper's
+    // doc comment for why a `macro_rules!` producing `async fn` is
+    // incompatible with `#[async_trait]` (E0195 lifetime mismatch).
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let current_version = self.version.as_deref().unwrap_or("0.0.0");
-        let new_version = next_version(current_version, update_type)?;
-
-        write_pyproject_version(&self.path, &new_version, false).await?;
-        self.version = Some(new_version);
-        Ok(())
+        crate::update_version_from_fields(&mut self.version, &self.path, update_type, false).await
     }
 
     fn language(&self) -> Language {

@@ -24,9 +24,45 @@ pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "uv publish --dry-run";
 use std::path::Path;
 
 use anyhow::Result;
-use changepacks_utils::trailing_newline;
+use changepacks_core::UpdateType;
+use changepacks_utils::{finalize_content, next_version};
 use tokio::fs::{read_to_string, write};
 use toml_edit::DocumentMut;
+
+/// Shared body for `PythonPackage::update_version` and
+/// `PythonWorkspace::update_version`.
+///
+/// Consolidates the "read current version, compute next, write pyproject,
+/// stash new version on `self`" 5-line sequence — previously duplicated
+/// between `PythonPackage` and `PythonWorkspace` differing ONLY in the
+/// `ensure_project_table` bool passed to `write_pyproject_version` — into
+/// ONE source of truth. Both trait impls now delegate here so a future
+/// rewording of the "reserve `0.0.0` when unversioned" fallback lands in
+/// exactly one place. The `ensure_project_table` parameter keeps the
+/// workspace vs. package behaviour distinct at the call site
+/// (`false` for `PythonPackage`, `true` for `PythonWorkspace` — matching
+/// the pre-consolidation bodies exactly).
+///
+/// A shared helper (rather than a parameterized `macro_rules!` producing
+/// `async fn`) is required because `#[async_trait]` runs BEFORE
+/// declarative-macro expansion — see the twin helper in
+/// `crates/dart/src/lib.rs` for the full E0195 rationale.
+///
+/// # Errors
+/// Returns error if the version update or pyproject write fails.
+pub(crate) async fn update_version_from_fields(
+    version: &mut Option<String>,
+    path: &Path,
+    update_type: UpdateType,
+    ensure_project_table: bool,
+) -> Result<()> {
+    let current_version = version.as_deref().unwrap_or("0.0.0");
+    let new_version = next_version(current_version, update_type)?;
+
+    write_pyproject_version(path, &new_version, ensure_project_table).await?;
+    *version = Some(new_version);
+    Ok(())
+}
 
 /// Update `pyproject.toml` at `path` to set `[project].version` to
 /// `new_version`, preserving the file's trailing-newline shape (via
@@ -54,11 +90,7 @@ pub(crate) async fn write_pyproject_version(
     pyproject_toml["project"]["version"] = new_version.into();
     write(
         path,
-        format!(
-            "{}{}",
-            pyproject_toml.to_string().trim_end(),
-            trailing_newline(&pyproject_toml_raw)
-        ),
+        finalize_content(&pyproject_toml.to_string(), &pyproject_toml_raw),
     )
     .await?;
     Ok(())

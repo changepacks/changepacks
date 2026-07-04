@@ -15,7 +15,7 @@ pub use finder::RustProjectFinder;
 use std::path::Path;
 
 use anyhow::Result;
-use changepacks_utils::trailing_newline;
+use changepacks_utils::finalize_content;
 use tokio::fs::{read_to_string, write};
 use toml_edit::DocumentMut;
 
@@ -73,11 +73,7 @@ pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) 
     cargo_toml["package"]["version"] = new_version.into();
     write(
         path,
-        format!(
-            "{}{}",
-            cargo_toml.to_string().trim_end(),
-            trailing_newline(&cargo_toml_raw)
-        ),
+        finalize_content(&cargo_toml.to_string(), &cargo_toml_raw),
     )
     .await?;
     Ok(())

@@ -15,9 +15,39 @@ pub use finder::NodeProjectFinder;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use changepacks_utils::{detect_indent_str, trailing_newline};
+use changepacks_core::UpdateType;
+use changepacks_utils::{detect_indent_str, finalize_content, next_version};
 use serde::Serialize;
 use tokio::fs::{read_to_string, write};
+
+/// Shared body for `NodePackage::update_version` and
+/// `NodeWorkspace::update_version`.
+///
+/// Consolidates the "read current version, compute next, write
+/// package.json, stash new version on `self`" 5-line sequence —
+/// previously duplicated (semantically identical) between `NodePackage`
+/// and `NodeWorkspace` — into ONE source of truth. Both trait impls now
+/// delegate here so a future rewording of the "reserve `0.0.0` when
+/// unversioned" fallback lands in exactly one place.
+///
+/// A shared helper (rather than a `macro_rules!` mirroring
+/// `impl_node_publish_wiring!()`) is required because `#[async_trait]`
+/// runs BEFORE declarative-macro expansion — see the twin helper in
+/// `crates/dart/src/lib.rs` for the full E0195 rationale.
+///
+/// # Errors
+/// Returns error if the version update or package.json write fails.
+pub(crate) async fn update_version_from_fields(
+    version: &mut Option<String>,
+    path: &Path,
+    update_type: UpdateType,
+) -> Result<()> {
+    let current_version = version.as_deref().unwrap_or("0.0.0");
+    let new_version = next_version(current_version, update_type)?;
+    write_package_json_version(path, &new_version).await?;
+    *version = Some(new_version);
+    Ok(())
+}
 
 /// Update `package.json` at `path` to set its `version` field to `new_version`,
 /// preserving the file's original indent size (via `detect_indent`) and its
@@ -41,11 +71,7 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
     package_json.serialize(&mut ser)?;
     write(
         path,
-        format!(
-            "{}{}",
-            String::from_utf8(ser.into_inner())?.trim_end(),
-            trailing_newline(&package_json_raw)
-        ),
+        finalize_content(&String::from_utf8(ser.into_inner())?, &package_json_raw),
     )
     .await?;
     Ok(())

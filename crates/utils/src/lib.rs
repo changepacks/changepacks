@@ -43,4 +43,4 @@ pub use get_relative_path::get_relative_path;
 pub use next_version::next_version;
 pub use sort_by_dep::sort_by_dependencies;
 pub use split_version::split_version;
-pub use trailing_newline::trailing_newline;
+pub use trailing_newline::{finalize_content, trailing_newline};
