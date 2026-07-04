@@ -209,8 +209,12 @@ impl ProjectFinder for RustProjectFinder {
                 git_root.pop();
             }
 
-            let mut dir = first_pkg.abs_path.parent().and_then(Path::parent);
-            while let Some(parent) = dir {
+            // `Path::ancestors()` yields `[self, parent, grandparent, …, root]`,
+            // so `skip(2)` starts at grandparent — the same starting point as
+            // the previous `first_pkg.abs_path.parent().and_then(Path::parent)`
+            // seed. Using the iterator lets the walk-up terminate cleanly with
+            // a plain `break` instead of a mutable `dir` slot juggled by hand.
+            for parent in first_pkg.abs_path.ancestors().skip(2) {
                 let candidate = parent.join("Cargo.toml");
                 // AGENTS.md rule: all file ops via `tokio::fs`. A stat error
                 // is treated as "does not exist", matching the previous
@@ -259,7 +263,6 @@ impl ProjectFinder for RustProjectFinder {
                     );
                     break;
                 }
-                dir = parent.parent();
             }
         }
 

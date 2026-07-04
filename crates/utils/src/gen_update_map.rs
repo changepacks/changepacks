@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{HashMap, HashSet},
     hash::BuildHasher,
     path::{Path, PathBuf},
@@ -63,38 +64,53 @@ fn apply_update_on_rules(
         return;
     }
 
-    // Snapshot updated paths as owned strings ONCE — the inner
-    // `updated_paths.iter().any(...)` closure runs `N × M` times (N updated
-    // paths × M `updateOn` triggers), so precomputing collapses `N × M`
-    // `to_string_lossy()` calls to `N` and keeps the closure body one line.
-    let updated_paths: Vec<String> = update_map
-        .keys()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
+    // Two-phase design so the immutable borrow of `update_map` (via the
+    // path snapshot) ends before we mutate `update_map` below:
+    //
+    // Phase 1 (inside the block): snapshot updated paths ONCE and evaluate
+    // every trigger against them. The inner `.any(...)` runs `N × M` times
+    // (N updated paths × M `updateOn` triggers), so precomputing collapses
+    // `N × M` `to_string_lossy()` calls down to `N`. We keep the snapshot
+    // as `Cow<'_, str>` so on the common UTF-8-path case each entry stays
+    // `Cow::Borrowed(&str)` with zero allocation; non-UTF-8 paths degrade
+    // to `Cow::Owned(String)` automatically, preserving the lossy-
+    // replacement semantics of the previous code.
+    //
+    // Phase 2 (below): the snapshot has been dropped, so we own the
+    // matched trigger references outright and can safely mutate
+    // `update_map`. `trigger_matches` borrows from `config`, not from
+    // `update_map`, so there is no borrow conflict here.
+    let trigger_matches: Vec<(&String, &Vec<String>)> = {
+        let updated_paths: Vec<Cow<'_, str>> =
+            update_map.keys().map(|p| p.to_string_lossy()).collect();
+        config
+            .update_on
+            .iter()
+            .filter(|(trigger_pattern, _)| match Pattern::new(trigger_pattern) {
+                Ok(pattern) => updated_paths.iter().any(|s| pattern.matches(s.as_ref())),
+                Err(_) => {
+                    eprintln!(
+                        "warning: invalid glob pattern in updateOn config: {trigger_pattern}"
+                    );
+                    false
+                }
+            })
+            .collect()
+    };
 
-    for (trigger_pattern, dependents) in &config.update_on {
-        let Ok(pattern) = Pattern::new(trigger_pattern) else {
-            eprintln!("warning: invalid glob pattern in updateOn config: {trigger_pattern}");
-            continue;
-        };
-
-        // Check if any updated package matches the trigger pattern
-        let has_trigger = updated_paths.iter().any(|s| pattern.matches(s));
-
-        if has_trigger {
-            // Add dependent packages as PATCH updates if not already in update_map
-            for dependent in dependents {
-                let dependent_path = PathBuf::from(dependent);
-                update_map.entry(dependent_path).or_insert_with(|| {
-                    (
+    for (trigger_pattern, dependents) in trigger_matches {
+        // Add dependent packages as PATCH updates if not already in update_map
+        for dependent in dependents {
+            let dependent_path = PathBuf::from(dependent);
+            update_map.entry(dependent_path).or_insert_with(|| {
+                (
+                    UpdateType::Patch,
+                    vec![ChangePackResultLog::new(
                         UpdateType::Patch,
-                        vec![ChangePackResultLog::new(
-                            UpdateType::Patch,
-                            format!("Auto-update triggered by updateOn rule: {trigger_pattern}"),
-                        )],
-                    )
-                });
-            }
+                        format!("Auto-update triggered by updateOn rule: {trigger_pattern}"),
+                    )],
+                )
+            });
         }
     }
 }

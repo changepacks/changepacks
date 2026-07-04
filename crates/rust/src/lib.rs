@@ -19,6 +19,35 @@ use changepacks_utils::trailing_newline;
 use tokio::fs::{read_to_string, write};
 use toml_edit::DocumentMut;
 
+/// Default publish command for a single-crate `Cargo.toml`.
+///
+/// Kept as a `pub(crate) const` here so `RustPackage::default_publish_command`
+/// and `RustWorkspace::default_publish_command` (which each have their own
+/// workspace-scoped variant below) reference ONE source of truth. Every
+/// other language crate — `changepacks-python`, `changepacks-dart`,
+/// `changepacks-java`, `changepacks-csharp` — already exposes this same
+/// `PUBLISH_COMMAND` const; this fills the Rust-crate gap so the pattern is
+/// uniform and a future edit lives in one place.
+pub(crate) const PUBLISH_COMMAND: &str = "cargo publish";
+
+/// Default dry-run publish command for a single-crate `Cargo.toml`.
+///
+/// Paired with `PUBLISH_COMMAND` so both live next to each other for
+/// package-scope callers.
+pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "cargo publish --dry-run";
+
+/// Default publish command for a Cargo workspace root.
+///
+/// `--workspace` publishes every member in one invocation, which matches
+/// what `RustWorkspace::default_publish_command` returned before this
+/// consolidation.
+pub(crate) const WORKSPACE_PUBLISH_COMMAND: &str = "cargo publish --workspace";
+
+/// Default dry-run publish command for a Cargo workspace root.
+///
+/// Paired with `WORKSPACE_PUBLISH_COMMAND` for the workspace-scope callers.
+pub(crate) const WORKSPACE_DRY_RUN_PUBLISH_COMMAND: &str = "cargo publish --workspace --dry-run";
+
 /// Update the `[package].version` key of the `Cargo.toml` at `path` to
 /// `new_version`, using `toml_edit` to preserve the file's formatting,
 /// comments, and trailing-newline shape.

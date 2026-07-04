@@ -68,14 +68,18 @@ pub fn resolve_dry_run_publish_command(
 /// `run_publish_command_argv` so a future change to output handling (e.g.
 /// lossy → strict UTF-8, extra logging) touches ONE place.
 ///
-/// Note: `from_utf8_lossy` silently replaces invalid UTF-8 with replacement
-/// characters. This is acceptable since child processes may produce non-UTF-8
-/// bytes.
+/// On the common valid-UTF-8 case we consume `output.stdout` / `output.stderr`
+/// directly via `String::from_utf8`, which reuses the child's `Vec<u8>`
+/// buffer as the `String` payload — zero copy of the stdout/stderr bytes.
+/// On invalid UTF-8 we fall back to `String::from_utf8_lossy` for
+/// byte-identical replacement-character semantics with the previous code.
 fn build_publish_output(output: std::process::Output) -> PublishOutput {
     PublishOutput {
         success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        stdout: String::from_utf8(output.stdout)
+            .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned()),
+        stderr: String::from_utf8(output.stderr)
+            .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned()),
     }
 }
 

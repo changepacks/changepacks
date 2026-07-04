@@ -21,10 +21,15 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     // `.csproj` filename stems), never as relative paths — so the historical
     // path-side lookup was dead code and its `to_string_lossy().into_owned()`
     // per project was pure allocation waste. Name lookup is sufficient.
-    let mut name_to_index: HashMap<String, usize> = HashMap::new();
+    //
+    // Keys are borrowed `&str` from `project.name()` — the input `projects`
+    // slice lives for the whole function scope so borrowing is sound, and it
+    // eliminates N `String` allocations (one per project) on every
+    // `publish` / `check --tree` invocation.
+    let mut name_to_index: HashMap<&str, usize> = HashMap::new();
     for (idx, project) in projects.iter().enumerate() {
         if let Some(name) = project.name() {
-            name_to_index.insert(name.to_string(), idx);
+            name_to_index.insert(name, idx);
         }
     }
 
@@ -37,7 +42,11 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     for (idx, project) in projects.iter().enumerate() {
         let deps = project.dependencies();
         for dep in deps {
-            if let Some(&dep_idx) = name_to_index.get(dep) {
+            // `dep: &String` — call `.as_str()` so the borrow-key lookup on
+            // `HashMap<&str, usize>` resolves without an intermediate
+            // `String` alloc. (`.get(&String)` needs `&str: Borrow<String>`,
+            // which is not implemented; the borrow direction is the reverse.)
+            if let Some(&dep_idx) = name_to_index.get(dep.as_str()) {
                 // Project at idx depends on project at dep_idx
                 // So dep_idx should come before idx
                 graph[dep_idx].push(idx);
