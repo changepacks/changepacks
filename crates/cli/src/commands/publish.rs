@@ -60,9 +60,15 @@ pub async fn handle_publish_with_prompter(
     // Filter by language if specified
     retain_by_language(&args.language, &mut projects);
 
-    // Filter by project relative path if specified
+    // Filter by project relative path if specified.
+    // `HashSet<String>` gives O(1) lookup vs `Vec::contains` O(A) per project,
+    // dropping the overall filter cost from O(P × A) to O(P + A) — meaningful in
+    // large monorepos where both P and A can reach the dozens. Behavior is
+    // unchanged: same case-sensitive `\` → `/` normalization, same
+    // `.contains(&normalized_path)` call site (`HashSet<String>` accepts it
+    // identically to `Vec<String>`).
     if !args.project.is_empty() {
-        let normalized_args: Vec<String> =
+        let normalized_args: std::collections::HashSet<String> =
             args.project.iter().map(|p| p.replace('\\', "/")).collect();
         projects.retain(|project| {
             let relative_path = project.relative_path().to_string_lossy();

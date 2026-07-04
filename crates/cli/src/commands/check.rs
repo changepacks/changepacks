@@ -152,7 +152,11 @@ fn display_tree(
     // below by a single pass over `projects`. Matches the preallocation policy
     // already applied in `sort_by_dep.rs` and `apply_reverse_dependencies`.
     let mut graph: HashMap<String, Vec<String>> = HashMap::with_capacity(projects.len());
-    let mut roots: HashSet<String> = HashSet::with_capacity(projects.len());
+    // Borrow the `&str` name that already lives inside each `Project`; the
+    // owned `String` keys in `name_to_project` accept `&str` lookups via
+    // `Borrow<str>`. Avoids N per-invocation `String::clone`s of names we
+    // already own further up the stack.
+    let mut roots: HashSet<&str> = HashSet::with_capacity(projects.len());
 
     for project in projects {
         let deps = project.dependencies();
@@ -196,12 +200,15 @@ fn display_tree(
     for project in projects {
         let name = project.name().unwrap_or("noname");
         if !has_dependencies.contains(name) {
-            roots.insert(name.to_string());
+            roots.insert(name);
         }
     }
 
-    // Sort roots for consistent output
-    let mut sorted_roots: Vec<String> = roots.into_iter().collect();
+    // Sort roots for consistent output. `Vec<&str>` sorts identically to
+    // `Vec<String>` for the same name strings (byte-identical order), and
+    // `name_to_project.get(root)` still resolves because
+    // `HashMap<String, _>::get` accepts anything `Borrow<str>`.
+    let mut sorted_roots: Vec<&str> = roots.into_iter().collect();
     sorted_roots.sort();
 
     // Display tree starting from roots
@@ -213,7 +220,9 @@ fn display_tree(
         update_map,
     };
     for (idx, root) in sorted_roots.iter().enumerate() {
-        if let Some(project) = name_to_project.get(root) {
+        // Deref `&&str` → `&str` so `HashMap<String, _>::get` picks up
+        // `Borrow<str>` (there is no `Borrow<&str>` impl for `String`).
+        if let Some(project) = name_to_project.get(*root) {
             let is_last = idx == sorted_roots.len() - 1;
             display_tree_node(project, &mut ctx, "", is_last, &mut visited)?;
         }
@@ -277,10 +286,13 @@ fn display_tree_node(
     // `.sort()` — meaningful on diamond graphs where the same subtree is
     // re-descended under multiple parents.
     if let Some(deps) = ctx.graph.get(&project_name) {
-        let sorted_deps_count = deps.len();
         for (idx, dep_name) in deps.iter().enumerate() {
             if let Some(dep_project) = ctx.name_to_project.get(dep_name) {
-                let is_last_dep = idx == sorted_deps_count - 1;
+                // `deps.iter().enumerate()` guarantees `deps.len() >= 1`
+                // inside the loop, so plain subtraction is safe. `Vec::len()`
+                // is O(1); the vestigial `sorted_deps_count` binding just
+                // added a name without hiding a real cost.
+                let is_last_dep = idx == deps.len() - 1;
                 let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
                 // Use a separate visited set for dependencies to avoid infinite loops
                 // but still show all dependencies

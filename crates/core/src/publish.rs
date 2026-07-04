@@ -122,8 +122,17 @@ fn prepend_path_dirs(extra_path_dirs: &[PathBuf]) -> Option<std::ffi::OsString> 
     if extra_path_dirs.is_empty() {
         return None;
     }
-    let mut dirs: Vec<PathBuf> = extra_path_dirs.to_vec();
-    if let Some(existing) = std::env::var_os("PATH") {
+    // Walk `PATH` ONCE to count entries, then reserve exactly what we need so
+    // `Vec::extend` never geometrically re-grows on typical Unix/Windows
+    // `$PATH` values (dozens of entries). One extra `split_paths` iteration is
+    // cheap next to skipping ~log2(N) reallocations of `Vec<PathBuf>`.
+    let existing = std::env::var_os("PATH");
+    let existing_count = existing
+        .as_ref()
+        .map_or(0, |e| std::env::split_paths(e).count());
+    let mut dirs: Vec<PathBuf> = Vec::with_capacity(extra_path_dirs.len() + existing_count);
+    dirs.extend(extra_path_dirs.iter().cloned());
+    if let Some(existing) = existing {
         dirs.extend(std::env::split_paths(&existing));
     }
     std::env::join_paths(dirs).ok()
