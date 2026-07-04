@@ -4,6 +4,50 @@ use crate::project::Project;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+/// Expand to the identical `projects()` / `projects_mut()` accessor pair
+/// used by every finder whose backing store is a `HashMap<PathBuf,
+/// Project>` (Node, Python, Dart share byte-identical bodies today).
+///
+/// Invoked from inside an `impl ProjectFinder for XxxProjectFinder`
+/// block; expands to two methods that collect the map's values into a
+/// `Vec` of borrows. Byte-identical expansion — the previously
+/// hand-rolled bodies:
+///
+/// ```ignore
+/// fn projects(&self)     -> Vec<&Project>     { self.projects.values().collect::<Vec<_>>() }
+/// fn projects_mut(&mut self) -> Vec<&mut Project> { self.projects.values_mut().collect::<Vec<_>>() }
+/// ```
+///
+/// are replaced 1:1 by a single `impl_projects_hashmap_accessors!()`
+/// invocation. `$crate::Project` is used so callers do not have to have
+/// `Project` in scope at the invocation site — though every current
+/// caller already does via `use changepacks_core::{Project,
+/// ProjectFinder};`, so the macro is fully backward-compatible with the
+/// existing import shape.
+///
+/// Rust / CSharp / Java finders are intentionally NOT consumers:
+/// - RustProjectFinder's projects live under a `projects_by_id`
+///   IndexMap, not the flat `projects` HashMap this macro assumes.
+/// - CSharpProjectFinder also carries the `is_workspace_cache` field
+///   introduced in retry-now#0029 and uses `.csproj` extension matching.
+/// - JavaProjectFinder shells out to gradlew and stores state
+///   differently.
+///
+/// Adding a new consumer requires only that its struct has a
+/// `projects: HashMap<PathBuf, Project>` field with those exact
+/// spellings.
+#[macro_export]
+macro_rules! impl_projects_hashmap_accessors {
+    () => {
+        fn projects(&self) -> ::std::vec::Vec<&$crate::Project> {
+            self.projects.values().collect::<::std::vec::Vec<_>>()
+        }
+        fn projects_mut(&mut self) -> ::std::vec::Vec<&mut $crate::Project> {
+            self.projects.values_mut().collect::<::std::vec::Vec<_>>()
+        }
+    };
+}
+
 /// Returns `true` when `path` refers to an existing regular file.
 ///
 /// AGENTS.md rule: never blocking I/O in async — use `tokio::fs::metadata`.

@@ -31,12 +31,13 @@ impl NodeProjectFinder {
 
 #[async_trait]
 impl ProjectFinder for NodeProjectFinder {
-    fn projects(&self) -> Vec<&Project> {
-        self.projects.values().collect::<Vec<_>>()
-    }
-    fn projects_mut(&mut self) -> Vec<&mut Project> {
-        self.projects.values_mut().collect::<Vec<_>>()
-    }
+    // `projects()` / `projects_mut()` share their byte-identical body with
+    // the Python and Dart finders (all three use a
+    // `HashMap<PathBuf, Project>` backing store). Consolidated via the
+    // `impl_projects_hashmap_accessors!()` macro in `changepacks-core` so
+    // future accessor tweaks land in one place — expansion is byte-
+    // identical to the previous hand-rolled bodies.
+    changepacks_core::impl_projects_hashmap_accessors!();
 
     fn project_files(&self) -> &[&str] {
         PROJECT_FILES

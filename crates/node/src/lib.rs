@@ -214,6 +214,40 @@ mod tests {
         );
     }
 
+    /// Regression: locks the "walk upward, stop at the FIRST non-npm hit"
+    /// contract of `detect_package_manager_recursive`. When a nearer
+    /// directory holds a non-npm lockfile and a further ancestor holds a
+    /// DIFFERENT non-npm lockfile, the nearer one MUST win. `test_detect_recursive`
+    /// only pins the single-lockfile case, so this test complements it
+    /// with the two-lockfiles case a naive edit could silently break —
+    /// e.g. a refactor that reversed the direction of the ancestor walk,
+    /// or bubbled the outermost lock up instead of the innermost.
+    ///
+    /// Fixture: `<tmp>/bun.lock` at the root + `<tmp>/pkg/pnpm-lock.yaml`
+    /// one level in, resolved from `<tmp>/pkg/sub/package.json` two
+    /// levels deep. The nearer `pnpm-lock.yaml` must win over the
+    /// outermost `bun.lock` — encoding "nearest lockfile beats ancestor".
+    #[test]
+    fn test_detect_recursive_nearer_lockfile_wins_over_ancestor() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let pkg_dir = root.join("pkg");
+        let sub_dir = pkg_dir.join("sub");
+        fs::create_dir_all(&sub_dir).unwrap();
+
+        // Ancestor lockfile (further from the manifest).
+        fs::write(root.join("bun.lock"), "").unwrap();
+        // Nearer lockfile (should win).
+        fs::write(pkg_dir.join("pnpm-lock.yaml"), "").unwrap();
+        fs::write(sub_dir.join("package.json"), "{}").unwrap();
+
+        assert_eq!(
+            detect_package_manager_recursive(&sub_dir.join("package.json")),
+            PackageManager::Pnpm,
+            "expected the nearer pnpm-lock.yaml to beat the ancestor bun.lock"
+        );
+    }
+
     #[test]
     fn test_node_modules_bin_dirs_collects_ancestors_nearest_first() {
         let temp_dir = TempDir::new().unwrap();
