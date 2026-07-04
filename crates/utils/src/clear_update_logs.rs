@@ -16,7 +16,10 @@ use crate::is_changepack_log_json_name;
 /// # Errors
 /// Returns error if any update log file fails to be removed.
 pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
-    if !changepacks_dir.exists() {
+    if !tokio::fs::try_exists(changepacks_dir)
+        .await
+        .unwrap_or(false)
+    {
         return Ok(());
     }
     let mut entries = read_dir(changepacks_dir).await?;

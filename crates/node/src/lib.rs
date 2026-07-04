@@ -15,7 +15,7 @@ pub use finder::NodeProjectFinder;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use changepacks_utils::{detect_indent, trailing_newline};
+use changepacks_utils::{detect_indent_str, trailing_newline};
 use serde::Serialize;
 use tokio::fs::{read_to_string, write};
 
@@ -31,10 +31,10 @@ use tokio::fs::{read_to_string, write};
 /// fails.
 pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -> Result<()> {
     let package_json_raw = read_to_string(path).await?;
-    let indent = detect_indent(&package_json_raw);
+    let indent_str = detect_indent_str(&package_json_raw);
     let mut package_json: serde_json::Value = serde_json::from_str(&package_json_raw)?;
     package_json["version"] = serde_json::Value::String(new_version.to_string());
-    let ind = &b" ".repeat(indent);
+    let ind = indent_str.as_bytes();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);
     let writer = Vec::new();
     let mut ser = serde_json::Serializer::with_formatter(writer, formatter);

@@ -15,7 +15,7 @@ pub async fn get_changepacks_config(current_dir: &Path) -> Result<Config> {
     let changepacks_dir = get_changepacks_dir(current_dir)?;
     let config_file = changepacks_dir.join("config.json");
 
-    if !config_file.exists() {
+    if !tokio::fs::try_exists(&config_file).await.unwrap_or(false) {
         return Ok(Config::default());
     }
 

@@ -172,6 +172,7 @@ impl Workspace for RustWorkspace {
             .and_then(|d| d.as_table_mut())
             .context("Dependencies section not found")?;
 
+        let mut any_updated = false;
         for package in packages {
             if package.language() != Language::Rust {
                 continue;
@@ -190,7 +191,12 @@ impl Workspace for RustWorkspace {
             {
                 let (prefix, _) = split_version(current_version)?;
                 dep["version"] = format!("{}{}", prefix.unwrap_or_default(), next_version).into();
+                any_updated = true;
             }
+        }
+
+        if !any_updated {
+            return Ok(());
         }
 
         write(

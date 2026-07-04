@@ -30,7 +30,7 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
     }
     // create config.json file
     let config_file = changepacks_dir.join("config.json");
-    if config_file.exists() {
+    if tokio::fs::try_exists(&config_file).await.unwrap_or(false) {
         Err(anyhow::anyhow!("changepacks project already initialized"))
     } else {
         if !args.dry_run {
