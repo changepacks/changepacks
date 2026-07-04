@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use changepacks_core::Config;
 use changepacks_core::ProjectFinder;
 use changepacks_utils::{
-    ThreadSafeRepository, find_current_git_repo, find_project_dirs, get_changepacks_config,
+    ThreadSafeRepository, find_current_git_repo, find_project_dirs, get_changepacks_config_at,
 };
 use std::path::PathBuf;
 
@@ -22,6 +22,20 @@ pub struct CommandContext {
     /// do not re-run `gix::discover` per invocation. `ThreadSafeRepository`
     /// is an internal `Arc` handle so this adds no measurable memory cost.
     pub repo: ThreadSafeRepository,
+    /// Cached `<repo_root_path>/.changepacks` computed once in `new()` so
+    /// every `check`/`update`/`changepack` command reads a stable
+    /// `&PathBuf` (deref-coerces to `&Path`) instead of re-allocating a
+    /// fresh `PathBuf` via `repo_root_path.join(".changepacks")` on every
+    /// call. Byte-identical to `repo_root_path.join(".changepacks")`
+    /// because `CommandContext::new` sets `repo_root_path =
+    /// repo.work_dir()`, matching what `get_changepacks_dir(current_dir)`
+    /// computes. Exposed as a `pub` field (matching every other
+    /// `CommandContext` field) so callers like `update.rs` can borrow it
+    /// with `&ctx.changepacks_dir` after partially moving other fields
+    /// such as `ctx.project_finders` — a method-based accessor would
+    /// require an outstanding `&self` borrow that conflicts with the
+    /// partial-move pattern already in use downstream.
+    pub changepacks_dir: PathBuf,
 }
 
 impl CommandContext {
@@ -40,7 +54,14 @@ impl CommandContext {
             .work_dir()
             .context("Not a git working directory. Ensure you are inside a git repository.")?
             .to_path_buf();
-        let config = get_changepacks_config(&current_dir).await?;
+        // Compute `changepacks_dir` up front so we can hand it to
+        // `get_changepacks_config_at`, skipping a redundant second
+        // `gix::discover(current_dir)` walk that the current-dir wrapper
+        // performs via `get_changepacks_dir`. `repo.work_dir().join(...)`
+        // is byte-identical to `get_changepacks_dir(current_dir)?` because
+        // `find_current_git_repo` already yielded the same repo.
+        let changepacks_dir = repo_root_path.join(".changepacks");
+        let config = get_changepacks_config_at(&changepacks_dir).await?;
         let mut project_finders = get_finders();
         find_project_dirs(&repo, &mut project_finders, &config, remote).await?;
 
@@ -49,6 +70,7 @@ impl CommandContext {
             config,
             project_finders,
             repo,
+            changepacks_dir,
         })
     }
 
@@ -56,18 +78,5 @@ impl CommandContext {
     /// Returns error if retrieving the current directory fails.
     pub fn current_dir() -> Result<PathBuf> {
         Ok(std::env::current_dir()?)
-    }
-
-    /// Path to the `.changepacks/` directory at the repo root.
-    ///
-    /// Cached derivative of `repo_root_path` so downstream commands do not
-    /// re-run `gix::discover` per invocation. `CommandContext::new` already
-    /// sets `repo_root_path = repo.work_dir()`, which is exactly what
-    /// `changepacks_utils::get_changepacks_dir(current_dir)` computes, so
-    /// this is byte-identical to the previous
-    /// `get_changepacks_dir(&CommandContext::current_dir()?)?` pattern.
-    #[must_use]
-    pub fn changepacks_dir(&self) -> PathBuf {
-        self.repo_root_path.join(".changepacks")
     }
 }

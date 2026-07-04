@@ -30,10 +30,23 @@ const PROJECT_FILES: &[&str] = &["Cargo.toml"];
 /// a future manifest shape change (e.g. inline-table `name = { workspace = true }`)
 /// only needs to be adapted in one place.
 ///
-/// Deliberately does NOT cover `[workspace.package].<field>` — that path uses a
-/// different key (`workspace.package`) and its callers already read it inline.
+/// See [`workspace_package_str`] for the `[workspace.package].<field>` sibling.
 fn package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<String> {
     doc.get("package")
+        .and_then(|p| p.get(field))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+}
+
+/// Look up `[workspace.package].<field>` as an owned string, mirroring the
+/// `doc.get("workspace").and_then(|w| w.get("package")).and_then(|p| p.get(field)).and_then(|v| v.as_str()).map(String::from)`
+/// chain that was previously open-coded twice in this file (once in `visit`
+/// to seed `workspace_package_version`, once in `finalize` to walk up to a
+/// missed workspace root). Extracted so the manifest-shape assumption lives
+/// in one place, matching the `[package].<field>` sibling helper.
+fn workspace_package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<String> {
+    doc.get("workspace")
+        .and_then(|w| w.get("package"))
         .and_then(|p| p.get(field))
         .and_then(|v| v.as_str())
         .map(String::from)
@@ -100,12 +113,7 @@ impl ProjectFinder for RustProjectFinder {
             // if workspace
             if cargo_toml.get("workspace").is_some() {
                 // Read [workspace.package].version if present
-                let ws_pkg_version = cargo_toml
-                    .get("workspace")
-                    .and_then(|w| w.get("package"))
-                    .and_then(|p| p.get("version"))
-                    .and_then(|v| v.as_str())
-                    .map(String::from);
+                let ws_pkg_version = workspace_package_str(&cargo_toml, "version");
                 if ws_pkg_version.is_some() {
                     self.workspace_package_version = ws_pkg_version;
                     self.workspace_root_path = Some(path.to_path_buf());
@@ -202,13 +210,25 @@ impl ProjectFinder for RustProjectFinder {
             && !self.pending_workspace_packages.is_empty()
             && let Some(first_pkg) = self.pending_workspace_packages.first()
         {
-            // Derive git root from the first pending package's absolute/relative paths
-            // e.g. abs=<repo>/crates/foo/Cargo.toml, rel=crates/foo/Cargo.toml → git_root=<repo>
-            let rel_component_count = first_pkg.relative_path.components().count();
-            let mut git_root = first_pkg.abs_path.clone();
-            for _ in 0..rel_component_count {
-                git_root.pop();
-            }
+            // Derive git root from the first pending package's absolute/relative
+            // paths: strip `rel_component_count` trailing components from
+            // `abs_path`. `Path::ancestors()` already exposes that walk as an
+            // iterator (matching the `abs_path.ancestors().skip(2)` walk-up
+            // used a few lines below), and `nth(n)` yields the same result as
+            // `n` sequential `PathBuf::pop()` calls without cloning + mutating
+            // the buffer in a for-loop. The `unwrap_or_else` fallback
+            // preserves the previous behaviour for the pathological edge case
+            // where the count exceeds the ancestor depth: the old pop loop
+            // stopped at `""`, and the safe cousin `first_pkg.abs_path.clone()`
+            // still yields the same lookup result downstream because
+            // `strip_prefix(&git_root)` in the subsequent block just falls
+            // back to `Path::new("Cargo.toml")`.
+            let git_root = first_pkg
+                .abs_path
+                .ancestors()
+                .nth(first_pkg.relative_path.components().count())
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| first_pkg.abs_path.clone());
 
             // `Path::ancestors()` yields `[self, parent, grandparent, …, root]`,
             // so `skip(2)` starts at grandparent — the same starting point as
@@ -226,13 +246,9 @@ impl ProjectFinder for RustProjectFinder {
                     .unwrap_or(false)
                     && let Ok(content) = read_to_string(&candidate).await
                     && let Ok(parsed) = content.parse::<toml_edit::DocumentMut>()
-                    && let Some(version) = parsed
-                        .get("workspace")
-                        .and_then(|w| w.get("package"))
-                        .and_then(|p| p.get("version"))
-                        .and_then(|v| v.as_str())
+                    && let Some(version) = workspace_package_str(&parsed, "version")
                 {
-                    self.workspace_package_version = Some(version.to_string());
+                    self.workspace_package_version = Some(version);
                     self.workspace_root_path = Some(candidate.clone());
 
                     // Insert synthetic workspace project so apply_updates() can find it

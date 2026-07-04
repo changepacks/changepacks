@@ -79,6 +79,18 @@ pub async fn handle_changepack_with_prompter(
             break;
         }
 
+        // Compute relative paths ONCE per update-type turn — up to three
+        // turns (Major / Minor / Patch) — so both the "insert into
+        // update_map" pass and the "keep_projects" filter reuse them
+        // instead of re-allocating a `PathBuf` per (project × pass) pair.
+        // The vector is then CONSUMED by the single combined pass below
+        // so each entry either moves into `update_map` (selected) or is
+        // dropped with the project (not selected) — no clone.
+        let rel_paths: Vec<PathBuf> = projects
+            .iter()
+            .map(|p| get_relative_path(&ctx.repo_root_path, p.path()))
+            .collect::<Result<_>>()?;
+
         let selected_projects = if args.yes {
             projects.clone()
         } else if update_type == UpdateType::Patch && projects.len() == 1 {
@@ -93,25 +105,26 @@ pub async fn handle_changepack_with_prompter(
             prompter.multi_select(&message, projects.clone(), defaults)?
         };
 
-        // remove selected projects from projects by index
-        for project in selected_projects {
-            update_map.insert(
-                get_relative_path(&ctx.repo_root_path, project.path())?,
-                update_type,
-            );
-        }
+        // Identify selected projects by pointer equality — every entry
+        // in `selected_projects` is a copy of the `&Project` reference
+        // that already lives in `projects`, so their addresses match and
+        // an O(1) HashSet lookup replaces the previous per-project
+        // `get_relative_path` recomputation. Then a single combined pass
+        // fuses "insert if selected" and "keep if not" so `projects` is
+        // walked ONCE per update-type turn instead of twice — and the
+        // sort order is preserved because `keep_projects` accumulates in
+        // input order, matching the previous filter behaviour byte-for-byte.
+        let selected_ptrs: std::collections::HashSet<*const Project> = selected_projects
+            .iter()
+            .map(|&p| std::ptr::from_ref(p))
+            .collect();
 
-        // Single pass: compute rel_path per project and filter without
-        // materializing an intermediate `Vec<(&&Project, PathBuf)>` that
-        // was immediately consumed by the next filter+collect. `?` still
-        // short-circuits on the first bad path exactly like the previous
-        // `.collect::<Result<Vec<_>>>()?` did (just earlier in the loop
-        // instead of at the end of the map phase).
         let mut keep_projects: Vec<_> = Vec::with_capacity(projects.len());
-        for project in &projects {
-            let rel_path = get_relative_path(&ctx.repo_root_path, project.path())?;
-            if !update_map.contains_key(&rel_path) {
-                keep_projects.push(*project);
+        for (project, rel_path) in projects.iter().copied().zip(rel_paths) {
+            if selected_ptrs.contains(&std::ptr::from_ref(project)) {
+                update_map.insert(rel_path, update_type);
+            } else {
+                keep_projects.push(project);
             }
         }
         projects = keep_projects;
@@ -136,7 +149,7 @@ pub async fn handle_changepack_with_prompter(
     // random uuid
     let changepack_log_id = nanoid::nanoid!();
     let changepack_log_file = ctx
-        .changepacks_dir()
+        .changepacks_dir
         .join(format!("changepack_log_{changepack_log_id}.json"));
     write(changepack_log_file, serde_json::to_string(&changepack_log)?).await?;
 

@@ -80,13 +80,16 @@ pub async fn update_gradle_version_at(
     let new_version = next_version(current_version, update_type)?;
 
     let content = read_to_string(path).await?;
-    let file_name = path
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or_default();
-    let is_kts = Path::new(file_name)
+    // `Path::extension()` already returns the trailing extension component,
+    // so the previous `file_name().and_then(to_str) → Path::new(...).extension()`
+    // trip through a fresh `Path` was redundant. Behaviour is preserved on
+    // extension-less inputs: `Path::extension()` yields `None` when the file
+    // stem is empty or missing, matching the old `unwrap_or_default() →
+    // Path::new("").extension() == None` fallthrough.
+    let is_kts = path
         .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("kts"));
+        .and_then(|e| e.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("kts"));
 
     let updated_content = if is_kts {
         update_version_in_kts(&content, &new_version)

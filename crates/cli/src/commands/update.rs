@@ -61,8 +61,7 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
 #[cfg(not(tarpaulin_include))]
 pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Prompter) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
-    let changepacks_dir = ctx.changepacks_dir();
-    let mut update_map = gen_update_map(&changepacks_dir, &ctx.config).await?;
+    let mut update_map = gen_update_map(&ctx.changepacks_dir, &ctx.config).await?;
 
     let mut project_finders = ctx.project_finders;
     let mut all_finders = get_finders();
@@ -178,7 +177,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
 
     // Clear files
-    clear_update_logs(&changepacks_dir).await?;
+    clear_update_logs(&ctx.changepacks_dir).await?;
 
     Ok(())
 }

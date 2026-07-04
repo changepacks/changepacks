@@ -6,46 +6,53 @@ use changepacks_core::UpdateType;
 /// # Errors
 /// Returns error if the version format is invalid.
 pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
-    let mut version_parts = version.split('.').collect::<Vec<&str>>();
-
-    // Ensure we have exactly 3 parts (major.minor.patch)
-    if version_parts.len() != 3 {
+    // Destructure `major.minor.patch` via two `split_once('.')` calls
+    // instead of collecting into a throwaway `Vec<&str>`. The previous
+    // `version.split('.').collect::<Vec<&str>>()` allocated a fresh
+    // `Vec<&str>` on every call — hot on the criterion
+    // `bench_next_version` bench and on every `Package::update_version`
+    // / `Workspace::update_version` call across the 6 language crates.
+    // Byte-identical to the previous `split.collect + len() == 3` guard:
+    //   - `"1.2"` → the second `split_once('.')` returns `None` → error,
+    //     matching the old `len() != 3` early return.
+    //   - `"1.2.3.4"` → both splits succeed but `patch = "3.4"` still
+    //     carries a `'.'`, caught by `patch.contains('.')` → error.
+    //   - `"1.2.wrong"` → both splits succeed, `patch = "wrong"`, no `.`,
+    //     `parse::<usize>()` fails downstream.
+    let (major, rest) = version
+        .split_once('.')
+        .ok_or_else(|| anyhow::anyhow!("Invalid version format: {version}"))?;
+    let (minor, patch) = rest
+        .split_once('.')
+        .ok_or_else(|| anyhow::anyhow!("Invalid version format: {version}"))?;
+    if patch.contains('.') {
         return Err(anyhow::anyhow!("Invalid version format: {version}"));
     }
-    // `split_once('+')` returns `None` when there is no `+`, and
-    // `Some((base, rest))` otherwise. This replaces the previous
-    // `split(...).collect::<Vec<&str>>()` + `len() == 2` guard, which
-    // allocated a throwaway `Vec<&str>` on every call on the criterion
-    // hot path (`bench_next_version`). Behavior on multi-`+` inputs
-    // (e.g. `"1.0.0++"`) is preserved: the old `len() == 2` path also
-    // swallowed the trailing `+`, and `split_once` puts it inside `ext`
-    // exactly the same way.
-    let plus_part = if let Some((base, ext)) = version_parts[2].split_once('+') {
-        version_parts[2] = base;
-        Some(ext)
-    } else {
-        None
+
+    // Optional `+build` suffix on the patch component. Semantics are
+    // byte-identical to the previous `split_once('+')` handling:
+    // `Some((patch, build))` when the marker is present, `None`
+    // otherwise. Multi-`+` inputs (`"1.0.0++"`) route the trailing `+`
+    // into `build`, matching the pre-existing round-trip.
+    let (patch, plus_part) = match patch.split_once('+') {
+        Some((base, ext)) => (base, Some(ext)),
+        None => (patch, None),
     };
 
-    let version_index = match update_type {
-        UpdateType::Major => 0,
-        UpdateType::Minor => 1,
-        UpdateType::Patch => 2,
+    let parse = |s: &str| -> Result<usize> {
+        s.parse::<usize>()
+            .with_context(|| format!("Invalid version: {version}"))
     };
 
-    let version_part = (version_parts[version_index]
-        .parse::<usize>()
-        .with_context(|| format!("Invalid version: {version}"))?
-        + 1)
-    .to_string();
-    version_parts[version_index] = version_part.as_str();
+    // Rebuild via `format!` — one allocation for the result string, no
+    // per-part heap traffic. Lower components reset to `0` for Major /
+    // Minor bumps, matching the previous "reset lower parts to 0" loop.
+    let mut result = match update_type {
+        UpdateType::Major => format!("{}.0.0", parse(major)? + 1),
+        UpdateType::Minor => format!("{major}.{}.0", parse(minor)? + 1),
+        UpdateType::Patch => format!("{major}.{minor}.{}", parse(patch)? + 1),
+    };
 
-    // Reset lower version parts to 0
-    for part in version_parts.iter_mut().skip(version_index + 1) {
-        *part = "0";
-    }
-
-    let mut result = version_parts.join(".");
     if let Some(p) = plus_part {
         result.push('+');
         result.push_str(p);
