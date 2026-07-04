@@ -52,6 +52,34 @@ fn workspace_package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<St
         .map(String::from)
 }
 
+/// Collect names of `[dependencies]` entries declared as
+/// `dep = { workspace = true }` — the shape used by workspace members to
+/// inherit a dependency's version from `[workspace.dependencies]`.
+///
+/// Previously open-coded inside `visit`; extracted so the same
+/// `dep_names` list feeds every branch (workspace / inherits-workspace-
+/// version / plain-package) through one code path. Byte-identical
+/// output to the previous inline walk — the filter is unchanged
+/// (`as_table_like` + `.get("workspace")` + `.as_bool()` defaulting to
+/// `false`).
+///
+/// Matches the `package_str` / `workspace_package_str` sibling-helper
+/// idiom already established in this file.
+fn workspace_dep_names(doc: &toml_edit::DocumentMut) -> Vec<String> {
+    let mut dep_names = Vec::new();
+    if let Some(deps) = doc.get("dependencies").and_then(|d| d.as_table_like()) {
+        for (dep_name, value) in deps.iter() {
+            if let Some(dep) = value.as_table_like()
+                && let Some(workspace) = dep.get("workspace")
+                && workspace.as_bool().unwrap_or(false)
+            {
+                dep_names.push(dep_name.to_string());
+            }
+        }
+    }
+    dep_names
+}
+
 #[derive(Debug, Default)]
 pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
@@ -89,21 +117,10 @@ impl ProjectFinder for RustProjectFinder {
             let cargo_toml = read_to_string(path).await?;
             let cargo_toml: toml_edit::DocumentMut = cargo_toml.parse()?;
 
-            // Collect workspace dependencies for this file
-            let mut dep_names = Vec::new();
-            if let Some(deps) = cargo_toml
-                .get("dependencies")
-                .and_then(|d| d.as_table_like())
-            {
-                for (dep_name, value) in deps.iter() {
-                    if let Some(dep) = value.as_table_like()
-                        && let Some(workspace) = dep.get("workspace")
-                        && workspace.as_bool().unwrap_or(false)
-                    {
-                        dep_names.push(dep_name.to_string());
-                    }
-                }
-            }
+            // Collect workspace dependencies for this file — the same
+            // `dep_names` list feeds every branch below (workspace /
+            // inherits-workspace-version / plain-package).
+            let dep_names = workspace_dep_names(&cargo_toml);
 
             // if workspace
             if cargo_toml.get("workspace").is_some() {

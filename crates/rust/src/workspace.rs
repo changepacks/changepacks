@@ -150,13 +150,14 @@ impl Workspace for RustWorkspace {
         Some(crate::WORKSPACE_DRY_RUN_PUBLISH_COMMAND.to_string())
     }
 
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
-    }
+    // `dependencies()` / `add_dependency()` share their byte-identical
+    // body with every other language crate's `Package` and `Workspace`
+    // impl (all use `dependencies: HashSet<String>` as their backing
+    // store). Consolidated via the `impl_dependencies_accessors!()`
+    // macro in `changepacks-core` so future accessor tweaks land in
+    // one place — expansion is byte-identical to the previous
+    // hand-rolled bodies.
+    changepacks_core::impl_dependencies_accessors!();
 
     async fn update_workspace_dependencies(&self, packages: &[&dyn Package]) -> Result<()> {
         let cargo_toml_raw = read_to_string(&self.path).await?;
@@ -182,13 +183,18 @@ impl Workspace for RustWorkspace {
             let Some(package_name) = package.name() else {
                 continue;
             };
-            if dependencies.get(package_name).is_none() {
+            // Single lookup + type check via `get_mut(..).and_then(as_inline_table_mut)`:
+            // the previous `.get(k).is_none()` guard + `dependencies[k]` index
+            // did the same work in two steps and carried a panic surface on
+            // `[]` indexing. `let-else` continues on either a missing key or
+            // a non-inline-table value — byte-identical semantics.
+            let Some(dep) = dependencies
+                .get_mut(package_name)
+                .and_then(toml_edit::Item::as_inline_table_mut)
+            else {
                 continue;
-            }
-
-            let dep = dependencies[package_name].as_inline_table_mut();
-            if let Some(dep) = dep
-                && let Some(current_version) = dep.get("version").and_then(|v| v.as_str())
+            };
+            if let Some(current_version) = dep.get("version").and_then(|v| v.as_str())
                 && let Some(next_version) = package.version()
             {
                 let (prefix, _) = split_version(current_version)?;

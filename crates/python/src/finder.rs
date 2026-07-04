@@ -15,6 +15,21 @@ use crate::{package::PythonPackage, workspace::PythonWorkspace};
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["pyproject.toml"];
 
+/// Look up `[project].<field>` as an owned string, mirroring the
+/// `project.and_then(|p| p.get(field)).and_then(|v| v.as_str()).map(String::from)`
+/// chain that used to be open-coded twice inside `visit` (once for
+/// `version`, once for `name`). Extracted so a future manifest shape
+/// change (e.g. inline-table `name = { workspace = true }`) only needs
+/// to be adapted in one place — matches the `package_str` /
+/// `workspace_package_str` idiom in [`crate::finder`]'s sibling Rust
+/// finder ([`crates/rust/src/finder.rs`](../../../rust/src/finder.rs)).
+fn project_str(project: Option<&toml_edit::Item>, field: &str) -> Option<String> {
+    project
+        .and_then(|p| p.get(field))
+        .and_then(|v| v.as_str())
+        .map(std::string::ToString::to_string)
+}
+
 #[derive(Debug, Default)]
 pub struct PythonProjectFinder {
     projects: HashMap<PathBuf, Project>,
@@ -62,14 +77,8 @@ impl ProjectFinder for PythonProjectFinder {
 
             // Both branches use the same name/version and the same path;
             // hoist so each branch collapses to a single constructor call.
-            let version = project
-                .and_then(|p| p.get("version"))
-                .and_then(|v| v.as_str())
-                .map(std::string::ToString::to_string);
-            let name = project
-                .and_then(|p| p.get("name"))
-                .and_then(|v| v.as_str())
-                .map(std::string::ToString::to_string);
+            let version = project_str(project, "version");
+            let name = project_str(project, "name");
             let path_buf = path.to_path_buf();
             let relative_path_buf = relative_path.to_path_buf();
 

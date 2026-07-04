@@ -44,6 +44,48 @@ macro_rules! impl_projects_hashmap_accessors {
     };
 }
 
+/// Expand to the identical `dependencies()` / `add_dependency()` method
+/// pair used by every `Package` / `Workspace` impl whose backing store
+/// is a `dependencies: HashSet<String>` field — currently every
+/// language crate's `package.rs` and `workspace.rs` (Node, Python,
+/// Rust, Dart, CSharp, Java) shares byte-identical bodies through this
+/// macro.
+///
+/// Invoked from inside an `impl Package for XxxPackage` or `impl
+/// Workspace for XxxWorkspace` block; expands to two methods that
+/// borrow the dependency set immutably and insert into it mutably.
+/// Byte-identical expansion — the previously hand-rolled bodies:
+///
+/// ```ignore
+/// fn dependencies(&self)                       -> &HashSet<String> { &self.dependencies }
+/// fn add_dependency(&mut self, dependency: &str)                    { self.dependencies.insert(dependency.to_string()); }
+/// ```
+///
+/// are replaced 1:1 by a single `impl_dependencies_accessors!()`
+/// invocation. Fully-qualified `::std::collections::HashSet` and
+/// `::std::string::String` make the macro hygienic — callers do not
+/// need those types in scope at the invocation site (though every
+/// current caller already uses `use std::collections::HashSet;`, so
+/// the macro is fully backward-compatible with the existing import
+/// shape).
+///
+/// Consumer requirement: the struct must have a `dependencies:
+/// HashSet<String>` field with those exact spellings. Sibling fields
+/// (e.g. `is_changed` on every impl, `workspace_version_inherited` on
+/// `RustPackage`) are untouched by the macro — it only reads and
+/// mutates `self.dependencies`.
+#[macro_export]
+macro_rules! impl_dependencies_accessors {
+    () => {
+        fn dependencies(&self) -> &::std::collections::HashSet<::std::string::String> {
+            &self.dependencies
+        }
+        fn add_dependency(&mut self, dependency: &str) {
+            self.dependencies.insert(dependency.to_string());
+        }
+    };
+}
+
 /// Returns `true` when `path` refers to an existing regular file.
 ///
 /// AGENTS.md rule: never blocking I/O in async — use `tokio::fs::metadata`.

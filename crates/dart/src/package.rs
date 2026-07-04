@@ -87,13 +87,14 @@ impl Package for DartPackage {
         Some(crate::DRY_RUN_PUBLISH_COMMAND.to_string())
     }
 
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
-    }
+    // `dependencies()` / `add_dependency()` share their byte-identical
+    // body with every other language crate's `Package` and `Workspace`
+    // impl (all use `dependencies: HashSet<String>` as their backing
+    // store). Consolidated via the `impl_dependencies_accessors!()`
+    // macro in `changepacks-core` so future accessor tweaks land in
+    // one place — expansion is byte-identical to the previous
+    // hand-rolled bodies.
+    changepacks_core::impl_dependencies_accessors!();
 }
 
 #[cfg(test)]

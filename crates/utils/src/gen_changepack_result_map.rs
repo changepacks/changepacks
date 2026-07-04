@@ -33,7 +33,12 @@ pub fn gen_changepack_result_map<S: BuildHasher>(
         let changed = project.is_changed();
         let result = match update_result.remove(&key) {
             Some((update_type, notes)) => {
-                let next = next_version(project.version().unwrap_or("0.0.0"), update_type)?;
+                // Reuse the already-materialized `version` string above instead
+                // of re-dispatching `project.version()` through the `Project`
+                // enum. Semantically identical (both fall back to `"0.0.0"`
+                // when the project has no version) but avoids the second
+                // trait-object hop per project on every `update`/`check`.
+                let next = next_version(version.as_deref().unwrap_or("0.0.0"), update_type)?;
                 ChangePackResult::new(notes, version, Some(next), name, changed, key.clone())
             }
             None => ChangePackResult::new(vec![], version, None, name, changed, key.clone()),
