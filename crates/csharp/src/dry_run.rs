@@ -64,7 +64,7 @@ pub(crate) async fn resolve_and_run_dry_run(
     let dir = path.parent().context(missing_dir_msg)?;
 
     if let Some(user_cmd) =
-        resolve_dry_run_publish_command(relative_path, Language::CSharp, None, config)
+        resolve_dry_run_publish_command(relative_path, Language::CSharp, || None, config)
     {
         return Ok(Some(run_publish_command(&user_cmd, dir).await?));
     }

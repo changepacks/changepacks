@@ -143,7 +143,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     repo_root_path: &Path,
 ) {
     // Fast path for the dominant no-op case: with no scheduled updates the
-    // seed set below is empty and the reverse-dep BFS discovers nothing, so
+    // seed set below is empty and the reverse-dep DFS discovers nothing, so
     // walking the full project graph to populate `path_to_name` /
     // `reverse_deps` is pure waste (N `String` + N `PathBuf` allocations per
     // project). Semantic mirror of the existing guard in
@@ -153,7 +153,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     }
 
     // Second fast path: with no scheduled updates carrying any local
-    // (monorepo) dependency edge, the BFS discovers nothing and the
+    // (monorepo) dependency edge, the DFS discovers nothing and the
     // full `path_to_name` / `reverse_deps` construction below is pure
     // waste (N `PathBuf` + N `String` allocs per project). Common on
     // single-package repos and workspaces that don't use `workspace:*`
@@ -204,15 +204,23 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     let mut packages_to_add: HashMap<PathBuf, String> = HashMap::new();
 
     // Initial set of updated package names via O(1) path -> name lookup.
-    // Collect straight into the BFS work queue: dedup at THIS step is
+    // Collect straight into the DFS work queue: dedup at THIS step is
     // unnecessary (update_map keys are unique, path_to_name is 1-to-1
     // PathBuf -> String, so filter_map yields each name at most once) AND
-    // the BFS loop below already guards against reprocessing via the
+    // the DFS loop below already guards against reprocessing via the
     // `!update_map.contains_key(dep_path) && !packages_to_add.contains_key(dep_path)`
     // check. Skipping the intermediate `HashSet<String>` -> `Vec<String>`
     // hop removes one HashMap-backed allocation per call
     // (`apply_reverse_dependencies` runs on every `changepacks update` and
     // every `changepacks check`).
+    //
+    // Traversal order is DFS, not BFS: `Vec::pop` yields the last-pushed
+    // element (LIFO), so a `to_process.push(dep_name.clone())` inside the
+    // loop below re-visits its subtree before falling back to
+    // earlier-queued names. This is deterministic-in-shape and correct for
+    // reachability (which is all `packages_to_add` cares about); the
+    // `HashMap`-backed `reverse_deps` never guaranteed a particular order
+    // anyway.
     let mut to_process: Vec<String> = update_map
         .keys()
         .filter_map(|path| path_to_name.get(path).cloned())

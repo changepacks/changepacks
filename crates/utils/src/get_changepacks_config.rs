@@ -6,13 +6,20 @@ use tokio::fs::read_to_string;
 
 use crate::get_changepacks_dir;
 
-/// Get the changepacks configuration from .changepacks/config.json
-/// Returns default config if the file doesn't exist or is empty
+/// Get the changepacks configuration from `<changepacks_dir>/config.json`.
+///
+/// Same body as [`get_changepacks_config`] but takes an already-computed
+/// `.changepacks/` directory so callers that already hold the repo root (e.g.
+/// `CommandContext::new`, which caches `repo.work_dir().join(".changepacks")`)
+/// can skip the second `gix::discover(current_dir)` walk that
+/// [`get_changepacks_config`] performs via [`get_changepacks_dir`].
+///
+/// Returns the default config if the file doesn't exist or is empty (same
+/// behaviour as the current-dir wrapper).
 ///
 /// # Errors
 /// Returns error if reading or parsing the config.json file fails.
-pub async fn get_changepacks_config(current_dir: &Path) -> Result<Config> {
-    let changepacks_dir = get_changepacks_dir(current_dir)?;
+pub async fn get_changepacks_config_at(changepacks_dir: &Path) -> Result<Config> {
     let config_file = changepacks_dir.join("config.json");
 
     if !tokio::fs::try_exists(&config_file).await.unwrap_or(false) {
@@ -30,6 +37,16 @@ pub async fn get_changepacks_config(current_dir: &Path) -> Result<Config> {
     let config: Config = serde_json::from_str(&content).context("Failed to parse config.json")?;
 
     Ok(config)
+}
+
+/// Get the changepacks configuration from .changepacks/config.json
+/// Returns default config if the file doesn't exist or is empty
+///
+/// # Errors
+/// Returns error if reading or parsing the config.json file fails.
+pub async fn get_changepacks_config(current_dir: &Path) -> Result<Config> {
+    let changepacks_dir = get_changepacks_dir(current_dir)?;
+    get_changepacks_config_at(&changepacks_dir).await
 }
 
 #[cfg(test)]

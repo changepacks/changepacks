@@ -111,23 +111,35 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
         .await
     }
 
-    /// Get the publish command for this workspace, checking config first
+    /// Get the publish command for this workspace, checking config first.
+    ///
+    /// The `default_publish_command()` closure is `FnOnce`, so the
+    /// workspace's language-specific default (e.g. Node's
+    /// `detect_package_manager_recursive`, which walks the ancestor chain
+    /// with sync filesystem stats) is only invoked when config supplies
+    /// neither a per-path nor a per-language override — the common case
+    /// where the user configures a custom publish command in
+    /// `.changepacks/config.json` now avoids one `String` allocation and,
+    /// for Node, the ancestor-walking probe.
     fn get_publish_command(&self, config: &Config) -> String {
         crate::publish::resolve_publish_command(
             self.relative_path(),
             self.language(),
-            &self.default_publish_command(),
+            || self.default_publish_command(),
             config,
         )
     }
 
     /// Get the dry-run publish command for this workspace, checking config
     /// first, then falling back to the workspace's `default_dry_run_publish_command`.
+    ///
+    /// Mirrors [`Workspace::get_publish_command`] — the default closure is
+    /// `FnOnce` so it is only invoked on the cache-miss path.
     fn get_dry_run_publish_command(&self, config: &Config) -> Option<String> {
         crate::publish::resolve_dry_run_publish_command(
             self.relative_path(),
             self.language(),
-            self.default_dry_run_publish_command().as_deref(),
+            || self.default_dry_run_publish_command(),
             config,
         )
     }

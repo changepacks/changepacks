@@ -30,16 +30,23 @@ fn lookup_by_path_or_language(
     map.get(language.publish_key()).cloned()
 }
 
-/// Resolve the publish command from config, language, or default
-#[must_use]
-pub fn resolve_publish_command(
+/// Resolve the publish command from config, language, or default.
+///
+/// `default_command_fn` is a `FnOnce` closure so the language-specific
+/// default (e.g. Node's `detect_package_manager_recursive`, which walks
+/// the ancestor chain doing sync `is_dir` stats) is only invoked on the
+/// cache-miss path where both the per-path and per-language `config`
+/// entries are absent. On the common override case the closure is dropped
+/// unused, saving one `String` allocation per call across every language
+/// crate and — for Node — the ancestor-walking filesystem probe.
+pub fn resolve_publish_command<F: FnOnce() -> String>(
     relative_path: &Path,
     language: Language,
-    default_command: &str,
+    default_command_fn: F,
     config: &Config,
 ) -> String {
     lookup_by_path_or_language(&config.publish, relative_path, language)
-        .unwrap_or_else(|| default_command.to_string())
+        .unwrap_or_else(default_command_fn)
 }
 
 /// Resolve the dry-run publish command from config or fall back to the
@@ -49,15 +56,18 @@ pub fn resolve_publish_command(
 /// user has not provided an override in `config.publish_dry_run`. Callers
 /// should treat `None` as "dry-run not supported for this project; skip with a
 /// warning" rather than as a failure.
-#[must_use]
-pub fn resolve_dry_run_publish_command(
+///
+/// `default_dry_run_command_fn` is a `FnOnce` closure so the language
+/// crate's default is only invoked on the cache-miss path, mirroring
+/// [`resolve_publish_command`].
+pub fn resolve_dry_run_publish_command<F: FnOnce() -> Option<String>>(
     relative_path: &Path,
     language: Language,
-    default_dry_run_command: Option<&str>,
+    default_dry_run_command_fn: F,
     config: &Config,
 ) -> Option<String> {
     lookup_by_path_or_language(&config.publish_dry_run, relative_path, language)
-        .or_else(|| default_dry_run_command.map(str::to_string))
+        .or_else(default_dry_run_command_fn)
 }
 
 /// Convert a completed child-process `Output` into a `PublishOutput`.
@@ -247,7 +257,7 @@ mod tests {
         let result = resolve_publish_command(
             Path::new("packages/core/package.json"),
             Language::Node,
-            "npm publish",
+            || "npm publish".to_string(),
             &config,
         );
         assert_eq!(result, "custom publish");
@@ -268,7 +278,7 @@ mod tests {
         let result = resolve_publish_command(
             Path::new("package.json"),
             Language::Node,
-            "npm publish",
+            || "npm publish".to_string(),
             &config,
         );
         assert_eq!(result, "npm publish --access public");
@@ -281,7 +291,7 @@ mod tests {
         let result = resolve_publish_command(
             Path::new("package.json"),
             Language::Node,
-            "npm publish",
+            || "npm publish".to_string(),
             &config,
         );
         assert_eq!(result, "npm publish");
@@ -303,7 +313,7 @@ mod tests {
         let result = resolve_dry_run_publish_command(
             Path::new("packages/core/package.json"),
             Language::Node,
-            Some("npm publish --dry-run"),
+            || Some("npm publish --dry-run".to_string()),
             &config,
         );
         assert_eq!(result.as_deref(), Some("custom dry"));
@@ -322,7 +332,7 @@ mod tests {
         let result = resolve_dry_run_publish_command(
             Path::new("package.json"),
             Language::Node,
-            Some("npm publish --dry-run"),
+            || Some("npm publish --dry-run".to_string()),
             &config,
         );
         assert_eq!(result.as_deref(), Some("npm publish --dry-run -tag"));
@@ -336,7 +346,7 @@ mod tests {
         let result = resolve_dry_run_publish_command(
             Path::new("package.json"),
             Language::Node,
-            Some("npm publish --dry-run"),
+            || Some("npm publish --dry-run".to_string()),
             &config,
         );
         assert_eq!(result.as_deref(), Some("npm publish --dry-run"));
@@ -352,7 +362,7 @@ mod tests {
         let result = resolve_dry_run_publish_command(
             Path::new("project.csproj"),
             Language::CSharp,
-            None,
+            || None,
             &config,
         );
         assert!(result.is_none());
@@ -374,7 +384,7 @@ mod tests {
         let result = resolve_dry_run_publish_command(
             Path::new("project.csproj"),
             Language::CSharp,
-            None,
+            || None,
             &config,
         );
         assert_eq!(result.as_deref(), Some("dotnet pack -c Release"));
@@ -393,7 +403,7 @@ mod tests {
         let result = resolve_dry_run_publish_command(
             Path::new("project.csproj"),
             Language::CSharp,
-            None,
+            || None,
             &config,
         );
         assert_eq!(result.as_deref(), Some("dotnet pack -c Release"));
