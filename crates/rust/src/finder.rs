@@ -24,6 +24,21 @@ struct PendingWorkspacePackage {
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["Cargo.toml"];
 
+/// Look up `[package].<field>` as an owned string, mirroring the
+/// `doc.get("package").and_then(|p| p.get(field)).and_then(|v| v.as_str()).map(String::from)`
+/// chain that used to be open-coded across `visit` and `finalize`. Extracted so
+/// a future manifest shape change (e.g. inline-table `name = { workspace = true }`)
+/// only needs to be adapted in one place.
+///
+/// Deliberately does NOT cover `[workspace.package].<field>` — that path uses a
+/// different key (`workspace.package`) and its callers already read it inline.
+fn package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<String> {
+    doc.get("package")
+        .and_then(|p| p.get(field))
+        .and_then(|v| v.as_str())
+        .map(String::from)
+}
+
 #[derive(Debug, Default)]
 pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
@@ -96,16 +111,8 @@ impl ProjectFinder for RustProjectFinder {
                     self.workspace_root_path = Some(path.to_path_buf());
                 }
 
-                let version = cargo_toml
-                    .get("package")
-                    .and_then(|p| p.get("version"))
-                    .and_then(|v| v.as_str())
-                    .map(std::string::ToString::to_string);
-                let name = cargo_toml
-                    .get("package")
-                    .and_then(|p| p.get("name"))
-                    .and_then(|v| v.as_str())
-                    .map(std::string::ToString::to_string);
+                let version = package_str(&cargo_toml, "version");
+                let name = package_str(&cargo_toml, "name");
                 let mut project = Project::Workspace(Box::new(RustWorkspace::new(
                     name,
                     version,
@@ -143,11 +150,7 @@ impl ProjectFinder for RustProjectFinder {
                     .and_then(|w| w.as_bool())
                     .unwrap_or(false);
 
-                let name = cargo_toml
-                    .get("package")
-                    .and_then(|p| p.get("name"))
-                    .and_then(|v| v.as_str())
-                    .map(std::string::ToString::to_string);
+                let name = package_str(&cargo_toml, "name");
 
                 if inherits_workspace {
                     if self.workspace_package_version.is_some() {
@@ -175,9 +178,7 @@ impl ProjectFinder for RustProjectFinder {
                             });
                     }
                 } else {
-                    let version = cargo_toml["package"]["version"]
-                        .as_str()
-                        .map(std::string::ToString::to_string);
+                    let version = package_str(&cargo_toml, "version");
                     let mut project = Project::Package(Box::new(RustPackage::new(
                         name,
                         version,
@@ -235,16 +236,8 @@ impl ProjectFinder for RustProjectFinder {
                     self.workspace_root_path = Some(candidate.clone());
 
                     // Insert synthetic workspace project so apply_updates() can find it
-                    let ws_name = parsed
-                        .get("package")
-                        .and_then(|p| p.get("name"))
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
-                    let ws_pkg_version = parsed
-                        .get("package")
-                        .and_then(|p| p.get("version"))
-                        .and_then(|v| v.as_str())
-                        .map(String::from);
+                    let ws_name = package_str(&parsed, "name");
+                    let ws_pkg_version = package_str(&parsed, "version");
                     let ws_relative_path = candidate
                         .strip_prefix(&git_root)
                         .unwrap_or(Path::new("Cargo.toml"))

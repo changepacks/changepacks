@@ -22,15 +22,30 @@ pub async fn gen_update_map(
 ) -> Result<HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>> {
     let mut update_map = HashMap::<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>::new();
 
+    // Two-phase reader (mirrors `clear_update_logs`):
+    //   Phase 1: single directory walk to collect the paths of every matching
+    //            `changepack_log_*.json` entry — pure name filtering, no IO body.
+    //   Phase 2: `futures::future::try_join_all` reads every body concurrently,
+    //            collapsing N sequential `read_to_string` round-trips into one
+    //            parallel batch on IO-bound systems.
+    //   Phase 3: the existing sequential parse+merge loop is unchanged. Final
+    //            output ordering was never derived from filesystem order — the
+    //            `ret.0 > *update_type` guard is driven by `UpdateType::Ord` and
+    //            already collapses duplicates across files — so parallelizing
+    //            the reads is deterministic and cannot change the observable
+    //            update_map for any input.
+    let mut paths: Vec<PathBuf> = Vec::new();
     let mut entries = read_dir(&changepacks_dir).await?;
     while let Some(file) = entries.next_entry().await? {
         let file_name = file.file_name();
-        let file_name = file_name.to_string_lossy();
-        if !is_changepack_log_json_name(file_name.as_ref()) {
-            continue;
+        if is_changepack_log_json_name(file_name.to_string_lossy().as_ref()) {
+            paths.push(file.path());
         }
-        let file_json = read_to_string(file.path()).await?;
-        let file_json: ChangePackLog = serde_json::from_str(&file_json)?;
+    }
+    let bodies: Vec<String> =
+        futures::future::try_join_all(paths.iter().map(read_to_string)).await?;
+    for body in bodies {
+        let file_json: ChangePackLog = serde_json::from_str(&body)?;
         for (project_path, update_type) in file_json.changes() {
             let ret = update_map
                 .entry(project_path.clone())

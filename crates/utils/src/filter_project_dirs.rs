@@ -3,7 +3,27 @@ use anyhow::{Context, Result};
 use changepacks_core::{Config, ProjectFinder};
 use gix::{ThreadSafeRepository, bstr::ByteSlice, features::progress};
 use ignore::gitignore::GitignoreBuilder;
-use std::path::Path;
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
+
+/// Resolve a git ref (local or remote) to its committed tree by peeling
+/// `ref → id → commit → tree_id → tree`. Extracted so the local-branch and
+/// remote-branch arms of `find_project_dirs` no longer duplicate the six-step
+/// gix chain — a future gix API tweak (e.g. `peel_to_tree()` becoming an
+/// upstream helper) then only needs to be applied here. Same lifetime story on
+/// both sides: the returned `gix::Tree` borrows the same repository as the
+/// input `gix::Reference`.
+fn peel_to_tree(reference: gix::Reference<'_>) -> Result<gix::Tree<'_>> {
+    Ok(reference
+        .id()
+        .object()?
+        .try_into_commit()?
+        .tree_id()?
+        .object()?
+        .try_into_tree()?)
+}
 
 /// Find project directories containing specific files from git tracked files
 ///
@@ -120,29 +140,21 @@ pub async fn find_project_dirs(
         .collect::<Vec<_>>();
     // diff from main branch
     let main_tree = if remote {
-        repo.find_remote("origin")?
-            .repo
-            .find_reference(&format!("refs/remotes/origin/{}", config.base_branch))?
-            .id()
-            .object()?
-            .try_into_commit()?
-            .tree_id()?
-            .object()?
-            .try_into_tree()?
+        peel_to_tree(
+            repo.find_remote("origin")?
+                .repo
+                .find_reference(&format!("refs/remotes/origin/{}", config.base_branch))?,
+        )?
     } else {
-        repo.find_reference(&format!("refs/heads/{}", config.base_branch))
-            .with_context(|| {
-                format!(
-                    "base branch '{}' not found in local refs",
-                    config.base_branch
-                )
-            })?
-            .id()
-            .object()?
-            .try_into_commit()?
-            .tree_id()?
-            .object()?
-            .try_into_tree()?
+        peel_to_tree(
+            repo.find_reference(&format!("refs/heads/{}", config.base_branch))
+                .with_context(|| {
+                    format!(
+                        "base branch '{}' not found in local refs",
+                        config.base_branch
+                    )
+                })?,
+        )?
     };
     let head_tree = repo.head_tree()?;
     let diff = repo
@@ -161,14 +173,19 @@ pub async fn find_project_dirs(
         })
         .collect::<Vec<_>>();
 
-    for file in changed_files.iter().chain(diff.iter()) {
-        // Hoist the `git_root_path.join(file)` out of the inner finder loop.
-        // The joined path is identical for every finder on a given `file`, so
-        // computing it once collapses `F * M` `PathBuf` allocations down to
-        // `F` (where F is the count of changed/diffed files and M is the
-        // number of project finders — 6 on the standard workspace). Behavior
-        // is byte-identical: `check_changed` borrows `&Path`, so each finder
-        // sees the same bytes as before.
+    // Dedupe changed_files ∪ diff before dispatching to `check_changed`.
+    // The common case during a live edit against `main` is a file that has
+    // both an uncommitted local edit AND appears in the base-branch diff, so
+    // the previous `chain(...)` walked it twice — once per list — and each
+    // walk fired `check_changed` on every finder. `check_changed` is
+    // idempotent (its default guard returns early once `is_changed()` is
+    // true), so behavior is preserved, but the duplicate walk still cost
+    // `M` (finder count) `should_mark_changed` scans per repeated file.
+    // Collecting into a `HashSet<PathBuf>` collapses that to exactly one
+    // traversal per unique file. Also keeps the `git_root_path.join(file)`
+    // hoist from a previous iteration intact.
+    let unique_files: HashSet<PathBuf> = changed_files.into_iter().chain(diff).collect();
+    for file in &unique_files {
         let abs_path = git_root_path.join(file);
         for finder in project_finders.iter_mut() {
             finder.check_changed(&abs_path)?;
