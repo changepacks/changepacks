@@ -38,11 +38,12 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
         *part = "0";
     }
 
-    Ok(format!(
-        "{}{}",
-        version_parts.join("."),
-        plus_part.map(|p| format!("+{p}")).unwrap_or_default()
-    ))
+    let mut result = version_parts.join(".");
+    if let Some(p) = plus_part {
+        result.push('+');
+        result.push_str(p);
+    }
+    Ok(result)
 }
 
 #[cfg(test)]

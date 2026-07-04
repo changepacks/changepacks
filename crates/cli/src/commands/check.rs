@@ -152,13 +152,13 @@ fn display_tree(
             .collect();
 
         if !monorepo_deps.is_empty() {
-            graph.insert(
-                project.name().unwrap_or("noname").to_string(),
-                monorepo_deps.clone(),
-            );
             for dep in &monorepo_deps {
                 has_dependencies.insert(dep.clone());
             }
+            graph.insert(
+                project.name().unwrap_or("noname").to_string(),
+                monorepo_deps,
+            );
         }
     }
 

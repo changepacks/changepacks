@@ -76,11 +76,12 @@ pub async fn handle_changepack_with_prompter(
 
     let mut update_map = HashMap::<PathBuf, UpdateType>::new();
 
-    for update_type in if let Some(update_type) = &args.update_type {
-        vec![*update_type]
+    let update_types: &[UpdateType] = if let Some(update_type) = args.update_type.as_ref() {
+        std::slice::from_ref(update_type)
     } else {
-        vec![UpdateType::Major, UpdateType::Minor, UpdateType::Patch]
-    } {
+        &[UpdateType::Major, UpdateType::Minor, UpdateType::Patch]
+    };
+    for &update_type in update_types {
         if projects.is_empty() {
             break;
         }

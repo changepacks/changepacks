@@ -4,16 +4,17 @@
 /// its leading whitespace. Returns 1 for tabs, 0 for no indentation.
 #[must_use]
 pub fn detect_indent(content: &str) -> usize {
-    let mut indent = 0;
     for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed == line.trim_end() {
+        let stripped = line.trim_start();
+        if stripped.is_empty() {
             continue;
         }
-        indent = line.len() - line.trim_start().len();
-        break;
+        let indent = line.len() - stripped.len();
+        if indent > 0 {
+            return indent;
+        }
     }
-    indent
+    0
 }
 
 #[cfg(test)]
