@@ -11,10 +11,15 @@ use tokio::process::Command;
 
 use crate::{package::GradlePackage, workspace::GradleWorkspace};
 
+/// Manifest filenames this finder recognizes. Static because the list is
+/// compile-time constant — no per-instance heap `Vec` is needed and the
+/// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
+/// a `&'static [&'static str]`.
+const PROJECT_FILES: &[&str] = &["build.gradle.kts", "build.gradle"];
+
 #[derive(Debug)]
 pub struct GradleProjectFinder {
     projects: HashMap<PathBuf, Project>,
-    project_files: Vec<&'static str>,
 }
 
 impl Default for GradleProjectFinder {
@@ -28,7 +33,6 @@ impl GradleProjectFinder {
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),
-            project_files: vec!["build.gradle.kts", "build.gradle"],
         }
     }
 }
@@ -218,7 +222,7 @@ impl ProjectFinder for GradleProjectFinder {
     }
 
     fn project_files(&self) -> &[&str] {
-        &self.project_files
+        PROJECT_FILES
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {

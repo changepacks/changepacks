@@ -9,10 +9,15 @@ use tokio::fs::read_to_string;
 
 use crate::{package::NodePackage, workspace::NodeWorkspace};
 
+/// Manifest filenames this finder recognizes. Static because the list is
+/// compile-time constant — no per-instance heap `Vec` is needed and the
+/// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
+/// a `&'static [&'static str]`.
+const PROJECT_FILES: &[&str] = &["package.json"];
+
 #[derive(Debug)]
 pub struct NodeProjectFinder {
     projects: HashMap<PathBuf, Project>,
-    project_files: Vec<&'static str>,
 }
 
 impl Default for NodeProjectFinder {
@@ -26,7 +31,6 @@ impl NodeProjectFinder {
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),
-            project_files: vec!["package.json"],
         }
     }
 }
@@ -41,7 +45,7 @@ impl ProjectFinder for NodeProjectFinder {
     }
 
     fn project_files(&self) -> &[&str] {
-        &self.project_files
+        PROJECT_FILES
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {

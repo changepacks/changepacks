@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
 use std::{
@@ -9,10 +9,15 @@ use tokio::fs::read_to_string;
 
 use crate::{package::PythonPackage, workspace::PythonWorkspace};
 
+/// Manifest filenames this finder recognizes. Static because the list is
+/// compile-time constant — no per-instance heap `Vec` is needed and the
+/// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
+/// a `&'static [&'static str]`.
+const PROJECT_FILES: &[&str] = &["pyproject.toml"];
+
 #[derive(Debug)]
 pub struct PythonProjectFinder {
     projects: HashMap<PathBuf, Project>,
-    project_files: Vec<&'static str>,
 }
 
 impl Default for PythonProjectFinder {
@@ -26,7 +31,6 @@ impl PythonProjectFinder {
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),
-            project_files: vec!["pyproject.toml"],
         }
     }
 }
@@ -41,7 +45,7 @@ impl ProjectFinder for PythonProjectFinder {
     }
 
     fn project_files(&self) -> &[&str] {
-        &self.project_files
+        PROJECT_FILES
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
@@ -52,18 +56,23 @@ impl ProjectFinder for PythonProjectFinder {
             // read pyproject.toml
             let pyproject_toml = read_to_string(path).await?;
             let pyproject_toml: toml_edit::DocumentMut = pyproject_toml.parse()?;
-            let project = pyproject_toml
-                .get("project")
-                .with_context(|| format!("Project not found - {}", path.display()))?;
+            // `[project]` is OPTIONAL: uv workspace-only roots (the docs'
+            // canonical example) declare just `[tool.uv.workspace]` at the
+            // repo root and no `[project]` table. Match the tolerant
+            // extraction that `PythonWorkspace::update_version` already
+            // uses (see `ensure_project_table` in `crates/python/src/lib.rs`).
+            // Both name and version fall through to `None` when the table
+            // is missing, exactly like the constructor arguments accept.
+            let project = pyproject_toml.get("project");
 
             // Both branches use the same name/version and the same path;
             // hoist so each branch collapses to a single constructor call.
             let version = project
-                .get("version")
+                .and_then(|p| p.get("version"))
                 .and_then(|v| v.as_str())
                 .map(std::string::ToString::to_string);
             let name = project
-                .get("name")
+                .and_then(|p| p.get("name"))
                 .and_then(|v| v.as_str())
                 .map(std::string::ToString::to_string);
             let path_buf = path.to_path_buf();
@@ -377,6 +386,13 @@ version = "1.0.0"
 
     #[tokio::test]
     async fn test_python_project_finder_visit_package_without_project_section() {
+        // Regression: a pyproject.toml with only `[build-system]` (no
+        // `[project]`, no `[tool.uv.workspace]`) is a legitimate PEP 517
+        // shape used e.g. by build-only backend configs. The finder must
+        // register it as a Package with `None` name/version rather than
+        // failing hard — `PythonWorkspace::update_version` and
+        // `ensure_project_table` already handle the missing-section case
+        // downstream, so the extraction here must be lenient too.
         let temp_dir = TempDir::new().unwrap();
         let pyproject_toml = temp_dir.path().join("pyproject.toml");
         fs::write(
@@ -388,12 +404,59 @@ requires = ["setuptools"]
         .unwrap();
 
         let mut finder = PythonProjectFinder::new();
-        let result = finder
+        finder
             .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
-            .await;
+            .await
+            .unwrap();
 
-        assert!(result.is_err());
-        assert_eq!(finder.projects().len(), 0);
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Package(pkg) => {
+                assert_eq!(pkg.name(), None);
+                assert_eq!(pkg.version(), None);
+            }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_project_finder_visit_workspace_without_project_section() {
+        // Regression: uv workspace-only roots (the docs' canonical
+        // example) declare just `[tool.uv.workspace]` at the repo root
+        // with no `[project]` table at all. Members supply their own
+        // `[project]` sections. The finder must register the root as a
+        // `Project::Workspace` with `None` name/version, mirroring how
+        // `PythonWorkspace::update_version` (see
+        // `test_python_workspace_update_version_without_project_section`)
+        // already handles the missing-section case downstream.
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Workspace(ws) => {
+                assert_eq!(ws.name(), None);
+                assert_eq!(ws.version(), None);
+            }
+            _ => panic!("Expected Workspace"),
+        }
 
         temp_dir.close().unwrap();
     }

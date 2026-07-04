@@ -18,10 +18,15 @@ struct PendingWorkspacePackage {
     dependencies: Vec<String>,
 }
 
+/// Manifest filenames this finder recognizes. Static because the list is
+/// compile-time constant — no per-instance heap `Vec` is needed and the
+/// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
+/// a `&'static [&'static str]`.
+const PROJECT_FILES: &[&str] = &["Cargo.toml"];
+
 #[derive(Debug)]
 pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
-    project_files: Vec<&'static str>,
     workspace_package_version: Option<String>,
     workspace_root_path: Option<PathBuf>,
     pending_workspace_packages: Vec<PendingWorkspacePackage>,
@@ -38,7 +43,6 @@ impl RustProjectFinder {
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),
-            project_files: vec!["Cargo.toml"],
             workspace_package_version: None,
             workspace_root_path: None,
             pending_workspace_packages: Vec::new(),
@@ -56,7 +60,7 @@ impl ProjectFinder for RustProjectFinder {
     }
 
     fn project_files(&self) -> &[&str] {
-        &self.project_files
+        PROJECT_FILES
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {

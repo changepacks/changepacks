@@ -9,10 +9,15 @@ use tokio::fs::read_to_string;
 
 use crate::{package::DartPackage, workspace::DartWorkspace};
 
+/// Manifest filenames this finder recognizes. Static because the list is
+/// compile-time constant — no per-instance heap `Vec` is needed and the
+/// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
+/// a `&'static [&'static str]`.
+const PROJECT_FILES: &[&str] = &["pubspec.yaml"];
+
 #[derive(Debug)]
 pub struct DartProjectFinder {
     projects: HashMap<PathBuf, Project>,
-    project_files: Vec<&'static str>,
 }
 
 impl Default for DartProjectFinder {
@@ -26,7 +31,6 @@ impl DartProjectFinder {
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),
-            project_files: vec!["pubspec.yaml"],
         }
     }
 }
@@ -41,7 +45,7 @@ impl ProjectFinder for DartProjectFinder {
     }
 
     fn project_files(&self) -> &[&str] {
-        &self.project_files
+        PROJECT_FILES
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
