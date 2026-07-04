@@ -118,6 +118,7 @@ impl Workspace for CSharpWorkspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
@@ -220,8 +221,21 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    // Patch (with existing version), Minor, and Major all share the same
+    // setup: a csproj carrying `<Version>1.0.0</Version>`, a workspace
+    // constructed with `Some("1.0.0")`. Only the bump kind and the
+    // expected resulting version string differ. The `None`-version case
+    // (`test_update_version_without_version`) stays separate below because
+    // it uses a different csproj fixture and constructor.
+    #[rstest]
+    #[case(UpdateType::Patch, "1.0.1")]
+    #[case(UpdateType::Minor, "1.1.0")]
+    #[case(UpdateType::Major, "2.0.0")]
     #[tokio::test]
-    async fn test_update_version_with_existing_version() {
+    async fn test_update_version_with_existing_version(
+        #[case] update_type: UpdateType,
+        #[case] expected_version: &str,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let csproj_path = temp_dir.path().join("Test.csproj");
         fs::write(
@@ -242,10 +256,10 @@ mod tests {
             PathBuf::from("Test.csproj"),
         );
 
-        workspace.update_version(UpdateType::Patch).await.unwrap();
+        workspace.update_version(update_type).await.unwrap();
 
         let content = fs::read_to_string(&csproj_path).unwrap();
-        assert!(content.contains("<Version>1.0.1</Version>"));
+        assert!(content.contains(&format!("<Version>{expected_version}</Version>")));
 
         temp_dir.close().unwrap();
     }
@@ -276,66 +290,6 @@ mod tests {
 
         let content = fs::read_to_string(&csproj_path).unwrap();
         assert!(content.contains("<Version>0.0.1</Version>"));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_update_version_minor() {
-        let temp_dir = TempDir::new().unwrap();
-        let csproj_path = temp_dir.path().join("Test.csproj");
-        fs::write(
-            &csproj_path,
-            r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <Version>1.0.0</Version>
-  </PropertyGroup>
-</Project>
-"#,
-        )
-        .unwrap();
-
-        let mut workspace = CSharpWorkspace::new(
-            Some("Test".to_string()),
-            Some("1.0.0".to_string()),
-            csproj_path.clone(),
-            PathBuf::from("Test.csproj"),
-        );
-
-        workspace.update_version(UpdateType::Minor).await.unwrap();
-
-        let content = fs::read_to_string(&csproj_path).unwrap();
-        assert!(content.contains("<Version>1.1.0</Version>"));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_update_version_major() {
-        let temp_dir = TempDir::new().unwrap();
-        let csproj_path = temp_dir.path().join("Test.csproj");
-        fs::write(
-            &csproj_path,
-            r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <Version>1.0.0</Version>
-  </PropertyGroup>
-</Project>
-"#,
-        )
-        .unwrap();
-
-        let mut workspace = CSharpWorkspace::new(
-            Some("Test".to_string()),
-            Some("1.0.0".to_string()),
-            csproj_path.clone(),
-            PathBuf::from("Test.csproj"),
-        );
-
-        workspace.update_version(UpdateType::Major).await.unwrap();
-
-        let content = fs::read_to_string(&csproj_path).unwrap();
-        assert!(content.contains("<Version>2.0.0</Version>"));
 
         temp_dir.close().unwrap();
     }

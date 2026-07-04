@@ -120,19 +120,16 @@ impl ProjectFinder for PythonProjectFinder {
 mod tests {
     use super::*;
     use changepacks_core::Project;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_python_project_finder_new() {
-        let finder = PythonProjectFinder::new();
-        assert_eq!(finder.project_files(), &["pyproject.toml"]);
-        assert_eq!(finder.projects().len(), 0);
-    }
-
-    #[test]
-    fn test_python_project_finder_default() {
-        let finder = PythonProjectFinder::default();
+    // Both `PythonProjectFinder::new()` and `PythonProjectFinder::default()`
+    // must yield the same empty, `pyproject.toml`-scoped finder.
+    #[rstest]
+    #[case(PythonProjectFinder::new())]
+    #[case(PythonProjectFinder::default())]
+    fn test_python_project_finder_construction(#[case] finder: PythonProjectFinder) {
         assert_eq!(finder.project_files(), &["pyproject.toml"]);
         assert_eq!(finder.projects().len(), 0);
     }

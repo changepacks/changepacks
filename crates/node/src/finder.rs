@@ -117,19 +117,16 @@ impl ProjectFinder for NodeProjectFinder {
 mod tests {
     use super::*;
     use changepacks_core::Project;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_node_project_finder_new() {
-        let finder = NodeProjectFinder::new();
-        assert_eq!(finder.project_files(), &["package.json"]);
-        assert_eq!(finder.projects().len(), 0);
-    }
-
-    #[test]
-    fn test_node_project_finder_default() {
-        let finder = NodeProjectFinder::default();
+    // Both `NodeProjectFinder::new()` and `NodeProjectFinder::default()` must
+    // yield the same empty, `package.json`-scoped finder.
+    #[rstest]
+    #[case(NodeProjectFinder::new())]
+    #[case(NodeProjectFinder::default())]
+    fn test_node_project_finder_construction(#[case] finder: NodeProjectFinder) {
         assert_eq!(finder.project_files(), &["package.json"]);
         assert_eq!(finder.projects().len(), 0);
     }

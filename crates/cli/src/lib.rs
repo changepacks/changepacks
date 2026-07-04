@@ -128,40 +128,43 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    // Test that Cli struct parses correctly
-    #[test]
-    fn test_cli_parsing_init() {
-        use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "init"]);
-        assert!(matches!(cli.command, Some(Commands::Init(_))));
+    // Discriminant helper for the `Commands` enum. `matches!(cli.command,
+    // Some(Commands::X(_)))` cannot be case-parameterized directly because
+    // the variant token is not a value, so we bounce through this small
+    // Eq/Debug shadow enum instead.
+    #[derive(Debug, PartialEq, Eq)]
+    enum CmdKind {
+        Init,
+        Check,
+        Update,
+        Config,
+        Publish,
     }
 
-    #[test]
-    fn test_cli_parsing_check() {
-        use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "check"]);
-        assert!(matches!(cli.command, Some(Commands::Check(_))));
+    impl From<&Commands> for CmdKind {
+        fn from(c: &Commands) -> Self {
+            match c {
+                Commands::Init(_) => Self::Init,
+                Commands::Check(_) => Self::Check,
+                Commands::Update(_) => Self::Update,
+                Commands::Config(_) => Self::Config,
+                Commands::Publish(_) => Self::Publish,
+            }
+        }
     }
 
-    #[test]
-    fn test_cli_parsing_update() {
+    // Verify each subcommand argv routes to the matching `Commands` variant.
+    #[rstest]
+    #[case(&["changepacks", "init"], CmdKind::Init)]
+    #[case(&["changepacks", "check"], CmdKind::Check)]
+    #[case(&["changepacks", "update", "--dry-run"], CmdKind::Update)]
+    #[case(&["changepacks", "config"], CmdKind::Config)]
+    #[case(&["changepacks", "publish", "--dry-run"], CmdKind::Publish)]
+    fn test_cli_parsing_command(#[case] args: &[&str], #[case] expected: CmdKind) {
         use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "update", "--dry-run"]);
-        assert!(matches!(cli.command, Some(Commands::Update(_))));
-    }
-
-    #[test]
-    fn test_cli_parsing_config() {
-        use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "config"]);
-        assert!(matches!(cli.command, Some(Commands::Config(_))));
-    }
-
-    #[test]
-    fn test_cli_parsing_publish() {
-        use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "publish", "--dry-run"]);
-        assert!(matches!(cli.command, Some(Commands::Publish(_))));
+        let cli = Cli::parse_from(args);
+        let cmd = cli.command.expect("expected a subcommand");
+        assert_eq!(CmdKind::from(&cmd), expected);
     }
 
     #[test]
@@ -196,17 +199,14 @@ mod tests {
         assert!(cli.remote);
     }
 
-    #[test]
-    fn test_cli_parsing_with_language() {
+    // Repeated `--language` occurrences accumulate into `Vec<CliLanguage>`;
+    // the parsed length must match the number of flags supplied.
+    #[rstest]
+    #[case(&["changepacks", "--language", "node"], 1)]
+    #[case(&["changepacks", "--language", "node", "--language", "rust"], 2)]
+    fn test_cli_parsing_language(#[case] args: &[&str], #[case] expected_len: usize) {
         use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "--language", "node"]);
-        assert_eq!(cli.language.len(), 1);
-    }
-
-    #[test]
-    fn test_cli_parsing_with_multiple_languages() {
-        use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "--language", "node", "--language", "rust"]);
-        assert_eq!(cli.language.len(), 2);
+        let cli = Cli::parse_from(args);
+        assert_eq!(cli.language.len(), expected_len);
     }
 }

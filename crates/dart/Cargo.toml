@@ -21,3 +21,4 @@ yamlpath = "1.26"
 [dev-dependencies]
 tempfile = "3.27"
 tokio = { version = "1.52", features = ["test-util", "macros"] }
+rstest = "0.26"

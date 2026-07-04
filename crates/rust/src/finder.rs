@@ -281,19 +281,16 @@ impl ProjectFinder for RustProjectFinder {
 mod tests {
     use super::*;
     use changepacks_core::Project;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_rust_project_finder_new() {
-        let finder = RustProjectFinder::new();
-        assert_eq!(finder.project_files(), &["Cargo.toml"]);
-        assert_eq!(finder.projects().len(), 0);
-    }
-
-    #[test]
-    fn test_rust_project_finder_default() {
-        let finder = RustProjectFinder::default();
+    // Both `RustProjectFinder::new()` and `RustProjectFinder::default()` must
+    // yield the same empty, `Cargo.toml`-scoped finder.
+    #[rstest]
+    #[case(RustProjectFinder::new())]
+    #[case(RustProjectFinder::default())]
+    fn test_rust_project_finder_construction(#[case] finder: RustProjectFinder) {
         assert_eq!(finder.project_files(), &["Cargo.toml"]);
         assert_eq!(finder.projects().len(), 0);
     }

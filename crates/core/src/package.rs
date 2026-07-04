@@ -146,6 +146,7 @@ pub trait Package: std::fmt::Debug + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -230,34 +231,16 @@ mod tests {
         assert!(package.is_changed());
     }
 
-    #[test]
-    fn test_check_changed_sets_changed() {
+    #[rstest]
+    // A file inside the project dir marks it changed; a changepack log or a
+    // file that belongs to another project does not.
+    #[case("/project/src/index.js", true)]
+    #[case("/project/.changepacks/change.json", false)]
+    #[case("/other-project/src/index.js", false)]
+    fn test_check_changed(#[case] changed_path: &str, #[case] expected: bool) {
         let mut package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
-
-        package
-            .check_changed(Path::new("/project/src/index.js"))
-            .unwrap();
-        assert!(package.is_changed());
-    }
-
-    #[test]
-    fn test_check_changed_ignores_changepacks() {
-        let mut package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
-
-        package
-            .check_changed(Path::new("/project/.changepacks/change.json"))
-            .unwrap();
-        assert!(!package.is_changed());
-    }
-
-    #[test]
-    fn test_check_changed_ignores_other_projects() {
-        let mut package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
-
-        package
-            .check_changed(Path::new("/other-project/src/index.js"))
-            .unwrap();
-        assert!(!package.is_changed());
+        package.check_changed(Path::new(changed_path)).unwrap();
+        assert_eq!(package.is_changed(), expected);
     }
 
     #[test]
@@ -292,66 +275,26 @@ mod tests {
         assert_eq!(package.get_publish_command(&config), "custom publish");
     }
 
-    #[test]
-    fn test_get_publish_command_by_language_node() {
-        let package = MockPackage::new(Some("test"), "/project/package.json", "package.json")
-            .with_language(Language::Node);
+    #[rstest]
+    #[case(Language::Node, "node", "npm publish --access public")]
+    #[case(Language::Python, "python", "poetry publish")]
+    #[case(Language::Rust, "rust", "cargo publish")]
+    #[case(Language::Dart, "dart", "dart pub publish")]
+    fn test_get_publish_command_by_language(
+        #[case] language: Language,
+        #[case] key: &str,
+        #[case] command: &str,
+    ) {
+        let package =
+            MockPackage::new(Some("test"), "/project/manifest", "manifest").with_language(language);
         let mut publish = HashMap::new();
-        publish.insert(
-            "node".to_string(),
-            "npm publish --access public".to_string(),
-        );
+        publish.insert(key.to_string(), command.to_string());
         let config = Config {
             publish,
             ..Default::default()
         };
 
-        assert_eq!(
-            package.get_publish_command(&config),
-            "npm publish --access public"
-        );
-    }
-
-    #[test]
-    fn test_get_publish_command_by_language_python() {
-        let package = MockPackage::new(Some("test"), "/project/pyproject.toml", "pyproject.toml")
-            .with_language(Language::Python);
-        let mut publish = HashMap::new();
-        publish.insert("python".to_string(), "poetry publish".to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(package.get_publish_command(&config), "poetry publish");
-    }
-
-    #[test]
-    fn test_get_publish_command_by_language_rust() {
-        let package = MockPackage::new(Some("test"), "/project/Cargo.toml", "Cargo.toml")
-            .with_language(Language::Rust);
-        let mut publish = HashMap::new();
-        publish.insert("rust".to_string(), "cargo publish".to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(package.get_publish_command(&config), "cargo publish");
-    }
-
-    #[test]
-    fn test_get_publish_command_by_language_dart() {
-        let package = MockPackage::new(Some("test"), "/project/pubspec.yaml", "pubspec.yaml")
-            .with_language(Language::Dart);
-        let mut publish = HashMap::new();
-        publish.insert("dart".to_string(), "dart pub publish".to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(package.get_publish_command(&config), "dart pub publish");
+        assert_eq!(package.get_publish_command(&config), command);
     }
 
     #[test]

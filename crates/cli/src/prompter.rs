@@ -140,6 +140,7 @@ mod tests {
     use super::*;
     use async_trait::async_trait;
     use changepacks_core::{Language, Package, UpdateType};
+    use rstest::rstest;
     use std::collections::HashSet;
     use std::path::Path;
 
@@ -242,23 +243,14 @@ mod tests {
         assert_eq!(result.unwrap(), "test_value");
     }
 
-    #[test]
-    fn test_handle_inquire_result_operation_canceled() {
-        let result: Result<()> =
-            handle_inquire_result(Err(inquire::InquireError::OperationCanceled));
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .downcast_ref::<UserCancelled>()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn test_handle_inquire_result_operation_interrupted() {
-        let result: Result<()> =
-            handle_inquire_result(Err(inquire::InquireError::OperationInterrupted));
+    // Cancellation-shaped inquire errors (Ctrl+C, ESC) MUST downcast to
+    // `UserCancelled` so callers can distinguish user cancellation from a
+    // real interaction failure.
+    #[rstest]
+    #[case(inquire::InquireError::OperationCanceled)]
+    #[case(inquire::InquireError::OperationInterrupted)]
+    fn test_handle_inquire_result_cancellation(#[case] err: inquire::InquireError) {
+        let result: Result<()> = handle_inquire_result(Err(err));
         assert!(result.is_err());
         assert!(
             result
@@ -282,16 +274,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_score_project_changed() {
-        let project = Project::Package(Box::new(MockTestPackage::new("pkg", true)));
-        assert_eq!(score_project(&project), Some(100));
-    }
-
-    #[test]
-    fn test_score_project_unchanged() {
-        let project = Project::Package(Box::new(MockTestPackage::new("pkg", false)));
-        assert_eq!(score_project(&project), Some(0));
+    // Changed projects rank higher (score 100) so they appear at the top
+    // of the multi-select list; unchanged ones score 0.
+    #[rstest]
+    #[case(true, Some(100))]
+    #[case(false, Some(0))]
+    fn test_score_project(#[case] changed: bool, #[case] expected: Option<i64>) {
+        let project = Project::Package(Box::new(MockTestPackage::new("pkg", changed)));
+        assert_eq!(score_project(&project), expected);
     }
 
     #[test]

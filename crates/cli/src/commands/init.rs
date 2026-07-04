@@ -54,6 +54,7 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+    use rstest::rstest;
 
     #[derive(Parser)]
     struct TestCli {
@@ -67,15 +68,12 @@ mod tests {
         assert!(!cli.init.dry_run);
     }
 
-    #[test]
-    fn test_init_args_with_dry_run() {
-        let cli = TestCli::parse_from(["test", "--dry-run"]);
-        assert!(cli.init.dry_run);
-    }
-
-    #[test]
-    fn test_init_args_with_short_dry_run() {
-        let cli = TestCli::parse_from(["test", "-d"]);
+    // `--dry-run` (long) and `-d` (short) both flip the `dry_run` flag.
+    #[rstest]
+    #[case(&["test", "--dry-run"])]
+    #[case(&["test", "-d"])]
+    fn test_init_args_dry_run_flag(#[case] args: &[&str]) {
+        let cli = TestCli::parse_from(args);
         assert!(cli.init.dry_run);
     }
 }

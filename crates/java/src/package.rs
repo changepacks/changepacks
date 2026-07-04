@@ -105,6 +105,7 @@ impl Package for GradlePackage {
 mod tests {
     use super::*;
     use changepacks_core::UpdateType;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
@@ -161,8 +162,15 @@ mod tests {
         assert!(!package.is_changed());
     }
 
+    #[rstest]
+    #[case(UpdateType::Patch, "1.0.1")]
+    #[case(UpdateType::Minor, "1.1.0")]
+    #[case(UpdateType::Major, "2.0.0")]
     #[tokio::test]
-    async fn test_gradle_package_update_version_kts_patch() {
+    async fn test_gradle_package_update_version_kts(
+        #[case] update_type: UpdateType,
+        #[case] expected: &str,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let project_dir = temp_dir.path().join("myproject");
         fs::create_dir_all(&project_dir).unwrap();
@@ -188,80 +196,10 @@ version = "1.0.0"
             PathBuf::from("myproject/build.gradle.kts"),
         );
 
-        package.update_version(UpdateType::Patch).await.unwrap();
+        package.update_version(update_type).await.unwrap();
 
         let content = read_to_string(&build_gradle).await.unwrap();
-        assert!(content.contains(r#"version = "1.0.1""#));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_gradle_package_update_version_kts_minor() {
-        let temp_dir = TempDir::new().unwrap();
-        let project_dir = temp_dir.path().join("myproject");
-        fs::create_dir_all(&project_dir).unwrap();
-
-        let build_gradle = project_dir.join("build.gradle.kts");
-        fs::write(
-            &build_gradle,
-            r#"
-plugins {
-    id("java")
-}
-
-group = "com.example"
-version = "1.0.0"
-"#,
-        )
-        .unwrap();
-
-        let mut package = GradlePackage::new(
-            Some("myproject".to_string()),
-            Some("1.0.0".to_string()),
-            build_gradle.clone(),
-            PathBuf::from("myproject/build.gradle.kts"),
-        );
-
-        package.update_version(UpdateType::Minor).await.unwrap();
-
-        let content = read_to_string(&build_gradle).await.unwrap();
-        assert!(content.contains(r#"version = "1.1.0""#));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_gradle_package_update_version_kts_major() {
-        let temp_dir = TempDir::new().unwrap();
-        let project_dir = temp_dir.path().join("myproject");
-        fs::create_dir_all(&project_dir).unwrap();
-
-        let build_gradle = project_dir.join("build.gradle.kts");
-        fs::write(
-            &build_gradle,
-            r#"
-plugins {
-    id("java")
-}
-
-group = "com.example"
-version = "1.0.0"
-"#,
-        )
-        .unwrap();
-
-        let mut package = GradlePackage::new(
-            Some("myproject".to_string()),
-            Some("1.0.0".to_string()),
-            build_gradle.clone(),
-            PathBuf::from("myproject/build.gradle.kts"),
-        );
-
-        package.update_version(UpdateType::Major).await.unwrap();
-
-        let content = read_to_string(&build_gradle).await.unwrap();
-        assert!(content.contains(r#"version = "2.0.0""#));
+        assert!(content.contains(&format!(r#"version = "{expected}""#)));
 
         temp_dir.close().unwrap();
     }

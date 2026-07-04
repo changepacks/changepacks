@@ -247,6 +247,7 @@ mod tests {
     use super::*;
     use crate::Language;
     use async_trait::async_trait;
+    use rstest::rstest;
     use std::path::PathBuf;
 
     #[derive(Debug)]
@@ -377,6 +378,14 @@ mod tests {
         fn default_dry_run_publish_command(&self) -> Option<String> {
             Some("echo publish --dry-run".to_string())
         }
+    }
+
+    fn ws(name: Option<&str>, version: Option<&str>, language: Language) -> Project {
+        Project::Workspace(Box::new(MockWorkspace::new(name, version, language)))
+    }
+
+    fn pkg(name: Option<&str>, version: Option<&str>, language: Language) -> Project {
+        Project::Package(Box::new(MockPackage::new(name, version, language)))
     }
 
     #[test]
@@ -621,67 +630,75 @@ mod tests {
         assert!(p1.partial_cmp(&p2).is_some());
     }
 
-    #[test]
-    fn test_project_ord_workspace_before_package() {
-        let workspace = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);
-        let package = MockPackage::new(Some("test"), Some("1.0.0"), Language::Rust);
-        let p1 = Project::Workspace(Box::new(workspace));
-        let p2 = Project::Package(Box::new(package));
-        assert!(p1 < p2);
-    }
-
-    #[test]
-    fn test_project_ord_package_after_workspace() {
-        let workspace = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);
-        let package = MockPackage::new(Some("test"), Some("1.0.0"), Language::Rust);
-        let p1 = Project::Package(Box::new(package));
-        let p2 = Project::Workspace(Box::new(workspace));
-        assert!(p1 > p2);
+    #[rstest]
+    // Workspaces sort before packages regardless of language/name.
+    #[case(
+        ws(Some("test"), Some("1.0.0"), Language::Node),
+        pkg(Some("test"), Some("1.0.0"), Language::Rust),
+        Ordering::Less
+    )]
+    #[case(
+        pkg(Some("test"), Some("1.0.0"), Language::Rust),
+        ws(Some("test"), Some("1.0.0"), Language::Node),
+        Ordering::Greater
+    )]
+    // Same variant + same language: order by name, with `Some(_) < None`.
+    #[case(
+        ws(Some("aaa"), Some("1.0.0"), Language::Node),
+        ws(Some("bbb"), Some("1.0.0"), Language::Node),
+        Ordering::Less
+    )]
+    #[case(
+        ws(Some("test"), Some("1.0.0"), Language::Node),
+        ws(None, Some("1.0.0"), Language::Node),
+        Ordering::Less
+    )]
+    #[case(
+        ws(None, Some("1.0.0"), Language::Node),
+        ws(Some("test"), Some("1.0.0"), Language::Node),
+        Ordering::Greater
+    )]
+    // Two nameless workspaces fall back to version comparison.
+    #[case(
+        ws(None, Some("1.0.0"), Language::Node),
+        ws(None, Some("2.0.0"), Language::Node),
+        Ordering::Less
+    )]
+    #[case(
+        pkg(Some("aaa"), Some("1.0.0"), Language::Rust),
+        pkg(Some("bbb"), Some("1.0.0"), Language::Rust),
+        Ordering::Less
+    )]
+    #[case(
+        pkg(Some("test"), Some("1.0.0"), Language::Rust),
+        pkg(None, Some("1.0.0"), Language::Rust),
+        Ordering::Less
+    )]
+    #[case(
+        pkg(None, Some("1.0.0"), Language::Rust),
+        pkg(Some("test"), Some("1.0.0"), Language::Rust),
+        Ordering::Greater
+    )]
+    // Two nameless packages are equal (packages have no version tie-break).
+    #[case(
+        pkg(None, Some("1.0.0"), Language::Rust),
+        pkg(None, Some("1.0.0"), Language::Rust),
+        Ordering::Equal
+    )]
+    fn test_project_ord(#[case] a: Project, #[case] b: Project, #[case] expected: Ordering) {
+        assert_eq!(a.cmp(&b), expected);
     }
 
     #[test]
     fn test_project_ord_workspaces_by_language() {
+        // Kept separate: asserts only that a language difference breaks the tie
+        // (not a specific ordering), so it stays independent of the `Language`
+        // enum's declared order.
         let w1 = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);
         let w2 = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Python);
         let p1 = Project::Workspace(Box::new(w1));
         let p2 = Project::Workspace(Box::new(w2));
         assert_ne!(p1.cmp(&p2), Ordering::Equal);
-    }
-
-    #[test]
-    fn test_project_ord_workspaces_by_name() {
-        let w1 = MockWorkspace::new(Some("aaa"), Some("1.0.0"), Language::Node);
-        let w2 = MockWorkspace::new(Some("bbb"), Some("1.0.0"), Language::Node);
-        let p1 = Project::Workspace(Box::new(w1));
-        let p2 = Project::Workspace(Box::new(w2));
-        assert!(p1 < p2);
-    }
-
-    #[test]
-    fn test_project_ord_workspaces_name_some_vs_none() {
-        let w1 = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);
-        let w2 = MockWorkspace::new(None, Some("1.0.0"), Language::Node);
-        let p1 = Project::Workspace(Box::new(w1));
-        let p2 = Project::Workspace(Box::new(w2));
-        assert!(p1 < p2);
-    }
-
-    #[test]
-    fn test_project_ord_workspaces_name_none_vs_some() {
-        let w1 = MockWorkspace::new(None, Some("1.0.0"), Language::Node);
-        let w2 = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);
-        let p1 = Project::Workspace(Box::new(w1));
-        let p2 = Project::Workspace(Box::new(w2));
-        assert!(p1 > p2);
-    }
-
-    #[test]
-    fn test_project_ord_workspaces_both_none_names() {
-        let w1 = MockWorkspace::new(None, Some("1.0.0"), Language::Node);
-        let w2 = MockWorkspace::new(None, Some("2.0.0"), Language::Node);
-        let p1 = Project::Workspace(Box::new(w1));
-        let p2 = Project::Workspace(Box::new(w2));
-        assert!(p1 < p2);
     }
 
     #[test]
@@ -693,91 +710,18 @@ mod tests {
         assert_ne!(p1.cmp(&p2), Ordering::Equal);
     }
 
-    #[test]
-    fn test_project_ord_packages_by_name() {
-        let pkg1 = MockPackage::new(Some("aaa"), Some("1.0.0"), Language::Rust);
-        let pkg2 = MockPackage::new(Some("bbb"), Some("1.0.0"), Language::Rust);
-        let p1 = Project::Package(Box::new(pkg1));
-        let p2 = Project::Package(Box::new(pkg2));
-        assert!(p1 < p2);
-    }
-
-    #[test]
-    fn test_project_ord_packages_name_some_vs_none() {
-        let pkg1 = MockPackage::new(Some("test"), Some("1.0.0"), Language::Rust);
-        let pkg2 = MockPackage::new(None, Some("1.0.0"), Language::Rust);
-        let p1 = Project::Package(Box::new(pkg1));
-        let p2 = Project::Package(Box::new(pkg2));
-        assert!(p1 < p2);
-    }
-
-    #[test]
-    fn test_project_ord_packages_name_none_vs_some() {
-        let pkg1 = MockPackage::new(None, Some("1.0.0"), Language::Rust);
-        let pkg2 = MockPackage::new(Some("test"), Some("1.0.0"), Language::Rust);
-        let p1 = Project::Package(Box::new(pkg1));
-        let p2 = Project::Package(Box::new(pkg2));
-        assert!(p1 > p2);
-    }
-
-    #[test]
-    fn test_project_ord_packages_both_none_names() {
-        let pkg1 = MockPackage::new(None, Some("1.0.0"), Language::Rust);
-        let pkg2 = MockPackage::new(None, Some("1.0.0"), Language::Rust);
-        let p1 = Project::Package(Box::new(pkg1));
-        let p2 = Project::Package(Box::new(pkg2));
-        assert_eq!(p1.cmp(&p2), Ordering::Equal);
-    }
-
-    #[test]
-    fn test_project_display_workspace() {
-        let workspace = MockWorkspace::new(Some("my-workspace"), Some("1.0.0"), Language::Node);
-        let project = Project::Workspace(Box::new(workspace));
-        let display = format!("{}", project);
-        assert!(display.contains("Workspace"));
-        assert!(display.contains("my-workspace"));
-        assert!(display.contains("v1.0.0"));
-    }
-
-    #[test]
-    fn test_project_display_workspace_no_name() {
-        let workspace = MockWorkspace::new(None, Some("1.0.0"), Language::Node);
-        let project = Project::Workspace(Box::new(workspace));
-        let display = format!("{}", project);
-        assert!(display.contains("noname"));
-    }
-
-    #[test]
-    fn test_project_display_workspace_no_version() {
-        let workspace = MockWorkspace::new(Some("test"), None, Language::Node);
-        let project = Project::Workspace(Box::new(workspace));
-        let display = format!("{}", project);
-        assert!(display.contains("unknown"));
-    }
-
-    #[test]
-    fn test_project_display_package() {
-        let package = MockPackage::new(Some("my-package"), Some("2.0.0"), Language::Rust);
-        let project = Project::Package(Box::new(package));
-        let display = format!("{}", project);
-        assert!(display.contains("my-package"));
-        assert!(display.contains("v2.0.0"));
-    }
-
-    #[test]
-    fn test_project_display_package_no_name() {
-        let package = MockPackage::new(None, Some("1.0.0"), Language::Rust);
-        let project = Project::Package(Box::new(package));
-        let display = format!("{}", project);
-        assert!(display.contains("noname"));
-    }
-
-    #[test]
-    fn test_project_display_package_no_version() {
-        let package = MockPackage::new(Some("test"), None, Language::Rust);
-        let project = Project::Package(Box::new(package));
-        let display = format!("{}", project);
-        assert!(display.contains("unknown"));
+    #[rstest]
+    #[case(ws(Some("my-workspace"), Some("1.0.0"), Language::Node), &["Workspace", "my-workspace", "v1.0.0"])]
+    #[case(ws(None, Some("1.0.0"), Language::Node), &["noname"])]
+    #[case(ws(Some("test"), None, Language::Node), &["unknown"])]
+    #[case(pkg(Some("my-package"), Some("2.0.0"), Language::Rust), &["my-package", "v2.0.0"])]
+    #[case(pkg(None, Some("1.0.0"), Language::Rust), &["noname"])]
+    #[case(pkg(Some("test"), None, Language::Rust), &["unknown"])]
+    fn test_project_display(#[case] project: Project, #[case] expected: &[&str]) {
+        let display = format!("{project}");
+        for &needle in expected {
+            assert!(display.contains(needle), "{display:?} missing {needle:?}");
+        }
     }
 
     #[test]

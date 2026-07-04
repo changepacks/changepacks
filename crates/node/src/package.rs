@@ -112,6 +112,7 @@ impl Package for NodePackage {
 mod tests {
     use super::*;
     use changepacks_core::UpdateType;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
@@ -154,8 +155,15 @@ mod tests {
         assert!(!package.is_changed());
     }
 
+    #[rstest]
+    #[case(UpdateType::Patch, "1.0.1")]
+    #[case(UpdateType::Minor, "1.1.0")]
+    #[case(UpdateType::Major, "2.0.0")]
     #[tokio::test]
-    async fn test_node_package_update_version_patch() {
+    async fn test_node_package_update_version(
+        #[case] update_type: UpdateType,
+        #[case] expected: &str,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let package_json = temp_dir.path().join("package.json");
         fs::write(
@@ -175,68 +183,10 @@ mod tests {
             PathBuf::from("package.json"),
         );
 
-        package.update_version(UpdateType::Patch).await.unwrap();
+        package.update_version(update_type).await.unwrap();
 
         let content = read_to_string(&package_json).await.unwrap();
-        assert!(content.contains(r#""version": "1.0.1""#));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_node_package_update_version_minor() {
-        let temp_dir = TempDir::new().unwrap();
-        let package_json = temp_dir.path().join("package.json");
-        fs::write(
-            &package_json,
-            r#"{
-  "name": "test-package",
-  "version": "1.0.0"
-}
-"#,
-        )
-        .unwrap();
-
-        let mut package = NodePackage::new(
-            Some("test-package".to_string()),
-            Some("1.0.0".to_string()),
-            package_json.clone(),
-            PathBuf::from("package.json"),
-        );
-
-        package.update_version(UpdateType::Minor).await.unwrap();
-
-        let content = read_to_string(&package_json).await.unwrap();
-        assert!(content.contains(r#""version": "1.1.0""#));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_node_package_update_version_major() {
-        let temp_dir = TempDir::new().unwrap();
-        let package_json = temp_dir.path().join("package.json");
-        fs::write(
-            &package_json,
-            r#"{
-  "name": "test-package",
-  "version": "1.0.0"
-}
-"#,
-        )
-        .unwrap();
-
-        let mut package = NodePackage::new(
-            Some("test-package".to_string()),
-            Some("1.0.0".to_string()),
-            package_json.clone(),
-            PathBuf::from("package.json"),
-        );
-
-        package.update_version(UpdateType::Major).await.unwrap();
-
-        let content = read_to_string(&package_json).await.unwrap();
-        assert!(content.contains(r#""version": "2.0.0""#));
+        assert!(content.contains(&format!(r#""version": "{expected}""#)));
 
         temp_dir.close().unwrap();
     }

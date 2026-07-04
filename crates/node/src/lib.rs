@@ -154,105 +154,50 @@ pub fn detect_package_manager_recursive(path: &Path) -> PackageManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_detect_bun_lockb() {
+    // Lock-file → package-manager detection. Single-file cases exercise each
+    // supported lock file (plus the "no file" default-npm fall-through); the
+    // multi-file cases lock in the priority order documented on
+    // `detect_package_manager` (bun > pnpm > yarn > npm).
+    #[rstest]
+    #[case(&["bun.lockb"], PackageManager::Bun)]
+    #[case(&["bun.lock"], PackageManager::Bun)]
+    #[case(&["pnpm-lock.yaml"], PackageManager::Pnpm)]
+    #[case(&["yarn.lock"], PackageManager::Yarn)]
+    #[case(&["package-lock.json"], PackageManager::Npm)]
+    #[case(&[], PackageManager::Npm)]
+    #[case(&["bun.lockb", "pnpm-lock.yaml", "yarn.lock"], PackageManager::Bun)]
+    #[case(&["pnpm-lock.yaml", "yarn.lock"], PackageManager::Pnpm)]
+    fn test_detect_package_manager(#[case] lock_files: &[&str], #[case] expected: PackageManager) {
         let temp_dir = TempDir::new().unwrap();
-        fs::write(temp_dir.path().join("bun.lockb"), "").unwrap();
-        assert_eq!(detect_package_manager(temp_dir.path()), PackageManager::Bun);
+        for f in lock_files {
+            fs::write(temp_dir.path().join(f), "").unwrap();
+        }
+        assert_eq!(detect_package_manager(temp_dir.path()), expected);
     }
 
-    #[test]
-    fn test_detect_bun_lock() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::write(temp_dir.path().join("bun.lock"), "").unwrap();
-        assert_eq!(detect_package_manager(temp_dir.path()), PackageManager::Bun);
+    #[rstest]
+    #[case(PackageManager::Npm, "npm publish")]
+    #[case(PackageManager::Yarn, "yarn npm publish")]
+    #[case(PackageManager::Pnpm, "pnpm publish")]
+    #[case(PackageManager::Bun, "bun publish")]
+    fn test_publish_commands(#[case] pm: PackageManager, #[case] expected: &str) {
+        assert_eq!(pm.publish_command(), expected);
     }
 
-    #[test]
-    fn test_detect_pnpm() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::write(temp_dir.path().join("pnpm-lock.yaml"), "").unwrap();
-        assert_eq!(
-            detect_package_manager(temp_dir.path()),
-            PackageManager::Pnpm
-        );
-    }
-
-    #[test]
-    fn test_detect_yarn() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::write(temp_dir.path().join("yarn.lock"), "").unwrap();
-        assert_eq!(
-            detect_package_manager(temp_dir.path()),
-            PackageManager::Yarn
-        );
-    }
-
-    #[test]
-    fn test_detect_npm() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::write(temp_dir.path().join("package-lock.json"), "{}").unwrap();
-        assert_eq!(detect_package_manager(temp_dir.path()), PackageManager::Npm);
-    }
-
-    #[test]
-    fn test_detect_default_npm() {
-        let temp_dir = TempDir::new().unwrap();
-        assert_eq!(detect_package_manager(temp_dir.path()), PackageManager::Npm);
-    }
-
-    #[test]
-    fn test_bun_priority_over_others() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::write(temp_dir.path().join("bun.lockb"), "").unwrap();
-        fs::write(temp_dir.path().join("pnpm-lock.yaml"), "").unwrap();
-        fs::write(temp_dir.path().join("yarn.lock"), "").unwrap();
-        assert_eq!(detect_package_manager(temp_dir.path()), PackageManager::Bun);
-    }
-
-    #[test]
-    fn test_pnpm_priority_over_yarn() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::write(temp_dir.path().join("pnpm-lock.yaml"), "").unwrap();
-        fs::write(temp_dir.path().join("yarn.lock"), "").unwrap();
-        assert_eq!(
-            detect_package_manager(temp_dir.path()),
-            PackageManager::Pnpm
-        );
-    }
-
-    #[test]
-    fn test_publish_commands() {
-        assert_eq!(PackageManager::Npm.publish_command(), "npm publish");
-        assert_eq!(PackageManager::Yarn.publish_command(), "yarn npm publish");
-        assert_eq!(PackageManager::Pnpm.publish_command(), "pnpm publish");
-        assert_eq!(PackageManager::Bun.publish_command(), "bun publish");
-    }
-
-    #[test]
-    fn test_dry_run_publish_commands() {
-        // All four supported package managers natively support `--dry-run`.
-        // Source: official CLI docs for npm, pnpm, yarn berry (`yarn npm
-        // publish -n/--dry-run`) and bun publish.
-        assert_eq!(
-            PackageManager::Npm.dry_run_publish_command(),
-            "npm publish --dry-run"
-        );
-        assert_eq!(
-            PackageManager::Yarn.dry_run_publish_command(),
-            "yarn npm publish --dry-run"
-        );
-        assert_eq!(
-            PackageManager::Pnpm.dry_run_publish_command(),
-            "pnpm publish --dry-run"
-        );
-        assert_eq!(
-            PackageManager::Bun.dry_run_publish_command(),
-            "bun publish --dry-run"
-        );
+    // All four supported package managers natively support `--dry-run`.
+    // Source: official CLI docs for npm, pnpm, yarn berry (`yarn npm
+    // publish -n/--dry-run`) and bun publish.
+    #[rstest]
+    #[case(PackageManager::Npm, "npm publish --dry-run")]
+    #[case(PackageManager::Yarn, "yarn npm publish --dry-run")]
+    #[case(PackageManager::Pnpm, "pnpm publish --dry-run")]
+    #[case(PackageManager::Bun, "bun publish --dry-run")]
+    fn test_dry_run_publish_commands(#[case] pm: PackageManager, #[case] expected: &str) {
+        assert_eq!(pm.dry_run_publish_command(), expected);
     }
 
     #[test]

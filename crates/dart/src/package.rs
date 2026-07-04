@@ -99,6 +99,7 @@ impl Package for DartPackage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
@@ -164,8 +165,12 @@ version: 1.0.0
         temp_dir.close().unwrap();
     }
 
+    #[rstest]
+    #[case(UpdateType::Patch, "1.0.1")]
+    #[case(UpdateType::Minor, "1.1.0")]
+    #[case(UpdateType::Major, "2.0.0")]
     #[tokio::test]
-    async fn test_update_version_patch() {
+    async fn test_update_version(#[case] update_type: UpdateType, #[case] expected: &str) {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
@@ -183,64 +188,10 @@ version: 1.0.0
             PathBuf::from("pubspec.yaml"),
         );
 
-        package.update_version(UpdateType::Patch).await.unwrap();
+        package.update_version(update_type).await.unwrap();
 
         let content = fs::read_to_string(&pubspec_path).unwrap();
-        assert!(content.contains("version: 1.0.1"));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_update_version_minor() {
-        let temp_dir = TempDir::new().unwrap();
-        let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
-            &pubspec_path,
-            r#"name: test_package
-version: 1.0.0
-"#,
-        )
-        .unwrap();
-
-        let mut package = DartPackage::new(
-            Some("test_package".to_string()),
-            Some("1.0.0".to_string()),
-            pubspec_path.clone(),
-            PathBuf::from("pubspec.yaml"),
-        );
-
-        package.update_version(UpdateType::Minor).await.unwrap();
-
-        let content = fs::read_to_string(&pubspec_path).unwrap();
-        assert!(content.contains("version: 1.1.0"));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_update_version_major() {
-        let temp_dir = TempDir::new().unwrap();
-        let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
-            &pubspec_path,
-            r#"name: test_package
-version: 1.0.0
-"#,
-        )
-        .unwrap();
-
-        let mut package = DartPackage::new(
-            Some("test_package".to_string()),
-            Some("1.0.0".to_string()),
-            pubspec_path.clone(),
-            PathBuf::from("pubspec.yaml"),
-        );
-
-        package.update_version(UpdateType::Major).await.unwrap();
-
-        let content = fs::read_to_string(&pubspec_path).unwrap();
-        assert!(content.contains("version: 2.0.0"));
+        assert!(content.contains(&format!("version: {expected}")));
 
         temp_dir.close().unwrap();
     }

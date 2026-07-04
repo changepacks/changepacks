@@ -305,6 +305,7 @@ mod tests {
         ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType,
     };
     use clap::Parser;
+    use rstest::rstest;
     use std::{
         collections::{HashMap, HashSet},
         path::{Path, PathBuf},
@@ -674,15 +675,21 @@ mod tests {
         assert!(!cli.update.remote);
     }
 
-    #[test]
-    fn test_update_args_with_dry_run() {
-        let cli = TestCli::parse_from(["test", "--dry-run"]);
+    // `--dry-run` (long) and `-d` (short) both flip the `dry_run` flag.
+    #[rstest]
+    #[case(&["test", "--dry-run"])]
+    #[case(&["test", "-d"])]
+    fn test_update_args_dry_run_flag(#[case] args: &[&str]) {
+        let cli = TestCli::parse_from(args);
         assert!(cli.update.dry_run);
     }
 
-    #[test]
-    fn test_update_args_with_yes() {
-        let cli = TestCli::parse_from(["test", "--yes"]);
+    // `--yes` (long) and `-y` (short) both flip the `yes` flag.
+    #[rstest]
+    #[case(&["test", "--yes"])]
+    #[case(&["test", "-y"])]
+    fn test_update_args_yes_flag(#[case] args: &[&str]) {
+        let cli = TestCli::parse_from(args);
         assert!(cli.update.yes);
     }
 
@@ -692,9 +699,12 @@ mod tests {
         assert!(matches!(cli.update.format, FormatOptions::Json));
     }
 
-    #[test]
-    fn test_update_args_with_remote() {
-        let cli = TestCli::parse_from(["test", "--remote"]);
+    // `--remote` (long) and `-r` (short) both flip the `remote` flag.
+    #[rstest]
+    #[case(&["test", "--remote"])]
+    #[case(&["test", "-r"])]
+    fn test_update_args_remote_flag(#[case] args: &[&str]) {
+        let cli = TestCli::parse_from(args);
         assert!(cli.update.remote);
     }
 
@@ -708,24 +718,9 @@ mod tests {
         assert!(cli.update.remote);
     }
 
-    #[test]
-    fn test_update_args_short_dry_run() {
-        let cli = TestCli::parse_from(["test", "-d"]);
-        assert!(cli.update.dry_run);
-    }
-
-    #[test]
-    fn test_update_args_short_yes() {
-        let cli = TestCli::parse_from(["test", "-y"]);
-        assert!(cli.update.yes);
-    }
-
-    #[test]
-    fn test_update_args_short_remote() {
-        let cli = TestCli::parse_from(["test", "-r"]);
-        assert!(cli.update.remote);
-    }
-
+    // All three short flags together must set all three booleans; distinct
+    // from the individual `*_flag` tests above because it also guards
+    // against clap flag-conflict regressions.
     #[test]
     fn test_update_args_all_short_flags() {
         let cli = TestCli::parse_from(["test", "-d", "-y", "-r"]);
@@ -734,21 +729,14 @@ mod tests {
         assert!(cli.update.remote);
     }
 
-    #[test]
-    fn test_update_args_with_language_filter() {
-        let cli = TestCli::parse_from(["test", "--language", "node"]);
-        assert_eq!(cli.update.language.len(), 1);
-    }
-
-    #[test]
-    fn test_update_args_with_multiple_languages() {
-        let cli = TestCli::parse_from(["test", "--language", "node", "--language", "python"]);
-        assert_eq!(cli.update.language.len(), 2);
-    }
-
-    #[test]
-    fn test_update_args_short_language() {
-        let cli = TestCli::parse_from(["test", "-l", "rust"]);
-        assert_eq!(cli.update.language.len(), 1);
+    // `--language` / `-l` accumulate into `Vec<CliLanguage>`; the parsed
+    // length must match the number of flags supplied.
+    #[rstest]
+    #[case(&["test", "--language", "node"], 1)]
+    #[case(&["test", "-l", "rust"], 1)]
+    #[case(&["test", "--language", "node", "--language", "python"], 2)]
+    fn test_update_args_language_flag(#[case] args: &[&str], #[case] expected_len: usize) {
+        let cli = TestCli::parse_from(args);
+        assert_eq!(cli.update.language.len(), expected_len);
     }
 }

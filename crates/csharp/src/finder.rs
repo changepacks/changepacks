@@ -223,6 +223,7 @@ impl ProjectFinder for CSharpProjectFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
@@ -530,24 +531,71 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
-    #[test]
-    fn test_extract_version() {
-        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+    // Fixtures for `test_extract_version` — one per XML shape the finder
+    // must handle. Named consts keep each rstest `#[case]` line short and
+    // self-describing.
+
+    const XML_STANDARD_VERSION: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Version>1.2.3</Version>
   </PropertyGroup>
 </Project>"#;
-        assert_eq!(
-            CSharpProjectFinder::extract_version(content),
-            Some("1.2.3".to_string())
-        );
 
-        let no_version = r#"<Project Sdk="Microsoft.NET.Sdk">
+    const XML_NO_VERSION_ELEMENT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
   </PropertyGroup>
 </Project>"#;
-        assert_eq!(CSharpProjectFinder::extract_version(no_version), None);
+
+    const XML_VERSION_WITH_END_TAG_WHITESPACE: &str = r#"<Project><PropertyGroup><Version>
+   1.2.3
+   </Version></PropertyGroup></Project>"#;
+
+    const XML_EMPTY_VERSION: &str =
+        r#"<Project><PropertyGroup><Version>  </Version></PropertyGroup></Project>"#;
+
+    // Self-closing tags like <IsPackable /> generate Event::Empty, which
+    // exercises the wildcard `_ => {}` arm in extract_version.
+    const XML_VERSION_AFTER_EMPTY_ELEMENT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable />
+    <Version>3.2.1</Version>
+  </PropertyGroup>
+</Project>"#;
+
+    // XML comments generate Event::Comment, exercising the wildcard arm.
+    const XML_VERSION_AFTER_COMMENT: &str = r#"<Project>
+  <PropertyGroup>
+    <!-- version follows -->
+    <Version>4.0.0</Version>
+  </PropertyGroup>
+</Project>"#;
+
+    #[rstest]
+    // Standard `<Version>` inside `<PropertyGroup>`.
+    #[case(XML_STANDARD_VERSION, Some("1.2.3"))]
+    // No `<Version>` element at all → None.
+    #[case(XML_NO_VERSION_ELEMENT, None)]
+    // Whitespace/newlines around the version value are trimmed.
+    #[case(XML_VERSION_WITH_END_TAG_WHITESPACE, Some("1.2.3"))]
+    // Whitespace-only value returns None (empty after trim).
+    #[case(XML_EMPTY_VERSION, None)]
+    // Version element after a self-closing sibling (Event::Empty path).
+    #[case(XML_VERSION_AFTER_EMPTY_ELEMENT, Some("3.2.1"))]
+    // Version element after an XML comment (Event::Comment path).
+    #[case(XML_VERSION_AFTER_COMMENT, Some("4.0.0"))]
+    fn test_extract_version(#[case] content: &str, #[case] expected: Option<&str>) {
+        assert_eq!(
+            CSharpProjectFinder::extract_version(content),
+            expected.map(std::string::ToString::to_string)
+        );
+    }
+
+    #[test]
+    fn test_extract_version_malformed_xml() {
+        let content = "<Project><PropertyGroup><Version>1.0.0";
+        // Should not panic - either returns Some or None
+        let _ = CSharpProjectFinder::extract_version(content);
     }
 
     #[test]
@@ -564,83 +612,20 @@ mod tests {
         assert!(refs.contains(&"Utils".to_string()));
     }
 
-    #[test]
-    fn test_extract_project_name_from_path() {
-        // Windows-style paths
+    #[rstest]
+    // Windows-style paths (both single and doubled `..`).
+    #[case(r"..\CoreLib\CoreLib.csproj", Some("CoreLib"))]
+    #[case(r"..\..\Utils\Utils.csproj", Some("Utils"))]
+    // Unix-style paths.
+    #[case("../CoreLib/CoreLib.csproj", Some("CoreLib"))]
+    // Just filename — no separator at all.
+    #[case("MyProject.csproj", Some("MyProject"))]
+    // Invalid — the extension is the sole legit `None` source.
+    #[case("MyProject.txt", None)]
+    fn test_extract_project_name_from_path(#[case] input: &str, #[case] expected: Option<&str>) {
         assert_eq!(
-            super::extract_project_name_from_path(r"..\CoreLib\CoreLib.csproj"),
-            Some("CoreLib".to_string())
-        );
-        assert_eq!(
-            super::extract_project_name_from_path(r"..\..\Utils\Utils.csproj"),
-            Some("Utils".to_string())
-        );
-        // Unix-style paths
-        assert_eq!(
-            super::extract_project_name_from_path("../CoreLib/CoreLib.csproj"),
-            Some("CoreLib".to_string())
-        );
-        // Just filename
-        assert_eq!(
-            super::extract_project_name_from_path("MyProject.csproj"),
-            Some("MyProject".to_string())
-        );
-        // Invalid - no .csproj extension
-        assert_eq!(super::extract_project_name_from_path("MyProject.txt"), None);
-    }
-
-    #[test]
-    fn test_extract_version_end_tag() {
-        let content = r#"<Project><PropertyGroup><Version>
-   1.2.3
-   </Version></PropertyGroup></Project>"#;
-        assert_eq!(
-            CSharpProjectFinder::extract_version(content),
-            Some("1.2.3".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_version_malformed_xml() {
-        let content = "<Project><PropertyGroup><Version>1.0.0";
-        // Should not panic - either returns Some or None
-        let _ = CSharpProjectFinder::extract_version(content);
-    }
-
-    #[test]
-    fn test_extract_version_empty_version() {
-        let content = r#"<Project><PropertyGroup><Version>  </Version></PropertyGroup></Project>"#;
-        assert_eq!(CSharpProjectFinder::extract_version(content), None);
-    }
-
-    #[test]
-    fn test_extract_version_with_empty_element() {
-        // Self-closing tags like <IsPackable /> generate Event::Empty,
-        // which exercises the wildcard `_ => {}` arm in extract_version
-        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <IsPackable />
-    <Version>3.2.1</Version>
-  </PropertyGroup>
-</Project>"#;
-        assert_eq!(
-            CSharpProjectFinder::extract_version(content),
-            Some("3.2.1".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_version_with_comment() {
-        // XML comments generate Event::Comment, exercising the wildcard arm
-        let content = r#"<Project>
-  <PropertyGroup>
-    <!-- version follows -->
-    <Version>4.0.0</Version>
-  </PropertyGroup>
-</Project>"#;
-        assert_eq!(
-            CSharpProjectFinder::extract_version(content),
-            Some("4.0.0".to_string())
+            super::extract_project_name_from_path(input),
+            expected.map(std::string::ToString::to_string)
         );
     }
 }

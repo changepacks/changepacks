@@ -294,22 +294,17 @@ impl ProjectFinder for GradleProjectFinder {
 mod tests {
     use super::*;
     use changepacks_core::Project;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_gradle_project_finder_new() {
-        let finder = GradleProjectFinder::new();
-        assert_eq!(
-            finder.project_files(),
-            &["build.gradle.kts", "build.gradle"]
-        );
-        assert_eq!(finder.projects().len(), 0);
-    }
-
-    #[test]
-    fn test_gradle_project_finder_default() {
-        let finder = GradleProjectFinder::default();
+    // Both `GradleProjectFinder::new()` and `GradleProjectFinder::default()`
+    // must yield the same empty finder that recognizes both Kotlin and
+    // Groovy Gradle manifests.
+    #[rstest]
+    #[case(GradleProjectFinder::new())]
+    #[case(GradleProjectFinder::default())]
+    fn test_gradle_project_finder_construction(#[case] finder: GradleProjectFinder) {
         assert_eq!(
             finder.project_files(),
             &["build.gradle.kts", "build.gradle"]

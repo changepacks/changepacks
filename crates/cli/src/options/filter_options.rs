@@ -28,6 +28,7 @@ mod tests {
     use async_trait::async_trait;
     use changepacks_core::{Language, Package, UpdateType, Workspace};
     use clap::ValueEnum;
+    use rstest::rstest;
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
@@ -184,28 +185,20 @@ mod tests {
         }))
     }
 
-    #[test]
-    fn test_filter_options_matches_workspace_with_workspace_project() {
-        let project = workspace_project();
-        assert!(FilterOptions::Workspace.matches(&project));
-    }
-
-    #[test]
-    fn test_filter_options_matches_workspace_with_package_project() {
-        let project = package_project();
-        assert!(!FilterOptions::Workspace.matches(&project));
-    }
-
-    #[test]
-    fn test_filter_options_matches_package_with_package_project() {
-        let project = package_project();
-        assert!(FilterOptions::Package.matches(&project));
-    }
-
-    #[test]
-    fn test_filter_options_matches_package_with_workspace_project() {
-        let project = workspace_project();
-        assert!(!FilterOptions::Package.matches(&project));
+    // `FilterOptions::X.matches(&project)` is true iff `project` is the
+    // matching variant. Covers both `Workspace`/`Package` filters against
+    // both project variants (4 = 2 filters × 2 project shapes).
+    #[rstest]
+    #[case(FilterOptions::Workspace, workspace_project(), true)]
+    #[case(FilterOptions::Workspace, package_project(), false)]
+    #[case(FilterOptions::Package, package_project(), true)]
+    #[case(FilterOptions::Package, workspace_project(), false)]
+    fn test_filter_options_matches(
+        #[case] filter: FilterOptions,
+        #[case] project: Project,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(filter.matches(&project), expected);
     }
 
     #[test]

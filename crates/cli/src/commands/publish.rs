@@ -385,6 +385,7 @@ mod tests {
     use super::*;
     use changepacks_core::{Language, Package, UpdateType};
     use clap::Parser;
+    use rstest::rstest;
     use std::collections::HashSet;
 
     #[derive(Parser)]
@@ -404,15 +405,21 @@ mod tests {
         assert!(cli.publish.project.is_empty());
     }
 
-    #[test]
-    fn test_publish_args_with_dry_run() {
-        let cli = TestCli::parse_from(["test", "--dry-run"]);
+    // `--dry-run` (long) and `-d` (short) both flip the `dry_run` flag.
+    #[rstest]
+    #[case(&["test", "--dry-run"])]
+    #[case(&["test", "-d"])]
+    fn test_publish_args_dry_run_flag(#[case] args: &[&str]) {
+        let cli = TestCli::parse_from(args);
         assert!(cli.publish.dry_run);
     }
 
-    #[test]
-    fn test_publish_args_with_yes() {
-        let cli = TestCli::parse_from(["test", "--yes"]);
+    // `--yes` (long) and `-y` (short) both flip the `yes` flag.
+    #[rstest]
+    #[case(&["test", "--yes"])]
+    #[case(&["test", "-y"])]
+    fn test_publish_args_yes_flag(#[case] args: &[&str]) {
+        let cli = TestCli::parse_from(args);
         assert!(cli.publish.yes);
     }
 
@@ -422,29 +429,41 @@ mod tests {
         assert!(matches!(cli.publish.format, FormatOptions::Json));
     }
 
-    #[test]
-    fn test_publish_args_with_remote() {
-        let cli = TestCli::parse_from(["test", "--remote"]);
+    // `--remote` (long) and `-r` (short) both flip the `remote` flag.
+    #[rstest]
+    #[case(&["test", "--remote"])]
+    #[case(&["test", "-r"])]
+    fn test_publish_args_remote_flag(#[case] args: &[&str]) {
+        let cli = TestCli::parse_from(args);
         assert!(cli.publish.remote);
     }
 
-    #[test]
-    fn test_publish_args_with_language_filter() {
-        let cli = TestCli::parse_from(["test", "--language", "node"]);
-        assert_eq!(cli.publish.language.len(), 1);
+    // `--language` / `-l` accumulate into `Vec<CliLanguage>`; the parsed
+    // length must match the number of flags supplied.
+    #[rstest]
+    #[case(&["test", "--language", "node"], 1)]
+    #[case(&["test", "-l", "rust"], 1)]
+    #[case(&["test", "--language", "node", "--language", "python"], 2)]
+    fn test_publish_args_language_flag(#[case] args: &[&str], #[case] expected_len: usize) {
+        let cli = TestCli::parse_from(args);
+        assert_eq!(cli.publish.language.len(), expected_len);
     }
 
-    #[test]
-    fn test_publish_args_with_multiple_languages() {
-        let cli = TestCli::parse_from(["test", "--language", "node", "--language", "python"]);
-        assert_eq!(cli.publish.language.len(), 2);
-    }
-
-    #[test]
-    fn test_publish_args_with_project_filter() {
-        let cli = TestCli::parse_from(["test", "--project", "packages/core/package.json"]);
-        assert_eq!(cli.publish.project.len(), 1);
-        assert_eq!(cli.publish.project[0], "packages/core/package.json");
+    // `--project` / `-p` accumulate into `Vec<String>`; each supplied value
+    // must appear at the matching index in order.
+    #[rstest]
+    #[case(&["test", "--project", "packages/core/package.json"], &["packages/core/package.json"])]
+    #[case(&["test", "-p", "Cargo.toml"], &["Cargo.toml"])]
+    #[case(
+        &["test", "--project", "packages/a/package.json", "--project", "packages/b/package.json"],
+        &["packages/a/package.json", "packages/b/package.json"],
+    )]
+    fn test_publish_args_project_flag(#[case] args: &[&str], #[case] expected: &[&str]) {
+        let cli = TestCli::parse_from(args);
+        assert_eq!(cli.publish.project.len(), expected.len());
+        for (actual, exp) in cli.publish.project.iter().zip(expected.iter()) {
+            assert_eq!(actual, exp);
+        }
     }
 
     #[test]
@@ -469,80 +488,38 @@ mod tests {
         assert_eq!(cli.publish.project.len(), 1);
     }
 
-    #[test]
-    fn test_publish_result_all_succeed() {
-        let result = publish_result_from_failures(&[], 3);
+    // Zero failures (regardless of total count) must return `Ok(())`.
+    #[rstest]
+    #[case(&[], 3)]
+    #[case(&[], 0)]
+    fn test_publish_result_ok(#[case] failed: &[String], #[case] total: usize) {
+        let result = publish_result_from_failures(failed, total);
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn test_publish_result_single_failure() {
-        let result = publish_result_from_failures(&["pkg-a".to_string()], 3);
+    // Any non-empty failure list must return `Err`, and the error message
+    // must include the `<failed>/<total>` count plus every failed name.
+    #[rstest]
+    #[case(&["pkg-a".to_string()], 3, "1 of 3", &["pkg-a"])]
+    #[case(
+        &["pkg-a".to_string(), "pkg-b".to_string()],
+        5,
+        "2 of 5",
+        &["pkg-a", "pkg-b"],
+    )]
+    fn test_publish_result_err(
+        #[case] failed: &[String],
+        #[case] total: usize,
+        #[case] expected_count: &str,
+        #[case] expected_names: &[&str],
+    ) {
+        let result = publish_result_from_failures(failed, total);
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("1 of 3"));
-        assert!(err_msg.contains("pkg-a"));
-    }
-
-    #[test]
-    fn test_publish_result_multiple_failures() {
-        let result = publish_result_from_failures(&["pkg-a".to_string(), "pkg-b".to_string()], 5);
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("2 of 5"));
-        assert!(err_msg.contains("pkg-a"));
-        assert!(err_msg.contains("pkg-b"));
-    }
-
-    #[test]
-    fn test_publish_result_from_failures_zero_total() {
-        let result = publish_result_from_failures(&[], 0);
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_publish_args_short_dry_run() {
-        let cli = TestCli::parse_from(["test", "-d"]);
-        assert!(cli.publish.dry_run);
-    }
-
-    #[test]
-    fn test_publish_args_short_yes() {
-        let cli = TestCli::parse_from(["test", "-y"]);
-        assert!(cli.publish.yes);
-    }
-
-    #[test]
-    fn test_publish_args_short_remote() {
-        let cli = TestCli::parse_from(["test", "-r"]);
-        assert!(cli.publish.remote);
-    }
-
-    #[test]
-    fn test_publish_args_with_multiple_projects() {
-        let cli = TestCli::parse_from([
-            "test",
-            "--project",
-            "packages/a/package.json",
-            "--project",
-            "packages/b/package.json",
-        ]);
-        assert_eq!(cli.publish.project.len(), 2);
-        assert_eq!(cli.publish.project[0], "packages/a/package.json");
-        assert_eq!(cli.publish.project[1], "packages/b/package.json");
-    }
-
-    #[test]
-    fn test_publish_args_short_language() {
-        let cli = TestCli::parse_from(["test", "-l", "rust"]);
-        assert_eq!(cli.publish.language.len(), 1);
-    }
-
-    #[test]
-    fn test_publish_args_short_project() {
-        let cli = TestCli::parse_from(["test", "-p", "Cargo.toml"]);
-        assert_eq!(cli.publish.project.len(), 1);
-        assert_eq!(cli.publish.project[0], "Cargo.toml");
+        assert!(err_msg.contains(expected_count));
+        for name in expected_names {
+            assert!(err_msg.contains(name));
+        }
     }
 
     #[test]
@@ -617,8 +594,17 @@ mod tests {
     static EMPTY_DEPS: std::sync::LazyLock<HashSet<String>> =
         std::sync::LazyLock::new(HashSet::new);
 
+    // Stdout mode never populates `result_map`; JSON mode records exactly
+    // one entry per project. Both modes must count the spawn error as a
+    // failed project.
+    #[rstest]
+    #[case(FormatOptions::Stdout, 0)]
+    #[case(FormatOptions::Json, 1)]
     #[tokio::test]
-    async fn test_execute_publish_loop_spawn_error_stdout() {
+    async fn test_execute_publish_loop_spawn_error(
+        #[case] format: FormatOptions,
+        #[case] expected_result_map_len: usize,
+    ) {
         let pkg = FailSpawnPackage {
             path: PathBuf::from("/nonexistent/package.json"),
             relative_path: PathBuf::from("package.json"),
@@ -627,34 +613,23 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) =
-            execute_publish_loop(&projects, &config, &FormatOptions::Stdout).await;
+        let (result_map, failed) = execute_publish_loop(&projects, &config, &format).await;
 
-        assert!(result_map.is_empty());
-        assert_eq!(failed.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_execute_publish_loop_spawn_error_json() {
-        let pkg = FailSpawnPackage {
-            path: PathBuf::from("/nonexistent/package.json"),
-            relative_path: PathBuf::from("package.json"),
-        };
-        let project = Project::Package(Box::new(pkg));
-        let projects: Vec<&Project> = vec![&project];
-        let config = Config::default();
-
-        let (result_map, failed) =
-            execute_publish_loop(&projects, &config, &FormatOptions::Json).await;
-
-        assert_eq!(result_map.len(), 1);
+        assert_eq!(result_map.len(), expected_result_map_len);
         assert_eq!(failed.len(), 1);
     }
 
     /// Drives the `Err(e)` branch of `execute_dry_run_publish_loop`: the
-    /// dry-run call fails to spawn entirely.
+    /// dry-run call fails to spawn entirely. Same result-map / failed-count
+    /// shape as the non-dry-run spawn-error path above.
+    #[rstest]
+    #[case(FormatOptions::Stdout, 0)]
+    #[case(FormatOptions::Json, 1)]
     #[tokio::test]
-    async fn test_execute_dry_run_publish_loop_spawn_error_stdout() {
+    async fn test_execute_dry_run_publish_loop_spawn_error(
+        #[case] format: FormatOptions,
+        #[case] expected_result_map_len: usize,
+    ) {
         let pkg = FailSpawnPackage {
             path: PathBuf::from("/nonexistent/package.json"),
             relative_path: PathBuf::from("package.json"),
@@ -663,27 +638,9 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Stdout).await;
+        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, &format).await;
 
-        assert!(result_map.is_empty());
-        assert_eq!(failed.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_execute_dry_run_publish_loop_spawn_error_json() {
-        let pkg = FailSpawnPackage {
-            path: PathBuf::from("/nonexistent/package.json"),
-            relative_path: PathBuf::from("package.json"),
-        };
-        let project = Project::Package(Box::new(pkg));
-        let projects: Vec<&Project> = vec![&project];
-        let config = Config::default();
-
-        let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Json).await;
-
-        assert_eq!(result_map.len(), 1);
+        assert_eq!(result_map.len(), expected_result_map_len);
         assert_eq!(failed.len(), 1);
     }
 
@@ -739,8 +696,18 @@ mod tests {
         }
     }
 
+    // Non-zero-exit dry-run:
+    //   Stdout mode does not populate `result_map`; only `failed` is incremented.
+    //   JSON mode records the failure with both stdout and stderr captured.
+    // Either way exactly one project is marked failed.
+    #[rstest]
+    #[case(FormatOptions::Stdout, 0)]
+    #[case(FormatOptions::Json, 1)]
     #[tokio::test]
-    async fn test_execute_dry_run_publish_loop_non_zero_exit_stdout() {
+    async fn test_execute_dry_run_publish_loop_non_zero_exit(
+        #[case] format: FormatOptions,
+        #[case] expected_result_map_len: usize,
+    ) {
         let pkg = DryRunFailurePackage {
             path: PathBuf::from("/nonexistent/package.json"),
             relative_path: PathBuf::from("package.json"),
@@ -749,29 +716,9 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Stdout).await;
+        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, &format).await;
 
-        // Stdout mode does not populate result_map; only failed is incremented.
-        assert!(result_map.is_empty());
-        assert_eq!(failed.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_execute_dry_run_publish_loop_non_zero_exit_json() {
-        let pkg = DryRunFailurePackage {
-            path: PathBuf::from("/nonexistent/package.json"),
-            relative_path: PathBuf::from("package.json"),
-        };
-        let project = Project::Package(Box::new(pkg));
-        let projects: Vec<&Project> = vec![&project];
-        let config = Config::default();
-
-        let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Json).await;
-
-        // JSON mode records the failure with both stdout and stderr captured.
-        assert_eq!(result_map.len(), 1);
+        assert_eq!(result_map.len(), expected_result_map_len);
         assert_eq!(failed.len(), 1);
     }
 
@@ -822,8 +769,18 @@ mod tests {
         }
     }
 
+    // Unsupported dry-run is a warning, not a failure — `failed` must stay
+    // empty in both formats. Stdout mode records nothing in `result_map`;
+    // JSON mode records the skip as success=true with an explanatory error
+    // message so the run does not bail.
+    #[rstest]
+    #[case(FormatOptions::Stdout, 0)]
+    #[case(FormatOptions::Json, 1)]
     #[tokio::test]
-    async fn test_execute_dry_run_publish_loop_unsupported_stdout() {
+    async fn test_execute_dry_run_publish_loop_unsupported(
+        #[case] format: FormatOptions,
+        #[case] expected_result_map_len: usize,
+    ) {
         let pkg = DryRunUnsupportedPackage {
             path: PathBuf::from("/nonexistent/project.csproj"),
             relative_path: PathBuf::from("project.csproj"),
@@ -832,31 +789,9 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Stdout).await;
+        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, &format).await;
 
-        // Unsupported is a warning, not a failure: result_map stays empty,
-        // failed stays empty.
-        assert!(result_map.is_empty());
-        assert!(failed.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_execute_dry_run_publish_loop_unsupported_json() {
-        let pkg = DryRunUnsupportedPackage {
-            path: PathBuf::from("/nonexistent/project.csproj"),
-            relative_path: PathBuf::from("project.csproj"),
-        };
-        let project = Project::Package(Box::new(pkg));
-        let projects: Vec<&Project> = vec![&project];
-        let config = Config::default();
-
-        let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Json).await;
-
-        // JSON mode records the skip as success=true with an explanatory error
-        // message; failed stays empty so the run does not bail.
-        assert_eq!(result_map.len(), 1);
+        assert_eq!(result_map.len(), expected_result_map_len);
         assert!(failed.is_empty());
     }
 

@@ -134,6 +134,7 @@ pub fn detect_xml_indent_unit(content: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     #[test]
     fn test_update_version_in_xml() {
@@ -159,107 +160,81 @@ mod tests {
         assert!(result.contains("<Version>0.0.1</Version>"));
     }
 
-    #[test]
-    fn test_detect_xml_indent_unit_two_spaces() {
-        let content = "  <PropertyGroup>";
-        assert_eq!(detect_xml_indent_unit(content), "  ");
+    #[rstest]
+    // Two-space indent as the first indented line.
+    #[case("  <PropertyGroup>", "  ")]
+    // Four-space indent (must beat the two-space branch inside the fn).
+    #[case("    <PropertyGroup>", "    ")]
+    // Tab-indented .csproj file.
+    #[case("\t<PropertyGroup>", "\t")]
+    // No indented line at all — falls back to the 4-space default.
+    #[case("<PropertyGroup>", "    ")]
+    fn test_detect_xml_indent_unit(#[case] content: &str, #[case] expected: &str) {
+        assert_eq!(detect_xml_indent_unit(content), expected);
     }
 
-    #[test]
-    fn test_detect_xml_indent_unit_four_spaces() {
-        let content = "    <PropertyGroup>";
-        assert_eq!(detect_xml_indent_unit(content), "    ");
-    }
+    // Fixtures for `test_update_version_preserves_feature` — one per XML
+    // feature we must not drop when rewriting the version. Named consts keep
+    // each rstest `#[case]` line short and self-describing.
 
-    #[test]
-    fn test_detect_xml_indent_unit_tab() {
-        let content = "\t<PropertyGroup>";
-        assert_eq!(detect_xml_indent_unit(content), "\t");
-    }
-
-    #[test]
-    fn test_detect_xml_indent_unit_default() {
-        let content = "<PropertyGroup>";
-        assert_eq!(detect_xml_indent_unit(content), "    ");
-    }
-
-    #[test]
-    fn test_update_version_preserves_empty_elements() {
-        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+    const XML_WITH_EMPTY_ELEMENT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Version>1.0.0</Version>
     <IsPackable />
   </PropertyGroup>
 </Project>"#;
-        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
-        assert!(result.contains("2.0.0"));
-        assert!(result.contains("IsPackable"));
-    }
 
-    #[test]
-    fn test_update_version_preserves_comments() {
-        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+    const XML_WITH_COMMENT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <!-- This is a comment -->
   <PropertyGroup>
     <Version>1.0.0</Version>
   </PropertyGroup>
 </Project>"#;
-        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
-        assert!(result.contains("2.0.0"));
-        assert!(result.contains("<!-- This is a comment -->"));
-    }
 
-    #[test]
-    fn test_update_version_preserves_cdata() {
-        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+    const XML_WITH_CDATA: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Version>1.0.0</Version>
     <Description><![CDATA[some data]]></Description>
   </PropertyGroup>
 </Project>"#;
-        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
-        assert!(result.contains("2.0.0"));
-        assert!(result.contains("CDATA"));
-    }
 
-    #[test]
-    fn test_update_version_preserves_xml_declaration() {
-        let content = r#"<?xml version="1.0" encoding="utf-8"?>
+    const XML_WITH_XML_DECLARATION: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Version>1.0.0</Version>
   </PropertyGroup>
 </Project>"#;
-        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
-        assert!(result.contains("2.0.0"));
-        assert!(result.contains("<?xml"));
-    }
 
-    #[test]
-    fn test_update_version_preserves_processing_instruction() {
-        let content = r#"<?xml version="1.0" encoding="utf-8"?>
+    const XML_WITH_PROCESSING_INSTRUCTION: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <?xml-stylesheet type="text/xsl" href="style.xsl"?>
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Version>1.0.0</Version>
   </PropertyGroup>
 </Project>"#;
-        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
-        assert!(result.contains("2.0.0"));
-        assert!(result.contains("xml-stylesheet"));
-    }
 
-    #[test]
-    fn test_update_version_preserves_doctype() {
-        let content = r#"<!DOCTYPE Project>
+    const XML_WITH_DOCTYPE: &str = r#"<!DOCTYPE Project>
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Version>1.0.0</Version>
   </PropertyGroup>
 </Project>"#;
+
+    // Each XML feature — empty (self-closing) element, comment, CDATA, XML
+    // declaration, processing instruction, DOCTYPE — must survive the
+    // version rewrite. `marker` is a substring uniquely tied to the
+    // feature under test.
+    #[rstest]
+    #[case(XML_WITH_EMPTY_ELEMENT, "IsPackable")]
+    #[case(XML_WITH_COMMENT, "<!-- This is a comment -->")]
+    #[case(XML_WITH_CDATA, "CDATA")]
+    #[case(XML_WITH_XML_DECLARATION, "<?xml")]
+    #[case(XML_WITH_PROCESSING_INSTRUCTION, "xml-stylesheet")]
+    #[case(XML_WITH_DOCTYPE, "DOCTYPE")]
+    fn test_update_version_preserves_feature(#[case] content: &str, #[case] marker: &str) {
         let result = update_version_in_xml(content, "2.0.0", true).unwrap();
         assert!(result.contains("2.0.0"));
-        assert!(result.contains("DOCTYPE"));
+        assert!(result.contains(marker));
     }
 
     #[test]

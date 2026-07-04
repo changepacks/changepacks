@@ -19,27 +19,20 @@ pub const fn trailing_newline(source: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn returns_empty_for_empty_string() {
-        assert_eq!(trailing_newline(""), "");
-    }
-
-    #[test]
-    fn returns_empty_when_no_trailing_newline() {
-        assert_eq!(trailing_newline("hello"), "");
-        assert_eq!(trailing_newline("a\nb"), "");
-    }
-
-    #[test]
-    fn returns_newline_when_lf_terminated() {
-        assert_eq!(trailing_newline("hello\n"), "\n");
-        assert_eq!(trailing_newline("\n"), "\n");
-    }
-
-    #[test]
-    fn returns_newline_for_crlf_because_final_byte_is_lf() {
-        // Matches the existing `raw.ends_with('\n')` behavior (`\r\n` ends with `\n`).
-        assert_eq!(trailing_newline("hello\r\n"), "\n");
+    #[rstest]
+    // Empty / no trailing newline: empty string, plain text, mid-string LF.
+    #[case("", "")]
+    #[case("hello", "")]
+    #[case("a\nb", "")]
+    // LF terminated: normal and lone-LF.
+    #[case("hello\n", "\n")]
+    #[case("\n", "\n")]
+    // CRLF also yields `\n` because the final byte is LF — matches the
+    // existing `raw.ends_with('\n')` behavior.
+    #[case("hello\r\n", "\n")]
+    fn test_trailing_newline(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(trailing_newline(input), expected);
     }
 }

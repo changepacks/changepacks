@@ -27,49 +27,39 @@ pub(crate) fn is_changepack_log_json_name(file_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn test_rejects_config_json() {
-        // `config.json` is the one JSON file inside `.changepacks/` that must
-        // NOT be treated as a changepack log by either the cleaner or the
-        // reader; it stores the user's config.
-        assert!(!is_changepack_log_json_name("config.json"));
-    }
-
-    #[test]
-    fn test_rejects_config_json_case_insensitive() {
-        // Windows (NTFS) and macOS (default HFS+/APFS) return the same
-        // on-disk `config.json` from `read_dir` under mixed-case names —
-        // the guard MUST reject every case variant so the cleaner can never
-        // silently delete the user's config file.
-        assert!(!is_changepack_log_json_name("Config.json"));
-        assert!(!is_changepack_log_json_name("CONFIG.JSON"));
-        assert!(!is_changepack_log_json_name("config.JSON"));
-        assert!(!is_changepack_log_json_name("CoNfIg.JsOn"));
-    }
-
-    #[test]
-    fn test_rejects_non_json_files() {
-        // Non-JSON files (`.gitkeep`, `README.md`, dotfiles) are user-owned
-        // and must survive `clear_update_logs`; the reader skips them for
-        // the same reason.
-        assert!(!is_changepack_log_json_name("README.md"));
-        assert!(!is_changepack_log_json_name(".gitkeep"));
-        assert!(!is_changepack_log_json_name(".gitignore"));
-        assert!(!is_changepack_log_json_name("notes.txt"));
-        // No extension at all.
-        assert!(!is_changepack_log_json_name("randomfile"));
-    }
-
-    #[test]
-    fn test_accepts_json_logs() {
-        // Real changepack log names — both the auto-numbered and any custom
-        // JSON file — must be recognized as logs.
-        assert!(is_changepack_log_json_name("update_log_1.json"));
-        assert!(is_changepack_log_json_name("changepack_log_2.json"));
-        assert!(is_changepack_log_json_name("2024-01-01.json"));
-        // Case-insensitive extension match (matches the historical filter).
-        assert!(is_changepack_log_json_name("changepack_log_2.JSON"));
-        assert!(is_changepack_log_json_name("update.Json"));
+    // Every `.changepacks/` filename shape the cleaner + reader must agree on.
+    #[rstest]
+    // `config.json` is the one JSON file inside `.changepacks/` that must
+    // NOT be treated as a changepack log by either the cleaner or the
+    // reader; it stores the user's config. Windows (NTFS) and macOS
+    // (default HFS+/APFS) return the same on-disk `config.json` from
+    // `read_dir` under mixed-case names — the guard MUST reject every
+    // case variant so the cleaner can never silently delete the user's
+    // config file.
+    #[case("config.json", false)]
+    #[case("Config.json", false)]
+    #[case("CONFIG.JSON", false)]
+    #[case("config.JSON", false)]
+    #[case("CoNfIg.JsOn", false)]
+    // Non-JSON files (`.gitkeep`, `README.md`, dotfiles) are user-owned
+    // and must survive `clear_update_logs`; the reader skips them for
+    // the same reason. `randomfile` has no extension at all.
+    #[case("README.md", false)]
+    #[case(".gitkeep", false)]
+    #[case(".gitignore", false)]
+    #[case("notes.txt", false)]
+    #[case("randomfile", false)]
+    // Real changepack log names — both the auto-numbered and any custom
+    // JSON file — must be recognized as logs. Last two exercise the
+    // case-insensitive extension match (matches the historical filter).
+    #[case("update_log_1.json", true)]
+    #[case("changepack_log_2.json", true)]
+    #[case("2024-01-01.json", true)]
+    #[case("changepack_log_2.JSON", true)]
+    #[case("update.Json", true)]
+    fn test_is_changepack_log_json_name(#[case] file_name: &str, #[case] expected: bool) {
+        assert_eq!(is_changepack_log_json_name(file_name), expected);
     }
 }

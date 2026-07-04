@@ -141,6 +141,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::collections::HashMap;
     use std::path::PathBuf;
 
@@ -227,40 +228,17 @@ mod tests {
         assert!(workspace.is_changed());
     }
 
-    #[test]
-    fn test_check_changed_sets_changed() {
+    #[rstest]
+    // A file inside the project dir marks it changed; a changepack log or a
+    // file that belongs to another project does not.
+    #[case("/project/src/index.js", true)]
+    #[case("/project/.changepacks/change.json", false)]
+    #[case("/other-project/src/index.js", false)]
+    fn test_check_changed(#[case] changed_path: &str, #[case] expected: bool) {
         let mut workspace =
             MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
-
-        // File in project directory should mark as changed
-        workspace
-            .check_changed(Path::new("/project/src/index.js"))
-            .unwrap();
-        assert!(workspace.is_changed());
-    }
-
-    #[test]
-    fn test_check_changed_ignores_changepacks() {
-        let mut workspace =
-            MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
-
-        // Files in .changepacks should be ignored
-        workspace
-            .check_changed(Path::new("/project/.changepacks/change.json"))
-            .unwrap();
-        assert!(!workspace.is_changed());
-    }
-
-    #[test]
-    fn test_check_changed_ignores_other_projects() {
-        let mut workspace =
-            MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
-
-        // Files in other directories should not mark as changed
-        workspace
-            .check_changed(Path::new("/other-project/src/index.js"))
-            .unwrap();
-        assert!(!workspace.is_changed());
+        workspace.check_changed(Path::new(changed_path)).unwrap();
+        assert_eq!(workspace.is_changed(), expected);
     }
 
     #[test]
@@ -283,67 +261,26 @@ mod tests {
         assert_eq!(workspace.get_publish_command(&config), "custom publish");
     }
 
-    #[test]
-    fn test_get_publish_command_by_language() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json")
-            .with_language(Language::Node);
+    #[rstest]
+    #[case(Language::Node, "node", "npm publish --access public")]
+    #[case(Language::Python, "python", "poetry publish")]
+    #[case(Language::Rust, "rust", "cargo publish")]
+    #[case(Language::Dart, "dart", "dart pub publish")]
+    fn test_get_publish_command_by_language(
+        #[case] language: Language,
+        #[case] key: &str,
+        #[case] command: &str,
+    ) {
+        let workspace = MockWorkspace::new(Some("test"), "/project/manifest", "manifest")
+            .with_language(language);
         let mut publish = HashMap::new();
-        publish.insert(
-            "node".to_string(),
-            "npm publish --access public".to_string(),
-        );
+        publish.insert(key.to_string(), command.to_string());
         let config = Config {
             publish,
             ..Default::default()
         };
 
-        assert_eq!(
-            workspace.get_publish_command(&config),
-            "npm publish --access public"
-        );
-    }
-
-    #[test]
-    fn test_get_publish_command_python() {
-        let workspace =
-            MockWorkspace::new(Some("test"), "/project/pyproject.toml", "pyproject.toml")
-                .with_language(Language::Python);
-        let mut publish = HashMap::new();
-        publish.insert("python".to_string(), "poetry publish".to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(workspace.get_publish_command(&config), "poetry publish");
-    }
-
-    #[test]
-    fn test_get_publish_command_rust() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/Cargo.toml", "Cargo.toml")
-            .with_language(Language::Rust);
-        let mut publish = HashMap::new();
-        publish.insert("rust".to_string(), "cargo publish".to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(workspace.get_publish_command(&config), "cargo publish");
-    }
-
-    #[test]
-    fn test_get_publish_command_dart() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/pubspec.yaml", "pubspec.yaml")
-            .with_language(Language::Dart);
-        let mut publish = HashMap::new();
-        publish.insert("dart".to_string(), "dart pub publish".to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(workspace.get_publish_command(&config), "dart pub publish");
+        assert_eq!(workspace.get_publish_command(&config), command);
     }
 
     #[test]

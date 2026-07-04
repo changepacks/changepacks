@@ -31,26 +31,35 @@ pub(crate) fn should_mark_changed(candidate: &Path, project_manifest: &Path) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
-    #[test]
-    fn test_should_mark_changed_true_for_file_in_project() {
-        let candidate = Path::new("/project/src/index.js");
-        let manifest = Path::new("/project/package.json");
-        assert!(should_mark_changed(candidate, manifest).unwrap());
-    }
-
-    #[test]
-    fn test_should_mark_changed_false_for_changepacks_path() {
-        let candidate = Path::new("/project/.changepacks/change.json");
-        let manifest = Path::new("/project/package.json");
-        assert!(!should_mark_changed(candidate, manifest).unwrap());
-    }
-
-    #[test]
-    fn test_should_mark_changed_false_for_file_outside_project() {
-        let candidate = Path::new("/other-project/src/index.js");
-        let manifest = Path::new("/project/package.json");
-        assert!(!should_mark_changed(candidate, manifest).unwrap());
+    #[rstest]
+    // A source file inside the project directory marks it changed.
+    #[case("/project/src/index.js", "/project/package.json", true)]
+    // Anything under the project's `.changepacks/` dir is a changepack log,
+    // not a user change, so it must NOT mark the project changed.
+    #[case("/project/.changepacks/change.json", "/project/package.json", false)]
+    // A file belonging to a different project must not mark this one changed.
+    #[case("/other-project/src/index.js", "/project/package.json", false)]
+    // Sibling dirs/files whose name only *contains* ".changepacks" as a
+    // substring are real user data and MUST still mark the project changed —
+    // the guard matches on a full path component, not a substring. The old
+    // substring check silently dropped these legitimate source edits.
+    #[case(
+        "/project/.changepacks-backup/pinned.json",
+        "/project/package.json",
+        true
+    )]
+    #[case("/project/notes-about-.changepacks.md", "/project/package.json", true)]
+    fn test_should_mark_changed(
+        #[case] candidate: &str,
+        #[case] manifest: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            should_mark_changed(Path::new(candidate), Path::new(manifest)).unwrap(),
+            expected
+        );
     }
 
     #[test]
@@ -59,31 +68,5 @@ mod tests {
         let manifest = Path::new("");
         let err = should_mark_changed(candidate, manifest).unwrap_err();
         assert!(err.to_string().contains("Parent not found"));
-    }
-
-    #[test]
-    fn test_should_mark_changed_ignores_sibling_dot_prefixed_dirs() {
-        // Sibling directory whose name only *contains* ".changepacks" as a
-        // substring must NOT be swallowed by the guard. The old substring
-        // check treated any of these as "changepack log — do not mark
-        // changed", silently dropping legitimate source edits.
-        let manifest = Path::new("/project/package.json");
-
-        // A file inside a sibling `.changepacks-backup/` directory: this
-        // is user data, not a changepack log, so the project should be
-        // marked changed.
-        let backup_candidate = Path::new("/project/.changepacks-backup/pinned.json");
-        assert!(should_mark_changed(backup_candidate, manifest).unwrap());
-
-        // A file whose name literally contains `.changepacks` — again
-        // real user data, should be marked changed.
-        let named_candidate = Path::new("/project/notes-about-.changepacks.md");
-        assert!(should_mark_changed(named_candidate, manifest).unwrap());
-
-        // Regression: the true `.changepacks/` directory case still
-        // returns `false`, so the fix is a strict widening — nothing that
-        // previously passed silently now leaks through.
-        let real_log = Path::new("/project/.changepacks/change.json");
-        assert!(!should_mark_changed(real_log, manifest).unwrap());
     }
 }

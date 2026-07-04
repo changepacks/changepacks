@@ -364,6 +364,7 @@ fn format_project_line(
 mod tests {
     use super::*;
     use clap::Parser;
+    use rstest::rstest;
 
     // Test CheckArgs parsing via clap
     #[derive(Parser)]
@@ -393,22 +394,33 @@ mod tests {
         assert!(cli.check.tree);
     }
 
-    #[test]
-    fn test_check_args_with_remote() {
-        let cli = TestCli::parse_from(["test", "--remote"]);
-        assert!(cli.check.remote);
+    // Discriminant helper so `matches!(...)` becomes a case-parameterizable
+    // value comparison. `FilterOptions` derives `Debug` + `Clone` but not
+    // `PartialEq`, so we bounce through this shadow enum.
+    #[derive(Debug, PartialEq, Eq)]
+    enum FilterKind {
+        Workspace,
+        Package,
     }
 
-    #[test]
-    fn test_check_args_with_filter_workspace() {
-        let cli = TestCli::parse_from(["test", "--filter", "workspace"]);
-        assert!(matches!(cli.check.filter, Some(FilterOptions::Workspace)));
+    impl From<&FilterOptions> for FilterKind {
+        fn from(f: &FilterOptions) -> Self {
+            match f {
+                FilterOptions::Workspace => Self::Workspace,
+                FilterOptions::Package => Self::Package,
+            }
+        }
     }
 
-    #[test]
-    fn test_check_args_with_filter_package() {
-        let cli = TestCli::parse_from(["test", "--filter", "package"]);
-        assert!(matches!(cli.check.filter, Some(FilterOptions::Package)));
+    // `--filter` (long) and `-f` (short) both parse into `Some(FilterOptions::X)`.
+    #[rstest]
+    #[case(&["test", "--filter", "workspace"], FilterKind::Workspace)]
+    #[case(&["test", "--filter", "package"], FilterKind::Package)]
+    #[case(&["test", "-f", "workspace"], FilterKind::Workspace)]
+    fn test_check_args_filter_flag(#[case] args: &[&str], #[case] expected: FilterKind) {
+        let cli = TestCli::parse_from(args);
+        let filter = cli.check.filter.expect("filter should be present");
+        assert_eq!(FilterKind::from(&filter), expected);
     }
 
     #[test]
@@ -422,34 +434,24 @@ mod tests {
         assert!(cli.check.remote);
     }
 
-    #[test]
-    fn test_check_args_short_filter() {
-        let cli = TestCli::parse_from(["test", "-f", "workspace"]);
-        assert!(matches!(cli.check.filter, Some(FilterOptions::Workspace)));
-    }
-
-    #[test]
-    fn test_check_args_short_remote() {
-        let cli = TestCli::parse_from(["test", "-r"]);
+    // `--remote` (long) and `-r` (short) both flip the `remote` flag.
+    #[rstest]
+    #[case(&["test", "--remote"])]
+    #[case(&["test", "-r"])]
+    fn test_check_args_remote_flag(#[case] args: &[&str]) {
+        let cli = TestCli::parse_from(args);
         assert!(cli.check.remote);
     }
 
-    #[test]
-    fn test_check_args_with_language_filter() {
-        let cli = TestCli::parse_from(["test", "--language", "node"]);
-        assert_eq!(cli.check.language.len(), 1);
-    }
-
-    #[test]
-    fn test_check_args_with_multiple_languages() {
-        let cli = TestCli::parse_from(["test", "--language", "node", "--language", "python"]);
-        assert_eq!(cli.check.language.len(), 2);
-    }
-
-    #[test]
-    fn test_check_args_short_language() {
-        let cli = TestCli::parse_from(["test", "-l", "rust"]);
-        assert_eq!(cli.check.language.len(), 1);
+    // `--language` / `-l` accumulate into `Vec<CliLanguage>`; the parsed
+    // length must match the number of flags supplied.
+    #[rstest]
+    #[case(&["test", "--language", "node"], 1)]
+    #[case(&["test", "-l", "rust"], 1)]
+    #[case(&["test", "--language", "node", "--language", "python"], 2)]
+    fn test_check_args_language_flag(#[case] args: &[&str], #[case] expected_len: usize) {
+        let cli = TestCli::parse_from(args);
+        assert_eq!(cli.check.language.len(), expected_len);
     }
 
     // --- format_project_line tests using mock trait implementations ---

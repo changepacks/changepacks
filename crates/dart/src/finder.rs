@@ -144,19 +144,17 @@ impl ProjectFinder for DartProjectFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
+    // Both `DartProjectFinder::new()` and `DartProjectFinder::default()` must
+    // yield the same empty, `pubspec.yaml`-scoped finder.
+    #[rstest]
+    #[case(DartProjectFinder::new())]
+    #[case(DartProjectFinder::default())]
     #[tokio::test]
-    async fn test_new() {
-        let finder = DartProjectFinder::new();
-        assert_eq!(finder.project_files(), &["pubspec.yaml"]);
-        assert_eq!(finder.projects().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_default() {
-        let finder = DartProjectFinder::default();
+    async fn test_construction(#[case] finder: DartProjectFinder) {
         assert_eq!(finder.project_files(), &["pubspec.yaml"]);
         assert_eq!(finder.projects().len(), 0);
     }
