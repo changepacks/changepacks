@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
-use changepacks_utils::{finalize_content, next_version, split_version};
+use changepacks_utils::{finalize_content, next_version_or_default, split_version};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tokio::fs::{read_to_string, write};
@@ -46,8 +46,13 @@ impl Workspace for RustWorkspace {
     changepacks_core::impl_basic_accessors!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let current_version = self.version.as_deref().unwrap_or("0.0.0");
-        let new_version = next_version(current_version, update_type)?;
+        // Hoisted `unwrap_or("0.0.0")` so the "reserve 0.0.0 when
+        // unversioned" fallback is expressed ONCE, then reused BOTH for
+        // `next_version_or_default` here AND for the
+        // `[workspace.dependencies]` sync at the loop below. Matches the
+        // shared policy consolidated in `changepacks_utils::next_version_or_default`.
+        let old_version = self.version.as_deref().unwrap_or("0.0.0");
+        let new_version = next_version_or_default(Some(old_version), update_type)?;
 
         let cargo_toml_raw = read_to_string(&self.path).await?;
         let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
@@ -90,7 +95,9 @@ impl Workspace for RustWorkspace {
             .and_then(|w| w.get_mut("dependencies"))
             .and_then(|d| d.as_table_mut())
         {
-            let old_version = self.version.as_deref().unwrap_or("0.0.0");
+            // `old_version` hoisted to the top of this function so both the
+            // `next_version_or_default` fallback and this workspace-deps
+            // sync share the same "reserve 0.0.0 when unversioned" source.
             for (_, value) in ws_deps.iter_mut() {
                 if let Some(dep) = value.as_inline_table_mut()
                     && dep.get("path").is_some()

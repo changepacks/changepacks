@@ -151,9 +151,16 @@ pub enum PackageManager {
 }
 
 impl PackageManager {
-    /// Returns the publish command for this package manager
+    /// Returns the publish command for this package manager.
+    ///
+    /// `PackageManager` is `#[derive(Clone, Copy)]`, so this takes `self`
+    /// by value (not `&self`) — matching the sibling
+    /// [`changepacks_core::Language::publish_key`] const accessor's
+    /// `const fn (self)` shape. Making this `const fn` unlocks
+    /// compile-time evaluation and is a pure code-quality gain: every
+    /// call site already owns a `PackageManager` value on the stack.
     #[must_use]
-    pub fn publish_command(&self) -> &'static str {
+    pub const fn publish_command(self) -> &'static str {
         match self {
             Self::Npm => "npm publish",
             Self::Yarn => "yarn npm publish",
@@ -170,8 +177,14 @@ impl PackageManager {
     /// - `yarn npm publish --dry-run`
     /// - `pnpm publish --dry-run`
     /// - `bun publish --dry-run`
+    ///
+    /// `PackageManager` is `#[derive(Clone, Copy)]`, so this takes `self`
+    /// by value (not `&self`) — matching the sibling
+    /// [`changepacks_core::Language::publish_key`] const accessor's
+    /// `const fn (self)` shape. See [`Self::publish_command`] for the
+    /// rationale.
     #[must_use]
-    pub fn dry_run_publish_command(&self) -> &'static str {
+    pub const fn dry_run_publish_command(self) -> &'static str {
         match self {
             Self::Npm => "npm publish --dry-run",
             Self::Yarn => "yarn npm publish --dry-run",

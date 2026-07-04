@@ -1,20 +1,22 @@
 use anyhow::Result;
 use changepacks_core::UpdateType;
 
-use crate::next_version;
+use crate::next_version_or_default;
 
 /// Display the version update as a formatted string
 ///
 /// # Errors
 /// Returns error if the next version cannot be calculated.
 pub fn display_update(current_version: Option<&str>, update_type: UpdateType) -> Result<String> {
-    if let Some(current_version) = current_version {
-        let next_version = next_version(current_version, update_type)?;
-        Ok(format!("v{current_version} → v{next_version}"))
-    } else {
-        let next_version = next_version("0.0.0", update_type)?;
-        Ok(format!("unknown → v{next_version}"))
-    }
+    // Two-branch "reserve `0.0.0` when `None`" prelude consolidated into
+    // `next_version_or_default` — the same helper Node/Python/Dart/CSharp
+    // already delegate through for their `update_version_from_fields`.
+    // The `Some` vs `None` split now only carries the `"v"`-prefix vs
+    // `"unknown"` DISPLAY distinction.
+    let next_version = next_version_or_default(current_version, update_type)?;
+    let current_display =
+        current_version.map_or_else(|| "unknown".to_string(), |v| format!("v{v}"));
+    Ok(format!("{current_display} → v{next_version}"))
 }
 
 #[cfg(test)]

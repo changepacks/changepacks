@@ -67,7 +67,12 @@ impl ProjectFinder for NodeProjectFinder {
             // `PathBuf` via `.clone()`. Pure rename — clone count is
             // unchanged.
             let path_key = path.to_path_buf();
-            let relative_path_buf = relative_path.to_path_buf();
+            // Rename `relative_path_buf` → `relative_path_key` to match the
+            // Dart, Java, and CSharp finders' local naming convention
+            // (matches the docstring at `crates/dart/src/finder.rs`
+            // claiming "Node, Python, CSharp, Java, and post-item-2 Rust"
+            // all use this name). Pure rename — behavior unchanged.
+            let relative_path_key = relative_path.to_path_buf();
             // Workspace detection is short-circuited: a `workspaces` field in
             // `package.json` (npm / yarn / bun monorepos — the common case)
             // is enough on its own, so only fall back to a `pnpm-workspace.yaml`
@@ -93,14 +98,14 @@ impl ProjectFinder for NodeProjectFinder {
                     name,
                     version,
                     path_key.clone(),
-                    relative_path_buf,
+                    relative_path_key,
                 )))
             } else {
                 Project::Package(Box::new(NodePackage::new(
                     name,
                     version,
                     path_key.clone(),
-                    relative_path_buf,
+                    relative_path_key,
                 )))
             };
 

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::next_version;
+use changepacks_utils::next_version_or_default;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -84,8 +84,12 @@ impl Package for RustPackage {
         if self.workspace_version_inherited {
             return Ok(());
         }
-        let current_version = self.version.as_deref().unwrap_or("0.0.0");
-        let new_version = next_version(current_version, update_type)?;
+        // Two-line "reserve `0.0.0` when unversioned" prelude consolidated
+        // into `changepacks_utils::next_version_or_default` so the fallback
+        // policy lives in ONE place across every language crate. Mirrors
+        // the shared `update_version_from_fields` helper used by Node,
+        // Python, Dart, and CSharp.
+        let new_version = next_version_or_default(self.version.as_deref(), update_type)?;
         write_cargo_package_version(&self.path, &new_version).await?;
         self.version = Some(new_version);
         Ok(())
