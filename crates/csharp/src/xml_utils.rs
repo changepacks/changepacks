@@ -52,8 +52,18 @@ pub fn update_version_in_xml(
                         // reindent of `</PropertyGroup>` must use it —
                         // hardcoding `"\n  "` (as we used to) breaks the
                         // format-preservation invariant on 4-space and tab
-                        // .csproj files.
-                        let indent = detect_xml_indent_unit(content);
+                        // .csproj files. Delegates to the workspace-wide
+                        // `detect_indent_str` (returns the exact leading
+                        // whitespace of the first indented line, or `""`
+                        // when none) and falls back to 4 spaces when the
+                        // file has no indented line at all, matching the
+                        // prior local helper's default.
+                        let detected = changepacks_utils::detect_indent_str(content);
+                        let indent = if detected.is_empty() {
+                            "    "
+                        } else {
+                            detected
+                        };
                         let trailing = format!("\n{indent}");
                         writer.write_event(Event::Text(BytesText::new(indent)))?;
                         writer.write_event(Event::Start(BytesStart::new("Version")))?;
@@ -109,28 +119,6 @@ pub fn update_version_in_xml(
     String::from_utf8(result).context("Failed to convert XML to UTF-8")
 }
 
-/// Detect the indentation UNIT used in XML content (returns the indent string
-/// itself, e.g. `"    "` / `"  "` / `"\t"`).
-///
-/// Renamed from `detect_indent` to avoid shadowing the workspace-wide
-/// `changepacks_utils::detect_indent`, which has a different signature
-/// (`fn(&str) -> usize`) and returns the indent WIDTH, not the unit. A
-/// reader jumping into `update_version_in_xml` used to reasonably assume
-/// the local `detect_indent` was the shared helper; the more precise name
-/// removes that trap.
-pub fn detect_xml_indent_unit(content: &str) -> &'static str {
-    for line in content.lines() {
-        if line.starts_with("    ") {
-            return "    ";
-        } else if line.starts_with("  ") {
-            return "  ";
-        } else if line.starts_with('\t') {
-            return "\t";
-        }
-    }
-    "    " // default to 4 spaces
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,19 +146,6 @@ mod tests {
 
         let result = update_version_in_xml(content, "0.0.1", false).unwrap();
         assert!(result.contains("<Version>0.0.1</Version>"));
-    }
-
-    #[rstest]
-    // Two-space indent as the first indented line.
-    #[case("  <PropertyGroup>", "  ")]
-    // Four-space indent (must beat the two-space branch inside the fn).
-    #[case("    <PropertyGroup>", "    ")]
-    // Tab-indented .csproj file.
-    #[case("\t<PropertyGroup>", "\t")]
-    // No indented line at all — falls back to the 4-space default.
-    #[case("<PropertyGroup>", "    ")]
-    fn test_detect_xml_indent_unit(#[case] content: &str, #[case] expected: &str) {
-        assert_eq!(detect_xml_indent_unit(content), expected);
     }
 
     // Fixtures for `test_update_version_preserves_feature` — one per XML

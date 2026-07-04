@@ -62,8 +62,17 @@ pub async fn find_project_dirs(
     // Iterate through git tracked files and find matching project files
     for entry in index.entries() {
         let file_path = entry.path(&index);
-        let file_path_str = file_path.to_string();
-        let path = Path::new(&file_path_str);
+        // `BStr::to_str_lossy()` returns `Cow<'_, str>` that borrows on the
+        // valid-UTF-8 happy path (every path in the git index is UTF-8 on
+        // Windows and virtually every Unix repo) and only allocates on
+        // invalid UTF-8 — matching the previous `Display`-based lossy
+        // replacement behavior. The old `to_string()` unconditionally
+        // allocated a fresh `String` per tracked file; on large monorepos
+        // that is thousands of small heap allocations per invocation of
+        // `find_project_dirs`, and every command (`check`, `update`,
+        // `changepack`, `publish`) flows through this walk.
+        let file_path_str = file_path.to_str_lossy();
+        let path = Path::new(file_path_str.as_ref());
 
         // Check if this file matches any of the project files
         // Insert absolute path using git_root_path.join(parent)
