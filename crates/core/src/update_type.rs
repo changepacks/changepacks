@@ -1,3 +1,4 @@
+use colored::Colorize;
 use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
@@ -21,9 +22,9 @@ impl Display for UpdateType {
             f,
             "{}",
             match self {
-                Self::Major => "\x1b[1;31mMajor\x1b[0m", // bold red
-                Self::Minor => "\x1b[1;33mMinor\x1b[0m", // bold yellow
-                Self::Patch => "\x1b[1;32mPatch\x1b[0m", // bold green
+                Self::Major => "Major".bright_red().bold(),
+                Self::Minor => "Minor".bright_yellow().bold(),
+                Self::Patch => "Patch".bright_green().bold(),
             }
         )
     }

@@ -59,7 +59,8 @@ impl Package for DartPackage {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
         let new_version = next_version(current_version, update_type)?;
 
-        write_pubspec_version(&self.path, &new_version, true).await?;
+        let existing_version = self.version.is_some();
+        write_pubspec_version(&self.path, &new_version, existing_version).await?;
         self.version = Some(new_version);
         Ok(())
     }

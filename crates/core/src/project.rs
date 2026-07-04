@@ -604,9 +604,11 @@ mod tests {
             ..Config::default()
         };
 
-        // Even for languages whose crate would return None from
-        // `default_dry_run_publish_command()`, a per-language config override
-        // still resolves to a runnable command.
+        // A per-language `publish_dry_run` config entry (here: `csharp`)
+        // resolves to a runnable command and takes precedence over the
+        // crate's built-in `default_dry_run_publish_command()`, ensuring
+        // user-configured dry-run commands win regardless of whether the
+        // language provides its own default.
         let output = project.dry_run_publish(&config).await.unwrap();
         assert!(output.is_some());
         assert!(output.unwrap().success);

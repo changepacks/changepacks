@@ -52,7 +52,7 @@ impl Workspace for RustWorkspace {
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
-        let next_version = next_version(current_version, update_type)?;
+        let new_version = next_version(current_version, update_type)?;
 
         let cargo_toml_raw = read_to_string(&self.path).await?;
         let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
@@ -64,18 +64,17 @@ impl Workspace for RustWorkspace {
             .and_then(|p| p.get("version"))
             .is_some();
 
+        let fallback_name = self.name.as_deref().unwrap_or("_");
         if has_package {
-            cargo_toml["package"]["version"] = next_version.clone().into();
+            cargo_toml["package"]["version"] = new_version.clone().into();
             if cargo_toml["package"].get("name").is_none() {
-                cargo_toml["package"]["name"] =
-                    self.name.clone().unwrap_or_else(|| "_".to_string()).into();
+                cargo_toml["package"]["name"] = fallback_name.into();
             }
         } else if !has_workspace_package_version {
             // No [package] and no [workspace.package].version — create [package]
             cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
-            cargo_toml["package"]["version"] = next_version.clone().into();
-            cargo_toml["package"]["name"] =
-                self.name.clone().unwrap_or_else(|| "_".to_string()).into();
+            cargo_toml["package"]["version"] = new_version.clone().into();
+            cargo_toml["package"]["name"] = fallback_name.into();
         }
         // else: virtual workspace — only [workspace.package].version needs updating (below)
 
@@ -86,7 +85,7 @@ impl Workspace for RustWorkspace {
             .and_then(|p| p.as_table_mut())
             && ws_pkg.contains_key("version")
         {
-            ws_pkg["version"] = toml_edit::value(next_version.clone());
+            ws_pkg["version"] = toml_edit::value(new_version.clone());
         }
 
         // Sync [workspace.dependencies] for local path deps whose version matched
@@ -104,7 +103,7 @@ impl Workspace for RustWorkspace {
                     && let Ok((prefix, ver)) = split_version(ver_str)
                     && ver == old_version
                 {
-                    dep["version"] = format!("{}{next_version}", prefix.unwrap_or_default()).into();
+                    dep["version"] = format!("{}{new_version}", prefix.unwrap_or_default()).into();
                 }
             }
         }
@@ -118,7 +117,7 @@ impl Workspace for RustWorkspace {
             ),
         )
         .await?;
-        self.version = Some(next_version);
+        self.version = Some(new_version);
         Ok(())
     }
 

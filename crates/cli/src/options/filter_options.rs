@@ -152,13 +152,6 @@ mod tests {
         fn default_dry_run_publish_command(&self) -> Option<String> {
             Some("echo publish --dry-run".to_string())
         }
-
-        async fn update_workspace_dependencies(
-            &self,
-            _packages: &[&dyn Package],
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
     }
 
     fn workspace_project() -> Project {

@@ -52,11 +52,11 @@ impl Workspace for DartWorkspace {
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
-        let next_version = next_version(current_version, update_type)?;
+        let new_version = next_version(current_version, update_type)?;
 
         let existing_version = self.version.is_some();
-        write_pubspec_version(&self.path, &next_version, existing_version).await?;
-        self.version = Some(next_version);
+        write_pubspec_version(&self.path, &new_version, existing_version).await?;
+        self.version = Some(new_version);
         Ok(())
     }
 
