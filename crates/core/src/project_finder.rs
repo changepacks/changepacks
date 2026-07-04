@@ -6,7 +6,8 @@ use async_trait::async_trait;
 
 /// Expand to the identical `projects()` / `projects_mut()` accessor pair
 /// used by every finder whose backing store is a `HashMap<PathBuf,
-/// Project>` (Node, Python, Dart share byte-identical bodies today).
+/// Project>` — currently every language finder (Node, Python, Dart,
+/// Rust, CSharp, Java) shares byte-identical bodies through this macro.
 ///
 /// Invoked from inside an `impl ProjectFinder for XxxProjectFinder`
 /// block; expands to two methods that collect the map's values into a
@@ -25,17 +26,12 @@ use async_trait::async_trait;
 /// ProjectFinder};`, so the macro is fully backward-compatible with the
 /// existing import shape.
 ///
-/// Rust / CSharp / Java finders are intentionally NOT consumers:
-/// - RustProjectFinder's projects live under a `projects_by_id`
-///   IndexMap, not the flat `projects` HashMap this macro assumes.
-/// - CSharpProjectFinder also carries the `is_workspace_cache` field
-///   introduced in retry-now#0029 and uses `.csproj` extension matching.
-/// - JavaProjectFinder shells out to gradlew and stores state
-///   differently.
-///
-/// Adding a new consumer requires only that its struct has a
+/// Consumer requirement: the struct must have a
 /// `projects: HashMap<PathBuf, Project>` field with those exact
-/// spellings.
+/// spellings. Sibling fields (e.g. `is_workspace_cache` on
+/// `CSharpProjectFinder`, `workspace_package_version` on
+/// `RustProjectFinder`) are untouched by the macro — it only reads
+/// `self.projects`.
 #[macro_export]
 macro_rules! impl_projects_hashmap_accessors {
     () => {
@@ -99,7 +95,7 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
             .file_name()
             .with_context(|| format!("File name not found - {}", path.display()))?
             .to_str()
-            .with_context(|| format!("File name not found - {}", path.display()))?;
+            .with_context(|| format!("File name not valid UTF-8 - {}", path.display()))?;
         Ok(self.project_files().contains(&name))
     }
     /// # Errors

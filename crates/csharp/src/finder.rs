@@ -229,13 +229,7 @@ fn extract_project_name_from_path(path_str: &str) -> Option<String> {
 
 #[async_trait]
 impl ProjectFinder for CSharpProjectFinder {
-    fn projects(&self) -> Vec<&Project> {
-        self.projects.values().collect::<Vec<_>>()
-    }
-
-    fn projects_mut(&mut self) -> Vec<&mut Project> {
-        self.projects.values_mut().collect::<Vec<_>>()
-    }
+    changepacks_core::impl_projects_hashmap_accessors!();
 
     fn project_files(&self) -> &[&str] {
         PROJECT_FILES

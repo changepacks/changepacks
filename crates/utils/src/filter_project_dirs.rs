@@ -81,14 +81,12 @@ pub async fn find_project_dirs(
             continue;
         }
 
-        futures::future::join_all(
+        futures::future::try_join_all(
             project_finders
                 .iter_mut()
                 .map(async |finder| finder.visit(&abs_path, path).await),
         )
-        .await
-        .into_iter()
-        .collect::<Result<Vec<_>>>()?;
+        .await?;
     }
 
     // Post-visit finalization (resolves deferred state like workspace-inherited versions)

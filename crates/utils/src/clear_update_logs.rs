@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use tokio::fs::{read_dir, remove_file};
@@ -22,18 +22,26 @@ pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
     {
         return Ok(());
     }
+    // Two-phase collect+delete, mirroring `gen_update_map`:
+    //   Phase 1: single directory walk to collect the paths of every matching
+    //            `changepack_log_*.json` entry — pure name filtering, no IO body.
+    //   Phase 2: build a `Vec::with_capacity(paths.len())` of `remove_file`
+    //            futures and hand them to `futures::future::join_all` as today.
+    //   Keeping the reader (`gen_update_map`) and cleaner (`clear_update_logs`)
+    //   in lock-step on the shape reinforces the shared-predicate invariant
+    //   and drops the geometric-doubling reallocations the un-hinted
+    //   `vec![]` incurs on repos with many pending changepack logs.
+    let mut paths: Vec<PathBuf> = Vec::new();
     let mut entries = read_dir(changepacks_dir).await?;
-    let mut update_logs = vec![];
     while let Some(file) = entries.next_entry().await? {
         let file_name = file.file_name();
         let file_name_lossy = file_name.to_string_lossy();
         if !is_changepack_log_json_name(file_name_lossy.as_ref()) {
             continue;
         }
-        update_logs.push(remove_file(file.path()));
+        paths.push(file.path());
     }
-
-    let results: Vec<_> = futures::future::join_all(update_logs).await;
+    let results: Vec<_> = futures::future::join_all(paths.into_iter().map(remove_file)).await;
     let error_details: Vec<String> = results
         .iter()
         .filter_map(|r| r.as_ref().err().map(std::string::ToString::to_string))
