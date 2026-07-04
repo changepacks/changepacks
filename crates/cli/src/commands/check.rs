@@ -97,14 +97,20 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                     } else {
                         "".normal()
                     };
+                    // Compute the relative-path key ONCE and match on the
+                    // update_map lookup, so `version_display(project)` appears in
+                    // exactly one place instead of duplicated across the
+                    // `else if` and trailing `else` arms. The `update_map_empty`
+                    // fast-path guard is preserved (skips the `get_relative_path`
+                    // allocation when the map is empty — the dominant case).
                     let version_str = if update_map_empty {
                         version_display(project)
-                    } else if let Some(update_type) =
-                        update_map.get(&get_relative_path(&ctx.repo_root_path, project.path())?)
-                    {
-                        display_update(project.version(), update_type.0)?
                     } else {
-                        version_display(project)
+                        let key = get_relative_path(&ctx.repo_root_path, project.path())?;
+                        match update_map.get(&key) {
+                            Some(update_type) => display_update(project.version(), update_type.0)?,
+                            None => version_display(project),
+                        }
                     };
                     println!(
                         "{}{}",
@@ -194,7 +200,17 @@ fn display_tree(
     // `has_dependencies.insert(dep.clone())` inside the build loop. The
     // borrow is valid through the roots-computation loop below because
     // `graph` is not mutated after this point.
-    let has_dependencies: HashSet<&str> = graph.values().flatten().map(String::as_str).collect();
+    //
+    // Preallocate against the exact upper bound: the total edge count is
+    // `graph.values().map(Vec::len).sum()`. `HashSet::from_iter` (via
+    // `.collect()`) does NOT reserve capacity from `Iterator::size_hint`,
+    // so seeding + `.extend(...)` skips the log2(N) geometric-doubling
+    // reallocations the un-hinted collect incurs. Matches the
+    // preallocation policy already applied to `name_to_project`, `graph`,
+    // `roots`, and `visited` in this same function.
+    let has_dependencies_cap: usize = graph.values().map(Vec::len).sum();
+    let mut has_dependencies: HashSet<&str> = HashSet::with_capacity(has_dependencies_cap);
+    has_dependencies.extend(graph.values().flatten().map(String::as_str));
 
     // Root nodes are projects that are not dependencies of any other project
     for project in projects {
@@ -361,21 +377,26 @@ fn format_project_line(
         "".normal()
     };
 
-    // Only show dependencies that are in the monorepo (in name_to_project)
-    let monorepo_deps: Vec<&String> = project
-        .dependencies()
-        .iter()
-        .filter(|dep| name_to_project.contains_key(*dep))
-        .collect();
-
-    let deps_info = if monorepo_deps.is_empty() {
+    // Fuse the filter + join into a single `String::push_str` loop, matching
+    // the `format_selected_projects` pattern in `prompter.rs`. Drops the
+    // intermediate `Vec<&String>` (monorepo_deps) and the intermediate
+    // `Vec<&str>` from `.iter().map().collect::<Vec<_>>()` — both allocated
+    // per project displayed and multiplied through `display_tree_node` on
+    // wide/deep trees. Empty-guard shape preserved: `deps_info` still degrades
+    // to `"".normal()` when no monorepo-local dep survives the filter.
+    let mut deps_str = String::new();
+    for dep in project.dependencies() {
+        if !name_to_project.contains_key(dep) {
+            continue;
+        }
+        if !deps_str.is_empty() {
+            deps_str.push_str("\n        ");
+        }
+        deps_str.push_str(dep);
+    }
+    let deps_info = if deps_str.is_empty() {
         "".normal()
     } else {
-        let deps_str = monorepo_deps
-            .iter()
-            .map(|d| d.as_str())
-            .collect::<Vec<_>>()
-            .join("\n        ");
         format!(" [deps:\n        {deps_str}]").bright_black()
     };
 

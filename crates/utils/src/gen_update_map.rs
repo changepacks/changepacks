@@ -20,8 +20,6 @@ pub async fn gen_update_map(
     changepacks_dir: &Path,
     config: &Config,
 ) -> Result<HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>> {
-    let mut update_map = HashMap::<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>::new();
-
     // Two-phase reader (mirrors `clear_update_logs`):
     //   Phase 1: single directory walk to collect the paths of every matching
     //            `changepack_log_*.json` entry — pure name filtering, no IO body.
@@ -42,14 +40,34 @@ pub async fn gen_update_map(
             paths.push(file.path());
         }
     }
+    // Preallocate against `paths.len()` — a tight lower bound because each
+    // changepack log's `changes` map usually names one or more distinct
+    // project paths. Matches the preallocation policy already applied in
+    // `sort_by_dep.rs`, `filter_project_dirs.rs`, and
+    // `apply_reverse_dependencies`. Eliminates the first geometric-doubling
+    // reallocation on any repo with more than one changepack log; byte-
+    // identical map contents.
+    let mut update_map: HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)> =
+        HashMap::with_capacity(paths.len());
     let bodies: Vec<String> =
         futures::future::try_join_all(paths.iter().map(read_to_string)).await?;
     for body in bodies {
         let file_json: ChangePackLog = serde_json::from_str(&body)?;
         for (project_path, update_type) in file_json.changes() {
-            let ret = update_map
-                .entry(project_path.clone())
-                .or_insert((*update_type, vec![]));
+            // Fast-path: `HashMap::get_mut` on an existing key is zero-alloc,
+            // whereas `entry(project_path.clone()).or_insert(...)` unconditionally
+            // clones the `PathBuf` even when the entry already exists. On repos
+            // with many changepack logs mentioning the same package paths (common
+            // in active monorepos), this saves N `PathBuf` allocations per hot
+            // invocation. Semantics are byte-identical: both branches produce the
+            // same mutable reference for the same input.
+            let ret = if let Some(existing) = update_map.get_mut(project_path) {
+                existing
+            } else {
+                update_map
+                    .entry(project_path.clone())
+                    .or_insert((*update_type, vec![]))
+            };
             ret.1.push(ChangePackResultLog::new(
                 *update_type,
                 file_json.note().to_string(),

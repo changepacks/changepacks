@@ -125,13 +125,24 @@ pub async fn find_project_dirs(
                 .and_then(|n| n.to_str())
                 .map(String::from)
         });
-    if let Some(ref repo_name) = repo_name {
-        for finder in project_finders.iter_mut() {
-            for project in finder.projects_mut() {
-                if project.name().is_none() {
-                    project.set_name(repo_name.clone());
-                }
+    if let Some(repo_name) = repo_name {
+        // Move the owned `String` into the LAST no-name project instead of
+        // cloning it for every no-name project. On repos where multiple
+        // projects lack an explicit name (Node workspaces without `"name"`
+        // fields at the root), this saves one `String::clone` per invocation.
+        // Behavior is byte-identical: every no-name project still ends up
+        // with the same `repo_name` string; only the last one moves rather
+        // than clones.
+        let mut targets: Vec<&mut changepacks_core::Project> = project_finders
+            .iter_mut()
+            .flat_map(|f| f.projects_mut())
+            .filter(|p| p.name().is_none())
+            .collect();
+        if let Some((last, rest)) = targets.split_last_mut() {
+            for project in rest {
+                project.set_name(repo_name.clone());
             }
+            last.set_name(repo_name);
         }
     }
 

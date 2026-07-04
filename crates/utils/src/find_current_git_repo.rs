@@ -71,7 +71,6 @@ mod tests {
         {
             fs::create_dir_all(&temp_path.join("subdir")).await.unwrap();
             let result = find_current_git_repo(&temp_path.join("subdir"));
-            println!("{:?}", result);
             assert!(result.is_ok());
             let repo = result.unwrap();
             assert!(repo.work_dir().unwrap() == temp_path);
