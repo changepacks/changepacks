@@ -211,8 +211,13 @@ fn display_tree(
     // still re-descends the deps so all edges render). Behavior is
     // preserved because the sort is applied to identical inputs — the
     // output ordering is byte-identical.
+    //
+    // `sort_unstable`: dep vectors hold unique package-name `String`s, and
+    // `String::cmp` is a total order — no two equal-but-distinguishable
+    // elements exist, so stability is not observable in the rendered tree.
+    // Skips the stability bookkeeping the stable sort pays for.
     for deps in graph.values_mut() {
-        deps.sort();
+        deps.sort_unstable();
     }
 
     // Derive `has_dependencies` AFTER the graph is fully built by borrowing
@@ -246,8 +251,13 @@ fn display_tree(
     // `Vec<String>` for the same name strings (byte-identical order), and
     // `name_to_project.get(root)` still resolves because
     // `HashMap<String, _>::get` accepts anything `Borrow<str>`.
+    //
+    // `sort_unstable`: `roots` originates from a `HashSet<&str>` so its
+    // elements are distinct by construction, and `str::cmp` is a total
+    // order — stability is not observable in the printed tree. Skips the
+    // stability bookkeeping the stable sort pays for.
     let mut sorted_roots: Vec<&str> = roots.into_iter().collect();
-    sorted_roots.sort();
+    sorted_roots.sort_unstable();
 
     // Display tree starting from roots.
     // Preallocate: `visited.insert(project_name)` fires at most once per

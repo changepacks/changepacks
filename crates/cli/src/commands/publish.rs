@@ -225,13 +225,14 @@ async fn execute_dry_run_publish_loop(
     // `size_hint` to reserve capacity (unlike `Vec`), so it incurs
     // geometric-doubling reallocations. `projects.len()` is a tight upper
     // bound (the `filter_map` only drops nameless projects).
+    // `HashSet::extend(iter)` reuses the existing `with_capacity` allocation
+    // and matches the idiom already used across the utils crate (e.g.
+    // `unique_files.extend(diff)` in `filter_project_dirs.rs`) — collapses
+    // the 4-line loop + `Option::Some` guard to a single call while
+    // preserving the same borrow-the-name-out-of-the-project semantics.
     let mut bumped_package_names: std::collections::HashSet<&str> =
         std::collections::HashSet::with_capacity(projects.len());
-    for p in projects {
-        if let Some(name) = p.name() {
-            bumped_package_names.insert(name);
-        }
-    }
+    bumped_package_names.extend(projects.iter().filter_map(|p| p.name()));
 
     for project in projects {
         if skip_dry_run_due_to_workspace_internal_dep(project, &bumped_package_names) {

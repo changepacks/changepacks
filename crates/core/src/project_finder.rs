@@ -122,11 +122,11 @@ macro_rules! impl_dependencies_accessors {
 /// Node cannot use this macro because its publish command is
 /// determined at runtime via `detect_package_manager_recursive`, not
 /// from a compile-time const; see `impl_node_publish_wiring!()` in
-/// `crates/node/src/lib.rs`. Rust also does not use it because
-/// `RustWorkspace` uses different consts than `RustPackage`
-/// (`WORKSPACE_PUBLISH_COMMAND` vs `PUBLISH_COMMAND`) — the trivial
-/// two-line body per impl was left hand-rolled to keep the const
-/// choice explicit at each call site.
+/// `crates/node/src/lib.rs`. Both `RustPackage` and `RustWorkspace`
+/// use the two-arg form (with `PUBLISH_COMMAND` /
+/// `DRY_RUN_PUBLISH_COMMAND` and `WORKSPACE_PUBLISH_COMMAND` /
+/// `WORKSPACE_DRY_RUN_PUBLISH_COMMAND` respectively) — the macro's
+/// `$publish:path` parameter accepts either const path.
 #[macro_export]
 macro_rules! impl_const_publish_commands {
     ($publish:path, $dry_run:path) => {

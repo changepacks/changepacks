@@ -95,13 +95,18 @@ impl Package for RustPackage {
         Language::Rust
     }
 
-    fn default_publish_command(&self) -> String {
-        crate::PUBLISH_COMMAND.to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        Some(crate::DRY_RUN_PUBLISH_COMMAND.to_string())
-    }
+    // `default_publish_command` / `default_dry_run_publish_command` share
+    // their const-based shape with every other const-driven language
+    // crate. Consolidated via `impl_const_publish_commands!()` in
+    // `changepacks-core` — expansion is byte-identical to the previous
+    // hand-rolled bodies. The macro's `$publish:path` argument keeps the
+    // `crate::PUBLISH_COMMAND` / `crate::DRY_RUN_PUBLISH_COMMAND` const
+    // choice explicit at this call site, matching the pattern used by
+    // Python/Dart/Java package impls.
+    changepacks_core::impl_const_publish_commands!(
+        crate::PUBLISH_COMMAND,
+        crate::DRY_RUN_PUBLISH_COMMAND
+    );
 
     // `dependencies()` / `add_dependency()` share their byte-identical
     // body with every other language crate's `Package` and `Workspace`
