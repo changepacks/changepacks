@@ -100,10 +100,23 @@ impl ProjectFinder for DartProjectFinder {
                 )))
             };
 
-            // read dependencies section
+            // read dependencies section — track only LOCAL monorepo deps
+            // (entries whose value is a mapping containing a `path:` key).
+            // Bare version strings like `http: ^1.0.0` point at pub.dev and
+            // cannot be resolved by `sort_by_dependencies` (which filters
+            // via `name_to_index` over local project names), so tracking
+            // them just burns a `HashSet` insertion + a `String` allocation
+            // per external dep. This also aligns Dart with every other
+            // finder: Node keeps only `workspace:*`, Python only
+            // `[tool.uv.sources]`, Rust only `dep.workspace == true`, and
+            // C# only `<ProjectReference Include="..." />`.
             if let Some(dependencies) = pubspec.get("dependencies").and_then(|d| d.as_mapping()) {
-                for (dep_name, _) in dependencies {
-                    if let Some(dep_str) = dep_name.as_str() {
+                for (dep_name, dep_value) in dependencies {
+                    if let Some(dep_str) = dep_name.as_str()
+                        && dep_value
+                            .as_mapping()
+                            .is_some_and(|m| m.contains_key("path"))
+                    {
                         project.add_dependency(dep_str);
                     }
                 }
@@ -421,10 +434,59 @@ dependencies:
             Project::Package(pkg) => {
                 assert_eq!(pkg.name(), Some("test_package"));
                 let deps = pkg.dependencies();
-                assert_eq!(deps.len(), 3);
-                assert!(deps.contains("http"));
+                // Only local (`path:`) deps are tracked — matches the
+                // "only monorepo deps" invariant every other language
+                // finder already honors. `http: ^1.0.0` points at
+                // pub.dev, so it is intentionally excluded here.
+                assert_eq!(deps.len(), 2);
                 assert!(deps.contains("core"));
                 assert!(deps.contains("utils"));
+                assert!(!deps.contains("http"));
+            }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_package_with_only_external_deps() {
+        // Regression: a pubspec whose `dependencies:` is entirely bare
+        // version strings (all external pub.dev packages) must yield an
+        // empty `dependencies()` HashSet on the resulting project.
+        // `sort_by_dependencies` already ignores names it cannot resolve
+        // via `name_to_index`, so tracking them was pure allocation waste
+        // — and made Dart the odd one out among the language finders.
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_package
+version: 1.0.0
+dependencies:
+  http: ^1.0.0
+  path: ^1.9.0
+  intl: ^0.20.0
+"#,
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Package(pkg) => {
+                assert_eq!(pkg.name(), Some("test_package"));
+                assert!(
+                    pkg.dependencies().is_empty(),
+                    "expected zero local deps, got {:?}",
+                    pkg.dependencies()
+                );
             }
             _ => panic!("Expected Package"),
         }

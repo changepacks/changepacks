@@ -84,9 +84,11 @@ impl Package for PythonPackage {
     }
 
     fn default_dry_run_publish_command(&self) -> Option<String> {
-        // `uv publish` supports `--check-url` for non-mutating verification.
-        // Users who prefer a different verification flow (e.g. `uv build` or
-        // `twine check`) can override via `publishDryRun` in config.
+        // `uv publish --dry-run` is `uv`'s built-in non-mutating publish
+        // preview — it resolves the target index and simulates the upload
+        // without touching the registry. Users who prefer a different
+        // verification flow (e.g. `uv publish --check-url ...`, `uv build`,
+        // or `twine check`) can override via `publishDryRun` in config.
         Some(crate::DRY_RUN_PUBLISH_COMMAND.to_string())
     }
 
