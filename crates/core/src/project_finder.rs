@@ -86,6 +86,138 @@ macro_rules! impl_dependencies_accessors {
     };
 }
 
+/// Expand to the identical `default_publish_command` /
+/// `default_dry_run_publish_command` method pair used by every language
+/// crate whose defaults are const-based (Python, Dart, Java, CSharp) —
+/// i.e. `default_publish_command` returns `SOME_CONST.to_string()` and
+/// `default_dry_run_publish_command` either returns
+/// `Some(SOME_OTHER_CONST.to_string())` or `None`.
+///
+/// Invoked from inside an `impl Package for XxxPackage` or `impl
+/// Workspace for XxxWorkspace` block. Two forms:
+///
+/// - Two-arg form (Python / Dart / Java): both `publish` and `dry-run`
+///   are const strings, `default_dry_run_publish_command` returns
+///   `Some($dry_run.to_string())`.
+/// - One-arg form (CSharp): only the real publish is a const string,
+///   `default_dry_run_publish_command` returns `None` (the actual C#
+///   dry-run flow is managed via the `dry_run_publish` trait override
+///   in `crates/csharp/src/dry_run.rs`).
+///
+/// Byte-identical expansion — the previously hand-rolled bodies:
+///
+/// ```ignore
+/// fn default_publish_command(&self) -> String { crate::PUBLISH_COMMAND.to_string() }
+/// fn default_dry_run_publish_command(&self) -> Option<String> {
+///     Some(crate::DRY_RUN_PUBLISH_COMMAND.to_string())
+/// }
+/// ```
+///
+/// are replaced 1:1 by a single
+/// `impl_const_publish_commands!(crate::PUBLISH_COMMAND, crate::DRY_RUN_PUBLISH_COMMAND);`
+/// invocation. Fully-qualified `::std::string::String` and
+/// `::std::option::Option` make the macro hygienic — callers do not
+/// need those types in scope at the invocation site.
+///
+/// Node cannot use this macro because its publish command is
+/// determined at runtime via `detect_package_manager_recursive`, not
+/// from a compile-time const; see `impl_node_publish_wiring!()` in
+/// `crates/node/src/lib.rs`. Rust also does not use it because
+/// `RustWorkspace` uses different consts than `RustPackage`
+/// (`WORKSPACE_PUBLISH_COMMAND` vs `PUBLISH_COMMAND`) — the trivial
+/// two-line body per impl was left hand-rolled to keep the const
+/// choice explicit at each call site.
+#[macro_export]
+macro_rules! impl_const_publish_commands {
+    ($publish:path, $dry_run:path) => {
+        fn default_publish_command(&self) -> ::std::string::String {
+            $publish.to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> ::std::option::Option<::std::string::String> {
+            ::std::option::Option::Some($dry_run.to_string())
+        }
+    };
+    // CSharp variant: `dotnet nuget push` has no built-in `--dry-run`
+    // mode, so the default returns `None`. The actual dry-run flow
+    // lives in `CSharpPackage::dry_run_publish` / `CSharpWorkspace::
+    // dry_run_publish` (see `crates/csharp/src/dry_run.rs::
+    // resolve_and_run_dry_run`), which honors `config.publishDryRun`
+    // overrides first and falls back to a managed `dotnet pack` +
+    // `dotnet nuget push` against ephemeral `tempfile::TempDir`
+    // directories when no override is set.
+    ($publish:path) => {
+        fn default_publish_command(&self) -> ::std::string::String {
+            $publish.to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> ::std::option::Option<::std::string::String> {
+            ::std::option::Option::None
+        }
+    };
+}
+
+/// Expand to the seven identical basic accessor bodies (`name`,
+/// `version`, `path`, `relative_path`, `is_changed`, `set_changed`,
+/// `set_name`) used by every `Package` / `Workspace` impl in every
+/// language crate (Node, Python, Rust, Dart, CSharp, Java — 12 impls,
+/// 84 method bodies before this macro).
+///
+/// Invoked from inside an `impl Package for XxxPackage` or `impl
+/// Workspace for XxxWorkspace` block; expands to the seven byte-
+/// identical bodies:
+///
+/// ```ignore
+/// fn name(&self) -> Option<&str>          { self.name.as_deref() }
+/// fn version(&self) -> Option<&str>       { self.version.as_deref() }
+/// fn path(&self) -> &Path                 { &self.path }
+/// fn relative_path(&self) -> &Path        { &self.relative_path }
+/// fn is_changed(&self) -> bool            { self.is_changed }
+/// fn set_changed(&mut self, changed: bool){ self.is_changed = changed; }
+/// fn set_name(&mut self, name: String)    { self.name = Some(name); }
+/// ```
+///
+/// Fully-qualified `::std::primitive::str`, `::std::path::Path`,
+/// `::std::primitive::bool`, `::std::string::String`, and
+/// `::std::option::Option` make the macro hygienic — callers do not
+/// need those types in scope at the invocation site (though every
+/// current caller already has `Path` and `String` in scope, so the
+/// macro is fully backward-compatible with the existing import shape).
+///
+/// Consumer requirement: the struct must have `name: Option<String>`,
+/// `version: Option<String>`, `path: PathBuf`, `relative_path:
+/// PathBuf`, and `is_changed: bool` fields with those exact spellings.
+/// Language-specific overrides (e.g. `RustPackage::
+/// inherits_workspace_version`, `RustPackage::workspace_root_path`) are
+/// untouched by this macro — it only touches the seven trivial
+/// accessors listed above. Sibling fields (e.g.
+/// `workspace_version_inherited` on `RustPackage`, `is_workspace_cache`
+/// on `CSharpProjectFinder`) are likewise untouched.
+#[macro_export]
+macro_rules! impl_basic_accessors {
+    () => {
+        fn name(&self) -> ::std::option::Option<&::std::primitive::str> {
+            self.name.as_deref()
+        }
+        fn version(&self) -> ::std::option::Option<&::std::primitive::str> {
+            self.version.as_deref()
+        }
+        fn path(&self) -> &::std::path::Path {
+            &self.path
+        }
+        fn relative_path(&self) -> &::std::path::Path {
+            &self.relative_path
+        }
+        fn is_changed(&self) -> ::std::primitive::bool {
+            self.is_changed
+        }
+        fn set_changed(&mut self, changed: ::std::primitive::bool) {
+            self.is_changed = changed;
+        }
+        fn set_name(&mut self, name: ::std::string::String) {
+            self.name = ::std::option::Option::Some(name);
+        }
+    };
+}
+
 /// Returns `true` when `path` refers to an existing regular file.
 ///
 /// AGENTS.md rule: never blocking I/O in async — use `tokio::fs::metadata`.
@@ -169,9 +301,10 @@ mod tests {
     #[derive(Debug)]
     struct MockPackage {
         name: Option<String>,
+        version: Option<String>,
         path: PathBuf,
         relative_path: PathBuf,
-        changed: bool,
+        is_changed: bool,
         dependencies: HashSet<String>,
     }
 
@@ -179,9 +312,10 @@ mod tests {
         fn new(name: &str, path: &str) -> Self {
             Self {
                 name: Some(name.to_string()),
+                version: Some("1.0.0".to_string()),
                 path: PathBuf::from(path),
                 relative_path: PathBuf::from(path),
-                changed: false,
+                is_changed: false,
                 dependencies: HashSet::new(),
             }
         }
@@ -189,23 +323,12 @@ mod tests {
 
     #[async_trait]
     impl Package for MockPackage {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn version(&self) -> Option<&str> {
-            Some("1.0.0")
-        }
-        fn path(&self) -> &Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
+        // Locks the `impl_basic_accessors!()` field-name contract at the
+        // test surface — see the sibling mock in `package.rs::tests`.
+        crate::impl_basic_accessors!();
+
         async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
             Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
         }
         fn language(&self) -> Language {
             Language::Node
@@ -215,9 +338,6 @@ mod tests {
         }
         fn add_dependency(&mut self, dep: &str) {
             self.dependencies.insert(dep.to_string());
-        }
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
         }
         fn default_publish_command(&self) -> String {
             "echo test".to_string()
@@ -236,9 +356,10 @@ mod tests {
     #[derive(Debug)]
     struct MockWorkspace {
         name: Option<String>,
+        version: Option<String>,
         path: PathBuf,
         relative_path: PathBuf,
-        changed: bool,
+        is_changed: bool,
         dependencies: HashSet<String>,
     }
 
@@ -246,9 +367,10 @@ mod tests {
         fn new(name: &str, path: &str) -> Self {
             Self {
                 name: Some(name.to_string()),
+                version: Some("1.0.0".to_string()),
                 path: PathBuf::from(path),
                 relative_path: PathBuf::from(path),
-                changed: false,
+                is_changed: false,
                 dependencies: HashSet::new(),
             }
         }
@@ -256,18 +378,10 @@ mod tests {
 
     #[async_trait]
     impl Workspace for MockWorkspace {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn path(&self) -> &Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
-        fn version(&self) -> Option<&str> {
-            Some("1.0.0")
-        }
+        // Locks the `impl_basic_accessors!()` field-name contract at the
+        // test surface — see the sibling mock in `package.rs::tests`.
+        crate::impl_basic_accessors!();
+
         async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
             Ok(())
         }
@@ -279,12 +393,6 @@ mod tests {
         }
         fn add_dependency(&mut self, dep: &str) {
             self.dependencies.insert(dep.to_string());
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
         }
         fn default_publish_command(&self) -> String {
             "echo test".to_string()

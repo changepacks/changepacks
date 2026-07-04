@@ -170,7 +170,7 @@ mod tests {
         version: Option<String>,
         language: Language,
         dependencies: HashSet<String>,
-        changed: bool,
+        is_changed: bool,
     }
 
     impl MockPackage {
@@ -182,7 +182,7 @@ mod tests {
                 version: Some("1.0.0".to_string()),
                 language: Language::Node,
                 dependencies: HashSet::new(),
-                changed: false,
+                is_changed: false,
             }
         }
 
@@ -194,23 +194,19 @@ mod tests {
 
     #[async_trait]
     impl Package for MockPackage {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
-        fn path(&self) -> &Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
+        // Consumes the same `impl_basic_accessors!()` macro that every
+        // real-world `Package` impl uses (Node, Python, Rust, Dart,
+        // CSharp, Java — 12 impls). This mock exists to prove the
+        // macro's field-name contract survives future edits: if
+        // someone renames a struct field (e.g. `is_changed` →
+        // `changed`), these tests fail to compile immediately. The
+        // struct fields above are pinned to the macro's expected
+        // spellings (`name: Option<String>`, `version: Option<String>`,
+        // `path: PathBuf`, `relative_path: PathBuf`, `is_changed: bool`).
+        crate::impl_basic_accessors!();
+
         async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
             Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
         }
         fn language(&self) -> Language {
             self.language
@@ -220,9 +216,6 @@ mod tests {
         }
         fn add_dependency(&mut self, dependency: &str) {
             self.dependencies.insert(dependency.to_string());
-        }
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
         }
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
@@ -235,7 +228,7 @@ mod tests {
     #[test]
     fn test_check_changed_already_changed() {
         let mut package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
-        package.changed = true;
+        package.is_changed = true;
 
         package
             .check_changed(Path::new("/project/src/index.js"))
@@ -358,7 +351,7 @@ mod tests {
             version: Some("1.0.0".to_string()),
             language: Language::Node,
             dependencies: HashSet::new(),
-            changed: false,
+            is_changed: false,
         };
         let config = Config::default();
         let result = package.publish(&config).await;
@@ -372,11 +365,17 @@ mod tests {
     }
 
     #[test]
-    fn test_set_name_default_is_noop() {
+    fn test_set_name_updates_via_impl_basic_accessors_macro() {
+        // Regression guard for item 10: MockPackage's `Package` impl uses
+        // the shared `crate::impl_basic_accessors!()` macro, so `set_name`
+        // MUST update the underlying `name` field (not fall through to the
+        // trait's default no-op). If the macro's field-name contract
+        // silently regresses (say, someone renames `name` on the mock and
+        // the macro loses sight of it), the mock will fail to compile;
+        // this test then locks the runtime behavior after compilation.
         let mut package =
             MockPackage::new(Some("original"), "/project/package.json", "package.json");
         package.set_name("new-name".to_string());
-        // Default implementation is a no-op, name should remain unchanged
-        assert_eq!(package.name(), Some("original"));
+        assert_eq!(package.name(), Some("new-name"));
     }
 }

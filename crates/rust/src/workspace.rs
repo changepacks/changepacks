@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
 use changepacks_utils::{next_version, split_version, trailing_newline};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tokio::fs::{read_to_string, write};
 use toml_edit::DocumentMut;
 
@@ -38,17 +38,12 @@ impl RustWorkspace {
 
 #[async_trait]
 impl Workspace for RustWorkspace {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
+    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
+    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
+    // bodies with every other language crate's `Package` / `Workspace`
+    // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
+    // — expansion is byte-identical to the previous hand-rolled bodies.
+    changepacks_core::impl_basic_accessors!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
@@ -123,22 +118,6 @@ impl Workspace for RustWorkspace {
 
     fn language(&self) -> Language {
         Language::Rust
-    }
-
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
-
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
     }
 
     fn default_publish_command(&self) -> String {

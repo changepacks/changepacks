@@ -258,7 +258,7 @@ mod tests {
         relative_path: PathBuf,
         language: Language,
         dependencies: HashSet<String>,
-        changed: bool,
+        is_changed: bool,
     }
 
     impl MockWorkspace {
@@ -270,25 +270,17 @@ mod tests {
                 relative_path: PathBuf::from("package.json"),
                 language,
                 dependencies: HashSet::new(),
-                changed: false,
+                is_changed: false,
             }
         }
     }
 
     #[async_trait]
     impl Workspace for MockWorkspace {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn path(&self) -> &Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
+        // Locks the `impl_basic_accessors!()` field-name contract at the
+        // test surface too — see the sibling mock in `package.rs::tests`.
+        crate::impl_basic_accessors!();
+
         async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
             Ok(())
         }
@@ -300,12 +292,6 @@ mod tests {
         }
         fn add_dependency(&mut self, dependency: &str) {
             self.dependencies.insert(dependency.to_string());
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
         }
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
@@ -323,7 +309,7 @@ mod tests {
         relative_path: PathBuf,
         language: Language,
         dependencies: HashSet<String>,
-        changed: bool,
+        is_changed: bool,
     }
 
     impl MockPackage {
@@ -335,25 +321,17 @@ mod tests {
                 relative_path: PathBuf::from("Cargo.toml"),
                 language,
                 dependencies: HashSet::new(),
-                changed: false,
+                is_changed: false,
             }
         }
     }
 
     #[async_trait]
     impl Package for MockPackage {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn path(&self) -> &Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
+        // Locks the `impl_basic_accessors!()` field-name contract at the
+        // test surface too — see the sibling mock in `package.rs::tests`.
+        crate::impl_basic_accessors!();
+
         async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
             Ok(())
         }
@@ -365,12 +343,6 @@ mod tests {
         }
         fn add_dependency(&mut self, dependency: &str) {
             self.dependencies.insert(dependency.to_string());
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
         }
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
@@ -479,7 +451,7 @@ mod tests {
     #[test]
     fn test_project_workspace_is_changed() {
         let mut workspace = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);
-        workspace.changed = true;
+        workspace.is_changed = true;
         let project = Project::Workspace(Box::new(workspace));
         assert!(project.is_changed());
     }
@@ -487,7 +459,7 @@ mod tests {
     #[test]
     fn test_project_package_is_changed() {
         let mut package = MockPackage::new(Some("test"), Some("1.0.0"), Language::Rust);
-        package.changed = true;
+        package.is_changed = true;
         let project = Project::Package(Box::new(package));
         assert!(project.is_changed());
     }
@@ -817,20 +789,25 @@ mod tests {
 
     #[test]
     fn test_project_set_name_workspace() {
+        // MockWorkspace's `Workspace` impl now consumes
+        // `crate::impl_basic_accessors!()`, so `set_name` updates the
+        // wrapped `name` field. `Project::set_name` delegates straight to
+        // that impl, so the underlying rename must round-trip.
         let workspace = MockWorkspace::new(Some("test"), Some("1.0.0"), Language::Node);
         let mut project = Project::Workspace(Box::new(workspace));
         project.set_name("new-name".to_string());
-        // Mock doesn't override set_name, so default no-op applies
-        assert_eq!(project.name(), Some("test"));
+        assert_eq!(project.name(), Some("new-name"));
     }
 
     #[test]
     fn test_project_set_name_package() {
+        // Same rationale as `test_project_set_name_workspace` — MockPackage
+        // uses the shared basic-accessors macro, so `Project::set_name`
+        // propagates through to the mock's `name` field.
         let package = MockPackage::new(Some("test"), Some("1.0.0"), Language::Rust);
         let mut project = Project::Package(Box::new(package));
         project.set_name("new-name".to_string());
-        // Mock doesn't override set_name, so default no-op applies
-        assert_eq!(project.name(), Some("test"));
+        assert_eq!(project.name(), Some("new-name"));
     }
 
     #[test]

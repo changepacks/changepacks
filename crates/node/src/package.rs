@@ -3,9 +3,7 @@ use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
 use changepacks_utils::next_version;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-
-use crate::detect_package_manager_recursive;
+use std::path::PathBuf;
 
 #[derive(Debug)]
 pub struct NodePackage {
@@ -38,21 +36,16 @@ impl NodePackage {
 
 #[async_trait]
 impl Package for NodePackage {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
+    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
+    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
+    // bodies with every other language crate's `Package` / `Workspace`
+    // impl (all 12 use the same field spellings: `name: Option<String>`,
+    // `version: Option<String>`, `path: PathBuf`, `relative_path: PathBuf`,
+    // `is_changed: bool`). Consolidated via the `impl_basic_accessors!()`
+    // macro in `changepacks-core` so future accessor tweaks land in one
+    // place — expansion is byte-identical to the previous hand-rolled
+    // bodies.
+    changepacks_core::impl_basic_accessors!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
@@ -66,38 +59,14 @@ impl Package for NodePackage {
         Language::Node
     }
 
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
-
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn default_publish_command(&self) -> String {
-        detect_package_manager_recursive(&self.path)
-            .publish_command()
-            .to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        Some(
-            detect_package_manager_recursive(&self.path)
-                .dry_run_publish_command()
-                .to_string(),
-        )
-    }
-
-    fn publish_path_dirs(&self) -> Vec<PathBuf> {
-        self.path
-            .parent()
-            .map(crate::node_modules_bin_dirs)
-            .unwrap_or_default()
-    }
+    // `default_publish_command`, `default_dry_run_publish_command`, and
+    // `publish_path_dirs` share their byte-identical bodies with
+    // `NodeWorkspace`. Consolidated via `impl_node_publish_wiring!()` in
+    // `crates/node/src/lib.rs` — expansion is byte-identical to the
+    // previous hand-rolled bodies. See the macro doc for the
+    // `detect_package_manager_recursive` runtime-dispatch and
+    // `node_modules/.bin` `PATH`-injection rationale.
+    crate::impl_node_publish_wiring!();
 
     // `dependencies()` / `add_dependency()` share their byte-identical
     // body with every other language crate's `Package` and `Workspace`

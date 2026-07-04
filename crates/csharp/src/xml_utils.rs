@@ -20,7 +20,17 @@ pub fn update_version_in_xml(
     let mut reader = Reader::from_str(content);
     let mut writer = Writer::new(Cursor::new(Vec::new()));
 
-    let mut buf = Vec::new();
+    // Preallocate the XML event buffer to skip the first few
+    // geometric-doubling reallocations on the every-`changepacks update`
+    // hot path for C# projects. Mirrors the `Vec::with_capacity(...)`
+    // preallocation policy already applied across `sort_by_dep.rs`,
+    // `gen_update_map.rs`, `filter_project_dirs.rs`, and the sibling
+    // `parse_csproj_metadata` in `crates/csharp/src/finder.rs`.
+    // `read_event_into` calls `buf.clear()` between events so capacity
+    // persists; 256 bytes comfortably covers the largest single event
+    // (attribute-laden `<Project Sdk="Microsoft.NET.Sdk"...>`) without
+    // over-reserving on tiny `.csproj` files.
+    let mut buf = Vec::with_capacity(256);
     let mut in_property_group = false;
     let mut in_version = false;
     let mut version_updated = false;

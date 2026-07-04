@@ -66,7 +66,17 @@ impl CSharpProjectFinder {
     /// surface, so no test edit is required.
     fn parse_csproj_metadata(content: &str) -> (Option<String>, Vec<String>) {
         let mut reader = Reader::from_str(content);
-        let mut buf = Vec::new();
+        // Preallocate the XML event buffer to skip the first few
+        // geometric-doubling reallocations. Mirrors the
+        // `Vec::with_capacity(paths.len())` preallocation policy already
+        // applied across `sort_by_dep.rs`, `gen_update_map.rs`, and
+        // `filter_project_dirs.rs`. `read_event_into` calls `buf.clear()`
+        // between events so the capacity persists; 256 bytes comfortably
+        // covers the largest single event (attribute-laden `<Project Sdk=
+        // "Microsoft.NET.Sdk"...>`, ~1-2 dozen bytes for the common
+        // `<Version>` and `<ProjectReference>` shapes) without over-
+        // reserving on tiny `.csproj` files.
+        let mut buf = Vec::with_capacity(256);
         let mut in_property_group = false;
         let mut in_version = false;
         let mut version: Option<String> = None;

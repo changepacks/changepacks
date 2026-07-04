@@ -90,6 +90,10 @@ impl ProjectFinder for DartProjectFinder {
 
             // Both branches use the same name/version and the same path;
             // hoist so each branch collapses to a single constructor call.
+            // `path_key` / `relative_path_key` naming matches every other
+            // finder (Node, Python, CSharp, Java, and post-item-2 Rust) so
+            // grepping for the "shared hoisted key" idiom finds every
+            // finder at once.
             //
             // Delegate the `.get(...).and_then(as_str).map(...)` chain to
             // the module-private `pubspec_str` helper — mirrors the
@@ -103,22 +107,22 @@ impl ProjectFinder for DartProjectFinder {
             // unchanged.
             let version = pubspec_str(&pubspec, "version");
             let name = pubspec_str(&pubspec, "name");
-            let path_buf = path.to_path_buf();
-            let relative_path_buf = relative_path.to_path_buf();
+            let path_key = path.to_path_buf();
+            let relative_path_key = relative_path.to_path_buf();
 
             let mut project = if is_workspace {
                 Project::Workspace(Box::new(DartWorkspace::new(
                     name,
                     version,
-                    path_buf.clone(),
-                    relative_path_buf,
+                    path_key.clone(),
+                    relative_path_key,
                 )))
             } else {
                 Project::Package(Box::new(DartPackage::new(
                     name,
                     version,
-                    path_buf.clone(),
-                    relative_path_buf,
+                    path_key.clone(),
+                    relative_path_key,
                 )))
             };
 
@@ -143,7 +147,7 @@ impl ProjectFinder for DartProjectFinder {
                     }
                 }
             }
-            self.projects.insert(path_buf, project);
+            self.projects.insert(path_key, project);
         }
         Ok(())
     }

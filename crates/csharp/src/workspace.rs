@@ -4,7 +4,7 @@ use changepacks_core::publish::PublishOutput;
 use changepacks_core::{Config, Language, UpdateType, Workspace};
 use changepacks_utils::next_version;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::dry_run::resolve_and_run_dry_run;
 use crate::write_csproj_version;
@@ -40,17 +40,12 @@ impl CSharpWorkspace {
 
 #[async_trait]
 impl Workspace for CSharpWorkspace {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
+    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
+    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
+    // bodies with every other language crate's `Package` / `Workspace`
+    // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
+    // — expansion is byte-identical to the previous hand-rolled bodies.
+    changepacks_core::impl_basic_accessors!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
@@ -64,33 +59,17 @@ impl Workspace for CSharpWorkspace {
         Language::CSharp
     }
 
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
-
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn default_publish_command(&self) -> String {
-        crate::PUBLISH_COMMAND.to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        // No single shell one-liner reliably represents the C# dry-run flow.
-        // See `CSharpPackage::default_dry_run_publish_command` for rationale.
-        // The actual dry-run logic lives in the `dry_run_publish` override
-        // below.
-        None
-    }
+    // `default_publish_command` returns the const from `crate` (see
+    // `lib.rs`). `default_dry_run_publish_command` returns `None` because
+    // no single shell one-liner reliably represents the C# dry-run flow.
+    // See `CSharpPackage::default_dry_run_publish_command` for full
+    // rationale. The actual dry-run logic lives in the `dry_run_publish`
+    // override below.
+    //
+    // Consolidated via the single-arg form of
+    // `impl_const_publish_commands!()` in `changepacks-core` — expansion
+    // is byte-identical to the previous hand-rolled bodies.
+    changepacks_core::impl_const_publish_commands!(crate::PUBLISH_COMMAND);
 
     /// Managed dry-run for C#/.NET workspaces. See [`crate::package::CSharpPackage::dry_run_publish`]
     /// for the full rationale — workspace and package share identical

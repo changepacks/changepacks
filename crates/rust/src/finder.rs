@@ -183,28 +183,42 @@ impl ProjectFinder for RustProjectFinder {
 
                 let name = package_str(&cargo_toml, "name");
 
+                // Hoist BOTH shared `PathBuf`s once for every non-workspace
+                // arm: `path_key` / `relative_path_key` seed both the
+                // constructor slot (`RustPackage::new*` /
+                // `PendingWorkspacePackage`) AND the
+                // `self.projects.insert(...)` map key (for `path_key`),
+                // mirroring the same pattern already used in the
+                // workspace arm above and by every peer finder (Node,
+                // Python, CSharp, Java, Dart). Each branch clones each
+                // key into non-final slots and moves it into the LAST-
+                // used slot — one `PathBuf` allocation per key per visit
+                // instead of two-to-three, byte-identical output.
+                let path_key = path.to_path_buf();
+                let relative_path_key = relative_path.to_path_buf();
+
                 if inherits_workspace {
                     if self.workspace_package_version.is_some() {
                         // Workspace already visited — resolve immediately
                         let mut pkg = RustPackage::new_with_workspace_version(
                             name,
                             self.workspace_package_version.clone(),
-                            path.to_path_buf(),
-                            relative_path.to_path_buf(),
+                            path_key.clone(),
+                            relative_path_key,
                             self.workspace_root_path.clone(),
                         );
                         for dep_name in &dep_names {
                             pkg.add_dependency(dep_name);
                         }
                         self.projects
-                            .insert(path.to_path_buf(), Project::Package(Box::new(pkg)));
+                            .insert(path_key, Project::Package(Box::new(pkg)));
                     } else {
                         // Workspace not yet visited — defer
                         self.pending_workspace_packages
                             .push(PendingWorkspacePackage {
                                 name,
-                                abs_path: path.to_path_buf(),
-                                relative_path: relative_path.to_path_buf(),
+                                abs_path: path_key,
+                                relative_path: relative_path_key,
                                 dependencies: dep_names,
                             });
                     }
@@ -213,13 +227,13 @@ impl ProjectFinder for RustProjectFinder {
                     let mut project = Project::Package(Box::new(RustPackage::new(
                         name,
                         version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
+                        path_key.clone(),
+                        relative_path_key,
                     )));
                     for dep_name in &dep_names {
                         project.add_dependency(dep_name);
                     }
-                    self.projects.insert(path.to_path_buf(), project);
+                    self.projects.insert(path_key, project);
                 }
             };
         }

@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -39,21 +39,12 @@ impl DartPackage {
 
 #[async_trait]
 impl Package for DartPackage {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
+    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
+    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
+    // bodies with every other language crate's `Package` / `Workspace`
+    // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
+    // — expansion is byte-identical to the previous hand-rolled bodies.
+    changepacks_core::impl_basic_accessors!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
@@ -69,24 +60,15 @@ impl Package for DartPackage {
         Language::Dart
     }
 
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn default_publish_command(&self) -> String {
-        crate::PUBLISH_COMMAND.to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        Some(crate::DRY_RUN_PUBLISH_COMMAND.to_string())
-    }
+    // `default_publish_command` / `default_dry_run_publish_command` share
+    // their const-based shape with every other const-driven language
+    // crate. Consolidated via `impl_const_publish_commands!()` in
+    // `changepacks-core` — expansion is byte-identical to the previous
+    // hand-rolled bodies.
+    changepacks_core::impl_const_publish_commands!(
+        crate::PUBLISH_COMMAND,
+        crate::DRY_RUN_PUBLISH_COMMAND
+    );
 
     // `dependencies()` / `add_dependency()` share their byte-identical
     // body with every other language crate's `Package` and `Workspace`

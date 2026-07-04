@@ -62,20 +62,14 @@ impl RustPackage {
 
 #[async_trait]
 impl Package for RustPackage {
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
+    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
+    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
+    // bodies with every other language crate's `Package` / `Workspace`
+    // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
+    // — expansion is byte-identical to the previous hand-rolled bodies.
+    // Rust-specific overrides (`inherits_workspace_version`,
+    // `workspace_root_path`) stay hand-rolled below.
+    changepacks_core::impl_basic_accessors!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         // Members that inherit `version.workspace = true` from the workspace
@@ -99,18 +93,6 @@ impl Package for RustPackage {
 
     fn language(&self) -> Language {
         Language::Rust
-    }
-
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn is_changed(&self) -> bool {
-        self.is_changed
     }
 
     fn default_publish_command(&self) -> String {

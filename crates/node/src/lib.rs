@@ -51,6 +51,67 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
     Ok(())
 }
 
+/// Expand to the identical `default_publish_command` /
+/// `default_dry_run_publish_command` / `publish_path_dirs` triple used by
+/// both `NodePackage` and `NodeWorkspace`.
+///
+/// Node cannot use `changepacks_core::impl_const_publish_commands!()`
+/// because its publish command is determined at runtime by walking the
+/// ancestor chain via `detect_package_manager_recursive`, not from a
+/// compile-time const. It also needs the `publish_path_dirs` override so
+/// `node_modules/.bin` gets prepended to `PATH` (workaround for
+/// oven-sh/bun#16071, #18055, #23594 — bun does not add
+/// `node_modules/.bin` to `PATH` during `bun publish` / `bun pm pack`).
+///
+/// Invoked from inside an `impl Package for NodePackage` or `impl
+/// Workspace for NodeWorkspace` block. Byte-identical expansion — the
+/// previously hand-rolled bodies:
+///
+/// ```ignore
+/// fn default_publish_command(&self) -> String {
+///     detect_package_manager_recursive(&self.path).publish_command().to_string()
+/// }
+/// fn default_dry_run_publish_command(&self) -> Option<String> {
+///     Some(detect_package_manager_recursive(&self.path).dry_run_publish_command().to_string())
+/// }
+/// fn publish_path_dirs(&self) -> Vec<PathBuf> {
+///     self.path.parent().map(node_modules_bin_dirs).unwrap_or_default()
+/// }
+/// ```
+///
+/// are replaced 1:1 by a single `crate::impl_node_publish_wiring!();`
+/// invocation. Fully-qualified `::std::string::String`,
+/// `::std::option::Option`, `::std::vec::Vec`, and
+/// `::std::path::PathBuf` make the macro hygienic — callers do not need
+/// those types in scope at the invocation site.
+///
+/// Consumer requirement: the struct must have a `path: PathBuf` field
+/// with that exact spelling. Both `NodePackage` and `NodeWorkspace`
+/// satisfy this — the only two intended callers.
+#[macro_export]
+macro_rules! impl_node_publish_wiring {
+    () => {
+        fn default_publish_command(&self) -> ::std::string::String {
+            $crate::detect_package_manager_recursive(&self.path)
+                .publish_command()
+                .to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> ::std::option::Option<::std::string::String> {
+            ::std::option::Option::Some(
+                $crate::detect_package_manager_recursive(&self.path)
+                    .dry_run_publish_command()
+                    .to_string(),
+            )
+        }
+        fn publish_path_dirs(&self) -> ::std::vec::Vec<::std::path::PathBuf> {
+            self.path
+                .parent()
+                .map($crate::node_modules_bin_dirs)
+                .unwrap_or_default()
+        }
+    };
+}
+
 /// Represents the detected Node.js package manager
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageManager {

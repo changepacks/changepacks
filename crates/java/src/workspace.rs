@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::update_gradle_version_at;
 
@@ -37,17 +37,12 @@ impl GradleWorkspace {
 
 #[async_trait]
 impl Workspace for GradleWorkspace {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
+    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
+    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
+    // bodies with every other language crate's `Package` / `Workspace`
+    // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
+    // — expansion is byte-identical to the previous hand-rolled bodies.
+    changepacks_core::impl_basic_accessors!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
@@ -61,33 +56,19 @@ impl Workspace for GradleWorkspace {
         Language::Java
     }
 
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
-
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn default_publish_command(&self) -> String {
-        // Per-OS command lives on the const in `crate` (see `lib.rs`).
-        crate::PUBLISH_COMMAND.to_string()
-    }
-
-    // See java package impl for rationale: Gradle's `--dry-run` only
-    // previews the task graph, so we run the full publish pipeline
-    // against the local Maven cache (`~/.m2/repository`) instead.
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        Some(crate::DRY_RUN_PUBLISH_COMMAND.to_string())
-    }
+    // Per-OS command lives on the const in `crate` (see `lib.rs`). See the
+    // Java package impl for the `publishToMavenLocal` dry-run rationale:
+    // Gradle's `--dry-run` only previews the task graph, so we run the
+    // full publish pipeline against the local Maven cache
+    // (`~/.m2/repository`) instead.
+    //
+    // Consolidated via `impl_const_publish_commands!()` in
+    // `changepacks-core` — expansion is byte-identical to the previous
+    // hand-rolled bodies.
+    changepacks_core::impl_const_publish_commands!(
+        crate::PUBLISH_COMMAND,
+        crate::DRY_RUN_PUBLISH_COMMAND
+    );
 
     // `dependencies()` / `add_dependency()` share their byte-identical
     // body with every other language crate's `Package` and `Workspace`

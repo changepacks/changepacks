@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -41,21 +41,12 @@ impl CSharpPackage {
 
 #[async_trait]
 impl Package for CSharpPackage {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
+    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
+    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
+    // bodies with every other language crate's `Package` / `Workspace`
+    // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
+    // — expansion is byte-identical to the previous hand-rolled bodies.
+    changepacks_core::impl_basic_accessors!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let current_version = self.version.as_deref().unwrap_or("0.0.0");
@@ -69,31 +60,20 @@ impl Package for CSharpPackage {
         Language::CSharp
     }
 
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
-
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn default_publish_command(&self) -> String {
-        crate::PUBLISH_COMMAND.to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        // No single shell one-liner reliably represents the C# dry-run flow
-        // (pack + push to an ephemeral local feed + guaranteed cleanup), so
-        // we return `None` here and override `dry_run_publish` below with a
-        // managed RAII implementation. Returning `None` still lets users
-        // supply a custom shell command via `publishDryRun` in config; that
-        // override is honored first inside the override.
-        None
-    }
+    // `default_publish_command` returns the const from `crate` (see
+    // `lib.rs`). `default_dry_run_publish_command` returns `None` because
+    // no single shell one-liner reliably represents the C# dry-run flow
+    // (pack + push to an ephemeral local feed + guaranteed cleanup);
+    // returning `None` still lets users supply a custom shell command via
+    // `publishDryRun` in config. The actual managed RAII dry-run flow
+    // lives in `dry_run_publish` below (delegates to
+    // `dry_run::resolve_and_run_dry_run`, which honors the `publishDryRun`
+    // override first).
+    //
+    // Consolidated via the single-arg form of
+    // `impl_const_publish_commands!()` in `changepacks-core` — expansion
+    // is byte-identical to the previous hand-rolled bodies.
+    changepacks_core::impl_const_publish_commands!(crate::PUBLISH_COMMAND);
 
     /// Managed dry-run for C#/.NET packages.
     ///

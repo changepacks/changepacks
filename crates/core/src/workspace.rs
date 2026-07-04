@@ -165,7 +165,7 @@ mod tests {
         version: Option<String>,
         language: Language,
         dependencies: HashSet<String>,
-        changed: bool,
+        is_changed: bool,
     }
 
     impl MockWorkspace {
@@ -177,7 +177,7 @@ mod tests {
                 version: Some("1.0.0".to_string()),
                 language: Language::Node,
                 dependencies: HashSet::new(),
-                changed: false,
+                is_changed: false,
             }
         }
 
@@ -189,18 +189,13 @@ mod tests {
 
     #[async_trait]
     impl Workspace for MockWorkspace {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn path(&self) -> &Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
+        // Consumes the same `impl_basic_accessors!()` macro used by every
+        // real-world `Workspace` impl. Locks the macro's field-name
+        // contract via the type system: rename a struct field and this
+        // mock fails to compile immediately, catching the regression
+        // before it ships downstream to language crates.
+        crate::impl_basic_accessors!();
+
         async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
             Ok(())
         }
@@ -212,12 +207,6 @@ mod tests {
         }
         fn add_dependency(&mut self, dependency: &str) {
             self.dependencies.insert(dependency.to_string());
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
         }
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
@@ -231,7 +220,7 @@ mod tests {
     fn test_check_changed_already_changed() {
         let mut workspace =
             MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
-        workspace.changed = true;
+        workspace.is_changed = true;
 
         // Should return early if already changed
         workspace
@@ -413,7 +402,7 @@ mod tests {
             version: Some("1.0.0".to_string()),
             language: Language::Node,
             dependencies: HashSet::new(),
-            changed: false,
+            is_changed: false,
         };
         let config = Config::default();
         let result = workspace.publish(&config).await;
@@ -427,11 +416,15 @@ mod tests {
     }
 
     #[test]
-    fn test_set_name_default_is_noop() {
+    fn test_set_name_updates_via_impl_basic_accessors_macro() {
+        // Regression guard for item 10 — see the sibling test in
+        // `package.rs::tests::test_set_name_updates_via_impl_basic_accessors_macro`
+        // for the full rationale. The mock's `Workspace` impl uses
+        // `crate::impl_basic_accessors!()`, so `set_name` MUST update the
+        // underlying `name` field.
         let mut workspace =
             MockWorkspace::new(Some("original"), "/project/package.json", "package.json");
         workspace.set_name("new-name".to_string());
-        // Default implementation is a no-op, name should remain unchanged
-        assert_eq!(workspace.name(), Some("original"));
+        assert_eq!(workspace.name(), Some("new-name"));
     }
 }
