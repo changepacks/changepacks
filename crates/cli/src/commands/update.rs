@@ -67,12 +67,11 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     let mut project_finders = ctx.project_finders;
     let mut all_finders = get_finders();
 
-    // Need a second git repo reference for the all_finders, but since CommandContext already called find_project_dirs
-    // we use an empty config for all_finders which won't filter anything
-    let current_dir = CommandContext::current_dir()?;
-    let repo = changepacks_utils::find_current_git_repo(&current_dir)?;
+    // Reuse the ThreadSafeRepository already discovered by CommandContext::new
+    // instead of re-running `gix::discover` per invocation. `all_finders` uses
+    // an empty config so nothing is filtered out here.
     find_project_dirs(
-        &repo,
+        &ctx.repo,
         &mut all_finders,
         &changepacks_core::Config::default(),
         args.remote,

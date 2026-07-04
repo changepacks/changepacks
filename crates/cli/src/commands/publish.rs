@@ -1,13 +1,13 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::Result;
-use changepacks_core::{Config, Language, Project, PublishOutput, PublishResult};
+use changepacks_core::{Config, Project, PublishOutput, PublishResult};
 use changepacks_utils::sort_by_dependencies;
 use clap::Args;
 
 use crate::{
     CommandContext,
-    options::FormatOptions,
+    options::{FormatOptions, retain_by_language},
     prompter::{InquirePrompter, Prompter},
 };
 
@@ -58,14 +58,7 @@ pub async fn handle_publish_with_prompter(
         .collect();
 
     // Filter by language if specified
-    if !args.language.is_empty() {
-        let allowed_languages: Vec<Language> = args
-            .language
-            .iter()
-            .map(|&lang| Language::from(lang))
-            .collect();
-        projects.retain(|project| allowed_languages.contains(&project.language()));
-    }
+    retain_by_language(&args.language, &mut projects);
 
     // Filter by project relative path if specified
     if !args.project.is_empty() {
@@ -390,7 +383,7 @@ fn publish_result_from_failures(failed: &[String], total: usize) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use changepacks_core::{Package, UpdateType};
+    use changepacks_core::{Language, Package, UpdateType};
     use clap::Parser;
     use std::collections::HashSet;
 

@@ -4,6 +4,26 @@ use crate::project::Project;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
+/// Returns `true` when `path` refers to an existing regular file.
+///
+/// AGENTS.md rule: never blocking I/O in async — use `tokio::fs::metadata`.
+/// `unwrap_or(false)` mirrors the previous inline `is_file()` semantics on
+/// stat errors (broken symlink, permission denied, missing path): treat as
+/// "not a regular file" and short-circuit, rather than propagating an error
+/// the caller would silently ignore.
+///
+/// Shared between `ProjectFinder::matches_project_file` (name-based match
+/// used by every language) and `CSharpProjectFinder::visit` (extension-based
+/// match) so the byte-identical stat + `is_file()` fallthrough lives in ONE
+/// place. Public so cross-crate callers (e.g. `changepacks-csharp`) can
+/// reuse it via the re-export from `changepacks_core::lib.rs`.
+pub async fn is_regular_file(path: &Path) -> bool {
+    tokio::fs::metadata(path)
+        .await
+        .map(|m| m.is_file())
+        .unwrap_or(false)
+}
+
 /// Visitor pattern for discovering projects by walking the git tree.
 ///
 /// Each language implements this trait to detect its project files (package.json, Cargo.toml, etc.)
@@ -27,18 +47,8 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// # Errors
     /// Returns error if the path has no file name component or the file name
     /// is not valid UTF-8.
-    ///
-    /// AGENTS.md rule: never blocking I/O in async — use tokio::fs::metadata.
-    /// `unwrap_or(false)` matches the previous sync `is_file()` semantics on
-    /// stat errors (broken symlink, permission denied): treat as "not a file"
-    /// and short-circuit, rather than propagating an error the caller would
-    /// silently ignore.
     async fn matches_project_file(&self, path: &Path) -> Result<bool> {
-        let is_file = tokio::fs::metadata(path)
-            .await
-            .map(|m| m.is_file())
-            .unwrap_or(false);
-        if !is_file {
+        if !is_regular_file(path).await {
             return Ok(false);
         }
         let name = path

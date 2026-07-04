@@ -15,15 +15,9 @@ use crate::{package::DartPackage, workspace::DartWorkspace};
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["pubspec.yaml"];
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct DartProjectFinder {
     projects: HashMap<PathBuf, Project>,
-}
-
-impl Default for DartProjectFinder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl DartProjectFinder {

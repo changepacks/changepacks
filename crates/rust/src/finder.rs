@@ -24,18 +24,12 @@ struct PendingWorkspacePackage {
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["Cargo.toml"];
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
     workspace_package_version: Option<String>,
     workspace_root_path: Option<PathBuf>,
     pending_workspace_packages: Vec<PendingWorkspacePackage>,
-}
-
-impl Default for RustProjectFinder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl RustProjectFinder {

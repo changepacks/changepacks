@@ -34,15 +34,9 @@ static SUBPROJECTS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?m)^subprojects:\s*(.+)$").expect("hardcoded regex must compile")
 });
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct GradleProjectFinder {
     projects: HashMap<PathBuf, Project>,
-}
-
-impl Default for GradleProjectFinder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl GradleProjectFinder {

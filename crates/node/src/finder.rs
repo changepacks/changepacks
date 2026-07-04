@@ -15,15 +15,9 @@ use crate::{package::NodePackage, workspace::NodeWorkspace};
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["package.json"];
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct NodeProjectFinder {
     projects: HashMap<PathBuf, Project>,
-}
-
-impl Default for NodeProjectFinder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl NodeProjectFinder {

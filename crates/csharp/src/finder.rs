@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use changepacks_core::{Project, ProjectFinder};
+use changepacks_core::{Project, ProjectFinder, is_regular_file};
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
 use quick_xml::events::Event;
@@ -18,15 +18,9 @@ use crate::{package::CSharpPackage, workspace::CSharpWorkspace};
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &[".csproj"];
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct CSharpProjectFinder {
     projects: HashMap<PathBuf, Project>,
-}
-
-impl Default for CSharpProjectFinder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl CSharpProjectFinder {
@@ -164,17 +158,11 @@ impl ProjectFinder for CSharpProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        // Check if this is a .csproj file
-        // AGENTS.md rule: never blocking I/O in async — use tokio::fs::metadata.
-        // `unwrap_or(false)` matches the previous sync `is_file()` semantics on
-        // stat errors (broken symlink, permission denied): treat as "not a
-        // file" and short-circuit, rather than propagating an error the caller
-        // would silently ignore.
-        let is_file = tokio::fs::metadata(path)
-            .await
-            .map(|m| m.is_file())
-            .unwrap_or(false);
-        if is_file {
+        // Check if this is a .csproj file. Delegates to the shared
+        // `is_regular_file` helper in `changepacks_core` (same
+        // `unwrap_or(false)` fallthrough on stat errors as the previous
+        // inline call — broken symlink / permission denied → "not a file").
+        if is_regular_file(path).await {
             let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
             if extension != "csproj" {

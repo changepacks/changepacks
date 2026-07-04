@@ -1,4 +1,4 @@
-use changepacks_core::Language;
+use changepacks_core::{Language, Project};
 use clap::ValueEnum;
 
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
@@ -22,6 +22,21 @@ impl From<CliLanguage> for Language {
             CliLanguage::CSharp => Self::CSharp,
         }
     }
+}
+
+/// Retain only projects whose language matches one of `langs`.
+///
+/// No-op when `langs` is empty (the CLI convention: an empty `--language`
+/// flag list means "no language filter applied"). Extracted from the
+/// identical filter block that was previously open-coded in `check`,
+/// `publish`, and `changepacks` — one place to evolve the semantics
+/// (e.g. accept a `Language::Java` alias for `--language kotlin`).
+pub fn retain_by_language(langs: &[CliLanguage], projects: &mut Vec<&Project>) {
+    if langs.is_empty() {
+        return;
+    }
+    let allowed: Vec<Language> = langs.iter().map(|&l| Language::from(l)).collect();
+    projects.retain(|project| allowed.contains(&project.language()));
 }
 
 #[cfg(test)]

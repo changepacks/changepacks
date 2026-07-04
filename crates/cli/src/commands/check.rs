@@ -1,4 +1,4 @@
-use changepacks_core::{ChangePackResultLog, Language, Project, UpdateType};
+use changepacks_core::{ChangePackResultLog, Project, UpdateType};
 
 use anyhow::Result;
 use changepacks_utils::{
@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     CommandContext,
-    options::{CliLanguage, FilterOptions, FormatOptions},
+    options::{CliLanguage, FilterOptions, FormatOptions, retain_by_language},
 };
 
 #[derive(Args, Debug)]
@@ -57,14 +57,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     if let Some(filter) = &args.filter {
         projects.retain(|p| filter.matches(p));
     }
-    if !args.language.is_empty() {
-        let allowed_languages: Vec<Language> = args
-            .language
-            .iter()
-            .map(|&lang| Language::from(lang))
-            .collect();
-        projects.retain(|project| allowed_languages.contains(&project.language()));
-    }
+    retain_by_language(&args.language, &mut projects);
     projects.sort();
     if let FormatOptions::Stdout = args.format {
         println!("Found {} projects", projects.len());

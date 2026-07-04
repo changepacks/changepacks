@@ -1,4 +1,4 @@
-use changepacks_core::{ChangePackLog, Language, Project, UpdateType};
+use changepacks_core::{ChangePackLog, Project, UpdateType};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::write;
 
@@ -8,7 +8,7 @@ use anyhow::Result;
 
 use crate::{
     CommandContext,
-    options::{CliLanguage, FilterOptions},
+    options::{CliLanguage, FilterOptions, retain_by_language},
     prompter::{InquirePrompter, Prompter},
 };
 
@@ -61,14 +61,7 @@ pub async fn handle_changepack_with_prompter(
     if let Some(filter) = &args.filter {
         projects.retain(|p| filter.matches(p));
     }
-    if !args.language.is_empty() {
-        let allowed_languages: Vec<Language> = args
-            .language
-            .iter()
-            .map(|&lang| Language::from(lang))
-            .collect();
-        projects.retain(|project| allowed_languages.contains(&project.language()));
-    }
+    retain_by_language(&args.language, &mut projects);
 
     println!("Found {} projects", projects.len());
     // workspace first

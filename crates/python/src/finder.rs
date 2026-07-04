@@ -15,15 +15,9 @@ use crate::{package::PythonPackage, workspace::PythonWorkspace};
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["pyproject.toml"];
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PythonProjectFinder {
     projects: HashMap<PathBuf, Project>,
-}
-
-impl Default for PythonProjectFinder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl PythonProjectFinder {
