@@ -59,12 +59,21 @@ impl ProjectFinder for DartProjectFinder {
             // treats a stat error (broken symlink, permission denied) as
             // "does not exist", matching the previous sync `is_file()`
             // fallthrough on error.
-            let melos_yaml = path
-                .parent()
-                .context("Parent not found")?
-                .join("melos.yaml");
-            let has_melos_yaml = tokio::fs::try_exists(&melos_yaml).await.unwrap_or(false);
-            let is_workspace = pubspec.get("workspace").is_some() || has_melos_yaml;
+            //
+            // Short-circuit: when the pubspec's inline `workspace:` field
+            // is already present, skip building the sibling `melos.yaml`
+            // PathBuf and issuing the async `try_exists` syscall. Mirrors
+            // the same optimization the node finder applies to
+            // `pnpm-workspace.yaml` (retry-now#0010).
+            let is_workspace = if pubspec.get("workspace").is_some() {
+                true
+            } else {
+                let melos_yaml = path
+                    .parent()
+                    .context("Parent not found")?
+                    .join("melos.yaml");
+                tokio::fs::try_exists(&melos_yaml).await.unwrap_or(false)
+            };
 
             // Both branches use the same name/version and the same path;
             // hoist so each branch collapses to a single constructor call.

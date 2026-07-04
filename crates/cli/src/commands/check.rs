@@ -140,7 +140,6 @@ fn display_tree(
     // This way, dependencies appear as children in the tree
     let mut graph: HashMap<String, Vec<String>> = HashMap::new();
     let mut roots: HashSet<String> = HashSet::new();
-    let mut has_dependencies: HashSet<String> = HashSet::new();
 
     for project in projects {
         let deps = project.dependencies();
@@ -152,9 +151,6 @@ fn display_tree(
             .collect();
 
         if !monorepo_deps.is_empty() {
-            for dep in &monorepo_deps {
-                has_dependencies.insert(dep.clone());
-            }
             graph.insert(
                 project.name().unwrap_or("noname").to_string(),
                 monorepo_deps,
@@ -162,10 +158,32 @@ fn display_tree(
         }
     }
 
+    // Pre-sort each graph value ONCE now, before `has_dependencies`
+    // borrows into `graph`. `display_tree_node` then borrows the
+    // already-sorted dep list on every visit instead of doing a per-visit
+    // `deps.clone()` + `.sort()`. Meaningful on diamond/wide graphs where
+    // the same subtree is revisited under multiple parents (each revisit
+    // still re-descends the deps so all edges render). Behavior is
+    // preserved because the sort is applied to identical inputs — the
+    // output ordering is byte-identical.
+    for deps in graph.values_mut() {
+        deps.sort();
+    }
+
+    // Derive `has_dependencies` AFTER the graph is fully built by borrowing
+    // the Strings that already live inside `graph.values()`
+    // (`HashSet<&str>`). Avoids N owned `String::clone()` calls — one per
+    // monorepo edge — vs. the previous eager
+    // `has_dependencies.insert(dep.clone())` inside the build loop. The
+    // borrow is valid through the roots-computation loop below because
+    // `graph` is not mutated after this point.
+    let has_dependencies: HashSet<&str> = graph.values().flatten().map(String::as_str).collect();
+
     // Root nodes are projects that are not dependencies of any other project
     for project in projects {
-        if !has_dependencies.contains(project.name().unwrap_or("noname")) {
-            roots.insert(project.name().unwrap_or("noname").to_string());
+        let name = project.name().unwrap_or("noname");
+        if !has_dependencies.contains(name) {
+            roots.insert(name.to_string());
         }
     }
 
@@ -240,12 +258,14 @@ fn display_tree_node(
     }
 
     // Always display dependencies, even if the node was already visited
-    // This ensures all dependencies are shown in the tree
+    // This ensures all dependencies are shown in the tree.
+    // NOTE: `deps` is pre-sorted ONCE in `display_tree` (see comment
+    // there); borrowing here avoids the per-visit `deps.clone()` +
+    // `.sort()` — meaningful on diamond graphs where the same subtree is
+    // re-descended under multiple parents.
     if let Some(deps) = ctx.graph.get(&project_name) {
-        let mut sorted_deps = deps.clone();
-        sorted_deps.sort();
-        let sorted_deps_count = sorted_deps.len();
-        for (idx, dep_name) in sorted_deps.iter().enumerate() {
+        let sorted_deps_count = deps.len();
+        for (idx, dep_name) in deps.iter().enumerate() {
             if let Some(dep_project) = ctx.name_to_project.get(dep_name) {
                 let is_last_dep = idx == sorted_deps_count - 1;
                 let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });

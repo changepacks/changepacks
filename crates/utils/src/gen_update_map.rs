@@ -155,9 +155,15 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         }
     }
 
-    // Find all packages that need to be updated due to dependencies
-    let mut packages_to_add: Vec<(PathBuf, String)> = Vec::new();
-    let mut processed: HashSet<PathBuf> = HashSet::new();
+    // Find all packages that need to be updated due to dependencies.
+    // `packages_to_add` serves BOTH purposes: the "already scheduled" gate
+    // (via `contains_key`) and the final insertion queue (drained into
+    // `update_map` below). This collapses the previous parallel
+    // `HashSet<PathBuf>` + `Vec<(PathBuf, String)>` structures into a
+    // single `HashMap` allocation and cuts per-edge clones from 2 to 1
+    // (`dep_path` is cloned once as the map key, vs. once for the set
+    // insert and once again for the vec push in the old shape).
+    let mut packages_to_add: HashMap<PathBuf, String> = HashMap::new();
 
     // Initial set of updated package names via O(1) path -> name lookup
     let updated_names: HashSet<String> = update_map
@@ -170,9 +176,8 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     while let Some(pkg_name) = to_process.pop() {
         if let Some(dependents) = reverse_deps.get(&pkg_name) {
             for (dep_path, dep_name) in dependents {
-                if !processed.contains(dep_path) && !update_map.contains_key(dep_path) {
-                    processed.insert(dep_path.clone());
-                    packages_to_add.push((dep_path.clone(), pkg_name.clone()));
+                if !update_map.contains_key(dep_path) && !packages_to_add.contains_key(dep_path) {
+                    packages_to_add.insert(dep_path.clone(), pkg_name.clone());
                     to_process.push(dep_name.clone());
                 }
             }

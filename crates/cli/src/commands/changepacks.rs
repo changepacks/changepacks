@@ -114,19 +114,19 @@ pub async fn handle_changepack_with_prompter(
             );
         }
 
-        let project_with_relpath: Vec<_> = projects
-            .iter()
-            .map(|project| {
-                get_relative_path(&ctx.repo_root_path, project.path()).map(|rel| (project, rel))
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let keep_projects: Vec<_> = project_with_relpath
-            .into_iter()
-            .filter(|(_, rel_path)| !update_map.contains_key(rel_path))
-            .map(|(project, _)| *project)
-            .collect();
-
+        // Single pass: compute rel_path per project and filter without
+        // materializing an intermediate `Vec<(&&Project, PathBuf)>` that
+        // was immediately consumed by the next filter+collect. `?` still
+        // short-circuits on the first bad path exactly like the previous
+        // `.collect::<Result<Vec<_>>>()?` did (just earlier in the loop
+        // instead of at the end of the map phase).
+        let mut keep_projects: Vec<_> = Vec::with_capacity(projects.len());
+        for project in &projects {
+            let rel_path = get_relative_path(&ctx.repo_root_path, project.path())?;
+            if !update_map.contains_key(&rel_path) {
+                keep_projects.push(*project);
+            }
+        }
         projects = keep_projects;
     }
 
