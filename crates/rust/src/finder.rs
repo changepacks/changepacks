@@ -143,8 +143,10 @@ impl ProjectFinder for RustProjectFinder {
                     .and_then(|w| w.as_bool())
                     .unwrap_or(false);
 
-                let name = cargo_toml["package"]["name"]
-                    .as_str()
+                let name = cargo_toml
+                    .get("package")
+                    .and_then(|p| p.get("name"))
+                    .and_then(|v| v.as_str())
                     .map(std::string::ToString::to_string);
 
                 if inherits_workspace {

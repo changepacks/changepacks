@@ -88,13 +88,7 @@ pub async fn handle_changepack_with_prompter(
             let defaults = projects
                 .iter()
                 .enumerate()
-                .filter_map(|(index, project)| {
-                    if project.is_changed() {
-                        Some(index)
-                    } else {
-                        None
-                    }
-                })
+                .filter_map(|(index, project)| project.is_changed().then_some(index))
                 .collect::<Vec<_>>();
             prompter.multi_select(&message, projects.clone(), defaults)?
         };

@@ -154,7 +154,8 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     //   - path_to_name:   relative file path -> package name (for O(1) reverse lookup)
     //   - reverse_deps:   dependency name -> [packages that depend on it]
     let mut path_to_name: HashMap<PathBuf, String> = HashMap::with_capacity(projects.len());
-    let mut reverse_deps: HashMap<String, Vec<(PathBuf, String)>> = HashMap::new();
+    let mut reverse_deps: HashMap<String, Vec<(PathBuf, String)>> =
+        HashMap::with_capacity(projects.len());
     for project in projects {
         let Ok(rel_path) = project.path().strip_prefix(repo_root_path) else {
             continue;

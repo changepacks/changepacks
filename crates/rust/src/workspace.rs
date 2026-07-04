@@ -67,13 +67,15 @@ impl Workspace for RustWorkspace {
         if has_package {
             cargo_toml["package"]["version"] = next_version.clone().into();
             if cargo_toml["package"].get("name").is_none() {
-                cargo_toml["package"]["name"] = self.name.clone().unwrap_or("_".to_string()).into();
+                cargo_toml["package"]["name"] =
+                    self.name.clone().unwrap_or_else(|| "_".to_string()).into();
             }
         } else if !has_workspace_package_version {
             // No [package] and no [workspace.package].version — create [package]
             cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
             cargo_toml["package"]["version"] = next_version.clone().into();
-            cargo_toml["package"]["name"] = self.name.clone().unwrap_or("_".to_string()).into();
+            cargo_toml["package"]["name"] =
+                self.name.clone().unwrap_or_else(|| "_".to_string()).into();
         }
         // else: virtual workspace — only [workspace.package].version needs updating (below)
 

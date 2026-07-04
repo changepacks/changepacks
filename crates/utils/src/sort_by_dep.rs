@@ -62,7 +62,7 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     }
 
     // Kahn's algorithm for topological sort
-    let mut queue: VecDeque<usize> = VecDeque::new();
+    let mut queue: VecDeque<usize> = VecDeque::with_capacity(projects.len());
     for (idx, &degree) in in_degree.iter().enumerate() {
         if degree == 0 {
             queue.push_back(idx);
