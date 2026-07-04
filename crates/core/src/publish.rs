@@ -1,5 +1,6 @@
 use crate::{Config, Language};
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// Output captured from a publish command execution.
@@ -13,6 +14,22 @@ pub struct PublishOutput {
     pub stderr: String,
 }
 
+/// Shared 2-step lookup: first by the project's relative path, then by the
+/// language's `publish_key()`. Extracted so `resolve_publish_command` and
+/// `resolve_dry_run_publish_command` share ONE resolution ladder; a future
+/// change (e.g. adding an env-var override step) only needs to touch this
+/// helper instead of drifting between two nearly-identical copies.
+fn lookup_by_path_or_language(
+    map: &HashMap<String, String>,
+    relative_path: &Path,
+    language: Language,
+) -> Option<String> {
+    if let Some(cmd) = map.get(relative_path.to_string_lossy().as_ref()) {
+        return Some(cmd.clone());
+    }
+    map.get(language.publish_key()).cloned()
+}
+
 /// Resolve the publish command from config, language, or default
 #[must_use]
 pub fn resolve_publish_command(
@@ -21,16 +38,8 @@ pub fn resolve_publish_command(
     default_command: &str,
     config: &Config,
 ) -> String {
-    // Check by relative path
-    if let Some(cmd) = config.publish.get(relative_path.to_string_lossy().as_ref()) {
-        return cmd.clone();
-    }
-    // Check by language
-    let lang_key = language.publish_key();
-    if let Some(cmd) = config.publish.get(lang_key) {
-        return cmd.clone();
-    }
-    default_command.to_string()
+    lookup_by_path_or_language(&config.publish, relative_path, language)
+        .unwrap_or_else(|| default_command.to_string())
 }
 
 /// Resolve the dry-run publish command from config or fall back to the
@@ -47,19 +56,8 @@ pub fn resolve_dry_run_publish_command(
     default_dry_run_command: Option<&str>,
     config: &Config,
 ) -> Option<String> {
-    // 1) Per-project override
-    if let Some(cmd) = config
-        .publish_dry_run
-        .get(relative_path.to_string_lossy().as_ref())
-    {
-        return Some(cmd.clone());
-    }
-    // 2) Per-language override
-    if let Some(cmd) = config.publish_dry_run.get(language.publish_key()) {
-        return Some(cmd.clone());
-    }
-    // 3) Fall back to the language crate's own default dry-run command
-    default_dry_run_command.map(str::to_string)
+    lookup_by_path_or_language(&config.publish_dry_run, relative_path, language)
+        .or_else(|| default_dry_run_command.map(str::to_string))
 }
 
 /// Convert a completed child-process `Output` into a `PublishOutput`.

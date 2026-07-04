@@ -162,8 +162,16 @@ pub async fn find_project_dirs(
         .collect::<Vec<_>>();
 
     for file in changed_files.iter().chain(diff.iter()) {
+        // Hoist the `git_root_path.join(file)` out of the inner finder loop.
+        // The joined path is identical for every finder on a given `file`, so
+        // computing it once collapses `F * M` `PathBuf` allocations down to
+        // `F` (where F is the count of changed/diffed files and M is the
+        // number of project finders — 6 on the standard workspace). Behavior
+        // is byte-identical: `check_changed` borrows `&Path`, so each finder
+        // sees the same bytes as before.
+        let abs_path = git_root_path.join(file);
         for finder in project_finders.iter_mut() {
-            finder.check_changed(&git_root_path.join(file))?;
+            finder.check_changed(&abs_path)?;
         }
     }
 

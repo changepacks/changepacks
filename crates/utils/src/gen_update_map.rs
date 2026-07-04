@@ -128,6 +128,16 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     projects: &[&Project],
     repo_root_path: &Path,
 ) {
+    // Fast path for the dominant no-op case: with no scheduled updates the
+    // seed set below is empty and the reverse-dep BFS discovers nothing, so
+    // walking the full project graph to populate `path_to_name` /
+    // `reverse_deps` is pure waste (N `String` + N `PathBuf` allocations per
+    // project). Semantic mirror of the existing guard in
+    // `apply_update_on_rules` above.
+    if update_map.is_empty() {
+        return;
+    }
+
     // Single pass over projects to build:
     //   - path_to_name:   relative file path -> package name (for O(1) reverse lookup)
     //   - reverse_deps:   dependency name -> [packages that depend on it]

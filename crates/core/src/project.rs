@@ -192,43 +192,46 @@ impl PartialOrd for Project {
     }
 }
 
+/// Shared language-then-name comparator for the Workspace × Workspace and
+/// Package × Package arms of `Project::cmp`. Both arms follow the same
+/// precedence — language first, then `(Some, Some) < (Some, None) < (None,
+/// Some) < (None, None)` — and the ONLY divergence is the `(None, None)`
+/// tie-breaker: Workspace falls back to version comparison, Package returns
+/// `Ordering::Equal`. Threading that final branch through the caller-supplied
+/// `none_none` closure preserves the byte-identical behavior of the two arms
+/// while eliminating ~30 lines of duplication.
+fn cmp_lang_then_name(
+    lhs: (crate::Language, Option<&str>),
+    rhs: (crate::Language, Option<&str>),
+    none_none: impl FnOnce() -> Ordering,
+) -> Ordering {
+    let lang_ord = lhs.0.cmp(&rhs.0);
+    if lang_ord != Ordering::Equal {
+        return lang_ord;
+    }
+    match (lhs.1, rhs.1) {
+        (Some(a), Some(b)) => a.cmp(b),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => none_none(),
+    }
+}
+
 impl Ord for Project {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Self::Workspace(_), Self::Package(_)) => Ordering::Less,
             (Self::Package(_), Self::Workspace(_)) => Ordering::Greater,
-            (Self::Workspace(w1), Self::Workspace(w2)) => {
-                let lang_ord = w1.language().cmp(&w2.language());
-                if lang_ord != Ordering::Equal {
-                    return lang_ord;
-                }
-
-                let name1 = w1.name();
-                let name2 = w2.name();
-
-                match (name1, name2) {
-                    (Some(n1), Some(n2)) => n1.cmp(n2),
-                    (Some(_), None) => Ordering::Less,
-                    (None, Some(_)) => Ordering::Greater,
-                    (None, None) => {
-                        let v1 = w1.version().unwrap_or("");
-                        let v2 = w2.version().unwrap_or("");
-                        v1.cmp(v2)
-                    }
-                }
-            }
-            (Self::Package(p1), Self::Package(p2)) => {
-                let lang_ord = p1.language().cmp(&p2.language());
-                if lang_ord != Ordering::Equal {
-                    return lang_ord;
-                }
-                match (p1.name(), p2.name()) {
-                    (Some(n1), Some(n2)) => n1.cmp(n2),
-                    (Some(_), None) => Ordering::Less,
-                    (None, Some(_)) => Ordering::Greater,
-                    (None, None) => Ordering::Equal,
-                }
-            }
+            (Self::Workspace(w1), Self::Workspace(w2)) => cmp_lang_then_name(
+                (w1.language(), w1.name()),
+                (w2.language(), w2.name()),
+                || w1.version().unwrap_or("").cmp(w2.version().unwrap_or("")),
+            ),
+            (Self::Package(p1), Self::Package(p2)) => cmp_lang_then_name(
+                (p1.language(), p1.name()),
+                (p2.language(), p2.name()),
+                || Ordering::Equal,
+            ),
         }
     }
 }

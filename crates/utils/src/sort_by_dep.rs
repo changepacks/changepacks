@@ -26,7 +26,13 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     // slice lives for the whole function scope so borrowing is sound, and it
     // eliminates N `String` allocations (one per project) on every
     // `publish` / `check --tree` invocation.
-    let mut name_to_index: HashMap<&str, usize> = HashMap::new();
+    // Preallocate for the same `projects.len()` upper bound that the sibling
+    // `sorted_indices: Vec::with_capacity(projects.len())` below already
+    // uses. Every project inserts at most once (only when `project.name()`
+    // is `Some`), so `projects.len()` is a tight upper bound and removes
+    // the `HashMap::new()` geometric-doubling reallocations that were pure
+    // waste on monorepos with dozens of packages.
+    let mut name_to_index: HashMap<&str, usize> = HashMap::with_capacity(projects.len());
     for (idx, project) in projects.iter().enumerate() {
         if let Some(name) = project.name() {
             name_to_index.insert(name, idx);
