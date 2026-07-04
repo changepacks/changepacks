@@ -57,4 +57,17 @@ impl CommandContext {
     pub fn current_dir() -> Result<PathBuf> {
         Ok(std::env::current_dir()?)
     }
+
+    /// Path to the `.changepacks/` directory at the repo root.
+    ///
+    /// Cached derivative of `repo_root_path` so downstream commands do not
+    /// re-run `gix::discover` per invocation. `CommandContext::new` already
+    /// sets `repo_root_path = repo.work_dir()`, which is exactly what
+    /// `changepacks_utils::get_changepacks_dir(current_dir)` computes, so
+    /// this is byte-identical to the previous
+    /// `get_changepacks_dir(&CommandContext::current_dir()?)?` pattern.
+    #[must_use]
+    pub fn changepacks_dir(&self) -> PathBuf {
+        self.repo_root_path.join(".changepacks")
+    }
 }

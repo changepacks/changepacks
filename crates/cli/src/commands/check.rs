@@ -74,20 +74,31 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
         match args.format {
             FormatOptions::Stdout => {
                 use colored::Colorize;
+                // Fast-path: when `update_map` is empty (the dominant case for a
+                // repo with no pending changepack logs), skip the per-project
+                // `get_relative_path` allocation entirely — the lookup can never
+                // succeed against an empty map, so its `PathBuf` would only be
+                // allocated and immediately dropped. Byte-identical output.
+                let update_map_empty = update_map.is_empty();
                 for project in projects {
                     let changed_marker = if project.is_changed() {
                         " (changed)".bright_yellow()
                     } else {
                         "".normal()
                     };
-                    let version_str = if let Some(update_type) =
+                    let unknown_or_versioned = || {
+                        project
+                            .version()
+                            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
+                    };
+                    let version_str = if update_map_empty {
+                        unknown_or_versioned()
+                    } else if let Some(update_type) =
                         update_map.get(&get_relative_path(&ctx.repo_root_path, project.path())?)
                     {
                         display_update(project.version(), update_type.0)?
                     } else {
-                        project
-                            .version()
-                            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
+                        unknown_or_versioned()
                     };
                     println!(
                         "{}{}",

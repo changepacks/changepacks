@@ -31,7 +31,7 @@ pub(crate) use is_changepack_log::is_changepack_log_json_name;
 pub use gix::ThreadSafeRepository;
 
 pub use clear_update_logs::clear_update_logs;
-pub use detect_indent::{detect_indent, detect_indent_str};
+pub use detect_indent::detect_indent_str;
 pub use display_update::display_update;
 pub use filter_project_dirs::find_project_dirs;
 pub use find_current_git_repo::find_current_git_repo;

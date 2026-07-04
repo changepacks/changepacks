@@ -89,12 +89,12 @@ impl Workspace for RustWorkspace {
 
         // Sync [workspace.dependencies] for local path deps whose version matched
         // the old workspace version (these are workspace members bumped together)
-        let old_version = self.version.as_deref().unwrap_or("0.0.0");
         if let Some(ws_deps) = cargo_toml
             .get_mut("workspace")
             .and_then(|w| w.get_mut("dependencies"))
             .and_then(|d| d.as_table_mut())
         {
+            let old_version = self.version.as_deref().unwrap_or("0.0.0");
             for (_, value) in ws_deps.iter_mut() {
                 if let Some(dep) = value.as_inline_table_mut()
                     && dep.get("path").is_some()

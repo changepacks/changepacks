@@ -2,7 +2,7 @@ use changepacks_core::{ChangePackLog, Project, UpdateType};
 use std::{collections::HashMap, path::PathBuf};
 use tokio::fs::write;
 
-use changepacks_utils::{get_changepacks_dir, get_relative_path};
+use changepacks_utils::get_relative_path;
 
 use anyhow::Result;
 
@@ -141,7 +141,8 @@ pub async fn handle_changepack_with_prompter(
     let changepack_log = ChangePackLog::new(update_map, notes);
     // random uuid
     let changepack_log_id = nanoid::nanoid!();
-    let changepack_log_file = get_changepacks_dir(&CommandContext::current_dir()?)?
+    let changepack_log_file = ctx
+        .changepacks_dir()
         .join(format!("changepack_log_{changepack_log_id}.json"));
     write(changepack_log_file, serde_json::to_string(&changepack_log)?).await?;
 

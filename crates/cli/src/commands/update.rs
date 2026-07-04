@@ -9,7 +9,7 @@ use changepacks_core::{
 };
 use changepacks_utils::{
     apply_reverse_dependencies, clear_update_logs, display_update, find_project_dirs,
-    gen_changepack_result_map, gen_update_map, get_changepacks_dir, get_relative_path,
+    gen_changepack_result_map, gen_update_map, get_relative_path,
 };
 use clap::Args;
 
@@ -61,7 +61,7 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
 #[cfg(not(tarpaulin_include))]
 pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Prompter) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
-    let changepacks_dir = get_changepacks_dir(&CommandContext::current_dir()?)?;
+    let changepacks_dir = ctx.changepacks_dir();
     let mut update_map = gen_update_map(&CommandContext::current_dir()?, &ctx.config).await?;
 
     let mut project_finders = ctx.project_finders;
@@ -97,22 +97,31 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         println!("Updates found:");
     }
 
-    // Filter update_map by language if specified
+    // Filter update_map by language if specified.
+    //
+    // Prebuild `path_to_language` once so `retain` does O(1) lookups instead
+    // of the previous O(N×M) any() closure that re-computed a `PathBuf` per
+    // (map entry × project) pair — dropping allocations from `M × N` to
+    // `N` (one PathBuf per project) plus `M` HashMap lookups.
     if !args.language.is_empty() {
         let allowed_languages: Vec<Language> = args
             .language
             .iter()
             .map(|&lang| Language::from(lang))
             .collect();
-        let all_projects_for_filter: Vec<&Project> = project_finders
+        let path_to_language: HashMap<PathBuf, Language> = project_finders
             .iter()
             .flat_map(|finder| finder.projects())
+            .filter_map(|p| {
+                get_relative_path(&ctx.repo_root_path, p.path())
+                    .ok()
+                    .map(|rel| (rel, p.language()))
+            })
             .collect();
         update_map.retain(|path, _| {
-            all_projects_for_filter.iter().any(|p| {
-                get_relative_path(&ctx.repo_root_path, p.path()).is_ok_and(|rel| &rel == path)
-                    && allowed_languages.contains(&p.language())
-            })
+            path_to_language
+                .get(path)
+                .is_some_and(|lang| allowed_languages.contains(lang))
         });
     }
 
