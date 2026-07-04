@@ -75,11 +75,25 @@ impl ProjectFinder for DartProjectFinder {
 
             // Both branches use the same name/version and the same path;
             // hoist so each branch collapses to a single constructor call.
-            let version = pubspec["version"]
-                .as_str()
+            //
+            // Use `.get(...).and_then(as_str)` here rather than the direct
+            // `pubspec["version"].as_str()` / `pubspec["name"].as_str()`
+            // indexing: every other finder (`crates/rust/src/finder.rs`,
+            // `crates/node/src/finder.rs`, `crates/python/src/finder.rs`)
+            // reads name/version via `.get(...).and_then(...)`, so this
+            // matches the workspace-wide convention and drops the
+            // "does `[]` panic on missing keys?" question a reader has
+            // to answer to trust this file. Semantically identical:
+            // `yaml_serde::Value`'s `Index` impl already returns
+            // `Value::Null` for missing keys, and `Value::Null.as_str()`
+            // is `None`.
+            let version = pubspec
+                .get("version")
+                .and_then(|v| v.as_str())
                 .map(std::string::ToString::to_string);
-            let name = pubspec["name"]
-                .as_str()
+            let name = pubspec
+                .get("name")
+                .and_then(|v| v.as_str())
                 .map(std::string::ToString::to_string);
             let path_buf = path.to_path_buf();
             let relative_path_buf = relative_path.to_path_buf();

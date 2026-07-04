@@ -134,8 +134,14 @@ impl CSharpProjectFinder {
 /// Input: `"..\CoreLib\CoreLib.csproj"` or `"../CoreLib/CoreLib.csproj"`
 /// Output: `"CoreLib"`
 fn extract_project_name_from_path(path_str: &str) -> Option<String> {
-    // Split by both Windows (\) and Unix (/) separators
-    let filename = path_str.rsplit(['\\', '/']).next()?;
+    // Split by both Windows (\) and Unix (/) separators.
+    // `rsplit(pat).next()` is documented to always return `Some(&str)`
+    // (an input with no separator yields `Some(path_str)` intact, and
+    // even `""` yields `Some("")`), so the previous `?` could never
+    // short-circuit — it only misled readers into thinking a `None` arm
+    // existed here. `strip_suffix(".csproj")` on the next line is the
+    // sole actual `None` source for this function.
+    let filename = path_str.rsplit(['\\', '/']).next().unwrap_or(path_str);
 
     // Remove .csproj extension
     filename

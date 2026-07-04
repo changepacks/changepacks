@@ -12,10 +12,17 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     if version_parts.len() != 3 {
         return Err(anyhow::anyhow!("Invalid version format: {version}"));
     }
-    let plus_split = version_parts[2].split('+').collect::<Vec<&str>>();
-    let plus_part = if plus_split.len() == 2 {
-        version_parts[2] = plus_split[0];
-        Some(plus_split[1])
+    // `split_once('+')` returns `None` when there is no `+`, and
+    // `Some((base, rest))` otherwise. This replaces the previous
+    // `split(...).collect::<Vec<&str>>()` + `len() == 2` guard, which
+    // allocated a throwaway `Vec<&str>` on every call on the criterion
+    // hot path (`bench_next_version`). Behavior on multi-`+` inputs
+    // (e.g. `"1.0.0++"`) is preserved: the old `len() == 2` path also
+    // swallowed the trailing `+`, and `split_once` puts it inside `ext`
+    // exactly the same way.
+    let plus_part = if let Some((base, ext)) = version_parts[2].split_once('+') {
+        version_parts[2] = base;
+        Some(ext)
     } else {
         None
     };

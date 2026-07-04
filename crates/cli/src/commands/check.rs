@@ -62,7 +62,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     if let FormatOptions::Stdout = args.format {
         println!("Found {} projects", projects.len());
     }
-    let mut update_map = gen_update_map(&CommandContext::current_dir()?, &ctx.config).await?;
+    let mut update_map = gen_update_map(&ctx.changepacks_dir(), &ctx.config).await?;
 
     // Apply reverse dependency updates (workspace:* dependencies)
     apply_reverse_dependencies(&mut update_map, &projects, &ctx.repo_root_path);
