@@ -226,10 +226,10 @@ pub fn detect_package_manager(dir: &Path) -> PackageManager {
         PackageManager::Pnpm
     } else if dir.join("yarn.lock").exists() {
         PackageManager::Yarn
-    } else if dir.join("package-lock.json").exists() {
-        PackageManager::Npm
     } else {
-        // Default to npm if no lock file found
+        // No bun/pnpm/yarn lockfile: default to npm. This also covers the
+        // package-lock.json case (npm), so no separate stat is needed here —
+        // detect_package_manager_recursive does its own package-lock.json check.
         PackageManager::Npm
     }
 }

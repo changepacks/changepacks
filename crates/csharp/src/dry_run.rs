@@ -208,7 +208,10 @@ async fn collect_nupkgs(dir: &Path) -> Result<Vec<String>> {
             out.push(path.to_string_lossy().into_owned());
         }
     }
-    out.sort();
+    // Unique `.nupkg` path strings from one directory — no equal-but-distinct
+    // elements, so stability is not observable; `sort_unstable` skips the
+    // stable-sort bookkeeping (mirrors check.rs's roots/deps rationale).
+    out.sort_unstable();
     Ok(out)
 }
 
