@@ -460,19 +460,6 @@ async fn execute_publish_loop(
 }
 
 #[cfg(test)]
-fn publish_result_from_failures(failed: &[String], total: usize) -> Result<()> {
-    if !failed.is_empty() {
-        anyhow::bail!(
-            "Failed to publish {} of {} project(s): {}",
-            failed.len(),
-            total,
-            failed.join(", ")
-        );
-    }
-    Ok(())
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use changepacks_core::{Language, Package, UpdateType};
@@ -578,40 +565,6 @@ mod tests {
         assert!(cli.publish.remote);
         assert_eq!(cli.publish.language.len(), 1);
         assert_eq!(cli.publish.project.len(), 1);
-    }
-
-    // Zero failures (regardless of total count) must return `Ok(())`.
-    #[rstest]
-    #[case(&[], 3)]
-    #[case(&[], 0)]
-    fn test_publish_result_ok(#[case] failed: &[String], #[case] total: usize) {
-        let result = publish_result_from_failures(failed, total);
-        assert!(result.is_ok());
-    }
-
-    // Any non-empty failure list must return `Err`, and the error message
-    // must include the `<failed>/<total>` count plus every failed name.
-    #[rstest]
-    #[case(&["pkg-a".to_string()], 3, "1 of 3", &["pkg-a"])]
-    #[case(
-        &["pkg-a".to_string(), "pkg-b".to_string()],
-        5,
-        "2 of 5",
-        &["pkg-a", "pkg-b"],
-    )]
-    fn test_publish_result_err(
-        #[case] failed: &[String],
-        #[case] total: usize,
-        #[case] expected_count: &str,
-        #[case] expected_names: &[&str],
-    ) {
-        let result = publish_result_from_failures(failed, total);
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains(expected_count));
-        for name in expected_names {
-            assert!(err_msg.contains(name));
-        }
     }
 
     #[test]
