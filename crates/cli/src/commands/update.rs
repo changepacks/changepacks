@@ -254,6 +254,18 @@ async fn apply_updates(
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
 
+    // Fast-path the dominant no-op case: a package-only repo has zero
+    // workspaces, so the `Vec<&dyn Package>` build + walk below and the
+    // trailing `join_all` over `workspace_projects` are pure no-ops. Bail
+    // here to skip that allocation and walk entirely. Behavior-preserving:
+    // an empty `workspace_projects` already produced an empty `join_all`,
+    // and `projects` is consumed only by that call. Semantic mirror of the
+    // `is_empty()` guards in `apply_reverse_dependencies`,
+    // `apply_update_on_rules`, and `RustWorkspace::update_workspace_dependencies`.
+    if workspace_projects.is_empty() {
+        return Ok(());
+    }
+
     // Preallocate: `FilterMap`'s `size_hint` reports
     // `(0, Some(update_projects.len()))` and `Vec::from_iter` reserves
     // against the LOWER bound (0), so a plain `.collect()` here hits

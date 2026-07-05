@@ -143,8 +143,10 @@ mod tests {
     use changepacks_node::package::NodePackage;
     use std::path::PathBuf;
 
-    // Helper function to create a test project with dependencies
-    // Dependencies are stored as paths (e.g., "p2" -> "p2/package.json")
+    // Helper function to create a test project with dependencies.
+    // Dependencies are stored as *names* (e.g., "p2"), matching every real
+    // finder — `add_dependency` records the raw name, never a relative path —
+    // and `sort_by_dependencies` resolves them by name via `name_to_index`.
     fn create_project(name: &str, dependencies: Vec<&str>) -> Project {
         let mut package = NodePackage::new(
             Some(name.to_string()),
@@ -153,7 +155,8 @@ mod tests {
             PathBuf::from(format!("{}/package.json", name)),
         );
         for dep in dependencies {
-            // Store dependency as path (e.g., "p2" -> "p2/package.json")
+            // Store dependency as a name (e.g., "p2") — the same form finders
+            // record, so the sort resolves it through `name_to_index`.
             package.add_dependency(dep);
         }
         Project::Package(Box::new(package))
@@ -306,7 +309,10 @@ mod tests {
 
     #[test]
     fn test_sort_self_reference_ignored() {
-        // p1 depends on itself (should be ignored as it's not in the name_to_index map correctly)
+        // p1 depends on itself: `p1` IS in `name_to_index`, so the self-edge
+        // gives p1 an in_degree of 1 that Kahn's loop never drains (its only
+        // dependency is itself). The trailing cyclic-fallback loop then appends
+        // it, so both projects still appear in the result.
         let p1 = create_project("p1", vec!["p1"]);
         let p2 = create_project("p2", vec![]);
 

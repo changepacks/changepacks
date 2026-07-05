@@ -65,19 +65,30 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     let (minor, patch) = rest
         .split_once('.')
         .ok_or_else(|| invalid_version(version))?;
-    if patch.contains('.') {
-        return Err(invalid_version(version));
-    }
 
-    // Optional `+build` suffix on the patch component. Semantics are
-    // byte-identical to the previous `split_once('+')` handling:
-    // `Some((patch, build))` when the marker is present, `None`
-    // otherwise. Multi-`+` inputs (`"1.0.0++"`) route the trailing `+`
-    // into `build`, matching the pre-existing round-trip.
+    // Split off the optional `+build` metadata BEFORE the dotted-patch
+    // guard below. Semver build metadata is itself a dot-separated
+    // identifier list (`1.2.3+4.5`, `1.2.3+build.7` are spec-valid), so
+    // the `.`-check must run on the numeric base ONLY — running it on the
+    // raw patch component would wrongly reject a valid `"1.2.3+4.5"`
+    // (patch component `"3+4.5"`) and abort the whole `update`.
+    // `Some((base, ext))` when the marker is present, `None` otherwise;
+    // multi-`+` inputs (`"1.0.0++"`) route the trailing `+` into `ext`,
+    // matching the pre-existing round-trip. The extension keeps its own
+    // dots and is re-appended verbatim below.
     let (patch, plus_part) = match patch.split_once('+') {
         Some((base, ext)) => (base, Some(ext)),
         None => (patch, None),
     };
+
+    // Reject a still-dotted patch base. A genuine 4th version component
+    // like `"1.2.3.4"` leaves `patch = "3.4"` (no `+`, so unchanged by the
+    // split above) and trips this guard exactly as before; because build
+    // metadata was already peeled off, its dots (`+4.5`) no longer reach
+    // here.
+    if patch.contains('.') {
+        return Err(invalid_version(version));
+    }
 
     // Version components are semver-scoped (spec: 32-bit safe), so `usize`
     // was the wrong type for a serialized format: platform-dependent (32 vs
@@ -120,6 +131,13 @@ mod tests {
     #[case("10.20.30", UpdateType::Minor, "10.21.0")]
     #[case("10.20.30", UpdateType::Patch, "10.20.31")]
     #[case("10.20.30+1", UpdateType::Patch, "10.20.31+1")]
+    // Build metadata is a dot-separated identifier list (semver spec): a
+    // dotted `+build` suffix must be accepted and round-tripped verbatim,
+    // not rejected by the numeric-patch `.`-guard. Regression anchor for
+    // the batch-plan item that moved the `+` split ahead of that guard.
+    #[case("1.2.3+4.5", UpdateType::Patch, "1.2.4+4.5")]
+    #[case("1.2.3+4.5", UpdateType::Major, "2.0.0+4.5")]
+    #[case("1.2.3+build.7", UpdateType::Minor, "1.3.0+build.7")]
     fn test_next_version(
         #[case] version: &str,
         #[case] update_type: UpdateType,

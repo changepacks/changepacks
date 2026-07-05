@@ -173,7 +173,17 @@ impl CSharpProjectFinder {
         };
         let mut is_workspace = false;
         while let Ok(Some(entry)) = entries.next_entry().await {
-            if entry.path().extension().is_some_and(|ext| ext == "sln") {
+            // Case-insensitive `.sln` match so a Windows-native
+            // `Solution.SLN` / `Foo.Sln` (mixed-case, common in Windows
+            // tooling) is recognized as a solution the same as lowercase
+            // `.sln`. Mirrors the case-insensitive `.csproj` gate already
+            // applied in `visit` and `extract_project_name_from_path`.
+            if entry
+                .path()
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("sln"))
+            {
                 is_workspace = true;
                 break;
             }
@@ -407,6 +417,50 @@ mod tests {
                 assert_eq!(ws.version(), Some("1.0.0"));
             }
             _ => panic!("Expected Workspace"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    /// Regression: a Windows-native uppercase `.SLN` sibling must classify
+    /// the `.csproj` as `Project::Workspace`, exactly like a lowercase
+    /// `.sln`. Locks in the case-insensitive `is_workspace` extension gate
+    /// so a future revert to a case-sensitive `ext == "sln"` compare (which
+    /// silently misclassified `MySolution.SLN` projects as `Package`) trips
+    /// immediately. Mirrors the case-insensitive `.csproj` coverage already
+    /// asserted in `test_extract_project_name_from_path`.
+    #[tokio::test]
+    async fn test_visit_workspace_with_uppercase_sln() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("TestProject.csproj");
+        let sln_path = temp_dir.path().join("TestSolution.SLN");
+
+        fs::write(
+            &csproj_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        fs::write(&sln_path, "Microsoft Visual Studio Solution File").unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&csproj_path, &PathBuf::from("TestProject.csproj"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.projects().len(), 1);
+        match finder.projects()[0] {
+            Project::Workspace(ws) => {
+                assert_eq!(ws.name(), Some("TestProject"));
+                assert_eq!(ws.version(), Some("1.0.0"));
+            }
+            _ => panic!("Expected Workspace (uppercase .SLN must be recognized)"),
         }
 
         temp_dir.close().unwrap();
