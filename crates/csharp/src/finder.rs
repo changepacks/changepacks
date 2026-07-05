@@ -211,19 +211,15 @@ fn collect_project_reference(e: &quick_xml::events::BytesStart<'_>, projects: &m
 /// propagation in `apply_reverse_dependencies` on Windows-native repos.
 /// Mirrors the case-insensitive extension gate now applied in `visit`.
 fn extract_project_name_from_path(path_str: &str) -> Option<String> {
-    // Split by both Windows (\) and Unix (/) separators.
-    // `str::rsplit(pat).next()` is documented to always return `Some(&str)`
-    // (an input with no separator yields `Some(path_str)` intact, and
-    // even `""` yields `Some("")`). The previous `.unwrap_or(path_str)`
-    // was a ghost fallback a reader had to trace to confirm was dead;
-    // `.expect(...)` collapses it to a documented invariant while
-    // preserving byte-identical behavior — the fallback branch was never
-    // hit at runtime. The extension gate below is the sole actual `None`
-    // source for this function.
+    // Split by both Windows (\) and Unix (/) separators; if there is no
+    // separator, the whole `path_str` IS the filename. `rsplit_once` returns
+    // `Some((prefix, tail))` when a separator is found and `None` otherwise,
+    // so `map_or` falls back to `path_str` intact — self-documenting, no
+    // unreachable panic surface. The extension gate below is the sole
+    // actual `None` source for this function.
     let filename = path_str
-        .rsplit(['\\', '/'])
-        .next()
-        .expect("str::rsplit always yields at least one element");
+        .rsplit_once(['\\', '/'])
+        .map_or(path_str, |(_, tail)| tail);
 
     // Split filename on the LAST `.` so `Foo.csproj` → (`Foo`, `csproj`)
     // and `Foo.tests.csproj` → (`Foo.tests`, `csproj`). Then gate on the

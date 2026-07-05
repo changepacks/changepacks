@@ -57,19 +57,21 @@ impl Workspace for RustWorkspace {
             .and_then(|p| p.get("version"))
             .is_some();
 
-        let fallback_name = self.name.as_deref().unwrap_or("_");
         if has_package {
             cargo_toml["package"]["version"] = new_version.as_str().into();
+            let fallback_name = self.name.as_deref().unwrap_or("_");
             if cargo_toml["package"].get("name").is_none() {
                 cargo_toml["package"]["name"] = fallback_name.into();
             }
         } else if !has_workspace_package_version {
             // No [package] and no [workspace.package].version — create [package]
+            let fallback_name = self.name.as_deref().unwrap_or("_");
             cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
             cargo_toml["package"]["version"] = new_version.as_str().into();
             cargo_toml["package"]["name"] = fallback_name.into();
         }
-        // else: virtual workspace — only [workspace.package].version needs updating (below)
+        // else: virtual workspace — only [workspace.package].version needs updating (below);
+        // `fallback_name` is not computed since [package] is untouched here.
 
         // Update [workspace.package].version if it exists.
         //

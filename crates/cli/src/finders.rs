@@ -7,6 +7,7 @@ use changepacks_python::PythonProjectFinder;
 use changepacks_rust::RustProjectFinder;
 
 /// Get finder list
+#[must_use]
 pub fn get_finders() -> Vec<Box<dyn ProjectFinder>> {
     vec![
         Box::new(NodeProjectFinder::new()),

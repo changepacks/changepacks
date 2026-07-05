@@ -142,7 +142,10 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
              includes the required PackageId / Version metadata.\n",
         );
         combined.success = false;
-        return Ok(combined);
+        // NOTE: no early return — fall through to the shared close block so
+        // any tempdir cleanup failure is surfaced on this path too. The push
+        // loop below is a no-op over the empty `nupkgs`, so semantics are
+        // byte-identical to the previous early return.
     }
 
     for nupkg in &nupkgs {
