@@ -3,8 +3,8 @@
 //! Dart project support for changepacks.
 //!
 //! Implements project discovery and version management for pubspec.yaml files. Parses YAML
-//! using the `yaml_serde` crate while maintaining formatting. Supports both single packages
-//! and workspace configurations with pub as the package manager.
+//! with `yaml_serde` and applies format-preserving edits via `yamlpatch`/`yamlpath`. Supports
+//! both single packages and workspace configurations with pub as the package manager.
 
 pub mod finder;
 pub mod package;

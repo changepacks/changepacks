@@ -20,6 +20,20 @@ pub fn split_version(version: &str) -> (Option<&str>, &str) {
     }
 }
 
+/// Rebuild a version specifier keeping its range prefix but swapping the
+/// numeric tail for `new_version`.
+///
+/// Splits `spec` via [`split_version`], discards the old numeric tail, and
+/// returns an owned `"<prefix><new_version>"` — the exact "preserve the
+/// prefix, replace the numeric tail" rebuild [`split_version`]'s own doc
+/// names as the intended caller pattern. Centralizing it here keeps that
+/// policy in ONE place instead of drifting between hand-rolled `format!`s.
+#[must_use]
+pub fn replace_version_keep_prefix(spec: &str, new_version: &str) -> String {
+    let (prefix, _) = split_version(spec);
+    format!("{}{new_version}", prefix.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -40,5 +54,19 @@ mod tests {
         let (prefix, version) = split_version(input);
         assert_eq!(prefix, expected.0);
         assert_eq!(version, expected.1);
+    }
+
+    #[rstest]
+    #[case("1.0.0", "2.0.0", "2.0.0")]
+    #[case("^1.0.0", "2.0.0", "^2.0.0")]
+    #[case("~1.2.3", "4.5.6", "~4.5.6")]
+    #[case(">=1.0.0", "2.0.0", ">=2.0.0")]
+    #[case("helloworld-1.0.2", "2.0.0", "helloworld-2.0.0")]
+    fn test_replace_version_keep_prefix(
+        #[case] spec: &str,
+        #[case] new_version: &str,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(replace_version_keep_prefix(spec, new_version), expected);
     }
 }

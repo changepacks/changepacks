@@ -3,8 +3,8 @@
 //! Python project support for changepacks.
 //!
 //! Implements project discovery and version management for pyproject.toml files. Parses
-//! TOML using the toml crate and preserves formatting when updating versions. Supports
-//! both single packages and workspace configurations.
+//! TOML using `toml_edit` for non-destructive formatting preservation when updating
+//! versions. Supports both single packages and workspace configurations.
 
 pub mod finder;
 pub mod package;

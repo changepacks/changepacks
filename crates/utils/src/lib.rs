@@ -45,7 +45,8 @@
 //! - **Config + directory management** — [`get_changepacks_config`] and
 //!   [`get_changepacks_config_at`] load `.changepacks/config.json` (with
 //!   sensible defaults for `ignore` / `baseBranch` / `publish` / `updateOn`);
-//!   [`get_changepacks_dir`] ensures the directory exists.
+//!   [`get_changepacks_dir`] resolves the `.changepacks` directory path
+//!   from the git repository root.
 
 mod clear_update_logs;
 mod detect_indent;
@@ -87,5 +88,5 @@ pub use get_relative_path::get_relative_path;
 pub use is_workspace_by_sibling::is_workspace_by_sibling;
 pub use next_version::{next_version, next_version_or_default};
 pub use sort_by_dep::sort_by_dependencies;
-pub use split_version::split_version;
+pub use split_version::{replace_version_keep_prefix, split_version};
 pub use trailing_newline::finalize_content;

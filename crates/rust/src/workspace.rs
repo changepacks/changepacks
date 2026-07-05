@@ -1,7 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
-use changepacks_utils::{finalize_content, next_version, split_version};
+use changepacks_utils::{
+    finalize_content, next_version, replace_version_keep_prefix, split_version,
+};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tokio::fs::{read_to_string, write};
@@ -131,13 +133,15 @@ impl Workspace for RustWorkspace {
                     && dep.get("path").is_some()
                     && let Some(ver_str) = dep.get("version").and_then(|v| v.as_str())
                 {
-                    let (prefix, ver) = split_version(ver_str);
-                    if ver == old_version {
-                        // `split_version` now borrows the prefix from `ver_str`
-                        // (which borrows `dep`); build the owned bumped string
+                    // Only the numeric tail (`split_version`'s `.1`) gates the
+                    // sync; the prefix-preserving rebuild is delegated to the
+                    // shared `replace_version_keep_prefix` so the "keep prefix,
+                    // swap version" policy lives next to `split_version`.
+                    if split_version(ver_str).1 == old_version {
+                        // `ver_str` borrows `dep`; build the owned bumped string
                         // BEFORE the `dep["version"] = ...` mutable index
                         // assignment so no shared borrow of `dep` outlives it.
-                        let bumped = format!("{}{new_version}", prefix.unwrap_or_default());
+                        let bumped = replace_version_keep_prefix(ver_str, &new_version);
                         dep["version"] = bumped.into();
                     }
                 }
@@ -254,12 +258,12 @@ impl Workspace for RustWorkspace {
             if let Some(current_version) = dep.get("version").and_then(|v| v.as_str())
                 && let Some(next_version) = package.version()
             {
-                // `split_version` is now total (no `Result`) and borrows the
-                // prefix from `current_version` (which borrows `dep`); build the
-                // owned bumped string BEFORE the `dep["version"] = ...` mutable
-                // index assignment so no shared borrow of `dep` outlives it.
-                let (prefix, _) = split_version(current_version);
-                let bumped = format!("{}{}", prefix.unwrap_or_default(), next_version);
+                // `current_version` borrows `dep`; delegate the prefix-
+                // preserving rebuild to the shared `replace_version_keep_prefix`
+                // and build the owned bumped string BEFORE the `dep["version"] =
+                // ...` mutable index assignment so no shared borrow of `dep`
+                // outlives it.
+                let bumped = replace_version_keep_prefix(current_version, next_version);
                 dep["version"] = bumped.into();
                 any_updated = true;
             }

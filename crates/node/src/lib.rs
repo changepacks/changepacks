@@ -217,7 +217,8 @@ pub fn node_modules_bin_dirs(start_dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Detects the package manager by checking for lock files in the given directory
-/// Priority: bun.lockb > pnpm-lock.yaml > yarn.lock > package-lock.json > npm (default)
+/// Priority: bun.lockb/bun.lock > pnpm-lock.yaml > yarn.lock > npm (default; a lone
+/// package-lock.json is resolved by `detect_package_manager_recursive`)
 #[must_use]
 pub fn detect_package_manager(dir: &Path) -> PackageManager {
     if dir.join("bun.lockb").exists() || dir.join("bun.lock").exists() {

@@ -8,7 +8,7 @@ Rust workspace crates implementing the changepacks CLI.
 |------|-------|--------------|
 | Add CLI command | `cli` | `src/commands/{name}.rs`, update `mod.rs` |
 | Add CLI option | `cli` | `src/options/{name}_options.rs` |
-| Add language support | `{lang}` | `finder.rs`, `package.rs`, `workspace.rs`, `lib.rs` |
+| Add language support | `{lang}` | `finder.rs`, `package.rs`, `workspace.rs`, `lib.rs` (+ `version_updater.rs` for `java`, `xml_utils.rs`/`dry_run.rs` for `csharp`) |
 | Modify core traits | `core` | `package.rs`, `workspace.rs`, `project_finder.rs` |
 | Add utility function | `utils` | New file in `src/`, export in `lib.rs` |
 | Version calculation | `utils` | `next_version.rs`, `split_version.rs` |
@@ -20,7 +20,8 @@ Rust workspace crates implementing the changepacks CLI.
 
 ### Language Crate Pattern
 
-Each language crate (`node`, `python`, `rust`, `dart`) follows identical structure:
+Each language crate (`node`, `python`, `rust`, `dart`, `java`, `csharp`) follows the
+same core structure:
 
 ```
 {lang}/src/
@@ -29,6 +30,10 @@ Each language crate (`node`, `python`, `rust`, `dart`) follows identical structu
 ├── package.rs     # impl Package - single package handling
 └── workspace.rs   # impl Workspace - monorepo root handling
 ```
+
+Some crates add language-specific helper files beside the four above:
+- `java` — `version_updater.rs` (Gradle property resolution via the wrapper)
+- `csharp` — `xml_utils.rs` (`.csproj` XML edits) and `dry_run.rs` (`dotnet nuget push` dry-run handling)
 
 All implement these `core` traits:
 - `Package` - version updates, publish commands, change detection
