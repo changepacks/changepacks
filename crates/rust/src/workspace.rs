@@ -1,7 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
-use changepacks_utils::{finalize_content, next_version_or_default, split_version};
+use changepacks_utils::{finalize_content, next_version, split_version};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use tokio::fs::{read_to_string, write};
@@ -38,11 +38,14 @@ impl Workspace for RustWorkspace {
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         // Hoisted `unwrap_or("0.0.0")` so the "reserve 0.0.0 when
         // unversioned" fallback is expressed ONCE, then reused BOTH for
-        // `next_version_or_default` here AND for the
-        // `[workspace.dependencies]` sync at the loop below. Matches the
-        // shared policy consolidated in `changepacks_utils::next_version_or_default`.
+        // `next_version` here AND for the `[workspace.dependencies]` sync
+        // at the loop below. Since the fallback is already applied inline,
+        // `next_version` is byte-identical to (and simpler than) the
+        // previous `next_version_or_default(Some(old_version), ...)`
+        // indirection — `_or_default`'s whole purpose is to fold that
+        // fallback, pointless once the fallback has already fired.
         let old_version = self.version.as_deref().unwrap_or("0.0.0");
-        let new_version = next_version_or_default(Some(old_version), update_type)?;
+        let new_version = next_version(old_version, update_type)?;
 
         let cargo_toml_raw = read_to_string(&self.path).await?;
         let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
@@ -148,6 +151,19 @@ impl Workspace for RustWorkspace {
     changepacks_core::impl_dependencies_accessors!();
 
     async fn update_workspace_dependencies(&self, packages: &[&dyn Package]) -> Result<()> {
+        // Zero-cost trivial-empty guard: on an empty `packages` slice the
+        // `.any(...)` below correctly returns `false`, but its predicate
+        // (`p.language() == Language::Rust && p.name().is_some()`) is
+        // wasted work per element on non-empty short-circuit paths. The
+        // dedicated `is_empty()` check short-circuits the predicate
+        // evaluation entirely — meaningful on the common `changepacks
+        // update` shape where no packages were queued for update. Matches
+        // the "fast-path for the dominant no-op case" pattern already
+        // applied to `apply_reverse_dependencies` and
+        // `apply_update_on_rules` in `changepacks-utils`.
+        if packages.is_empty() {
+            return Ok(());
+        }
         // Fast-path: if the caller feeds a cross-language `packages` slice
         // with zero eligible Rust entries (a common shape when the Node /
         // Python / Dart workspaces of a polyglot monorepo are updated in the

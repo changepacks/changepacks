@@ -135,8 +135,20 @@ fn apply_update_on_rules(
     // `update_map`. `trigger_matches` borrows from `config`, not from
     // `update_map`, so there is no borrow conflict here.
     let trigger_matches: Vec<(&String, &Vec<String>)> = {
-        let updated_paths: Vec<Cow<'_, str>> =
-            update_map.keys().map(|p| p.to_string_lossy()).collect();
+        // Preallocate: `HashMap::keys()` yields an `ExactSizeIterator`
+        // whose `size_hint = (len, Some(len))`, and `Vec::from_iter` DOES
+        // reserve against the exact upper bound in that case — so the
+        // previous `.collect()` was already zero-realloc. Switch to the
+        // explicit `Vec::with_capacity(update_map.len()) + .extend(...)`
+        // form purely for visual consistency with the `trigger_matches`
+        // preallocation a few lines below and the identical policy
+        // applied to `path_to_name` / `reverse_deps` / `packages_to_add`
+        // in the sibling `apply_reverse_dependencies`. Byte-identical
+        // output; the goal is a uniform preallocation idiom across this
+        // module so a future maintainer can trust every `Vec::from_iter`
+        // is deliberate.
+        let mut updated_paths: Vec<Cow<'_, str>> = Vec::with_capacity(update_map.len());
+        updated_paths.extend(update_map.keys().map(|p| p.to_string_lossy()));
         // `Filter`'s `size_hint` is `(0, Some(len))` and `Vec::from_iter`
         // reserves against the LOWER bound, so a plain `.collect()` here
         // incurs geometric-doubling reallocations on repos with many
@@ -249,10 +261,22 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         let dependencies = project.dependencies();
         if !dependencies.is_empty() {
             for dep_name in dependencies {
-                reverse_deps
-                    .entry(dep_name.clone())
-                    .or_default()
-                    .push((rel_path_buf.clone(), project_name.clone()));
+                // Fast-path: `HashMap::get_mut` on an existing key is zero-alloc,
+                // whereas `entry(dep_name.clone()).or_default()` unconditionally
+                // clones the `String` even when the entry already exists — common
+                // when multiple monorepo packages depend on the same core crate
+                // (e.g. `bridge/node` + `bridge/python` both depend on
+                // `changepacks`). Cloning is deferred to the cache-miss path
+                // only. Mirrors the sibling `gen_update_map`'s
+                // `HashMap::get_mut`-first idiom for its `PathBuf::clone`
+                // avoidance. `HashMap<String, _>::get_mut::<str>` works because
+                // `String: Borrow<str>`.
+                let entry = if let Some(existing) = reverse_deps.get_mut(dep_name.as_str()) {
+                    existing
+                } else {
+                    reverse_deps.entry(dep_name.clone()).or_default()
+                };
+                entry.push((rel_path_buf.clone(), project_name.clone()));
             }
         }
     }

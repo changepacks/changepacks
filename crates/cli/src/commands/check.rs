@@ -150,7 +150,7 @@ fn display_tree(
     // (one per project name) with byte-identical map contents.
     let mut name_to_project: HashMap<&str, &Project> = HashMap::with_capacity(projects.len());
     for project in projects {
-        name_to_project.insert(project.name().unwrap_or("noname"), project);
+        name_to_project.insert(project.name_or_noname(), project);
     }
 
     // Build reverse dependency graph: graph[dep] = list of projects that depend on dep
@@ -204,7 +204,7 @@ fn display_tree(
         }
 
         if !monorepo_deps.is_empty() {
-            graph.insert(project.name().unwrap_or("noname"), monorepo_deps);
+            graph.insert(project.name_or_noname(), monorepo_deps);
         }
     }
 
@@ -245,7 +245,7 @@ fn display_tree(
 
     // Root nodes are projects that are not dependencies of any other project
     for project in projects {
-        let name = project.name().unwrap_or("noname");
+        let name = project.name_or_noname();
         if !has_dependencies.contains(name) {
             roots.insert(name);
         }
@@ -260,7 +260,17 @@ fn display_tree(
     // elements are distinct by construction, and `str::cmp` is a total
     // order — stability is not observable in the printed tree. Skips the
     // stability bookkeeping the stable sort pays for.
-    let mut sorted_roots: Vec<&str> = roots.into_iter().collect();
+    //
+    // Preallocate: `HashSet::into_iter` reports `size_hint = (len,
+    // Some(len))` (ExactSize), so `.collect::<Vec<_>>()` DOES reserve
+    // capacity here — but making the reservation explicit matches the
+    // visually-uniform preallocation policy already applied throughout
+    // this same function (`name_to_project`, `graph`, `roots`,
+    // `has_dependencies`, `visited`, `monorepo_deps`). Byte-identical
+    // output; the goal is a uniform preallocation idiom so a future
+    // maintainer can trust every `Vec::from_iter` was deliberate.
+    let mut sorted_roots: Vec<&str> = Vec::with_capacity(roots.len());
+    sorted_roots.extend(roots);
     sorted_roots.sort_unstable();
 
     // Display tree starting from roots.
@@ -294,7 +304,7 @@ fn display_tree(
 
     // Display projects that weren't part of the tree (orphaned nodes)
     for project in projects {
-        if !visited.contains(project.name().unwrap_or("noname")) {
+        if !visited.contains(project.name_or_noname()) {
             println!(
                 "{}",
                 format_project_line(project, repo_root_path, update_map, &name_to_project)?
@@ -333,7 +343,7 @@ fn display_tree_node<'a>(
     // under multiple parents, so retiring the per-visit `String::from`
     // + `.clone()` pair collapses two heap ops per tree node down to a
     // pointer copy.
-    let project_name: &'a str = project.name().unwrap_or("noname");
+    let project_name: &'a str = project.name_or_noname();
     let is_first_visit = !visited.contains(project_name);
     if is_first_visit {
         visited.insert(project_name);
@@ -446,8 +456,19 @@ fn format_project_line(
     // `name_to_project` now keys on `&str` (see `display_tree`); the lookup
     // uses `dep.as_str()` because `HashMap<&str, _>::contains_key(&Q)`
     // needs `Q = str` (via `&str: Borrow<str>`), not `Q = String`.
-    let mut deps_str = String::new();
-    for dep in project.dependencies() {
+    //
+    // Preallocate: `String::new().push_str(...)` grows via geometric
+    // doubling on every dep addition. On projects with N monorepo
+    // dependencies (rendered as `\n        core\n        utils\n...`),
+    // that's `log2(total_len)` reallocations per project displayed —
+    // multiplied through every `display_tree_node` visit. Summing
+    // `dep.len() + 9` (each dep name plus its `\n        ` separator, 9
+    // bytes) is a tight upper bound that overshoots by at most one
+    // separator (the first dep skips the leading separator). Matches the
+    // preallocation policy already applied throughout the workspace.
+    let deps = project.dependencies();
+    let mut deps_str = String::with_capacity(deps.iter().map(|d| d.len() + 9).sum());
+    for dep in deps {
         if !name_to_project.contains_key(dep.as_str()) {
             continue;
         }

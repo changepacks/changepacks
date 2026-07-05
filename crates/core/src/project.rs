@@ -32,6 +32,20 @@ impl Project {
         }
     }
 
+    /// Return the project's name, or the shared `"noname"` sentinel when
+    /// the manifest supplies no `name` field.
+    ///
+    /// Centralizes the `project.name().unwrap_or("noname")` sentinel used
+    /// throughout `check.rs::display_tree` and matched inside
+    /// `Project::format_line` for its own `noname` fallback. A future
+    /// rename of the sentinel (e.g. `"anonymous"`, `"unknown"`) lands in
+    /// one place instead of every open-coded call site. Byte-identical
+    /// output to the previous open-coded pattern.
+    #[must_use]
+    pub fn name_or_noname(&self) -> &str {
+        self.name().unwrap_or("noname")
+    }
+
     #[must_use]
     pub fn version(&self) -> Option<&str> {
         match self {

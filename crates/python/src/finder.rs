@@ -100,6 +100,17 @@ impl ProjectFinder for PythonProjectFinder {
             // all use this name). Pure rename — behavior unchanged.
             let relative_path_key = relative_path.to_path_buf();
 
+            // Hoist the `[tool.uv]` lookup ONCE: both the workspace guard
+            // below and the `[tool.uv.sources]` walk further down previously
+            // walked the identical `pyproject_toml.get("tool").and_then(|t|
+            // t.get("uv"))` chain independently. `Option<&Item>` is `Copy`,
+            // so caching the intermediate binding lets both call sites reuse
+            // it — saves one HashMap-style lookup per Python-project visit
+            // on every `check` / `update` / `publish` invocation. Behavior
+            // is byte-identical: both branches short-circuit on the same
+            // `None` positions.
+            let uv_table = pyproject_toml.get("tool").and_then(|t| t.get("uv"));
+
             // if workspace
             //
             // Flat `.and_then` chain matches the sibling Rust finder's
@@ -108,12 +119,7 @@ impl ProjectFinder for PythonProjectFinder {
             // stylistic parity across the finder module. Byte-identical
             // to the previous nested closure: both short-circuit on the
             // same `None` positions.
-            let mut project = if pyproject_toml
-                .get("tool")
-                .and_then(|t| t.get("uv"))
-                .and_then(|u| u.get("workspace"))
-                .is_some()
-            {
+            let mut project = if uv_table.and_then(|u| u.get("workspace")).is_some() {
                 Project::Workspace(Box::new(PythonWorkspace::new(
                     name,
                     version,
@@ -135,9 +141,7 @@ impl ProjectFinder for PythonProjectFinder {
             // (e.g. `pkg-a = { path = "../pkg-a" }`), not an array of strings.
             // Iterate it as a table so Python packages actually register their
             // workspace deps for topological publish ordering.
-            if let Some(sources) = pyproject_toml
-                .get("tool")
-                .and_then(|t| t.get("uv"))
+            if let Some(sources) = uv_table
                 .and_then(|u| u.get("sources"))
                 .and_then(toml_edit::Item::as_table_like)
             {
