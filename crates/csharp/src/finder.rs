@@ -80,7 +80,18 @@ impl CSharpProjectFinder {
         let mut in_property_group = false;
         let mut in_version = false;
         let mut version: Option<String> = None;
-        let mut projects: Vec<String> = Vec::new();
+        // Preallocate against the typical `<ProjectReference>` fan-out
+        // observed in test fixtures (2 refs in
+        // `test_visit_package_with_project_references`,
+        // `test_extract_project_references`, and
+        // `test_parse_csproj_metadata_returns_version_and_refs_in_one_pass`).
+        // 4 comfortably covers the common 1-4 range without over-reserving
+        // on `.csproj` files with zero project references. Closes the last
+        // preallocation gap in this function and matches the
+        // `Vec::with_capacity(256)` policy applied to `buf` right above —
+        // the sibling preallocation policy shared with `sort_by_dep.rs`,
+        // `gen_update_map.rs`, and `filter_project_dirs.rs`.
+        let mut projects: Vec<String> = Vec::with_capacity(4);
 
         loop {
             match reader.read_event_into(&mut buf) {

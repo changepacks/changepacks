@@ -302,15 +302,25 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // (`apply_reverse_dependencies` runs on every `changepacks update` and
     // every `changepacks check`).
     //
-    // Preallocate against `update_map.len()` — a tight upper bound
-    // because `filter_map` yields AT MOST one `String` per `update_map`
-    // key (`path_to_name` is 1-to-1). `.collect::<Vec<_>>()` on a
-    // `filter_map` reports `size_hint = (0, Some(update_map.len()))` and
-    // `Vec::from_iter` reserves against the LOWER bound, so on repos
-    // with many `updateOn` triggers the collect hits 2-3 geometric-
-    // doubling reallocations. Matches the preallocation policy already
-    // applied to `path_to_name`, `reverse_deps`, and `packages_to_add`
-    // in this same function.
+    // Preallocate against `update_map.len()` — an UPPER bound, not a
+    // tight fit. Two independent reasons the actual seed count can be
+    // strictly LESS than `update_map.len()`:
+    //   (a) `filter_map` drops any `update_map` key that isn't present in
+    //       `path_to_name` (an unrecognized project path — e.g. a stale
+    //       changepack log referring to a package that was later removed
+    //       from the workspace, or an `updateOn`-injected dependent path
+    //       whose project row hasn't been visited yet).
+    //   (b) The DFS loop below `push`es additional names as it discovers
+    //       reverse-dep edges, so the working capacity may still grow past
+    //       the initial reservation — the `with_capacity` here just
+    //       eliminates the geometric-doubling reallocations for the seed
+    //       fill, matching the `Vec::from_iter` note below.
+    // `.collect::<Vec<_>>()` on a `filter_map` reports `size_hint = (0,
+    // Some(update_map.len()))` and `Vec::from_iter` reserves against the
+    // LOWER bound, so on repos with many `updateOn` triggers the collect
+    // hits 2-3 geometric-doubling reallocations. Matches the preallocation
+    // policy already applied to `path_to_name`, `reverse_deps`, and
+    // `packages_to_add` in this same function.
     //
     // Traversal order is DFS, not BFS: `Vec::pop` yields the last-pushed
     // element (LIFO), so a `to_process.push(dep_name.clone())` inside the

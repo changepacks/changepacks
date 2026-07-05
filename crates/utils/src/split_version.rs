@@ -9,10 +9,17 @@
 /// `Err` variant (both match arms already returned `Ok(...)`), so callers
 /// wrote `?` / `.unwrap()` against a `None` case that could never happen.
 pub fn split_version(version: &str) -> (Option<String>, String) {
-    let first_digit_pos = version
-        .char_indices()
-        .find(|(_, c)| c.is_ascii_digit())
-        .map(|(pos, _)| pos);
+    // Byte-level scan: the predicate is `is_ascii_digit()` (a byte-level
+    // check), and ASCII digits are single-byte / cannot appear inside a
+    // multi-byte UTF-8 sequence, so `.bytes().position(...)` returns the
+    // same byte offset as the previous `.char_indices().find(...).map(...)`
+    // chain — with less indirection (no per-char UTF-8 decode, no
+    // `.map(|(pos, _)| pos)` bookkeeping that discards the char it just
+    // decoded). The `Some(pos)` from a byte hit is always a valid char
+    // boundary because the digit itself is single-byte, so slicing
+    // `version[..pos]` / `version[pos..]` below stays panic-free even on
+    // multi-byte prefixes like `λ-1.0.0`.
+    let first_digit_pos = version.bytes().position(|b| b.is_ascii_digit());
 
     match first_digit_pos {
         Some(0) | None => (None, version.to_string()),

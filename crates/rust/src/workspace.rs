@@ -71,14 +71,27 @@ impl Workspace for RustWorkspace {
         }
         // else: virtual workspace — only [workspace.package].version needs updating (below)
 
-        // Update [workspace.package].version if it exists
-        if let Some(ws_pkg) = cargo_toml
+        // Update [workspace.package].version if it exists.
+        //
+        // Single-lookup `get_mut` chain: mirrors the "single lookup + type
+        // check via `get_mut(..)`" idiom already used by
+        // `update_workspace_dependencies` below (see the comment near
+        // `dependencies.get_mut(package_name).and_then(as_inline_table_mut)`).
+        // The previous shape called `as_table_mut()` + `contains_key("version")`
+        // and then re-indexed `ws_pkg["version"] = ...`, doing the HashMap-style
+        // key walk twice and carrying a latent panic surface behind the
+        // `contains_key` gate. `get_mut("version")` returns `None` when the key
+        // is missing, so no `version` key is added to a `[workspace.package]`
+        // table that lacks one — byte-identical to the previous behavior
+        // (test_rust_workspace_update_version_virtual_workspace fixes the
+        // has-version path; the without-version path stays a no-op just as
+        // before).
+        if let Some(ws_pkg_version) = cargo_toml
             .get_mut("workspace")
             .and_then(|w| w.get_mut("package"))
-            .and_then(|p| p.as_table_mut())
-            && ws_pkg.contains_key("version")
+            .and_then(|p| p.get_mut("version"))
         {
-            ws_pkg["version"] = toml_edit::value(new_version.as_str());
+            *ws_pkg_version = toml_edit::value(new_version.as_str());
         }
 
         // Sync [workspace.dependencies] for local path deps whose version matched
