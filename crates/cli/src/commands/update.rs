@@ -78,10 +78,20 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     .await?;
 
     // Apply reverse dependency updates (workspace:* dependencies)
-    let all_projects: Vec<&Project> = all_finders
-        .iter()
-        .flat_map(|finder| finder.projects())
-        .collect();
+    //
+    // Preallocate: `FlatMap`'s `size_hint` is `(0, None)` — no upper
+    // bound — so `Vec::from_iter` reserves nothing and every flatten
+    // grows via geometric doubling. `all_finders.iter().map(|f|
+    // f.projects().len()).sum::<usize>()` is a tight upper bound
+    // (each nested iterator yields exactly `projects().len()` refs).
+    // Matches the identical idiom already used a few lines below at
+    // `let cap: usize = project_finders.iter().map(|f| f.projects()
+    // .len()).sum();`, and the preallocation policy applied
+    // throughout `sort_by_dep.rs`, `gen_update_map.rs`, and
+    // `apply_reverse_dependencies`. Byte-identical output.
+    let cap: usize = all_finders.iter().map(|f| f.projects().len()).sum();
+    let mut all_projects: Vec<&Project> = Vec::with_capacity(cap);
+    all_projects.extend(all_finders.iter().flat_map(|finder| finder.projects()));
     apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
 
     // Merge workspace-inherited package updates into workspace entries
@@ -243,16 +253,22 @@ async fn apply_updates(
     .into_iter()
     .collect::<Result<Vec<_>>>()?;
 
-    let projects: Vec<&dyn Package> = update_projects
-        .iter()
-        .filter_map(|(project, _)| {
-            if let Project::Package(package) = project {
-                Some(package.as_ref())
-            } else {
-                None
-            }
-        })
-        .collect();
+    // Preallocate: `FilterMap`'s `size_hint` reports
+    // `(0, Some(update_projects.len()))` and `Vec::from_iter` reserves
+    // against the LOWER bound (0), so a plain `.collect()` here hits
+    // geometric-doubling reallocations. `update_projects.len()` is a tight
+    // upper bound (the filter only drops `Project::Workspace` variants —
+    // typically 0-1 entries in a package-heavy update). Matches the
+    // preallocation policy already applied a few lines above at
+    // `let mut update_projects = Vec::with_capacity(update_map.len());`
+    // and across `sort_by_dep.rs`, `gen_update_map.rs`, and
+    // `apply_reverse_dependencies`. Byte-identical output.
+    let mut projects: Vec<&dyn Package> = Vec::with_capacity(update_projects.len());
+    for (project, _) in update_projects.iter() {
+        if let Project::Package(package) = project {
+            projects.push(package.as_ref());
+        }
+    }
 
     futures::future::join_all(
         workspace_projects

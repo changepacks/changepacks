@@ -208,6 +208,90 @@ fn skip_dry_run_due_to_workspace_internal_dep(
         .any(|dep| bumped_package_names.contains(dep.as_str()))
 }
 
+/// Shared per-project success recorder for both `execute_publish_loop` and
+/// `execute_dry_run_publish_loop`.
+///
+/// Both loops previously open-coded the same `Stdout / Json` matrix around
+/// their success arms; only the human-facing label differed
+/// (`"Successfully published"` vs `"Dry-run succeeded for"`). Extracted so a
+/// future JSON-shape or stdout-formatting tweak lands in one place.
+///
+/// Preserves every message string byte-for-byte: the caller supplies the
+/// exact `<label> {project}` prefix, matching the format used by the
+/// integration tests (`test_execute_dry_run_loop_skips_workspace_internal_dep_*`).
+/// Takes `output` by value so the `PublishResult::new(..., output.stdout,
+/// output.stderr)` move stays zero-clone on the JSON path, matching the
+/// pre-refactor shape.
+fn record_publish_success(
+    result_map: &mut BTreeMap<PathBuf, PublishResult>,
+    project: &Project,
+    output: PublishOutput,
+    success_label: &str,
+    format: &FormatOptions,
+) {
+    if let FormatOptions::Stdout = format {
+        print_publish_output(&output);
+        println!("{success_label} {project}");
+    }
+    if let FormatOptions::Json = format {
+        result_map.insert(
+            project.relative_path().to_path_buf(),
+            PublishResult::new(true, None, output.stdout, output.stderr),
+        );
+    }
+}
+
+/// Shared per-project failure recorder for both publish loops.
+///
+/// Handles BOTH the "non-zero-exit `Ok(output)`" case (`output_opt = Some`,
+/// `err_opt = None`) and the "spawn error `Err(e)`" case (`output_opt =
+/// None`, `err_opt = Some`). Preserves the subtle stdout distinction the
+/// old loops maintained:
+///
+///   - `Ok(output)` with `output.success == false` prints
+///     `print_publish_output(&output); eprintln!("{label} {project}");`
+///   - `Err(e)` prints `eprintln!("{label} {project}: {e}");` (with the
+///     `: {e}` suffix).
+///
+/// Byte-identical to the pre-refactor arms — including the trailing
+/// `failed_projects.push(format!("{project}"))` shared by both. Ok(None)
+/// (dry-run unsupported) stays inline in the dry-run loop because it is
+/// a warning, not a failure, and does not fit this helper's contract.
+fn record_publish_failure(
+    result_map: &mut BTreeMap<PathBuf, PublishResult>,
+    failed_projects: &mut Vec<String>,
+    project: &Project,
+    output_opt: Option<PublishOutput>,
+    err_opt: Option<&anyhow::Error>,
+    failure_label: &str,
+    format: &FormatOptions,
+) {
+    if let FormatOptions::Stdout = format {
+        match (&output_opt, err_opt) {
+            (Some(output), _) => {
+                print_publish_output(output);
+                eprintln!("{failure_label} {project}");
+            }
+            (None, Some(e)) => {
+                eprintln!("{failure_label} {project}: {e}");
+            }
+            (None, None) => {}
+        }
+    }
+    if let FormatOptions::Json = format {
+        let (stdout, stderr, err_msg) = match (output_opt, err_opt) {
+            (Some(output), _) => (output.stdout, output.stderr, None),
+            (None, Some(e)) => (String::new(), String::new(), Some(e.to_string())),
+            (None, None) => (String::new(), String::new(), None),
+        };
+        result_map.insert(
+            project.relative_path().to_path_buf(),
+            PublishResult::new(false, err_msg, stdout, stderr),
+        );
+    }
+    failed_projects.push(format!("{project}"));
+}
+
 async fn execute_dry_run_publish_loop(
     projects: &[&Project],
     config: &Config,
@@ -263,31 +347,32 @@ async fn execute_dry_run_publish_loop(
         }
         match project.dry_run_publish(config).await {
             Ok(Some(output)) if output.success => {
-                if let FormatOptions::Stdout = format {
-                    print_publish_output(&output);
-                    println!("Dry-run succeeded for {project}");
-                }
-                if let FormatOptions::Json = format {
-                    result_map.insert(
-                        project.relative_path().to_path_buf(),
-                        PublishResult::new(true, None, output.stdout, output.stderr),
-                    );
-                }
+                record_publish_success(
+                    &mut result_map,
+                    project,
+                    output,
+                    "Dry-run succeeded for",
+                    format,
+                );
             }
             Ok(Some(output)) => {
-                if let FormatOptions::Stdout = format {
-                    print_publish_output(&output);
-                    eprintln!("Dry-run failed for {project}");
-                }
-                if let FormatOptions::Json = format {
-                    result_map.insert(
-                        project.relative_path().to_path_buf(),
-                        PublishResult::new(false, None, output.stdout, output.stderr),
-                    );
-                }
-                failed_projects.push(format!("{project}"));
+                record_publish_failure(
+                    &mut result_map,
+                    &mut failed_projects,
+                    project,
+                    Some(output),
+                    None,
+                    "Dry-run failed for",
+                    format,
+                );
             }
             Ok(None) => {
+                // Ok(None) stays inline: dry-run unsupported is a warning,
+                // not a failure (`failed_projects` is NOT bumped), so it
+                // does not fit `record_publish_failure`'s contract. The
+                // JSON side also records `success = true` with an
+                // explanatory error field, not the `success = false`
+                // shape `record_publish_failure` produces.
                 if let FormatOptions::Stdout = format {
                     eprintln!(
                         "Dry-run not supported for {project}; skipping. \
@@ -308,21 +393,15 @@ async fn execute_dry_run_publish_loop(
                 }
             }
             Err(e) => {
-                if let FormatOptions::Stdout = format {
-                    eprintln!("Dry-run failed for {project}: {e}");
-                }
-                if let FormatOptions::Json = format {
-                    result_map.insert(
-                        project.relative_path().to_path_buf(),
-                        PublishResult::new(
-                            false,
-                            Some(e.to_string()),
-                            String::new(),
-                            String::new(),
-                        ),
-                    );
-                }
-                failed_projects.push(format!("{project}"));
+                record_publish_failure(
+                    &mut result_map,
+                    &mut failed_projects,
+                    project,
+                    None,
+                    Some(&e),
+                    "Dry-run failed for",
+                    format,
+                );
             }
         }
     }
@@ -344,46 +423,35 @@ async fn execute_publish_loop(
         }
         match project.publish(config).await {
             Ok(output) if output.success => {
-                if let FormatOptions::Stdout = format {
-                    print_publish_output(&output);
-                    println!("Successfully published {project}");
-                }
-                if let FormatOptions::Json = format {
-                    result_map.insert(
-                        project.relative_path().to_path_buf(),
-                        PublishResult::new(true, None, output.stdout, output.stderr),
-                    );
-                }
+                record_publish_success(
+                    &mut result_map,
+                    project,
+                    output,
+                    "Successfully published",
+                    format,
+                );
             }
             Ok(output) => {
-                if let FormatOptions::Stdout = format {
-                    print_publish_output(&output);
-                    eprintln!("Failed to publish {project}");
-                }
-                if let FormatOptions::Json = format {
-                    result_map.insert(
-                        project.relative_path().to_path_buf(),
-                        PublishResult::new(false, None, output.stdout, output.stderr),
-                    );
-                }
-                failed_projects.push(format!("{project}"));
+                record_publish_failure(
+                    &mut result_map,
+                    &mut failed_projects,
+                    project,
+                    Some(output),
+                    None,
+                    "Failed to publish",
+                    format,
+                );
             }
             Err(e) => {
-                if let FormatOptions::Stdout = format {
-                    eprintln!("Failed to publish {project}: {e}");
-                }
-                if let FormatOptions::Json = format {
-                    result_map.insert(
-                        project.relative_path().to_path_buf(),
-                        PublishResult::new(
-                            false,
-                            Some(e.to_string()),
-                            String::new(),
-                            String::new(),
-                        ),
-                    );
-                }
-                failed_projects.push(format!("{project}"));
+                record_publish_failure(
+                    &mut result_map,
+                    &mut failed_projects,
+                    project,
+                    None,
+                    Some(&e),
+                    "Failed to publish",
+                    format,
+                );
             }
         }
     }

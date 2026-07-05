@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use changepacks_core::{ChangePackLog, ChangePackResultLog, Config, Project, UpdateType};
 use glob::Pattern;
 use tokio::fs::{read_dir, read_to_string};
@@ -51,8 +51,17 @@ pub async fn gen_update_map(
         HashMap::with_capacity(paths.len());
     let bodies: Vec<String> =
         futures::future::try_join_all(paths.iter().map(read_to_string)).await?;
-    for body in bodies {
-        let file_json: ChangePackLog = serde_json::from_str(&body)?;
+    // Zip `paths` with `bodies` so a malformed `changepack_log_*.json`
+    // surfaces WHICH file failed rather than a bare `serde_json` error.
+    // Users then jump straight to the offender instead of grepping every
+    // changepack log. Matches the `with_context` pattern already applied
+    // in `get_changepacks_config.rs` and `filter_project_dirs.rs`, and
+    // costs zero on the happy path (the closure is only invoked on the
+    // error path). `try_join_all` above already guarantees `bodies.len()
+    // == paths.len()` so the zip is in-lockstep.
+    for (path, body) in paths.iter().zip(bodies) {
+        let file_json: ChangePackLog = serde_json::from_str(&body)
+            .with_context(|| format!("Failed to parse changepack log {}", path.display()))?;
         for (project_path, update_type) in file_json.changes() {
             // Fast-path: `HashMap::get_mut` on an existing key is zero-alloc,
             // whereas `entry(project_path.clone()).or_insert(...)` unconditionally
@@ -461,6 +470,51 @@ mod tests {
             // remain
             assert!(update_map[&temp_path.join("package2")].0 == UpdateType::Major);
         }
+        temp_dir.close().unwrap();
+    }
+
+    // Regression: a malformed `changepack_log_*.json` must surface WHICH
+    // file failed to parse rather than a bare `serde_json` error, so users
+    // can jump straight to the offender instead of grepping every
+    // changepack log. Locks in the `.with_context(|| format!("Failed to
+    // parse changepack log {}", path.display()))` wrapper on the
+    // `serde_json::from_str` call above.
+    #[tokio::test]
+    async fn test_gen_update_map_reports_bad_log_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        let config = Config::default();
+
+        std::process::Command::new("git")
+            .arg("init")
+            .current_dir(temp_path)
+            .output()
+            .unwrap();
+
+        let changepacks_dir = temp_path.join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).await.unwrap();
+
+        // Drop a malformed log into the changepacks dir. `not valid json`
+        // fails the `serde_json::from_str` step deterministically.
+        let bad_log_path = changepacks_dir.join("changepack_log_bad.json");
+        fs::write(&bad_log_path, "not valid json").await.unwrap();
+
+        let err = gen_update_map(&changepacks_dir, &config)
+            .await
+            .expect_err("malformed changepack log must surface as an error");
+        // `{err:#}` renders the anyhow chain, so the wrapping
+        // `with_context` message is included alongside the inner
+        // `serde_json` error.
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("changepack_log_bad.json"),
+            "expected path in error message, got: {msg}"
+        );
+        assert!(
+            msg.contains("Failed to parse changepack log"),
+            "expected context prefix in error message, got: {msg}"
+        );
+
         temp_dir.close().unwrap();
     }
 

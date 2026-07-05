@@ -73,12 +73,20 @@ impl ProjectFinder for PythonProjectFinder {
             // uses (see `ensure_project_table` in `crates/python/src/lib.rs`).
             // Both name and version fall through to `None` when the table
             // is missing, exactly like the constructor arguments accept.
-            let project = pyproject_toml.get("project");
+            // Renamed from `project` to `project_table` to match the field
+            // it represents (`[project]` TOML table) and eliminate the
+            // visual clash with the `let mut project = if pyproject_toml
+            // .get("tool")...` binding a dozen lines below (which holds a
+            // `changepacks_core::Project`, not an `Option<&Item>`).
+            // Matches the sibling Rust finder's `package_str(doc, field)`
+            // pattern where the lookup target is passed in rather than
+            // aliased into a shadowed binding. Pure rename.
+            let project_table = pyproject_toml.get("project");
 
             // Both branches use the same name/version and the same path;
             // hoist so each branch collapses to a single constructor call.
-            let version = project_str(project, "version");
-            let name = project_str(project, "name");
+            let version = project_str(project_table, "version");
+            let name = project_str(project_table, "name");
             // Rename `path_buf` → `path_key` to align with the Java and
             // CSharp finders' local naming convention: the value is used
             // once as the `HashMap` insert key (the "key" role), while
@@ -93,9 +101,17 @@ impl ProjectFinder for PythonProjectFinder {
             let relative_path_key = relative_path.to_path_buf();
 
             // if workspace
+            //
+            // Flat `.and_then` chain matches the sibling Rust finder's
+            // `workspace_package_str` idiom (crates/rust/src/finder.rs) and
+            // the `[tool.uv.sources]` walk a few lines below, restoring
+            // stylistic parity across the finder module. Byte-identical
+            // to the previous nested closure: both short-circuit on the
+            // same `None` positions.
             let mut project = if pyproject_toml
                 .get("tool")
-                .and_then(|t| t.get("uv").and_then(|u| u.get("workspace")))
+                .and_then(|t| t.get("uv"))
+                .and_then(|u| u.get("workspace"))
                 .is_some()
             {
                 Project::Workspace(Box::new(PythonWorkspace::new(

@@ -97,11 +97,22 @@ pub async fn handle_changepack_with_prompter(
             vec![projects[0]]
         } else {
             let message = format!("Select projects to update for {update_type}");
-            let defaults = projects
-                .iter()
-                .enumerate()
-                .filter_map(|(index, project)| project.is_changed().then_some(index))
-                .collect::<Vec<_>>();
+            // Preallocate: `FilterMap`'s `size_hint` reports
+            // `(0, Some(projects.len()))` and `Vec::from_iter` reserves
+            // against the LOWER bound (0), so a plain `.collect()` here
+            // hits geometric-doubling reallocations whenever many projects
+            // are marked changed. `projects.len()` is a tight upper bound
+            // (each iteration pushes AT MOST one index). Matches the
+            // preallocation policy already applied across `sort_by_dep.rs`,
+            // `gen_update_map.rs`, `filter_project_dirs.rs`,
+            // `apply_reverse_dependencies`, and `check.rs`. Byte-identical
+            // output (same indices, same order).
+            let mut defaults = Vec::with_capacity(projects.len());
+            for (index, project) in projects.iter().enumerate() {
+                if project.is_changed() {
+                    defaults.push(index);
+                }
+            }
             prompter.multi_select(&message, projects.clone(), defaults)?
         };
 
