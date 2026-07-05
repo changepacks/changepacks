@@ -87,7 +87,7 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     // components hit, so the `format!` outputs stay unchanged.
     let parse = |s: &str| -> Result<u64> {
         s.parse::<u64>()
-            .with_context(|| format!("Invalid version: {version}"))
+            .with_context(|| format!("Invalid version format: {version}"))
     };
 
     // Rebuild via `format!` — one allocation for the result string, no
