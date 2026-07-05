@@ -51,11 +51,6 @@ impl Workspace for RustWorkspace {
         let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
 
         let has_package = cargo_toml.get("package").is_some();
-        let has_workspace_package_version = cargo_toml
-            .get("workspace")
-            .and_then(|w| w.get("package"))
-            .and_then(|p| p.get("version"))
-            .is_some();
 
         if has_package {
             cargo_toml["package"]["version"] = new_version.as_str().into();
@@ -63,15 +58,33 @@ impl Workspace for RustWorkspace {
             if cargo_toml["package"].get("name").is_none() {
                 cargo_toml["package"]["name"] = fallback_name.into();
             }
-        } else if !has_workspace_package_version {
-            // No [package] and no [workspace.package].version — create [package]
-            let fallback_name = self.name.as_deref().unwrap_or("_");
-            cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
-            cargo_toml["package"]["version"] = new_version.as_str().into();
-            cargo_toml["package"]["name"] = fallback_name.into();
+        } else {
+            // No [package] section: the 3-hop `[workspace.package].version`
+            // walk is now computed HERE instead of unconditionally at the
+            // top of the function. On the dominant "has [package]" shape
+            // (typical single-crate + workspace root — the shape used by
+            // the changepacks repo itself), the has_package arm above never
+            // reads the workspace-package-version answer, so hoisting it
+            // into this branch skips the
+            // `get(..).and_then(..).and_then(..).is_some()` trip on every
+            // has_package invocation. Byte-identical semantics: the else
+            // branch is still guarded on "no [package] AND no
+            // [workspace.package].version".
+            let has_workspace_package_version = cargo_toml
+                .get("workspace")
+                .and_then(|w| w.get("package"))
+                .and_then(|p| p.get("version"))
+                .is_some();
+            if !has_workspace_package_version {
+                // No [package] and no [workspace.package].version — create [package]
+                let fallback_name = self.name.as_deref().unwrap_or("_");
+                cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
+                cargo_toml["package"]["version"] = new_version.as_str().into();
+                cargo_toml["package"]["name"] = fallback_name.into();
+            }
+            // else: virtual workspace — only [workspace.package].version needs updating
+            // (below); `fallback_name` is not computed since [package] is untouched here.
         }
-        // else: virtual workspace — only [workspace.package].version needs updating (below);
-        // `fallback_name` is not computed since [package] is untouched here.
 
         // Update [workspace.package].version if it exists.
         //

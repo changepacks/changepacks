@@ -74,21 +74,30 @@ pub async fn find_project_dirs(
         let file_path_str = file_path.to_str_lossy();
         let path = Path::new(file_path_str.as_ref());
 
-        // Check if this file matches any of the project files
-        // Insert absolute path using git_root_path.join(parent)
-        let abs_path = git_root_path.join(path);
+        // Check if this file matches any of the project files.
+        //
         // `path` is ALREADY the git-relative path from the gix index entry, so
         // the previous `get_relative_path(git_root_path, git_root_path.join(path))`
         // trip was strip_prefix over the same prefix we just joined — a
         // guaranteed round-trip that allocated a fresh `PathBuf` per tracked
         // file. Pass `path` (which is `&Path`) directly to both call sites.
 
-        // Skip if path matches ignore patterns (gitignore supports ! negation)
+        // Skip if path matches ignore patterns (gitignore supports ! negation).
+        // Do this BEFORE joining `abs_path`: on a monorepo whose config
+        // discards most files (e.g. this repo's own
+        // `["**/*", "!crates/changepacks/Cargo.toml", …]`), every tracked
+        // file passes through here but only a handful survive the filter.
+        // Joining after the guard skips one `PathBuf::join` allocation per
+        // ignored file — byte-identical semantics because `abs_path` is only
+        // used inside the `try_join_all` visit call below.
         if let Some(ref gitignore) = gitignore
             && gitignore.matched(path, false).is_ignore()
         {
             continue;
         }
+
+        // Insert absolute path using git_root_path.join(parent).
+        let abs_path = git_root_path.join(path);
 
         futures::future::try_join_all(
             project_finders

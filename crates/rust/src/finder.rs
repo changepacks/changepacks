@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use changepacks_core::{Package, Project, ProjectFinder};
+use changepacks_core::{Package, Project, ProjectFinder, is_regular_file};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -318,11 +318,13 @@ impl ProjectFinder for RustProjectFinder {
                 let candidate = parent.join("Cargo.toml");
                 // AGENTS.md rule: all file ops via `tokio::fs`. A stat error
                 // is treated as "does not exist", matching the previous
-                // sync `is_file()` fallthrough on error.
-                if tokio::fs::metadata(&candidate)
-                    .await
-                    .map(|m| m.is_file())
-                    .unwrap_or(false)
+                // sync `is_file()` fallthrough on error. Delegated to the
+                // shared `changepacks_core::is_regular_file` helper so the
+                // same "stat, coerce error to false" shape lives in ONE
+                // place — this is the same import + call the CSharp finder
+                // already uses (`crates/csharp/src/finder.rs:3` + call site
+                // in its own `finalize`).
+                if is_regular_file(&candidate).await
                     && let Ok(content) = read_to_string(&candidate).await
                     && let Ok(parsed) = content.parse::<toml_edit::DocumentMut>()
                     && let Some(version) = workspace_package_str(&parsed, "version")
