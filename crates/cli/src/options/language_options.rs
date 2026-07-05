@@ -24,6 +24,20 @@ impl From<CliLanguage> for Language {
     }
 }
 
+/// Return whether `lang` matches any CLI-selected language in `langs`.
+///
+/// The single "does this project's language match the `--language` filter"
+/// predicate, shared by [`retain_by_language`] (which filters a `Vec<&Project>`)
+/// and the `update_map.retain(...)` closure in `commands/update.rs` (which
+/// filters a `HashMap` via a precomputed path→language map). A future language
+/// alias (e.g. `--language kotlin` mapping to `Language::Java`) now lands in
+/// exactly one place. Both call sites short-circuit on the first match,
+/// iterating `langs` in insertion order.
+#[must_use]
+pub fn language_slice_contains(langs: &[CliLanguage], lang: Language) -> bool {
+    langs.iter().any(|&l| Language::from(l) == lang)
+}
+
 /// Retain only projects whose language matches one of `langs`.
 ///
 /// No-op when `langs` is empty (the CLI convention: an empty `--language`
@@ -32,23 +46,17 @@ impl From<CliLanguage> for Language {
 /// `publish`, and `changepacks` — one place to evolve the semantics
 /// (e.g. accept a `Language::Java` alias for `--language kotlin`).
 ///
-/// Filters in-place with an inline `.iter().any(...)` pass over `langs`
-/// rather than pre-collecting a transient `Vec<Language>`. Both
-/// `CliLanguage` and `Language` are `Copy` enums with sub-word variants,
-/// so the intermediate `Vec` was pure heap allocation with no cache win
-/// on the tiny `--language` list (typically 1–2 items). Inlining also
-/// obviates the `Vec::contains` call, which does the same linear scan the
-/// `any` closure now does directly. Behavior is byte-identical because
-/// `Vec::contains` and `Iterator::any` both short-circuit on the first
-/// match and both iterate `langs` in insertion order.
+/// Delegates the per-project predicate to [`language_slice_contains`], the
+/// same match rule the `update_map.retain(...)` closure in
+/// `commands/update.rs` uses — so both filter shells share one definition of
+/// "does this language match the `--language` selection". Behavior is
+/// byte-identical: the predicate short-circuits on the first match and
+/// iterates `langs` in insertion order.
 pub fn retain_by_language(langs: &[CliLanguage], projects: &mut Vec<&Project>) {
     if langs.is_empty() {
         return;
     }
-    projects.retain(|project| {
-        let lang = project.language();
-        langs.iter().any(|&l| Language::from(l) == lang)
-    });
+    projects.retain(|project| language_slice_contains(langs, project.language()));
 }
 
 #[cfg(test)]

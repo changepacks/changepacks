@@ -125,10 +125,17 @@ pub async fn handle_changepack_with_prompter(
         // walked ONCE per update-type turn instead of twice — and the
         // sort order is preserved because `keep_projects` accumulates in
         // input order, matching the previous filter behaviour byte-for-byte.
-        let selected_ptrs: std::collections::HashSet<*const Project> = selected_projects
-            .iter()
-            .map(|&p| std::ptr::from_ref(p))
-            .collect();
+        //
+        // Preallocate: `HashSet::from_iter` (via `.collect()`) does NOT reserve
+        // from `Iterator::size_hint`, so the fill rehashes as it grows — and it
+        // runs inside the per-update-type loop (≤3 turns). `selected_projects.len()`
+        // is the exact upper bound, so seeding + `.extend(...)` skips those
+        // rehashes. Matches the preallocation policy already applied throughout
+        // this file (`defaults`, `keep_projects`) and the workspace. Byte-identical
+        // pointer-set membership.
+        let mut selected_ptrs: std::collections::HashSet<*const Project> =
+            std::collections::HashSet::with_capacity(selected_projects.len());
+        selected_ptrs.extend(selected_projects.iter().map(|&p| std::ptr::from_ref(p)));
 
         let mut keep_projects: Vec<_> = Vec::with_capacity(projects.len());
         for (project, rel_path) in projects.iter().copied().zip(rel_paths) {

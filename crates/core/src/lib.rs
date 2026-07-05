@@ -24,7 +24,7 @@ pub use changepack_result::{ChangePackResult, ChangePackResultLog};
 pub use config::Config;
 pub use language::Language;
 pub use package::Package;
-pub use project::Project;
+pub use project::{Project, format_version_display};
 pub use project_finder::{ProjectFinder, is_regular_file};
 pub use publish::PublishOutput;
 pub use publish_result::PublishResult;

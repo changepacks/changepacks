@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use changepacks_core::UpdateType;
 
 /// Single anyhow constructor for every "Invalid version format: <v>" error
@@ -85,8 +85,7 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     // cross-platform determinism for edge inputs. `Display` for `u64` is
     // byte-identical to `Display` for `usize` at the values real semver
     // components hit, so the `format!` outputs stay unchanged.
-    let parse =
-        |s: &str| -> Result<u64> { s.parse::<u64>().with_context(|| invalid_version(version)) };
+    let parse = |s: &str| -> Result<u64> { s.parse::<u64>().map_err(|_| invalid_version(version)) };
 
     // Rebuild via `format!` — one allocation for the result string, no
     // per-part heap traffic. Lower components reset to `0` for Major /

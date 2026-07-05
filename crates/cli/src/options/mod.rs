@@ -3,4 +3,4 @@ mod format_options;
 mod language_options;
 pub use filter_options::FilterOptions;
 pub use format_options::FormatOptions;
-pub use language_options::{CliLanguage, retain_by_language};
+pub use language_options::{CliLanguage, language_slice_contains, retain_by_language};

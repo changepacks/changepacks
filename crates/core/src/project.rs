@@ -23,6 +23,18 @@ pub enum Project {
     Package(Box<dyn Package>),
 }
 
+/// Format an optional version string as `v{version}`, or `"unknown"` when absent.
+///
+/// Single source of truth for the "unknown"/`v{v}` version-display policy shared
+/// by [`Project::version_display`] and `changepacks_utils::display_update`'s
+/// current-version rendering. A future rewording (e.g. "no version" instead of
+/// "unknown", or a different prefix) now lands in exactly one place across both
+/// crates. Byte-identical to the previously open-coded `map_or_else` copies.
+#[must_use]
+pub fn format_version_display(version: Option<&str>) -> String {
+    version.map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
+}
+
 impl Project {
     #[must_use]
     pub fn name(&self) -> Option<&str> {
@@ -162,8 +174,7 @@ impl Project {
     /// "unknown", or a different prefix) now lands in exactly one place.
     #[must_use]
     pub fn version_display(&self) -> String {
-        self.version()
-            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
+        format_version_display(self.version())
     }
 
     /// Render the project's canonical one-line label (`[Workspace - Node] name

@@ -14,8 +14,7 @@ pub fn display_update(current_version: Option<&str>, update_type: UpdateType) ->
     // The `Some` vs `None` split now only carries the `"v"`-prefix vs
     // `"unknown"` DISPLAY distinction.
     let next_version = next_version_or_default(current_version, update_type)?;
-    let current_display =
-        current_version.map_or_else(|| "unknown".to_string(), |v| format!("v{v}"));
+    let current_display = changepacks_core::format_version_display(current_version);
     Ok(format!("{current_display} → v{next_version}"))
 }
 

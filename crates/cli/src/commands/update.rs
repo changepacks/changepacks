@@ -16,7 +16,7 @@ use clap::Args;
 use crate::{
     CommandContext,
     finders::get_finders,
-    options::{CliLanguage, FormatOptions},
+    options::{CliLanguage, FormatOptions, language_slice_contains},
     prompter::{InquirePrompter, Prompter},
 };
 
@@ -128,17 +128,16 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
                 path_to_language.insert(rel, project.language());
             }
         }
-        // Filter with an inline `args.language.iter().any(...)` over the tiny
-        // (1-2 item) `--language` flag list instead of pre-collecting a
-        // transient `Vec<Language>`: both `CliLanguage` and `Language` are
-        // `Copy` enums, so the intermediate `Vec` was pure heap allocation
-        // with no cache win — matching the `retain_by_language` idiom in
-        // `options/language_options.rs`. Byte-identical filtering (both
-        // short-circuit on the first match, iterate `args.language` in order).
+        // Filter through the shared `language_slice_contains` predicate — the
+        // same match rule `retain_by_language` uses in
+        // `options/language_options.rs`, so the "does this language match the
+        // `--language` selection" rule has one definition across both filter
+        // shells. Byte-identical filtering (short-circuits on the first match,
+        // iterates `args.language` in order).
         update_map.retain(|path, _| {
             path_to_language
                 .get(path)
-                .is_some_and(|lang| args.language.iter().any(|&l| Language::from(l) == *lang))
+                .is_some_and(|lang| language_slice_contains(&args.language, *lang))
         });
     }
 

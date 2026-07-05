@@ -86,23 +86,15 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                     } else {
                         "".normal()
                     };
-                    // Compute the relative-path key ONCE and match on the
-                    // update_map lookup, so `project.version_display()` appears
-                    // in exactly one place instead of duplicated across the
-                    // `else if` and trailing `else` arms. The `update_map_empty`
-                    // fast-path guard is preserved (skips the `get_relative_path`
-                    // allocation when the map is empty — the dominant case).
-                    // `Project::version_display()` is the shared "unknown"/"v{v}"
-                    // formatting method — the same one `Project::format_line`
-                    // routes through when no override is supplied.
+                    // Fast-path preserved: when `update_map` is empty, skip the
+                    // shared resolver entirely (its `get_relative_path` key can
+                    // never hit an empty map — the dominant case). Otherwise
+                    // delegate to `version_display_with_update`, the one resolver
+                    // shared with `format_project_line`'s tree / orphan path.
                     let version_str = if update_map_empty {
                         project.version_display()
                     } else {
-                        let key = get_relative_path(&ctx.repo_root_path, project.path())?;
-                        match update_map.get(&key) {
-                            Some(update_type) => display_update(project.version(), update_type.0)?,
-                            None => project.version_display(),
-                        }
+                        version_display_with_update(project, &ctx.repo_root_path, &update_map)?
                     };
                     println!(
                         "{}{}",
@@ -417,6 +409,29 @@ fn display_tree_node<'a>(
     Ok(())
 }
 
+/// Resolve a project's display version, applying a pending `update_map`
+/// bump when present.
+///
+/// Single source of truth for "resolve the repo-relative key, render
+/// `display_update` when the map carries a pending bump, else fall back to
+/// `version_display`" — shared by the `check` stdout flat-list arm and
+/// `format_project_line` (tree / orphan path). Byte-identical to the two
+/// previously open-coded copies.
+///
+/// # Errors
+/// Returns error if the repo-relative path or the update display cannot be computed.
+fn version_display_with_update(
+    project: &Project,
+    repo_root_path: &Path,
+    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+) -> Result<String> {
+    let key = get_relative_path(repo_root_path, project.path())?;
+    Ok(match update_map.get(&key) {
+        Some(update_entry) => display_update(project.version(), update_entry.0)?,
+        None => project.version_display(),
+    })
+}
+
 /// Format a project line for display
 ///
 /// Excluded from coverage: tarpaulin mis-attributes the `display_update`
@@ -433,12 +448,7 @@ fn format_project_line(
 ) -> Result<String> {
     use colored::Colorize;
 
-    let relative_path = get_relative_path(repo_root_path, project.path())?;
-    let version = if let Some(update_entry) = update_map.get(&relative_path) {
-        display_update(project.version(), update_entry.0)?
-    } else {
-        project.version_display()
-    };
+    let version = version_display_with_update(project, repo_root_path, update_map)?;
 
     let changed_marker = if project.is_changed() {
         " (changed)".bright_yellow()
