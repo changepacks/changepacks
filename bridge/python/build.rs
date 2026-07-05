@@ -11,10 +11,8 @@ fn main() {
         // Enable position-independent code for shared libraries
         build.flag("-fPIC");
 
-        // Set target if cross-compiling
-        if let Ok(target) = std::env::var("TARGET") {
-            build.target(&target);
-        }
+        // Set target if cross-compiling (guaranteed non-empty inside the `linux` guard)
+        build.target(&target);
 
         build.compile("endian_helper");
 
@@ -26,11 +24,9 @@ fn main() {
 
         // For newer linkers (ubuntu-22.04, x86_64-unknown-linux-gnu), use simple linking
         // to avoid duplicate symbols
-        if target == "x86_64-unknown-linux-gnu" {
-            println!("cargo:rustc-link-lib=static=endian_helper");
-        } else {
-            // For older linkers (manylinux2014, ARM, etc.), we need to be more explicit
-            println!("cargo:rustc-link-lib=static=endian_helper");
+        println!("cargo:rustc-link-lib=static=endian_helper");
+        // For older linkers (manylinux2014, ARM, etc.), we need to be more explicit
+        if target != "x86_64-unknown-linux-gnu" {
             println!("cargo:rustc-link-arg-bins=-Wl,--no-as-needed");
             // Force include all symbols from the static library
             println!("cargo:rustc-link-arg-bins=-Wl,--whole-archive");

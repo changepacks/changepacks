@@ -289,7 +289,7 @@ fn record_publish_failure(
             PublishResult::new(false, err_msg, stdout, stderr),
         );
     }
-    failed_projects.push(format!("{project}"));
+    failed_projects.push(project.to_string());
 }
 
 async fn execute_dry_run_publish_loop(
