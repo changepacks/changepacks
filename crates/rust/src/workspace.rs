@@ -18,22 +18,12 @@ pub struct RustWorkspace {
 }
 
 impl RustWorkspace {
-    #[must_use]
-    pub fn new(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-    ) -> Self {
-        Self {
-            path,
-            relative_path,
-            name,
-            version,
-            is_changed: false,
-            dependencies: HashSet::new(),
-        }
-    }
+    // Byte-identical `#[must_use] pub fn new(name, version, path,
+    // relative_path)` constructor body shared with every other
+    // "plain 5-basic-field" language crate's `Package` / `Workspace`.
+    // Consolidated via `impl_default_new!()` in `changepacks-core` — see
+    // that macro's doc for the exact struct-field contract.
+    changepacks_core::impl_default_new!();
 }
 
 #[async_trait]

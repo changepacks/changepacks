@@ -139,13 +139,26 @@ impl Project {
         }
     }
 
+    /// Format the project's version as `v{version}` or `"unknown"` when absent.
+    ///
+    /// Single source of truth for the "unknown"/"v{v}" version-formatting
+    /// pattern shared by `Project::format_line` (when no `version_override`
+    /// is supplied) and `check.rs::format_project_line` (the CLI's tree /
+    /// stdout display). A future rewording (e.g. "no version" instead of
+    /// "unknown", or a different prefix) now lands in exactly one place.
+    #[must_use]
+    pub fn version_display(&self) -> String {
+        self.version()
+            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
+    }
+
     /// Render the project's canonical one-line label (`[Workspace - Node] name
     /// (v1.0.0) - path`) with optional version override.
     ///
     /// `version_override` is used verbatim when supplied (typically a
     /// pre-formatted "v1.0.0 -> v1.1.0 (minor)" upgrade string from
     /// `changepacks_utils::display_update`); when `None`, the current version
-    /// is rendered as `v{version}` or `unknown`. Extracted from `Display` so
+    /// is rendered via `self.version_display()`. Extracted from `Display` so
     /// `check.rs::format_project_line` reuses the exact same base formatting.
     #[must_use]
     pub fn format_line(&self, version_override: Option<&str>) -> String {
@@ -153,20 +166,14 @@ impl Project {
         // Workspace → "[Workspace - {lang}]", Package → "[{lang}]". Destructure
         // once so a future label/formatting change only needs to be applied in
         // one place.
-        let (label_prefix, lang, name, ver, rel_path) = match self {
-            Self::Workspace(w) => (
-                "Workspace - ",
-                w.language(),
-                w.name(),
-                w.version(),
-                w.relative_path(),
-            ),
-            Self::Package(p) => ("", p.language(), p.name(), p.version(), p.relative_path()),
+        let (label_prefix, lang, name, rel_path) = match self {
+            Self::Workspace(w) => ("Workspace - ", w.language(), w.name(), w.relative_path()),
+            Self::Package(p) => ("", p.language(), p.name(), p.relative_path()),
         };
-        let version = version_override.map_or_else(
-            || ver.map_or_else(|| "unknown".to_string(), |v| format!("v{v}")),
-            ToString::to_string,
-        );
+        // Route the None-override branch through `self.version_display()` so
+        // the "unknown"/"v{v}" formatting policy lives in exactly one place —
+        // shared with `check.rs::format_project_line`'s CLI display path.
+        let version = version_override.map_or_else(|| self.version_display(), ToString::to_string);
         format!(
             "{} {} {} {} {}",
             format!("[{label_prefix}{lang}]").bright_blue().bold(),

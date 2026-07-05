@@ -34,17 +34,6 @@ pub struct CheckArgs {
     pub language: Vec<CliLanguage>,
 }
 
-/// Format a project's version as `v{version}` or `"unknown"` when absent.
-///
-/// Extracted so `handle_check` and `format_project_line` share ONE
-/// definition — the two display paths must stay in lock-step for any
-/// future format tweak (e.g. adding a suffix, changing "unknown" wording).
-fn version_display(project: &Project) -> String {
-    project
-        .version()
-        .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
-}
-
 /// Check project status
 ///
 /// # Errors
@@ -98,18 +87,21 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                         "".normal()
                     };
                     // Compute the relative-path key ONCE and match on the
-                    // update_map lookup, so `version_display(project)` appears in
-                    // exactly one place instead of duplicated across the
+                    // update_map lookup, so `project.version_display()` appears
+                    // in exactly one place instead of duplicated across the
                     // `else if` and trailing `else` arms. The `update_map_empty`
                     // fast-path guard is preserved (skips the `get_relative_path`
                     // allocation when the map is empty — the dominant case).
+                    // `Project::version_display()` is the shared "unknown"/"v{v}"
+                    // formatting method — the same one `Project::format_line`
+                    // routes through when no override is supplied.
                     let version_str = if update_map_empty {
-                        version_display(project)
+                        project.version_display()
                     } else {
                         let key = get_relative_path(&ctx.repo_root_path, project.path())?;
                         match update_map.get(&key) {
                             Some(update_type) => display_update(project.version(), update_type.0)?,
-                            None => version_display(project),
+                            None => project.version_display(),
                         }
                     };
                     println!(
@@ -435,7 +427,7 @@ fn format_project_line(
     let version = if let Some(update_entry) = update_map.get(&relative_path) {
         changepacks_utils::display_update(project.version(), update_entry.0)?
     } else {
-        version_display(project)
+        project.version_display()
     };
 
     let changed_marker = if project.is_changed() {
