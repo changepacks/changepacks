@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
 use std::{
@@ -68,25 +68,18 @@ impl ProjectFinder for DartProjectFinder {
             let pubspec: yaml_serde::Value = yaml_serde::from_str(&pubspec_yaml)?;
 
             // Check if this is a workspace (melos workspace or similar).
-            // AGENTS.md rule: all file ops via `tokio::fs`. `try_exists`
-            // treats a stat error (broken symlink, permission denied) as
-            // "does not exist", matching the previous sync `is_file()`
-            // fallthrough on error.
-            //
-            // Short-circuit: when the pubspec's inline `workspace:` field
-            // is already present, skip building the sibling `melos.yaml`
-            // PathBuf and issuing the async `try_exists` syscall. Mirrors
-            // the same optimization the node finder applies to
-            // `pnpm-workspace.yaml` (retry-now#0010).
-            let is_workspace = if pubspec.get("workspace").is_some() {
-                true
-            } else {
-                let melos_yaml = path
-                    .parent()
-                    .with_context(|| format!("Parent not found - {}", path.display()))?
-                    .join("melos.yaml");
-                tokio::fs::try_exists(&melos_yaml).await.unwrap_or(false)
-            };
+            // Short-circuit: when the pubspec's inline `workspace:` field is
+            // already present, skip the sibling `melos.yaml` stat. Shared with
+            // the Node finder via `changepacks_utils::is_workspace_by_sibling`
+            // — the one source of truth for the "declared field OR fixed
+            // sibling file" policy (stat error → not-a-workspace; all file ops
+            // via `tokio::fs`).
+            let is_workspace = changepacks_utils::is_workspace_by_sibling(
+                pubspec.get("workspace").is_some(),
+                path,
+                "melos.yaml",
+            )
+            .await?;
 
             // Both branches use the same name/version and the same path;
             // hoist so each branch collapses to a single constructor call.

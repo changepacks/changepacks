@@ -153,8 +153,9 @@ fn display_tree(
         name_to_project.insert(project.name_or_noname(), project);
     }
 
-    // Build reverse dependency graph: graph[dep] = list of projects that depend on dep
-    // This way, dependencies appear as children in the tree
+    // Build the forward dependency graph: graph[project] = that project's
+    // monorepo-local dependency names, which `display_tree_node` renders as
+    // that project's children in the tree below.
     // Preallocate: `projects.len()` is a tight upper bound for every map/set built
     // below by a single pass over `projects`. Matches the preallocation policy
     // already applied in `sort_by_dep.rs` and `apply_reverse_dependencies`.

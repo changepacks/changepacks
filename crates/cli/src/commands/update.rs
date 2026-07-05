@@ -113,11 +113,6 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // (map entry × project) pair — dropping allocations from `M × N` to
     // `N` (one PathBuf per project) plus `M` HashMap lookups.
     if !args.language.is_empty() {
-        let allowed_languages: Vec<Language> = args
-            .language
-            .iter()
-            .map(|&lang| Language::from(lang))
-            .collect();
         // Preallocate: `HashMap::from_iter` (via `collect`) does NOT use
         // `size_hint` to reserve capacity (unlike `Vec`), so on a
         // language-filtered `changepacks update -l rust` against a large
@@ -133,10 +128,17 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
                 path_to_language.insert(rel, project.language());
             }
         }
+        // Filter with an inline `args.language.iter().any(...)` over the tiny
+        // (1-2 item) `--language` flag list instead of pre-collecting a
+        // transient `Vec<Language>`: both `CliLanguage` and `Language` are
+        // `Copy` enums, so the intermediate `Vec` was pure heap allocation
+        // with no cache win — matching the `retain_by_language` idiom in
+        // `options/language_options.rs`. Byte-identical filtering (both
+        // short-circuit on the first match, iterate `args.language` in order).
         update_map.retain(|path, _| {
             path_to_language
                 .get(path)
-                .is_some_and(|lang| allowed_languages.contains(lang))
+                .is_some_and(|lang| args.language.iter().any(|&l| Language::from(l) == *lang))
         });
     }
 

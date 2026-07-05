@@ -2,13 +2,13 @@ use anyhow::{Context, Result};
 use changepacks_core::UpdateType;
 
 /// Single anyhow constructor for every "Invalid version format: <v>" error
-/// path in `next_version`. Consolidating the three previous inline
-/// `anyhow::anyhow!("Invalid version format: {version}")` sites into one
+/// path in `next_version` — the three early-exit branches (the two
+/// `split_once('.')` misses and the `patch.contains('.')` guard) plus the
+/// `parse` closure's `u64`-parse failure. Routing all four sites through one
 /// helper means a future rewording (e.g. adding valid-shape guidance) only
-/// touches one location, so the message can never drift between the three
-/// early-exit branches. Pure code-quality gain — error path only, so
-/// `bench_next_version` (which feeds `"10.20.30"` / `"10.20.30+42"`, the
-/// happy path) cannot be affected.
+/// touches one location, so the message can never drift between them. Pure
+/// code-quality gain — error path only, so `bench_next_version` (which feeds
+/// `"10.20.30"` / `"10.20.30+42"`, the happy path) cannot be affected.
 fn invalid_version(v: &str) -> anyhow::Error {
     anyhow::anyhow!("Invalid version format: {v}")
 }
@@ -85,10 +85,8 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     // cross-platform determinism for edge inputs. `Display` for `u64` is
     // byte-identical to `Display` for `usize` at the values real semver
     // components hit, so the `format!` outputs stay unchanged.
-    let parse = |s: &str| -> Result<u64> {
-        s.parse::<u64>()
-            .with_context(|| format!("Invalid version format: {version}"))
-    };
+    let parse =
+        |s: &str| -> Result<u64> { s.parse::<u64>().with_context(|| invalid_version(version)) };
 
     // Rebuild via `format!` — one allocation for the result string, no
     // per-part heap traffic. Lower components reset to `0` for Major /

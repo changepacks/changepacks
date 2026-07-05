@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
 use std::{
@@ -76,23 +76,16 @@ impl ProjectFinder for NodeProjectFinder {
             // Workspace detection is short-circuited: a `workspaces` field in
             // `package.json` (npm / yarn / bun monorepos — the common case)
             // is enough on its own, so only fall back to a `pnpm-workspace.yaml`
-            // stat when that field is absent. This skips one async filesystem
-            // syscall + one `PathBuf` allocation per non-pnpm workspace.
-            // AGENTS.md rule: all file ops via `tokio::fs`. `try_exists`
-            // treats a stat error (broken symlink, permission denied) as
-            // "does not exist", matching the previous sync `is_file()`
-            // fallthrough on error.
-            let is_workspace = if package_json.get("workspaces").is_some() {
-                true
-            } else {
-                let pnpm_workspace_yaml = path
-                    .parent()
-                    .with_context(|| format!("Parent not found - {}", path.display()))?
-                    .join("pnpm-workspace.yaml");
-                tokio::fs::try_exists(&pnpm_workspace_yaml)
-                    .await
-                    .unwrap_or(false)
-            };
+            // stat when that field is absent. Shared with the Dart finder via
+            // `changepacks_utils::is_workspace_by_sibling` — the one source of
+            // truth for the "declared field OR fixed sibling file" policy
+            // (stat error → not-a-workspace; all file ops via `tokio::fs`).
+            let is_workspace = changepacks_utils::is_workspace_by_sibling(
+                package_json.get("workspaces").is_some(),
+                path,
+                "pnpm-workspace.yaml",
+            )
+            .await?;
             let mut project = if is_workspace {
                 Project::Workspace(Box::new(NodeWorkspace::new(
                     name,

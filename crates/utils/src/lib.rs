@@ -12,6 +12,10 @@
 //!   against the repo root. The concrete [`ThreadSafeRepository`] handle is
 //!   re-exported so downstream crates (e.g. `changepacks-cli`) can cache it
 //!   without a direct `gix` dep.
+//! - **Workspace-by-sibling detection** — [`is_workspace_by_sibling`] decides
+//!   whether a discovered manifest roots a workspace, either from an
+//!   in-manifest field or a fixed sibling file (`pnpm-workspace.yaml`,
+//!   `melos.yaml`), shared by the Node and Dart finders.
 //! - **Semver arithmetic** — [`next_version`] applies an `UpdateType` bump
 //!   to a version string; [`next_version_or_default`] wraps it with a
 //!   `0.0.0` fallback for the unversioned-manifest case shared across every
@@ -54,6 +58,7 @@ mod get_changepacks_config;
 mod get_changepacks_dir;
 mod get_relative_path;
 mod is_changepack_log;
+mod is_workspace_by_sibling;
 mod next_version;
 mod sort_by_dep;
 mod split_version;
@@ -77,6 +82,7 @@ pub use gen_update_map::{apply_reverse_dependencies, gen_update_map};
 pub use get_changepacks_config::{get_changepacks_config, get_changepacks_config_at};
 pub use get_changepacks_dir::get_changepacks_dir;
 pub use get_relative_path::get_relative_path;
+pub use is_workspace_by_sibling::is_workspace_by_sibling;
 pub use next_version::{next_version, next_version_or_default};
 pub use sort_by_dep::sort_by_dependencies;
 pub use split_version::split_version;
