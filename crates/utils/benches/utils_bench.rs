@@ -60,10 +60,10 @@ fn bench_next_version(c: &mut Criterion) {
 
 fn bench_split_version(c: &mut Criterion) {
     c.bench_function("split_version/prefixed", |b| {
-        b.iter(|| split_version(black_box(">=1.0.0+build1")).unwrap());
+        b.iter(|| black_box(split_version(black_box(">=1.0.0+build1"))));
     });
     c.bench_function("split_version/plain", |b| {
-        b.iter(|| split_version(black_box("1.0.0-alpha.1+build1")).unwrap());
+        b.iter(|| black_box(split_version(black_box("1.0.0-alpha.1+build1"))));
     });
 }
 

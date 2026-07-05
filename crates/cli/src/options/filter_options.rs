@@ -30,8 +30,14 @@ mod tests {
     use clap::ValueEnum;
     use rstest::rstest;
     use std::collections::HashSet;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
+    // Field name `is_changed` matches the `impl_basic_accessors!()` macro
+    // contract (see `crates/core/src/project_finder.rs`). Adopting the shared
+    // macros here locks the field-name contract at one more test surface —
+    // the same way every `Package`/`Workspace` mock in
+    // `crates/core/src/{package,workspace,project,project_finder}.rs::tests`
+    // and `crates/cli/src/commands/check.rs::tests` already does.
     #[derive(Debug)]
     struct MockPackage {
         name: Option<String>,
@@ -40,49 +46,26 @@ mod tests {
         version: Option<String>,
         language: Language,
         dependencies: HashSet<String>,
-        changed: bool,
+        is_changed: bool,
     }
 
     #[async_trait]
     impl Package for MockPackage {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
+        // Same macro adoption as every real-world `Package` impl and every
+        // other test mock in the workspace — collapses the seven trivial
+        // accessors (`name`, `version`, `path`, `relative_path`,
+        // `is_changed`, `set_changed`, `set_name`) into one invocation and
+        // the two dependency accessors (`dependencies`, `add_dependency`)
+        // into another.
+        changepacks_core::impl_basic_accessors!();
+        changepacks_core::impl_dependencies_accessors!();
 
         async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
             Ok(())
         }
 
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-
         fn language(&self) -> Language {
             self.language
-        }
-
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
         }
 
         fn default_publish_command(&self) -> String {
@@ -93,6 +76,8 @@ mod tests {
         }
     }
 
+    // Field name `is_changed` matches the `impl_basic_accessors!()` macro
+    // contract (see `MockPackage` above for rationale).
     #[derive(Debug)]
     struct MockWorkspace {
         name: Option<String>,
@@ -101,49 +86,24 @@ mod tests {
         version: Option<String>,
         language: Language,
         dependencies: HashSet<String>,
-        changed: bool,
+        is_changed: bool,
     }
 
     #[async_trait]
     impl Workspace for MockWorkspace {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
+        // Same macro adoption as `MockPackage` above — the `Workspace`
+        // trait carries the same trivial accessors as `Package`, so one
+        // `impl_basic_accessors!()` + `impl_dependencies_accessors!()` pair
+        // covers both trait shapes.
+        changepacks_core::impl_basic_accessors!();
+        changepacks_core::impl_dependencies_accessors!();
 
         async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
             Ok(())
         }
 
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-
         fn language(&self) -> Language {
             self.language
-        }
-
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
         }
 
         fn default_publish_command(&self) -> String {
@@ -162,7 +122,7 @@ mod tests {
             version: Some("1.0.0".to_string()),
             language: Language::Node,
             dependencies: HashSet::new(),
-            changed: false,
+            is_changed: false,
         }))
     }
 
@@ -174,7 +134,7 @@ mod tests {
             version: Some("1.0.0".to_string()),
             language: Language::Rust,
             dependencies: HashSet::new(),
-            changed: false,
+            is_changed: false,
         }))
     }
 

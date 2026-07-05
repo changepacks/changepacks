@@ -420,12 +420,11 @@ fn format_project_line(
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     name_to_project: &HashMap<&str, &Project>,
 ) -> Result<String> {
-    use changepacks_utils::get_relative_path;
     use colored::Colorize;
 
     let relative_path = get_relative_path(repo_root_path, project.path())?;
     let version = if let Some(update_entry) = update_map.get(&relative_path) {
-        changepacks_utils::display_update(project.version(), update_entry.0)?
+        display_update(project.version(), update_entry.0)?
     } else {
         project.version_display()
     };

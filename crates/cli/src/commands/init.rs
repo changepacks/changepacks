@@ -41,10 +41,22 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
             .await?;
         }
 
-        println!(
-            "changepacks project initialized in {}",
-            changepacks_dir.display()
-        );
+        if args.dry_run {
+            // Dry-run skipped both the `create_dir_all` (line above) and the
+            // `write` of `config.json` (line above), so nothing has actually
+            // been initialized — the message must reflect that or a user
+            // running `changepacks init --dry-run` cannot distinguish the
+            // preview from a real init.
+            println!(
+                "Would initialize changepacks project in {}",
+                changepacks_dir.display()
+            );
+        } else {
+            println!(
+                "changepacks project initialized in {}",
+                changepacks_dir.display()
+            );
+        }
 
         Ok(())
     }
