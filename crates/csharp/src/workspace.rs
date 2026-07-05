@@ -162,25 +162,12 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
-    #[tokio::test]
-    async fn test_set_changed() {
-        let temp_dir = TempDir::new().unwrap();
-        let csproj_path = temp_dir.path().join("Test.csproj");
-        fs::write(
-            &csproj_path,
-            r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <Version>1.0.0</Version>
-  </PropertyGroup>
-</Project>
-"#,
-        )
-        .unwrap();
-
+    #[test]
+    fn test_set_changed() {
         let mut workspace = CSharpWorkspace::new(
             Some("Test".to_string()),
             Some("1.0.0".to_string()),
-            csproj_path.clone(),
+            PathBuf::from("/test/Test.csproj"),
             PathBuf::from("Test.csproj"),
         );
 
@@ -189,8 +176,6 @@ mod tests {
         assert!(workspace.is_changed());
         workspace.set_changed(false);
         assert!(!workspace.is_changed());
-
-        temp_dir.close().unwrap();
     }
 
     // Patch (with existing version), Minor, and Major all share the same

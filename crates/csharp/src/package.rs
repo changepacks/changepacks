@@ -141,25 +141,12 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
-    #[tokio::test]
-    async fn test_set_changed() {
-        let temp_dir = TempDir::new().unwrap();
-        let csproj_path = temp_dir.path().join("Test.csproj");
-        fs::write(
-            &csproj_path,
-            r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <Version>1.0.0</Version>
-  </PropertyGroup>
-</Project>
-"#,
-        )
-        .unwrap();
-
+    #[test]
+    fn test_set_changed() {
         let mut package = CSharpPackage::new(
             Some("Test".to_string()),
             Some("1.0.0".to_string()),
-            csproj_path.clone(),
+            PathBuf::from("/test/Test.csproj"),
             PathBuf::from("Test.csproj"),
         );
 
@@ -168,8 +155,6 @@ mod tests {
         assert!(package.is_changed());
         package.set_changed(false);
         assert!(!package.is_changed());
-
-        temp_dir.close().unwrap();
     }
 
     // Patch, Minor, and Major all share the same setup (write a csproj with

@@ -111,22 +111,12 @@ version: 1.0.0
         temp_dir.close().unwrap();
     }
 
-    #[tokio::test]
-    async fn test_set_changed() {
-        let temp_dir = TempDir::new().unwrap();
-        let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
-            &pubspec_path,
-            r#"name: test_package
-version: 1.0.0
-"#,
-        )
-        .unwrap();
-
+    #[test]
+    fn test_set_changed() {
         let mut package = DartPackage::new(
             Some("test_package".to_string()),
             Some("1.0.0".to_string()),
-            pubspec_path.clone(),
+            PathBuf::from("/test/pubspec.yaml"),
             PathBuf::from("pubspec.yaml"),
         );
 
@@ -135,8 +125,6 @@ version: 1.0.0
         assert!(package.is_changed());
         package.set_changed(false);
         assert!(!package.is_changed());
-
-        temp_dir.close().unwrap();
     }
 
     #[rstest]

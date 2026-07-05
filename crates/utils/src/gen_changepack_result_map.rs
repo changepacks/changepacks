@@ -7,7 +7,7 @@ use std::{
 use anyhow::Result;
 use changepacks_core::{ChangePackResult, ChangePackResultLog, Project, UpdateType};
 
-use crate::{get_relative_path, next_version};
+use crate::{get_relative_path, next_version_or_default};
 
 /// Generate a changepack result map from projects and update results
 ///
@@ -44,7 +44,7 @@ pub fn gen_changepack_result_map<S: BuildHasher>(
                 // enum. Semantically identical (both fall back to `"0.0.0"`
                 // when the project has no version) but avoids the second
                 // trait-object hop per project on every `update`/`check`.
-                let next = next_version(version.as_deref().unwrap_or("0.0.0"), update_type)?;
+                let next = next_version_or_default(version.as_deref(), update_type)?;
                 ChangePackResult::new(notes, version, Some(next), name, changed, key_for_result)
             }
             None => ChangePackResult::new(vec![], version, None, name, changed, key_for_result),

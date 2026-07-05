@@ -140,25 +140,12 @@ workspace:
         temp_dir.close().unwrap();
     }
 
-    #[tokio::test]
-    async fn test_set_changed() {
-        let temp_dir = TempDir::new().unwrap();
-        let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
-            &pubspec_path,
-            r#"name: test_workspace
-version: 1.0.0
-workspace:
-  packages:
-    - packages/*
-"#,
-        )
-        .unwrap();
-
+    #[test]
+    fn test_set_changed() {
         let mut workspace = DartWorkspace::new(
             Some("test_workspace".to_string()),
             Some("1.0.0".to_string()),
-            pubspec_path.clone(),
+            PathBuf::from("/test/pubspec.yaml"),
             PathBuf::from("pubspec.yaml"),
         );
 
@@ -167,8 +154,6 @@ workspace:
         assert!(workspace.is_changed());
         workspace.set_changed(false);
         assert!(!workspace.is_changed());
-
-        temp_dir.close().unwrap();
     }
 
     #[rstest]
