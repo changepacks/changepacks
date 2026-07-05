@@ -133,8 +133,12 @@ impl Workspace for RustWorkspace {
                 {
                     let (prefix, ver) = split_version(ver_str);
                     if ver == old_version {
-                        dep["version"] =
-                            format!("{}{new_version}", prefix.unwrap_or_default()).into();
+                        // `split_version` now borrows the prefix from `ver_str`
+                        // (which borrows `dep`); build the owned bumped string
+                        // BEFORE the `dep["version"] = ...` mutable index
+                        // assignment so no shared borrow of `dep` outlives it.
+                        let bumped = format!("{}{new_version}", prefix.unwrap_or_default());
+                        dep["version"] = bumped.into();
                     }
                 }
             }
@@ -250,11 +254,13 @@ impl Workspace for RustWorkspace {
             if let Some(current_version) = dep.get("version").and_then(|v| v.as_str())
                 && let Some(next_version) = package.version()
             {
-                // `split_version` is now total (no `Result`), so the `?`
-                // that used to propagate its never-fires `Err` variant is
-                // gone. Semantics stay byte-identical for every input.
+                // `split_version` is now total (no `Result`) and borrows the
+                // prefix from `current_version` (which borrows `dep`); build the
+                // owned bumped string BEFORE the `dep["version"] = ...` mutable
+                // index assignment so no shared borrow of `dep` outlives it.
                 let (prefix, _) = split_version(current_version);
-                dep["version"] = format!("{}{}", prefix.unwrap_or_default(), next_version).into();
+                let bumped = format!("{}{}", prefix.unwrap_or_default(), next_version);
+                dep["version"] = bumped.into();
                 any_updated = true;
             }
         }

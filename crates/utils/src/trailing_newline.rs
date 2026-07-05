@@ -6,7 +6,7 @@
 /// helper spells that policy out in one place instead of a ternary duplicated
 /// in every `update_version` implementation.
 #[must_use]
-pub const fn trailing_newline(source: &str) -> &'static str {
+pub(crate) const fn trailing_newline(source: &str) -> &'static str {
     if let Some(last) = source.as_bytes().last()
         && *last == b'\n'
     {
@@ -18,7 +18,8 @@ pub const fn trailing_newline(source: &str) -> &'static str {
 
 /// Assemble the finalized on-disk bytes for a manifest rewrite by dropping
 /// trailing whitespace from the serialized `body` and re-appending exactly
-/// the terminator the `original` source had (via [`trailing_newline`]).
+/// the terminator the `original` source had (via the crate-internal
+/// `trailing_newline` helper).
 ///
 /// Consolidates the `format!("{}{}", body.trim_end(), trailing_newline(original))`
 /// incantation previously duplicated verbatim in six manifest writers

@@ -62,7 +62,7 @@ struct GradleProperties {
 /// binary; meaningful coverage requires a Java install which CI cannot
 /// guarantee on every matrix runner.
 #[cfg(not(tarpaulin_include))]
-fn which_java() -> Option<PathBuf> {
+async fn which_java() -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
         let candidate = if cfg!(windows) {
@@ -70,7 +70,14 @@ fn which_java() -> Option<PathBuf> {
         } else {
             dir.join("java")
         };
-        if candidate.is_file() {
+        // AGENTS.md rule: never blocking I/O in async — replace the blocking
+        // `candidate.is_file()` stat with the shared async
+        // `changepacks_core::is_regular_file` (a `tokio::fs::metadata` probe).
+        // Its internal `unwrap_or(false)` preserves the previous "stat error
+        // (missing / permission denied) → treat as not-a-file, keep scanning"
+        // semantics, matching how `find_gradlew` above already migrated off
+        // blocking `.exists()`.
+        if changepacks_core::is_regular_file(&candidate).await {
             return Some(candidate);
         }
     }
@@ -135,8 +142,11 @@ async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
 
     // Gradle requires Java. Error early with a clear message rather than
     // letting gradlew produce a confusing "JAVA_HOME is not set" wall of text.
+    // `which_java` is now async (it awaits `is_regular_file`), so hoist the
+    // short-circuiting OR into a local before feeding `anyhow::ensure!`.
+    let java_available = std::env::var_os("JAVA_HOME").is_some() || which_java().await.is_some();
     anyhow::ensure!(
-        std::env::var_os("JAVA_HOME").is_some() || which_java().is_some(),
+        java_available,
         "Java is required for Gradle projects but JAVA_HOME is not set and 'java' was not found on PATH.\n\
          Please set the JAVA_HOME environment variable or add java to your PATH."
     );
@@ -899,24 +909,24 @@ version = "1.0.0"
         temp_dir.close().unwrap();
     }
 
-    #[test]
-    fn test_which_java_returns_some_or_none() {
+    #[tokio::test]
+    async fn test_which_java_returns_some_or_none() {
         // Exercises which_java() — the result depends on the test environment,
         // but the function must not panic regardless.
-        let result = which_java();
+        let result = which_java().await;
         // On most dev/CI machines java is on PATH → Some; otherwise None.
         // Both branches are valid; we just verify it runs without error.
         let _ = result;
     }
 
-    #[test]
-    fn test_which_java_with_empty_path() {
+    #[tokio::test]
+    async fn test_which_java_with_empty_path() {
         // Temporarily set PATH to empty to guarantee the None branch (line 50).
         let original = std::env::var_os("PATH");
         // SAFETY: this test runs single-threaded; no other thread reads PATH concurrently.
         unsafe { std::env::set_var("PATH", "") };
 
-        let result = which_java();
+        let result = which_java().await;
         assert!(result.is_none());
 
         // Restore

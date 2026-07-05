@@ -33,9 +33,9 @@
 //!   ChangePackResultLog)` for display / JSON output.
 //! - **Format-preservation helpers** — [`detect_indent_str`] recovers the
 //!   indent width/character of the on-disk JSON so `serde_json` roundtrips
-//!   don't reformat it; [`trailing_newline`] reports the trailing-newline
-//!   convention; [`finalize_content`] rebuilds output that matches the
-//!   original file's trailing-whitespace shape byte-for-byte.
+//!   don't reformat it; the crate-internal `trailing_newline` helper reports
+//!   the trailing-newline convention; [`finalize_content`] rebuilds output
+//!   that matches the original file's trailing-whitespace shape byte-for-byte.
 //! - **Result / progress display** — [`display_update`] renders the
 //!   per-project update summary emitted by `changepacks update` / `check`.
 //! - **Config + directory management** — [`get_changepacks_config`] and
@@ -80,4 +80,4 @@ pub use get_relative_path::get_relative_path;
 pub use next_version::{next_version, next_version_or_default};
 pub use sort_by_dep::sort_by_dependencies;
 pub use split_version::split_version;
-pub use trailing_newline::{finalize_content, trailing_newline};
+pub use trailing_newline::finalize_content;
