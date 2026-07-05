@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
 use changepacks_utils::{finalize_content, next_version_or_default, split_version};
@@ -56,14 +56,14 @@ impl Workspace for RustWorkspace {
 
         let fallback_name = self.name.as_deref().unwrap_or("_");
         if has_package {
-            cargo_toml["package"]["version"] = new_version.clone().into();
+            cargo_toml["package"]["version"] = new_version.as_str().into();
             if cargo_toml["package"].get("name").is_none() {
                 cargo_toml["package"]["name"] = fallback_name.into();
             }
         } else if !has_workspace_package_version {
             // No [package] and no [workspace.package].version — create [package]
             cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
-            cargo_toml["package"]["version"] = new_version.clone().into();
+            cargo_toml["package"]["version"] = new_version.as_str().into();
             cargo_toml["package"]["name"] = fallback_name.into();
         }
         // else: virtual workspace — only [workspace.package].version needs updating (below)
@@ -75,7 +75,7 @@ impl Workspace for RustWorkspace {
             .and_then(|p| p.as_table_mut())
             && ws_pkg.contains_key("version")
         {
-            ws_pkg["version"] = toml_edit::value(new_version.clone());
+            ws_pkg["version"] = toml_edit::value(new_version.as_str());
         }
 
         // Sync [workspace.dependencies] for local path deps whose version matched
@@ -168,16 +168,21 @@ impl Workspace for RustWorkspace {
         let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
 
         // check has workspace.dependencies section
-        if cargo_toml.get("workspace").is_none()
-            || cargo_toml["workspace"].get("dependencies").is_none()
-        {
-            return Ok(());
-        }
-        let dependencies = cargo_toml
+        //
+        // Single-lookup `let-else` over the `get_mut` chain: previously we
+        // did TWO independent `get("workspace")` walks (one guard, one grab)
+        // plus a `.context("Dependencies section not found")?` that could
+        // never fire because the guard above already ensured the chain
+        // resolved. The refutable chain here returns `Ok(())` on any missing
+        // hop (no workspace, no dependencies, non-table) — byte-identical
+        // semantics with one fewer HashMap-style lookup per invocation.
+        let Some(dependencies) = cargo_toml
             .get_mut("workspace")
             .and_then(|w| w.get_mut("dependencies"))
             .and_then(|d| d.as_table_mut())
-            .context("Dependencies section not found")?;
+        else {
+            return Ok(());
+        };
 
         let mut any_updated = false;
         for package in packages {

@@ -102,12 +102,20 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
     let feed_dir =
         TempDir::new().context("Failed to create temporary directory for local NuGet feed")?;
 
-    let pack_path = pack_dir.path().to_string_lossy().into_owned();
-    let feed_path = feed_dir.path().to_string_lossy().into_owned();
+    // `to_string_lossy` returns `Cow<'_, str>`. Both `TempDir` handles live
+    // for the full function scope (they are the caller's cleanup source, not
+    // dropped early), so a borrowed `Cow` is sound across every `.await`.
+    // Skipping `.into_owned()` avoids 2 `String` allocations per managed
+    // dry-run on the valid-UTF-8 happy path (every filesystem `changepacks`
+    // targets on Windows/Unix). Downstream sites use `&pack_path` /
+    // `&feed_path` which deref-coerce to `&str` at the argv boundary, and
+    // `{pack_path}` in `format!` uses `Cow<str>`'s `Display` impl.
+    let pack_path = pack_dir.path().to_string_lossy();
+    let feed_path = feed_dir.path().to_string_lossy();
 
     let pack_output = run_publish_command_argv(
         "dotnet",
-        &["pack", "-c", "Release", "-o", pack_path.as_str()],
+        &["pack", "-c", "Release", "-o", &pack_path],
         working_dir,
         true,
     )
@@ -145,7 +153,7 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
                 "push",
                 nupkg.as_str(),
                 "-s",
-                feed_path.as_str(),
+                &feed_path,
                 "--skip-duplicate",
             ],
             working_dir,
