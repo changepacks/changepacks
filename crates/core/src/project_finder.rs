@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::project::Project;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 
 /// Expand to the identical `projects()` / `projects_mut()` accessor pair
@@ -364,19 +364,31 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// intentionally uses `.extension()` matching instead and does not call
     /// this method.
     ///
+    /// Check order is name-first, stat-last: on a monorepo with N tracked
+    /// files where only K match any recognized manifest name (typically
+    /// K ≪ N), the previous stat-then-name shape issued 5 × N async
+    /// `tokio::fs::metadata` syscalls across every non-CSharp language
+    /// finder invocation. Reversing the order collapses that to ~K stats
+    /// total. Missing/non-UTF-8 file names cannot possibly match ASCII
+    /// manifest names anyway, so returning `Ok(false)` early is
+    /// semantically identical to the previous with_context error paths
+    /// — which were unreachable for git-index-derived paths.
+    ///
     /// # Errors
-    /// Returns error if the path has no file name component or the file name
-    /// is not valid UTF-8.
+    /// Currently never returns an error; the `Result` return is preserved
+    /// so future implementations may return their own errors without a
+    /// signature break.
     async fn matches_project_file(&self, path: &Path) -> Result<bool> {
-        if !is_regular_file(path).await {
+        let Some(name_os) = path.file_name() else {
+            return Ok(false);
+        };
+        let Some(name) = name_os.to_str() else {
+            return Ok(false);
+        };
+        if !self.project_files().contains(&name) {
             return Ok(false);
         }
-        let name = path
-            .file_name()
-            .with_context(|| format!("File name not found - {}", path.display()))?
-            .to_str()
-            .with_context(|| format!("File name not valid UTF-8 - {}", path.display()))?;
-        Ok(self.project_files().contains(&name))
+        Ok(is_regular_file(path).await)
     }
     /// # Errors
     /// Returns error if checking changed status fails for any project.

@@ -1,21 +1,25 @@
-use anyhow::Result;
-
-/// Split a version string into prefix and version parts
+/// Split a version string into prefix and version parts.
 ///
-/// # Errors
-/// Returns error if splitting the version fails (currently never fails).
-pub fn split_version(version: &str) -> Result<(Option<String>, String)> {
+/// Returns a `(prefix, version)` tuple: the `prefix` is `Some(String)` when
+/// the input begins with non-digit characters (e.g. `"^"`, `"~"`, `">="`,
+/// `"helloworld-"`) and `None` when the input starts with a digit or contains
+/// no digits at all (e.g. `"latest"`, `"*"`). The function is total — every
+/// input yields a valid pair — so it does NOT return a `Result`. The
+/// previous `Result<(Option<String>, String)>` signature carried an unreached
+/// `Err` variant (both match arms already returned `Ok(...)`), so callers
+/// wrote `?` / `.unwrap()` against a `None` case that could never happen.
+pub fn split_version(version: &str) -> (Option<String>, String) {
     let first_digit_pos = version
         .char_indices()
         .find(|(_, c)| c.is_ascii_digit())
         .map(|(pos, _)| pos);
 
     match first_digit_pos {
-        Some(0) | None => Ok((None, version.to_string())),
+        Some(0) | None => (None, version.to_string()),
         Some(pos) => {
             let prefix = version[..pos].to_string();
             let version_part = version[pos..].to_string();
-            Ok((Some(prefix), version_part))
+            (Some(prefix), version_part)
         }
     }
 }
@@ -37,7 +41,7 @@ mod tests {
     #[case("latest", (None, "latest"))]
     #[case("*", (None, "*"))]
     fn test_split_version(#[case] input: &str, #[case] expected: (Option<&str>, &str)) {
-        let (prefix, version) = split_version(input).unwrap();
+        let (prefix, version) = split_version(input);
         assert_eq!(prefix.as_deref(), expected.0);
         assert_eq!(version.as_str(), expected.1);
     }

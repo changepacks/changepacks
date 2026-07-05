@@ -128,10 +128,18 @@ fn apply_update_on_rules(
     let trigger_matches: Vec<(&String, &Vec<String>)> = {
         let updated_paths: Vec<Cow<'_, str>> =
             update_map.keys().map(|p| p.to_string_lossy()).collect();
-        config
-            .update_on
-            .iter()
-            .filter(|(trigger_pattern, _)| match Pattern::new(trigger_pattern) {
+        // `Filter`'s `size_hint` is `(0, Some(len))` and `Vec::from_iter`
+        // reserves against the LOWER bound, so a plain `.collect()` here
+        // incurs geometric-doubling reallocations on repos with many
+        // `updateOn` triggers. `config.update_on.len()` is the exact
+        // upper bound because the filter keeps AT MOST one entry per
+        // trigger. Matches the preallocation policy already applied to
+        // `path_to_name` / `reverse_deps` / `packages_to_add` in the
+        // sibling `apply_reverse_dependencies`, and to `paths` /
+        // `update_map` in `gen_update_map` above.
+        let mut out = Vec::with_capacity(config.update_on.len());
+        out.extend(config.update_on.iter().filter(|(trigger_pattern, _)| {
+            match Pattern::new(trigger_pattern) {
                 Ok(pattern) => updated_paths.iter().any(|s| pattern.matches(s.as_ref())),
                 Err(_) => {
                     eprintln!(
@@ -139,8 +147,9 @@ fn apply_update_on_rules(
                     );
                     false
                 }
-            })
-            .collect()
+            }
+        }));
+        out
     };
 
     for (trigger_pattern, dependents) in trigger_matches {

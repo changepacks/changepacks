@@ -191,6 +191,14 @@ fn collect_project_reference(e: &quick_xml::events::BytesStart<'_>, projects: &m
 /// Extract project name from a path string, handling both Windows and Unix separators
 /// Input: `"..\CoreLib\CoreLib.csproj"` or `"../CoreLib/CoreLib.csproj"`
 /// Output: `"CoreLib"`
+///
+/// Case-insensitive `.csproj` match so `Include=".\Foo\Foo.CSPROJ"` (mixed-
+/// case, common in older solutions and hand-written `.csproj` files) resolves
+/// the same as the canonical `Foo.csproj`. The previous `strip_suffix(".csproj")`
+/// was case-sensitive and silently dropped uppercase / mixed-case references,
+/// which fed `sort_by_dependencies` a missing edge and skipped the reverse-dep
+/// propagation in `apply_reverse_dependencies` on Windows-native repos.
+/// Mirrors the case-insensitive extension gate now applied in `visit`.
 fn extract_project_name_from_path(path_str: &str) -> Option<String> {
     // Split by both Windows (\) and Unix (/) separators.
     // `str::rsplit(pat).next()` is documented to always return `Some(&str)`
@@ -199,17 +207,21 @@ fn extract_project_name_from_path(path_str: &str) -> Option<String> {
     // was a ghost fallback a reader had to trace to confirm was dead;
     // `.expect(...)` collapses it to a documented invariant while
     // preserving byte-identical behavior — the fallback branch was never
-    // hit at runtime. `strip_suffix(".csproj")` on the next line is the
-    // sole actual `None` source for this function.
+    // hit at runtime. The extension gate below is the sole actual `None`
+    // source for this function.
     let filename = path_str
         .rsplit(['\\', '/'])
         .next()
         .expect("str::rsplit always yields at least one element");
 
-    // Remove .csproj extension
-    filename
-        .strip_suffix(".csproj")
-        .map(std::string::ToString::to_string)
+    // Split filename on the LAST `.` so `Foo.csproj` → (`Foo`, `csproj`)
+    // and `Foo.tests.csproj` → (`Foo.tests`, `csproj`). Then gate on the
+    // extension using `eq_ignore_ascii_case` so mixed-case suffixes
+    // (`.CSPROJ`, `.CsProj`) match the same as lowercase. Preserves the
+    // previous `Option<String>` return and the "invalid extension → None"
+    // contract byte-for-byte on the canonical `.csproj` case.
+    let (stem, ext) = filename.rsplit_once('.')?;
+    ext.eq_ignore_ascii_case("csproj").then(|| stem.to_string())
 }
 
 #[async_trait]
@@ -221,66 +233,83 @@ impl ProjectFinder for CSharpProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        // Check if this is a .csproj file. Delegates to the shared
-        // `is_regular_file` helper in `changepacks_core` (same
-        // `unwrap_or(false)` fallthrough on stat errors as the previous
-        // inline call — broken symlink / permission denied → "not a file").
-        if is_regular_file(path).await {
-            let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-            if extension != "csproj" {
-                return Ok(());
-            }
-
-            if self.projects.contains_key(path) {
-                return Ok(());
-            }
-
-            // Read .csproj content
-            let csproj_content = read_to_string(path).await?;
-
-            let name = Self::extract_name_from_path(path);
-            // Single-pass metadata extraction — replaces the previous
-            // `extract_version(...)` + `extract_project_references(...)`
-            // pair that each constructed its own `quick_xml::Reader` and
-            // walked the identical XML bytes. Halves parse work per
-            // `.csproj` (meaningful on Unity/dotnet monorepos).
-            let (version, project_refs) = Self::parse_csproj_metadata(&csproj_content);
-            let is_workspace = self.is_workspace(path).await;
-
-            // Hoist the map key allocation out of both arms: the old shape
-            // built a `(PathBuf, Project)` tuple, which forced each branch
-            // to call `path.to_path_buf()` TWICE (once for the tuple slot,
-            // once again for `*::new`). One shared `path_key` + one
-            // `.clone()` into the constructor cuts 4 `PathBuf` allocs to 2.
-            // Mirror of the same fix in `crates/java/src/finder.rs::visit`.
-            let path_key = path.to_path_buf();
-            let mut project = if is_workspace {
-                Project::Workspace(Box::new(CSharpWorkspace::new(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path.to_path_buf(),
-                )))
-            } else {
-                Project::Package(Box::new(CSharpPackage::new(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path.to_path_buf(),
-                )))
-            };
-
-            // Add ProjectReference dependencies (local project references)
-            // — `project_refs` came from the single-pass
-            // `parse_csproj_metadata` call above, so no second walk of the
-            // XML is needed here.
-            for dep in project_refs {
-                project.add_dependency(&dep);
-            }
-
-            self.projects.insert(path_key, project);
+        // Cheap-checks-first ordering (mirrors the `matches_project_file`
+        // reorder in `changepacks-core`): reject on the file-extension
+        // gate BEFORE hitting `tokio::fs::metadata`, so every non-
+        // `.csproj` file in a `find_project_dirs` walk skips the async
+        // stat entirely. On a 10 000-file monorepo with zero `.csproj`
+        // entries this saves 10 000 stats per `visit` sweep.
+        //
+        // Extension match is case-insensitive so `.CSPROJ` /
+        // `.CsProj` (mixed-case, common in Windows tooling and hand-
+        // written project files) resolves the same as the canonical
+        // lowercase form. Matches the case-insensitive suffix decoder
+        // used by `extract_project_name_from_path`.
+        let matches_ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("csproj"));
+        if !matches_ext {
+            return Ok(());
         }
+
+        if self.projects.contains_key(path) {
+            return Ok(());
+        }
+
+        // Only after the cheap gates pass do we pay for a stat. Delegates
+        // to the shared `is_regular_file` helper in `changepacks_core`
+        // (same `unwrap_or(false)` fallthrough on stat errors as the
+        // previous inline call — broken symlink / permission denied →
+        // "not a file").
+        if !is_regular_file(path).await {
+            return Ok(());
+        }
+
+        // Read .csproj content
+        let csproj_content = read_to_string(path).await?;
+
+        let name = Self::extract_name_from_path(path);
+        // Single-pass metadata extraction — replaces the previous
+        // `extract_version(...)` + `extract_project_references(...)`
+        // pair that each constructed its own `quick_xml::Reader` and
+        // walked the identical XML bytes. Halves parse work per
+        // `.csproj` (meaningful on Unity/dotnet monorepos).
+        let (version, project_refs) = Self::parse_csproj_metadata(&csproj_content);
+        let is_workspace = self.is_workspace(path).await;
+
+        // Hoist the map key allocation out of both arms: the old shape
+        // built a `(PathBuf, Project)` tuple, which forced each branch
+        // to call `path.to_path_buf()` TWICE (once for the tuple slot,
+        // once again for `*::new`). One shared `path_key` + one
+        // `.clone()` into the constructor cuts 4 `PathBuf` allocs to 2.
+        // Mirror of the same fix in `crates/java/src/finder.rs::visit`.
+        let path_key = path.to_path_buf();
+        let mut project = if is_workspace {
+            Project::Workspace(Box::new(CSharpWorkspace::new(
+                name,
+                version,
+                path_key.clone(),
+                relative_path.to_path_buf(),
+            )))
+        } else {
+            Project::Package(Box::new(CSharpPackage::new(
+                name,
+                version,
+                path_key.clone(),
+                relative_path.to_path_buf(),
+            )))
+        };
+
+        // Add ProjectReference dependencies (local project references)
+        // — `project_refs` came from the single-pass
+        // `parse_csproj_metadata` call above, so no second walk of the
+        // XML is needed here.
+        for dep in project_refs {
+            project.add_dependency(&dep);
+        }
+
+        self.projects.insert(path_key, project);
         Ok(())
     }
 }
@@ -787,6 +816,16 @@ mod tests {
     #[case("MyProject.csproj", Some("MyProject"))]
     // Invalid — the extension is the sole legit `None` source.
     #[case("MyProject.txt", None)]
+    // Case-insensitive `.csproj` — mixed-case suffixes (common in Windows
+    // shell / hand-written project files) resolve the same as lowercase.
+    // Regression anchor for the batch-plan item that flipped
+    // `strip_suffix(".csproj")` to `eq_ignore_ascii_case`.
+    #[case("MyProject.CSPROJ", Some("MyProject"))]
+    #[case("MyProject.CsProj", Some("MyProject"))]
+    #[case(r"..\CoreLib\CoreLib.CSPROJ", Some("CoreLib"))]
+    // No extension at all → None (rsplit_once('.') fails, function returns
+    // early via `?`). Locks in the "no dot means no extension" contract.
+    #[case("MyProject", None)]
     fn test_extract_project_name_from_path(#[case] input: &str, #[case] expected: Option<&str>) {
         assert_eq!(
             super::extract_project_name_from_path(input),

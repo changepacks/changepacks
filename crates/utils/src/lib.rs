@@ -1,10 +1,47 @@
 //! # changepacks-utils
 //!
-//! Shared utilities for the changepacks system.
+//! Shared utilities for the changepacks system, consumed by every
+//! language-specific crate (`changepacks-node`, `-python`, `-rust`,
+//! `-dart`, `-csharp`, `-java`) and by the CLI commands themselves.
 //!
-//! Provides git repository operations via gix, version calculation, dependency sorting with
-//! Kahn's algorithm, config management, and format detection for JSON indentation. These
-//! utilities are used across all language-specific crates and CLI commands.
+//! ## Provided functionality
+//!
+//! - **Git repository discovery / walk** — [`find_current_git_repo`] locates
+//!   the enclosing repo, [`find_project_dirs`] walks the git tree to discover
+//!   every recognized manifest, and [`get_relative_path`] normalizes a path
+//!   against the repo root. The concrete [`ThreadSafeRepository`] handle is
+//!   re-exported so downstream crates (e.g. `changepacks-cli`) can cache it
+//!   without a direct `gix` dep.
+//! - **Semver arithmetic** — [`next_version`] applies an `UpdateType` bump
+//!   to a version string; [`next_version_or_default`] wraps it with a
+//!   `0.0.0` fallback for the unversioned-manifest case shared across every
+//!   language crate's `update_version`.
+//! - **Semver prefix split** — [`split_version`] cleaves a range specifier
+//!   (`^`, `~`, `>=`, `helloworld-`) from the numeric tail so callers can
+//!   rebuild `"<prefix><new_version>"` while preserving the prefix.
+//! - **Dependency ordering** — [`sort_by_dependencies`] runs Kahn's
+//!   algorithm over the project graph so publish walks touch dependencies
+//!   before dependents.
+//! - **Reverse-dep DFS + updateOn rules** — [`gen_update_map`] materializes
+//!   the `changepack_log_*.json` → `(UpdateType, notes)` map for every
+//!   changed package (including `updateOn` triggers), and
+//!   [`apply_reverse_dependencies`] extends it with transitive PATCH bumps
+//!   for every workspace member depending on a scheduled update.
+//! - **Changepack log lifecycle** — [`clear_update_logs`] retires consumed
+//!   `changepack_log_*.json` files after a successful `update`;
+//!   [`gen_changepack_result_map`] aggregates per-project `(UpdateType,
+//!   ChangePackResultLog)` for display / JSON output.
+//! - **Format-preservation helpers** — [`detect_indent_str`] recovers the
+//!   indent width/character of the on-disk JSON so `serde_json` roundtrips
+//!   don't reformat it; [`trailing_newline`] reports the trailing-newline
+//!   convention; [`finalize_content`] rebuilds output that matches the
+//!   original file's trailing-whitespace shape byte-for-byte.
+//! - **Result / progress display** — [`display_update`] renders the
+//!   per-project update summary emitted by `changepacks update` / `check`.
+//! - **Config + directory management** — [`get_changepacks_config`] and
+//!   [`get_changepacks_config_at`] load `.changepacks/config.json` (with
+//!   sensible defaults for `ignore` / `baseBranch` / `publish` / `updateOn`);
+//!   [`get_changepacks_dir`] ensures the directory exists.
 
 mod clear_update_logs;
 mod detect_indent;

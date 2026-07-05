@@ -278,9 +278,15 @@ impl ProjectFinder for RustProjectFinder {
 
     async fn finalize(&mut self) -> Result<()> {
         // If workspace root was never visited (e.g. excluded by ignore patterns),
-        // walk up from the first pending package to find and read it
+        // walk up from the first pending package to find and read it.
+        //
+        // The `!pending_workspace_packages.is_empty()` guard that used to sit
+        // between `workspace_package_version.is_none()` and the `let Some(...)
+        // = ..first()` bind has been dropped: `Vec::first()` returns `None`
+        // iff the vec is empty, so the following `let-else` bind is a strict
+        // superset of the emptiness check. One fewer condition, byte-identical
+        // control flow.
         if self.workspace_package_version.is_none()
-            && !self.pending_workspace_packages.is_empty()
             && let Some(first_pkg) = self.pending_workspace_packages.first()
         {
             // Derive git root from the first pending package's absolute/relative

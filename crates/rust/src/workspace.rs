@@ -89,13 +89,22 @@ impl Workspace for RustWorkspace {
             // `next_version_or_default` fallback and this workspace-deps
             // sync share the same "reserve 0.0.0 when unversioned" source.
             for (_, value) in ws_deps.iter_mut() {
+                // `split_version` no longer returns `Result` (it was total —
+                // both match arms returned `Ok`), so the destructure moves
+                // out of the `&&`-let-chain into a plain irrefutable `let`
+                // followed by a `ver == old_version` guard. The refutable
+                // gates that still filter the branch (`as_inline_table_mut`,
+                // `dep.get("path").is_some()`, `dep.get("version").as_str()`)
+                // stay in the `&&`-chain unchanged.
                 if let Some(dep) = value.as_inline_table_mut()
                     && dep.get("path").is_some()
                     && let Some(ver_str) = dep.get("version").and_then(|v| v.as_str())
-                    && let Ok((prefix, ver)) = split_version(ver_str)
-                    && ver == old_version
                 {
-                    dep["version"] = format!("{}{new_version}", prefix.unwrap_or_default()).into();
+                    let (prefix, ver) = split_version(ver_str);
+                    if ver == old_version {
+                        dep["version"] =
+                            format!("{}{new_version}", prefix.unwrap_or_default()).into();
+                    }
                 }
             }
         }
@@ -192,7 +201,10 @@ impl Workspace for RustWorkspace {
             if let Some(current_version) = dep.get("version").and_then(|v| v.as_str())
                 && let Some(next_version) = package.version()
             {
-                let (prefix, _) = split_version(current_version)?;
+                // `split_version` is now total (no `Result`), so the `?`
+                // that used to propagate its never-fires `Err` variant is
+                // gone. Semantics stay byte-identical for every input.
+                let (prefix, _) = split_version(current_version);
                 dep["version"] = format!("{}{}", prefix.unwrap_or_default(), next_version).into();
                 any_updated = true;
             }
