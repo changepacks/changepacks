@@ -139,28 +139,8 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use changepacks_core::{Package, Project};
-    use changepacks_node::package::NodePackage;
-    use std::path::PathBuf;
 
-    // Helper function to create a test project with dependencies.
-    // Dependencies are stored as *names* (e.g., "p2"), matching every real
-    // finder — `add_dependency` records the raw name, never a relative path —
-    // and `sort_by_dependencies` resolves them by name via `name_to_index`.
-    fn create_project(name: &str, dependencies: Vec<&str>) -> Project {
-        let mut package = NodePackage::new(
-            Some(name.to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from(format!("/test/{}/package.json", name)),
-            PathBuf::from(format!("{}/package.json", name)),
-        );
-        for dep in dependencies {
-            // Store dependency as a name (e.g., "p2") — the same form finders
-            // record, so the sort resolves it through `name_to_index`.
-            package.add_dependency(dep);
-        }
-        Project::Package(Box::new(package))
-    }
+    use crate::test_support::create_project;
 
     #[test]
     fn test_sort_empty() {

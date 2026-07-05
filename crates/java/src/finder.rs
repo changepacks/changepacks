@@ -108,11 +108,15 @@ async fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut current = start_dir.to_path_buf();
     loop {
         let gradlew = current.join(gradlew_name);
-        // AGENTS.md rule: never blocking I/O in async — use tokio::fs::try_exists.
-        // `unwrap_or(false)` matches the previous sync `.exists()` semantics on
-        // stat errors (permission denied, broken symlink): treat as "does not
-        // exist" and keep walking up rather than aborting the search.
-        let exists = tokio::fs::try_exists(&gradlew).await.unwrap_or(false);
+        // Probe with the shared `changepacks_core::is_regular_file` (a
+        // `tokio::fs::metadata().is_file()` check) so this file-vs-dir question
+        // matches the sibling `which_java` probe above. Its internal
+        // `unwrap_or(false)` preserves the previous "stat error (permission
+        // denied, broken symlink) → treat as not found, keep walking up"
+        // semantics, and it additionally rejects a *directory* named
+        // `gradlew`/`gradlew.bat` — which `try_exists` would accept and which
+        // would then fail confusingly at execution time.
+        let exists = changepacks_core::is_regular_file(&gradlew).await;
         if exists {
             return Some((gradlew, current));
         }

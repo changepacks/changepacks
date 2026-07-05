@@ -62,6 +62,8 @@ mod is_workspace_by_sibling;
 mod next_version;
 mod sort_by_dep;
 mod split_version;
+#[cfg(test)]
+mod test_support;
 mod trailing_newline;
 
 pub(crate) use is_changepack_log::is_changepack_log_json_name;

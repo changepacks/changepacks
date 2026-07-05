@@ -364,26 +364,13 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
 mod tests {
     use std::collections::HashMap;
 
-    use changepacks_core::{Config, Package};
-    use changepacks_node::package::NodePackage;
+    use changepacks_core::Config;
     use tempfile::TempDir;
     use tokio::fs;
 
     use super::*;
 
-    // Helper function to create a test project with dependencies
-    fn create_project(name: &str, dependencies: Vec<&str>) -> Project {
-        let mut package = NodePackage::new(
-            Some(name.to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from(format!("/test/{}/package.json", name)),
-            PathBuf::from(format!("{}/package.json", name)),
-        );
-        for dep in dependencies {
-            package.add_dependency(dep);
-        }
-        Project::Package(Box::new(package))
-    }
+    use crate::test_support::create_project;
 
     #[tokio::test]
     async fn test_gen_update_map() {
