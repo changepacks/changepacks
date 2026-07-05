@@ -52,6 +52,28 @@ fn workspace_package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<St
         .map(String::from)
 }
 
+/// Return `true` for a `toml_edit::Item` whose value is table-like with
+/// `workspace = true` — the shape Cargo uses to mark either a
+/// `[dependencies]` entry as inheriting from `[workspace.dependencies]`
+/// (`dep = { workspace = true }`) or a `[package]` scalar as inheriting
+/// from `[workspace.package]` (`version.workspace = true`, which
+/// `toml_edit` parses as a dotted-key table `version = { workspace =
+/// true }`). Extracted so both call sites — `workspace_dep_names` below
+/// and the `inherits_workspace` chain in `visit` — share exactly one
+/// decoder for that shape. Byte-identical semantics to both previous
+/// hand-rolled chains: `as_table_like()` returns `None` for scalars,
+/// `.get("workspace")` returns `None` when the key is missing,
+/// `.as_bool()` returns `None` for non-bool values, and each `None`
+/// path collapses to `false` via `.unwrap_or(false)` — matching the
+/// `&&`-chain in `workspace_dep_names` and the `.and_then` chain in
+/// `visit`.
+fn is_workspace_marker(item: &toml_edit::Item) -> bool {
+    item.as_table_like()
+        .and_then(|t| t.get("workspace"))
+        .and_then(|w| w.as_bool())
+        .unwrap_or(false)
+}
+
 /// Collect names of `[dependencies]` entries declared as
 /// `dep = { workspace = true }` — the shape used by workspace members to
 /// inherit a dependency's version from `[workspace.dependencies]`.
@@ -61,20 +83,31 @@ fn workspace_package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<St
 /// version / plain-package) through one code path. Byte-identical
 /// output to the previous inline walk — the filter is unchanged
 /// (`as_table_like` + `.get("workspace")` + `.as_bool()` defaulting to
-/// `false`).
+/// `false`), now delegated to the shared [`is_workspace_marker`]
+/// helper so a future TOML shape tweak (e.g. inline vs. dotted key)
+/// needs to touch one helper instead of two spots.
 ///
 /// Matches the `package_str` / `workspace_package_str` sibling-helper
 /// idiom already established in this file.
 fn workspace_dep_names(doc: &toml_edit::DocumentMut) -> Vec<String> {
-    let mut dep_names = Vec::new();
-    if let Some(deps) = doc.get("dependencies").and_then(|d| d.as_table_like()) {
-        for (dep_name, value) in deps.iter() {
-            if let Some(dep) = value.as_table_like()
-                && let Some(workspace) = dep.get("workspace")
-                && workspace.as_bool().unwrap_or(false)
-            {
-                dep_names.push(dep_name.to_string());
-            }
+    let Some(deps) = doc.get("dependencies").and_then(|d| d.as_table_like()) else {
+        // Empty allocation on the no-deps path — matches the previous
+        // `Vec::new()` shape byte-for-byte and lets the with-deps arm
+        // below reserve the exact upper bound without a redundant
+        // outer `Vec::new()` allocation.
+        return Vec::new();
+    };
+    // `deps.len()` is a tight upper bound: the inner loop pushes AT MOST
+    // one name per `(dep_name, value)` pair (`is_workspace_marker` only
+    // filters, never fans out). Matches the preallocation policy already
+    // applied throughout `sort_by_dep.rs`, `filter_project_dirs.rs`,
+    // `gen_update_map.rs`, and `check.rs` — eliminates the log2(N)
+    // geometric-doubling reallocations on `[dependencies]`-heavy
+    // workspaces; byte-identical output.
+    let mut dep_names = Vec::with_capacity(deps.len());
+    for (dep_name, value) in deps.iter() {
+        if is_workspace_marker(value) {
+            dep_names.push(dep_name.to_string());
         }
     }
     dep_names
@@ -172,14 +205,17 @@ impl ProjectFinder for RustProjectFinder {
                         .insert(p.abs_path, Project::Package(Box::new(pkg)));
                 }
             } else {
-                // Check if version.workspace = true
+                // Check if version.workspace = true — same table-like +
+                // `workspace = true` shape as `workspace_dep_names`
+                // above, so both call sites share the [`is_workspace_marker`]
+                // decoder. Byte-identical to the previous
+                // six-`.and_then` chain because `is_some_and(...)`
+                // short-circuits on the same `None` cases and its final
+                // `.unwrap_or(false)` matches.
                 let inherits_workspace = cargo_toml
                     .get("package")
                     .and_then(|p| p.get("version"))
-                    .and_then(|v| v.as_table_like())
-                    .and_then(|t| t.get("workspace"))
-                    .and_then(|w| w.as_bool())
-                    .unwrap_or(false);
+                    .is_some_and(is_workspace_marker);
 
                 let name = package_str(&cargo_toml, "name");
 

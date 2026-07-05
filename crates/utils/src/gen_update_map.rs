@@ -260,6 +260,16 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // (`apply_reverse_dependencies` runs on every `changepacks update` and
     // every `changepacks check`).
     //
+    // Preallocate against `update_map.len()` — a tight upper bound
+    // because `filter_map` yields AT MOST one `String` per `update_map`
+    // key (`path_to_name` is 1-to-1). `.collect::<Vec<_>>()` on a
+    // `filter_map` reports `size_hint = (0, Some(update_map.len()))` and
+    // `Vec::from_iter` reserves against the LOWER bound, so on repos
+    // with many `updateOn` triggers the collect hits 2-3 geometric-
+    // doubling reallocations. Matches the preallocation policy already
+    // applied to `path_to_name`, `reverse_deps`, and `packages_to_add`
+    // in this same function.
+    //
     // Traversal order is DFS, not BFS: `Vec::pop` yields the last-pushed
     // element (LIFO), so a `to_process.push(dep_name.clone())` inside the
     // loop below re-visits its subtree before falling back to
@@ -267,10 +277,12 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // reachability (which is all `packages_to_add` cares about); the
     // `HashMap`-backed `reverse_deps` never guaranteed a particular order
     // anyway.
-    let mut to_process: Vec<String> = update_map
-        .keys()
-        .filter_map(|path| path_to_name.get(path).cloned())
-        .collect();
+    let mut to_process: Vec<String> = Vec::with_capacity(update_map.len());
+    to_process.extend(
+        update_map
+            .keys()
+            .filter_map(|path| path_to_name.get(path).cloned()),
+    );
     while let Some(pkg_name) = to_process.pop() {
         if let Some(dependents) = reverse_deps.get(&pkg_name) {
             for (dep_path, dep_name) in dependents {

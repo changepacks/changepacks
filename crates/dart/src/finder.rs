@@ -83,7 +83,7 @@ impl ProjectFinder for DartProjectFinder {
             } else {
                 let melos_yaml = path
                     .parent()
-                    .context("Parent not found")?
+                    .with_context(|| format!("Parent not found - {}", path.display()))?
                     .join("melos.yaml");
                 tokio::fs::try_exists(&melos_yaml).await.unwrap_or(false)
             };

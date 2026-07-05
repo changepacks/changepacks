@@ -166,7 +166,17 @@ fn display_tree(
     // Preallocate: `projects.len()` is a tight upper bound for every map/set built
     // below by a single pass over `projects`. Matches the preallocation policy
     // already applied in `sort_by_dep.rs` and `apply_reverse_dependencies`.
-    let mut graph: HashMap<String, Vec<String>> = HashMap::with_capacity(projects.len());
+    //
+    // Keys and dep-list values borrow `&str` from the projects — the
+    // same borrowing pattern the sibling `name_to_project`, `roots`,
+    // `has_dependencies`, and `visited` collections in this function
+    // already use. Projects live for `handle_check`'s scope
+    // (`&[&Project]`), so every borrowed name slice outlives every
+    // downstream tree traversal. Retires the per-project
+    // `project.name().unwrap_or("noname").to_string()` key allocation
+    // AND the per-edge `dep.clone()` value allocation, closing the last
+    // "owned string" gap in this function.
+    let mut graph: HashMap<&str, Vec<&str>> = HashMap::with_capacity(projects.len());
     // Borrow the `&str` name that already lives inside each `Project`; the
     // owned `String` keys in `name_to_project` accept `&str` lookups via
     // `Borrow<str>`. Avoids N per-invocation `String::clone`s of names we
@@ -188,18 +198,21 @@ fn display_tree(
         // lists. `deps.len()` is the tight upper bound. Matches the
         // preallocation policy already applied at lines 159, 169, 174,
         // 225, and 256 of the same function.
-        let mut monorepo_deps: Vec<String> = Vec::with_capacity(deps.len());
+        //
+        // Value type is now `Vec<&str>` (see the `graph` declaration
+        // above): push the borrowed `dep.as_str()` slice directly
+        // instead of the owned `dep.clone()`. The `String` sitting
+        // inside `project.dependencies()` outlives every downstream
+        // borrow because `Project` is borrowed for the same scope.
+        let mut monorepo_deps: Vec<&str> = Vec::with_capacity(deps.len());
         for dep in deps {
             if name_to_project.contains_key(dep.as_str()) {
-                monorepo_deps.push(dep.clone());
+                monorepo_deps.push(dep.as_str());
             }
         }
 
         if !monorepo_deps.is_empty() {
-            graph.insert(
-                project.name().unwrap_or("noname").to_string(),
-                monorepo_deps,
-            );
+            graph.insert(project.name().unwrap_or("noname"), monorepo_deps);
         }
     }
 
@@ -212,21 +225,20 @@ fn display_tree(
     // preserved because the sort is applied to identical inputs — the
     // output ordering is byte-identical.
     //
-    // `sort_unstable`: dep vectors hold unique package-name `String`s, and
-    // `String::cmp` is a total order — no two equal-but-distinguishable
+    // `sort_unstable`: dep vectors hold unique package-name slices, and
+    // `str::cmp` is a total order — no two equal-but-distinguishable
     // elements exist, so stability is not observable in the rendered tree.
     // Skips the stability bookkeeping the stable sort pays for.
     for deps in graph.values_mut() {
         deps.sort_unstable();
     }
 
-    // Derive `has_dependencies` AFTER the graph is fully built by borrowing
-    // the Strings that already live inside `graph.values()`
-    // (`HashSet<&str>`). Avoids N owned `String::clone()` calls — one per
-    // monorepo edge — vs. the previous eager
-    // `has_dependencies.insert(dep.clone())` inside the build loop. The
-    // borrow is valid through the roots-computation loop below because
-    // `graph` is not mutated after this point.
+    // Derive `has_dependencies` AFTER the graph is fully built by
+    // borrowing the `&str` slices that already live inside
+    // `graph.values()` (`HashSet<&str>`). Byte-identical membership to
+    // the previous `String::as_str` map: `graph.values().flatten()`
+    // yields `&&str`, and `.copied()` unwraps that to `&str` without
+    // touching the underlying storage.
     //
     // Preallocate against the exact upper bound: the total edge count is
     // `graph.values().map(Vec::len).sum()`. `HashSet::from_iter` (via
@@ -237,7 +249,7 @@ fn display_tree(
     // `roots`, and `visited` in this same function.
     let has_dependencies_cap: usize = graph.values().map(Vec::len).sum();
     let mut has_dependencies: HashSet<&str> = HashSet::with_capacity(has_dependencies_cap);
-    has_dependencies.extend(graph.values().flatten().map(String::as_str));
+    has_dependencies.extend(graph.values().flatten().copied());
 
     // Root nodes are projects that are not dependencies of any other project
     for project in projects {
@@ -303,7 +315,11 @@ fn display_tree(
 
 /// Context for tree display operations
 struct TreeContext<'a> {
-    graph: &'a HashMap<String, Vec<String>>,
+    // `graph` now keys and values borrow `&str` from the projects, matching
+    // the same borrowing pattern the sibling `name_to_project` field
+    // already uses. Retires the `HashMap<String, Vec<String>>` shape's
+    // per-node key/value clones on every `display_tree_node` walk.
+    graph: &'a HashMap<&'a str, Vec<&'a str>>,
     name_to_project: &'a HashMap<&'a str, &'a Project>,
     repo_root_path: &'a Path,
     update_map: &'a HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
@@ -355,7 +371,13 @@ fn display_tree_node<'a>(
     // re-descended under multiple parents.
     if let Some(deps) = ctx.graph.get(project_name) {
         for (idx, dep_name) in deps.iter().enumerate() {
-            if let Some(dep_project) = ctx.name_to_project.get(dep_name.as_str()) {
+            // `deps: &Vec<&str>` now, so `deps.iter()` yields
+            // `dep_name: &&str`. Deref once with `*dep_name` at the two
+            // call sites below so `HashMap<&str, _>::get(&&str)` and
+            // `HashSet<&str>::contains(&&str)` both resolve via
+            // `&str: Borrow<str>` — byte-identical semantics to the
+            // previous `dep_name.as_str()` chain on `&String`.
+            if let Some(dep_project) = ctx.name_to_project.get(*dep_name) {
                 // `deps.iter().enumerate()` guarantees `deps.len() >= 1`
                 // inside the loop, so plain subtraction is safe. `Vec::len()`
                 // is O(1); the vestigial `sorted_deps_count` binding just
@@ -364,7 +386,7 @@ fn display_tree_node<'a>(
                 let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
                 // Use a separate visited set for dependencies to avoid infinite loops
                 // but still show all dependencies
-                if visited.contains(dep_name.as_str()) {
+                if visited.contains(*dep_name) {
                     // If already visited, just print it without recursion to avoid loops
                     let dep_connector = if is_last_dep {
                         "└── "
@@ -556,6 +578,13 @@ mod tests {
     use changepacks_core::{Language, Package, Workspace};
     use std::collections::HashSet;
 
+    // Field name `is_changed` matches the `impl_basic_accessors!()`
+    // macro contract (see `crates/core/src/project_finder.rs`) so the
+    // shared macro can generate every trivial accessor. Locks the
+    // macro's field-name contract at the CLI-test surface the same way
+    // `crates/core/src/{package,workspace,project,project_finder}.rs`
+    // already do — a future rename of the macro's expected field name
+    // trips a compile error here immediately.
     #[derive(Debug)]
     struct MockPackageForCheck {
         name: Option<String>,
@@ -564,7 +593,7 @@ mod tests {
         relative_path: PathBuf,
         language: Language,
         dependencies: HashSet<String>,
-        changed: bool,
+        is_changed: bool,
     }
 
     impl MockPackageForCheck {
@@ -582,33 +611,26 @@ mod tests {
                 relative_path: PathBuf::from(relative_path),
                 language,
                 dependencies: HashSet::new(),
-                changed: false,
+                is_changed: false,
             }
         }
     }
 
     #[async_trait]
     impl Package for MockPackageForCheck {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
-        fn path(&self) -> &std::path::Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &std::path::Path {
-            &self.relative_path
-        }
+        // Consumes the same `impl_basic_accessors!()` macro that every
+        // core-crate test mock uses — collapses the seven byte-identical
+        // trivial accessors (`name`, `version`, `path`, `relative_path`,
+        // `is_changed`, `set_changed`, `set_name`) into one macro
+        // invocation and locks the field-name contract for the CLI-test
+        // surface too.
+        changepacks_core::impl_basic_accessors!();
+
         async fn update_version(
             &mut self,
             _update_type: changepacks_core::UpdateType,
         ) -> anyhow::Result<()> {
             Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
         }
         fn language(&self) -> Language {
             self.language
@@ -619,9 +641,6 @@ mod tests {
         fn add_dependency(&mut self, dependency: &str) {
             self.dependencies.insert(dependency.to_string());
         }
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
-        }
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
         }
@@ -630,6 +649,8 @@ mod tests {
         }
     }
 
+    // Field name `is_changed` matches the `impl_basic_accessors!()`
+    // macro contract (see `MockPackageForCheck` above for rationale).
     #[derive(Debug)]
     struct MockWorkspaceForCheck {
         name: Option<String>,
@@ -638,7 +659,7 @@ mod tests {
         relative_path: PathBuf,
         language: Language,
         dependencies: HashSet<String>,
-        changed: bool,
+        is_changed: bool,
     }
 
     impl MockWorkspaceForCheck {
@@ -656,33 +677,24 @@ mod tests {
                 relative_path: PathBuf::from(relative_path),
                 language,
                 dependencies: HashSet::new(),
-                changed: false,
+                is_changed: false,
             }
         }
     }
 
     #[async_trait]
     impl Workspace for MockWorkspaceForCheck {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
-        fn path(&self) -> &std::path::Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &std::path::Path {
-            &self.relative_path
-        }
+        // Same macro adoption as `MockPackageForCheck` above — the
+        // `Workspace` trait carries the same seven trivial accessors as
+        // `Package`, so a single `impl_basic_accessors!()` invocation
+        // covers both trait shapes.
+        changepacks_core::impl_basic_accessors!();
+
         async fn update_version(
             &mut self,
             _update_type: changepacks_core::UpdateType,
         ) -> anyhow::Result<()> {
             Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
         }
         fn language(&self) -> Language {
             self.language
@@ -692,9 +704,6 @@ mod tests {
         }
         fn add_dependency(&mut self, dependency: &str) {
             self.dependencies.insert(dependency.to_string());
-        }
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
         }
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()
@@ -778,7 +787,7 @@ mod tests {
             "lib/Cargo.toml",
             Language::Rust,
         );
-        pkg.changed = true;
+        pkg.is_changed = true;
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();

@@ -338,6 +338,17 @@ mod tests {
         update: UpdateArgs,
     }
 
+    // Field name `is_changed` matches the `impl_basic_accessors!()`
+    // macro contract (see `crates/core/src/project_finder.rs`) so the
+    // shared macro can generate every trivial accessor. Locks the
+    // macro's field-name contract at this CLI-test surface the same way
+    // `MockPackageForCheck` / `MockWorkspaceForCheck` in `check.rs` and
+    // the core-crate test mocks do — a future rename of the macro's
+    // expected field name trips a compile error here immediately.
+    // Extra fields (`inherits_ws_version`, `workspace_root`) stay put
+    // — the macro is scoped to the seven basic accessors and leaves the
+    // Rust-specific `inherits_workspace_version` /
+    // `workspace_root_path` overrides hand-rolled below.
     #[derive(Debug)]
     struct MockInheritPackage {
         name: Option<String>,
@@ -346,7 +357,7 @@ mod tests {
         relative_path: PathBuf,
         language: Language,
         dependencies: HashSet<String>,
-        changed: bool,
+        is_changed: bool,
         inherits_ws_version: bool,
         workspace_root: Option<PathBuf>,
     }
@@ -365,7 +376,7 @@ mod tests {
                 relative_path: PathBuf::from(relative_path),
                 language: Language::Rust,
                 dependencies: HashSet::new(),
-                changed: false,
+                is_changed: false,
                 inherits_ws_version,
                 workspace_root: workspace_root.map(PathBuf::from),
             }
@@ -374,28 +385,18 @@ mod tests {
 
     #[async_trait]
     impl Package for MockInheritPackage {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
+        // Consumes the same `impl_basic_accessors!()` macro that every
+        // core-crate test mock uses — collapses the seven byte-identical
+        // trivial accessors (`name`, `version`, `path`, `relative_path`,
+        // `is_changed`, `set_changed`, `set_name`) into one macro
+        // invocation. The two Rust-specific overrides
+        // (`inherits_workspace_version`, `workspace_root_path`) stay
+        // hand-rolled below because the macro is scoped to the seven
+        // basic accessors.
+        changepacks_core::impl_basic_accessors!();
 
         async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
             Ok(())
-        }
-
-        fn is_changed(&self) -> bool {
-            self.changed
         }
 
         fn language(&self) -> Language {
@@ -408,10 +409,6 @@ mod tests {
 
         fn add_dependency(&mut self, dep: &str) {
             self.dependencies.insert(dep.to_string());
-        }
-
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
         }
 
         fn default_publish_command(&self) -> String {
