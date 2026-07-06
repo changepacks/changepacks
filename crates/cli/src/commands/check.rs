@@ -181,8 +181,9 @@ fn display_tree(
         // `(0, Some(deps.len()))` and `Vec::from_iter` uses the LOWER
         // bound, incurring geometric-doubling reallocations on wide dep
         // lists. `deps.len()` is the tight upper bound. Matches the
-        // preallocation policy already applied at lines 159, 169, 174,
-        // 225, and 256 of the same function.
+        // preallocation policy already applied to `name_to_project`,
+        // `graph`, `roots`, `has_dependencies`, `sorted_roots`, and
+        // `visited` in this same function.
         //
         // Value type is now `Vec<&str>` (see the `graph` declaration
         // above): push the borrowed `dep.as_str()` slice directly

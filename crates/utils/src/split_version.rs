@@ -8,6 +8,7 @@
 /// that need owned data rebuild `"<prefix><new_version>"` via `format!`. The
 /// function is total — every input yields a valid pair — so it does NOT return
 /// a `Result`.
+#[must_use]
 pub fn split_version(version: &str) -> (Option<&str>, &str) {
     // Byte-level scan: the predicate `is_ascii_digit()` is a byte check, and
     // ASCII digits are single-byte / cannot appear inside a multi-byte UTF-8

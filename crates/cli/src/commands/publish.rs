@@ -64,9 +64,9 @@ pub async fn handle_publish_with_prompter(
     // `HashSet<String>` gives O(1) lookup vs `Vec::contains` O(A) per project,
     // dropping the overall filter cost from O(P × A) to O(P + A) — meaningful in
     // large monorepos where both P and A can reach the dozens. Behavior is
-    // unchanged: same case-sensitive `\` → `/` normalization, same
-    // `.contains(&normalized_path)` call site (`HashSet<String>` accepts it
-    // identically to `Vec<String>`).
+    // unchanged: same case-sensitive `\` → `/` normalization and the same
+    // set-membership result (`HashSet<String>` matches what `Vec<String>`
+    // returned).
     if !args.project.is_empty() {
         // Preallocate: `HashSet::from_iter` (via `collect`) does NOT use
         // `size_hint` to reserve capacity, so it incurs geometric-doubling
@@ -80,8 +80,16 @@ pub async fn handle_publish_with_prompter(
         normalized_args.extend(args.project.iter().map(|p| p.replace('\\', "/")));
         projects.retain(|project| {
             let relative_path = project.relative_path().to_string_lossy();
-            let normalized_path = relative_path.replace('\\', "/");
-            normalized_args.contains(&normalized_path)
+            // Only pay the `replace` allocation when the path actually
+            // contains a backslash. Every `/`-only path (all Unix paths, and
+            // Windows paths already using `/`) is looked up by borrowed slice
+            // instead — `HashSet<String>::contains` accepts a `&str` via
+            // `Borrow<str>`, so the no-backslash branch is allocation-free.
+            if relative_path.contains('\\') {
+                normalized_args.contains(&relative_path.replace('\\', "/"))
+            } else {
+                normalized_args.contains(relative_path.as_ref())
+            }
         });
     }
 
