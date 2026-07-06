@@ -22,7 +22,10 @@ pub struct PublishOutput {
 /// `resolve_dry_run_publish_command` share ONE resolution ladder; a future
 /// change (e.g. adding an env-var override step) only needs to touch this
 /// helper instead of drifting between two nearly-identical copies.
-fn lookup_by_path_or_language(
+///
+/// Language crates delegate their own config lookup to this helper to avoid
+/// duplicating the path-first, language-fallback logic.
+pub fn lookup_by_path_or_language(
     map: &HashMap<String, String>,
     relative_path: &Path,
     language: Language,

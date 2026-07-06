@@ -15,7 +15,7 @@ use clap::Args;
 
 use crate::{
     CommandContext,
-    finders::get_finders,
+    finders::{get_finders, total_project_count},
     options::{CliLanguage, FormatOptions, language_slice_contains},
     prompter::{InquirePrompter, Prompter},
 };
@@ -78,7 +78,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     .await?;
 
     // Apply reverse dependency updates across all discovered projects.
-    let cap: usize = all_finders.iter().map(|f| f.projects().len()).sum();
+    let cap: usize = total_project_count(&all_finders);
     let mut all_projects: Vec<&Project> = Vec::with_capacity(cap);
     all_projects.extend(all_finders.iter().flat_map(|finder| finder.projects()));
     apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
@@ -111,7 +111,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         // `filter_map` below can only shrink it when a project path lies
         // outside the repo root). Matches the preallocation policy already
         // applied in `sort_by_dep.rs` and `filter_project_dirs.rs`.
-        let cap: usize = project_finders.iter().map(|f| f.projects().len()).sum();
+        let cap: usize = total_project_count(&project_finders);
         let mut path_to_language: HashMap<PathBuf, Language> = HashMap::with_capacity(cap);
         for project in project_finders.iter().flat_map(|finder| finder.projects()) {
             if let Ok(rel) = get_relative_path(&ctx.repo_root_path, project.path()) {
@@ -307,7 +307,7 @@ fn merge_workspace_inherited_updates(
     // workspace-inheriting members. Matches the preallocation policy
     // already applied throughout `sort_by_dep.rs`, `filter_project_dirs`,
     // and the sibling `apply_reverse_dependencies`.
-    let cap: usize = project_finders.iter().map(|f| f.projects().len()).sum();
+    let cap: usize = total_project_count(project_finders);
     let mut merge_targets: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(cap);
 
     for finder in project_finders {

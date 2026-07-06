@@ -313,9 +313,7 @@ fn config_command(
     map: &std::collections::HashMap<String, String>,
     relative_path: &Path,
 ) -> Option<String> {
-    map.get(relative_path.to_string_lossy().as_ref())
-        .cloned()
-        .or_else(|| map.get(Language::Node.publish_key()).cloned())
+    changepacks_core::publish::lookup_by_path_or_language(map, relative_path, Language::Node)
 }
 
 pub(crate) async fn publish_command_for_path(

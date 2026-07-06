@@ -19,6 +19,12 @@ pub fn get_finders() -> Vec<Box<dyn ProjectFinder>> {
     ]
 }
 
+/// Calculate total project count across all finders for capacity hints.
+#[must_use]
+pub fn total_project_count(finders: &[Box<dyn ProjectFinder>]) -> usize {
+    finders.iter().map(|f| f.projects().len()).sum()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -27,5 +33,13 @@ mod tests {
     fn test_get_finders() {
         let finders = get_finders();
         assert_eq!(finders.len(), 6);
+    }
+
+    #[test]
+    fn test_total_project_count() {
+        let finders = get_finders();
+        let count = total_project_count(&finders);
+        // Empty finders (no projects discovered yet) should sum to 0
+        assert_eq!(count, 0);
     }
 }

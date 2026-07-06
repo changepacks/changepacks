@@ -1,9 +1,27 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
-use tokio::fs::{read_dir, remove_file};
+use tokio::fs::{read_dir, read_to_string, remove_file, write};
 
 use crate::is_changepack_log_json_name;
+
+/// Check if the changepacks directory exists.
+///
+/// Returns `Ok(true)` if the directory exists, `Ok(false)` if it does not,
+/// or an error with context if the check fails.
+async fn changepacks_dir_exists(changepacks_dir: &Path) -> Result<bool> {
+    tokio::fs::try_exists(changepacks_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to check changepacks directory {}",
+                changepacks_dir.display()
+            )
+        })
+}
 
 /// Remove all update logs without confirmation
 ///
@@ -16,17 +34,8 @@ use crate::is_changepack_log_json_name;
 /// # Errors
 /// Returns error if any update log file fails to be removed.
 pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
-    match tokio::fs::try_exists(changepacks_dir).await {
-        Ok(true) => {}
-        Ok(false) => return Ok(()),
-        Err(err) => {
-            return Err(err).with_context(|| {
-                format!(
-                    "Failed to check changepacks directory {}",
-                    changepacks_dir.display()
-                )
-            });
-        }
+    if !changepacks_dir_exists(changepacks_dir).await? {
+        return Ok(());
     }
     // Two-phase collect+delete, mirroring `gen_update_map`:
     //   Phase 1: single directory walk to collect the paths of every matching
@@ -62,6 +71,62 @@ pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
             error_details.join("; ")
         ))
     }
+}
+
+/// Remove or rewrite update logs after a selective update.
+///
+/// Fully applied changepack logs are deleted. Mixed logs are rewritten with
+/// only unapplied `changes` entries while preserving sibling fields such as
+/// `note` and `date`.
+///
+/// # Errors
+/// Returns error if a matching changepack log cannot be read, parsed, removed,
+/// or rewritten.
+pub async fn clear_applied_update_logs(
+    changepacks_dir: &Path,
+    applied_paths: &HashSet<PathBuf>,
+) -> Result<()> {
+    if !changepacks_dir_exists(changepacks_dir).await? {
+        return Ok(());
+    }
+
+    let mut entries = read_dir(changepacks_dir).await?;
+    while let Some(file) = entries.next_entry().await? {
+        let file_name = file.file_name();
+        let file_name_lossy = file_name.to_string_lossy();
+        if !is_changepack_log_json_name(file_name_lossy.as_ref()) {
+            continue;
+        }
+
+        let path = file.path();
+        let content = read_to_string(&path)
+            .await
+            .with_context(|| format!("Failed to read update log {}", path.display()))?;
+        let mut value: serde_json::Value = serde_json::from_str(&content)
+            .with_context(|| format!("Failed to parse update log {}", path.display()))?;
+
+        let Some(changes) = value
+            .get_mut("changes")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            continue;
+        };
+
+        changes.retain(|change_path, _| !applied_paths.contains(&PathBuf::from(change_path)));
+        if changes.is_empty() {
+            remove_file(&path)
+                .await
+                .with_context(|| format!("Failed to remove update log {}", path.display()))?;
+        } else {
+            let next_content = serde_json::to_string(&value)
+                .with_context(|| format!("Failed to serialize update log {}", path.display()))?;
+            write(&path, next_content)
+                .await
+                .with_context(|| format!("Failed to rewrite update log {}", path.display()))?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -299,5 +364,96 @@ mod tests {
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("Failed to remove 1 update log(s)"));
+    }
+
+    #[tokio::test]
+    async fn test_clear_applied_update_logs_deletes_fully_applied_log() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        crate::test_support::init_git_repo(temp_path);
+
+        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        let log_file = changepacks_dir.join("changepack_log_1.json");
+        fs::write(
+            &log_file,
+            r#"{"changes":{"packages/a/package.json":"Patch"},"note":"done","date":"2026-01-01"}"#,
+        )
+        .unwrap();
+
+        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
+
+        assert!(result.is_ok());
+        assert!(!log_file.exists(), "fully applied log should be deleted");
+    }
+
+    #[tokio::test]
+    async fn test_clear_applied_update_logs_rewrites_mixed_log_preserving_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        crate::test_support::init_git_repo(temp_path);
+
+        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        let log_file = changepacks_dir.join("changepack_log_1.json");
+        fs::write(
+            &log_file,
+            r#"{"changes":{"packages/a/package.json":"Patch","packages/b/package.json":"Minor"},"note":"keep this","date":"2026-01-01"}"#,
+        )
+        .unwrap();
+
+        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
+
+        assert!(result.is_ok());
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&log_file).unwrap()).unwrap();
+        assert_eq!(value["changes"].as_object().unwrap().len(), 1);
+        assert_eq!(value["changes"]["packages/b/package.json"], "Minor");
+        assert!(value["changes"].get("packages/a/package.json").is_none());
+        assert_eq!(value["note"], "keep this");
+        assert_eq!(value["date"], "2026-01-01");
+    }
+
+    #[tokio::test]
+    async fn test_clear_applied_update_logs_ignores_config_and_non_json_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        crate::test_support::init_git_repo(temp_path);
+
+        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        let config_file = changepacks_dir.join("config.json");
+        let readme = changepacks_dir.join("README.md");
+        fs::write(&config_file, r#"{"ignore":[],"baseBranch":"main"}"#).unwrap();
+        fs::write(&readme, "notes").unwrap();
+
+        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
+
+        assert!(result.is_ok());
+        assert!(config_file.exists(), "config.json should be ignored");
+        assert!(readme.exists(), "non-json file should be ignored");
+    }
+
+    #[tokio::test]
+    async fn test_clear_applied_update_logs_missing_directory_returns_ok() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        crate::test_support::init_git_repo(temp_path);
+
+        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
+
+        assert!(result.is_ok());
     }
 }

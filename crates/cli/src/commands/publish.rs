@@ -10,6 +10,7 @@ use clap::Args;
 
 use crate::{
     CommandContext,
+    finders::total_project_count,
     options::{FormatOptions, retain_by_language},
     prompter::{InquirePrompter, Prompter},
 };
@@ -54,11 +55,7 @@ pub async fn handle_publish_with_prompter(
 ) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
 
-    let project_count = ctx
-        .project_finders
-        .iter()
-        .map(|finder| finder.projects().len())
-        .sum();
+    let project_count = total_project_count(&ctx.project_finders);
     let mut projects = Vec::with_capacity(project_count);
     projects.extend(
         ctx.project_finders
@@ -350,6 +347,39 @@ enum ProjectPublishOutcome {
     Error(anyhow::Error),
 }
 
+struct PublishOutcomeLabels {
+    success: &'static str,
+    failure: &'static str,
+}
+
+/// Calls [`record_publish_outcome`] and, when it returns `true` (failure),
+/// inserts `project.name()` into `failed_project_names` if the project has a
+/// name. Collapses the four identical
+/// `record_publish_outcome(...) && let Some(name) = project.name()` blocks
+/// that appeared in both publish loops.
+fn record_outcome_track_failure(
+    result_map: &mut BTreeMap<PathBuf, PublishResult>,
+    failed_projects: &mut Vec<String>,
+    failed_project_names: &mut HashSet<String>,
+    project: &Project,
+    outcome: ProjectPublishOutcome,
+    labels: PublishOutcomeLabels,
+    format: &FormatOptions,
+) {
+    if record_publish_outcome(
+        result_map,
+        failed_projects,
+        project,
+        outcome,
+        labels.success,
+        labels.failure,
+        format,
+    ) && let Some(name) = project.name()
+    {
+        failed_project_names.insert(name.to_string());
+    }
+}
+
 fn record_publish_outcome(
     result_map: &mut BTreeMap<PathBuf, PublishResult>,
     failed_projects: &mut Vec<String>,
@@ -464,18 +494,18 @@ async fn execute_dry_run_publish_loop(
                 } else {
                     ProjectPublishOutcome::Failure(output)
                 };
-                if record_publish_outcome(
+                record_outcome_track_failure(
                     &mut result_map,
                     &mut failed_projects,
+                    &mut failed_project_names,
                     project,
                     outcome,
-                    "Dry-run succeeded for",
-                    "Dry-run failed for",
+                    PublishOutcomeLabels {
+                        success: "Dry-run succeeded for",
+                        failure: "Dry-run failed for",
+                    },
                     format,
-                ) && let Some(name) = project.name()
-                {
-                    failed_project_names.insert(name.to_string());
-                }
+                );
             }
             Ok(None) => {
                 // Ok(None) stays inline: dry-run unsupported is a warning,
@@ -504,18 +534,18 @@ async fn execute_dry_run_publish_loop(
                 }
             }
             Err(e) => {
-                if record_publish_outcome(
+                record_outcome_track_failure(
                     &mut result_map,
                     &mut failed_projects,
+                    &mut failed_project_names,
                     project,
                     ProjectPublishOutcome::Error(e),
-                    "Dry-run succeeded for",
-                    "Dry-run failed for",
+                    PublishOutcomeLabels {
+                        success: "Dry-run succeeded for",
+                        failure: "Dry-run failed for",
+                    },
                     format,
-                ) && let Some(name) = project.name()
-                {
-                    failed_project_names.insert(name.to_string());
-                }
+                );
             }
         }
     }
@@ -555,32 +585,32 @@ async fn execute_publish_loop(
                 } else {
                     ProjectPublishOutcome::Failure(output)
                 };
-                if record_publish_outcome(
+                record_outcome_track_failure(
                     &mut result_map,
                     &mut failed_projects,
+                    &mut failed_project_names,
                     project,
                     outcome,
-                    "Successfully published",
-                    "Failed to publish",
+                    PublishOutcomeLabels {
+                        success: "Successfully published",
+                        failure: "Failed to publish",
+                    },
                     format,
-                ) && let Some(name) = project.name()
-                {
-                    failed_project_names.insert(name.to_string());
-                }
+                );
             }
             Err(e) => {
-                if record_publish_outcome(
+                record_outcome_track_failure(
                     &mut result_map,
                     &mut failed_projects,
+                    &mut failed_project_names,
                     project,
                     ProjectPublishOutcome::Error(e),
-                    "Successfully published",
-                    "Failed to publish",
+                    PublishOutcomeLabels {
+                        success: "Successfully published",
+                        failure: "Failed to publish",
+                    },
                     format,
-                ) && let Some(name) = project.name()
-                {
-                    failed_project_names.insert(name.to_string());
-                }
+                );
             }
         }
     }
