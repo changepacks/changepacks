@@ -29,6 +29,26 @@ impl NodeProjectFinder {
     }
 }
 
+fn add_workspace_dependencies(project: &mut Project, package_json: &serde_json::Value) {
+    for section in [
+        "dependencies",
+        "devDependencies",
+        "peerDependencies",
+        "optionalDependencies",
+    ] {
+        let Some(deps) = package_json.get(section).and_then(|deps| deps.as_object()) else {
+            continue;
+        };
+        for (dep_name, value) in deps {
+            // Only track workspace:* dependencies (exact version sync).
+            // workspace:^ uses semver ranges so doesn't need forced updates.
+            if value.as_str() == Some("workspace:*") {
+                project.add_dependency(dep_name);
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl ProjectFinder for NodeProjectFinder {
     // `projects()` / `projects_mut()` share their byte-identical body with
@@ -102,15 +122,7 @@ impl ProjectFinder for NodeProjectFinder {
                 )))
             };
 
-            if let Some(deps) = package_json.get("dependencies").and_then(|d| d.as_object()) {
-                for (dep_name, value) in deps {
-                    // Only track workspace:* dependencies (exact version sync)
-                    // workspace:^ uses semver ranges so doesn't need forced updates
-                    if value.as_str() == Some("workspace:*") {
-                        project.add_dependency(dep_name);
-                    }
-                }
-            }
+            add_workspace_dependencies(&mut project, &package_json);
 
             self.projects.insert(path_key, project);
         }
@@ -431,6 +443,16 @@ mod tests {
     "core": "workspace:*",
     "utils": "workspace:^",
     "external": "^1.0.0"
+  },
+  "devDependencies": {
+    "test-utils": "workspace:*"
+  },
+  "peerDependencies": {
+    "plugin-api": "workspace:*"
+  },
+  "optionalDependencies": {
+    "native-addon": "workspace:*",
+    "native-external": "^2.0.0"
   }
 }
 "#,
@@ -449,11 +471,15 @@ mod tests {
         let project = projects.first().unwrap();
         let deps = project.dependencies();
         // Only workspace:* dependencies should be tracked
-        assert_eq!(deps.len(), 1);
+        assert_eq!(deps.len(), 4);
         assert!(deps.contains("core"));
+        assert!(deps.contains("test-utils"));
+        assert!(deps.contains("plugin-api"));
+        assert!(deps.contains("native-addon"));
         // workspace:^ and external deps should not be tracked
         assert!(!deps.contains("utils"));
         assert!(!deps.contains("external"));
+        assert!(!deps.contains("native-external"));
 
         temp_dir.close().unwrap();
     }

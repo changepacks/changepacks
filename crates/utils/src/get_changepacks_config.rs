@@ -22,8 +22,17 @@ use crate::get_changepacks_dir;
 pub async fn get_changepacks_config_at(changepacks_dir: &Path) -> Result<Config> {
     let config_file = changepacks_dir.join("config.json");
 
-    if !tokio::fs::try_exists(&config_file).await.unwrap_or(false) {
-        return Ok(Config::default());
+    match tokio::fs::try_exists(&config_file).await {
+        Ok(true) => {}
+        Ok(false) => return Ok(Config::default()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "Failed to check changepacks config {}",
+                    config_file.display()
+                )
+            });
+        }
     }
 
     let content = read_to_string(&config_file).await?;

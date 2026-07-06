@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::fs::{read_dir, remove_file};
 
 use crate::is_changepack_log_json_name;
@@ -16,11 +16,17 @@ use crate::is_changepack_log_json_name;
 /// # Errors
 /// Returns error if any update log file fails to be removed.
 pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
-    if !tokio::fs::try_exists(changepacks_dir)
-        .await
-        .unwrap_or(false)
-    {
-        return Ok(());
+    match tokio::fs::try_exists(changepacks_dir).await {
+        Ok(true) => {}
+        Ok(false) => return Ok(()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "Failed to check changepacks directory {}",
+                    changepacks_dir.display()
+                )
+            });
+        }
     }
     // Two-phase collect+delete, mirroring `gen_update_map`:
     //   Phase 1: single directory walk to collect the paths of every matching

@@ -286,6 +286,7 @@ fn display_tree(
         name_to_project: &name_to_project,
         repo_root_path,
         update_map,
+        line_cache: HashMap::with_capacity(projects.len()),
     };
     for (idx, root) in sorted_roots.iter().enumerate() {
         // Deref `&&str` → `&str` so `HashMap<String, _>::get` picks up
@@ -299,10 +300,7 @@ fn display_tree(
     // Display projects that weren't part of the tree (orphaned nodes)
     for project in projects {
         if !visited.contains(project.name_or_noname()) {
-            println!(
-                "{}",
-                format_project_line(project, repo_root_path, update_map, &name_to_project)?
-            );
+            println!("{}", cached_project_line(project, &mut ctx)?);
         }
     }
 
@@ -319,6 +317,30 @@ struct TreeContext<'a> {
     name_to_project: &'a HashMap<&'a str, &'a Project>,
     repo_root_path: &'a Path,
     update_map: &'a HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    line_cache: HashMap<&'a str, String>,
+}
+
+fn cached_project_line<'a, 'ctx>(
+    project: &'a Project,
+    ctx: &'ctx mut TreeContext<'a>,
+) -> Result<&'ctx str> {
+    let project_name = project.name_or_noname();
+    if !ctx.line_cache.contains_key(project_name) {
+        let line = format_project_line(
+            project,
+            ctx.repo_root_path,
+            ctx.update_map,
+            ctx.name_to_project,
+        )?;
+        ctx.line_cache.insert(project_name, line);
+    }
+
+    match ctx.line_cache.get(project_name) {
+        Some(line) => Ok(line),
+        None => Err(anyhow::anyhow!(
+            "failed to cache tree display line for {project_name}"
+        )),
+    }
 }
 
 /// Display a single node in the tree
@@ -350,12 +372,7 @@ fn display_tree_node<'a>(
             "{}{}{}",
             prefix,
             connector,
-            format_project_line(
-                project,
-                ctx.repo_root_path,
-                ctx.update_map,
-                ctx.name_to_project
-            )?
+            cached_project_line(project, ctx)?
         );
     }
 
@@ -393,12 +410,7 @@ fn display_tree_node<'a>(
                         "{}{}{}",
                         new_prefix,
                         dep_connector,
-                        format_project_line(
-                            dep_project,
-                            ctx.repo_root_path,
-                            ctx.update_map,
-                            ctx.name_to_project
-                        )?
+                        cached_project_line(dep_project, ctx)?
                     );
                 } else {
                     display_tree_node(dep_project, ctx, &new_prefix, is_last_dep, visited)?;

@@ -24,6 +24,30 @@ fn peel_to_tree(reference: gix::Reference<'_>) -> Result<gix::Tree<'_>> {
         .try_into_tree()?)
 }
 
+fn finder_can_visit_path(finder: &dyn ProjectFinder, path: &Path) -> bool {
+    project_files_can_visit_path(finder.project_files(), path)
+}
+
+fn project_files_can_visit_path(project_files: &[&str], path: &Path) -> bool {
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+
+    project_files.iter().any(|project_file| {
+        if *project_file == file_name {
+            return true;
+        }
+
+        let Some(extension) = project_file.strip_prefix('.') else {
+            return false;
+        };
+
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
+    })
+}
+
 /// Find project directories containing specific files from git tracked files
 ///
 /// # Errors
@@ -102,6 +126,7 @@ pub async fn find_project_dirs(
         futures::future::try_join_all(
             project_finders
                 .iter_mut()
+                .filter(|finder| finder_can_visit_path(finder.as_ref(), path))
                 .map(async |finder| finder.visit(&abs_path, path).await),
         )
         .await?;
@@ -290,6 +315,38 @@ mod tests {
             .current_dir(path)
             .output()
             .unwrap();
+    }
+
+    #[test]
+    fn test_finder_can_visit_path_matches_manifest_name() {
+        let finder = NodeProjectFinder::new();
+
+        assert!(finder_can_visit_path(
+            &finder,
+            Path::new("apps/a/package.json")
+        ));
+        assert!(!finder_can_visit_path(
+            &finder,
+            Path::new("apps/a/index.ts")
+        ));
+    }
+
+    #[test]
+    fn test_finder_can_visit_path_matches_csharp_extension_case_insensitive() {
+        let project_files = [".csproj"];
+
+        assert!(project_files_can_visit_path(
+            &project_files,
+            Path::new("src/App.csproj")
+        ));
+        assert!(project_files_can_visit_path(
+            &project_files,
+            Path::new("src/App.CSPROJ")
+        ));
+        assert!(!project_files_can_visit_path(
+            &project_files,
+            Path::new("src/App.sln")
+        ));
     }
 
     #[tokio::test]

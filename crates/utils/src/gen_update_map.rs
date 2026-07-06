@@ -49,8 +49,12 @@ pub async fn gen_update_map(
     // identical map contents.
     let mut update_map: HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)> =
         HashMap::with_capacity(paths.len());
-    let bodies: Vec<String> =
-        futures::future::try_join_all(paths.iter().map(read_to_string)).await?;
+    let bodies: Vec<String> = futures::future::try_join_all(paths.iter().map(|path| async move {
+        read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read changepack log {}", path.display()))
+    }))
+    .await?;
     // Zip `paths` with `bodies` so a malformed `changepack_log_*.json`
     // surfaces WHICH file failed rather than a bare `serde_json` error.
     // Users then jump straight to the offender instead of grepping every
@@ -353,7 +357,9 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
                 UpdateType::Patch,
                 vec![ChangePackResultLog::new(
                     UpdateType::Patch,
-                    format!("Auto-update: depends on '{dependency_name}' via workspace:*"),
+                    format!(
+                        "Auto-update: depends on '{dependency_name}' via a local workspace dependency"
+                    ),
                 )],
             )
         });
@@ -532,6 +538,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_gen_update_map_reports_unreadable_log_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        let config = Config::default();
+
+        crate::test_support::init_git_repo(temp_path);
+
+        let changepacks_dir = temp_path.join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).await.unwrap();
+
+        let unreadable_log_path = changepacks_dir.join("changepack_log_unreadable.json");
+        fs::create_dir(&unreadable_log_path).await.unwrap();
+
+        let err = gen_update_map(&changepacks_dir, &config)
+            .await
+            .expect_err("unreadable changepack log must surface as an error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("changepack_log_unreadable.json"),
+            "expected path in error message, got: {msg}"
+        );
+        assert!(
+            msg.contains("Failed to read changepack log"),
+            "expected context prefix in error message, got: {msg}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
     async fn test_update_on_rules() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
@@ -622,6 +658,12 @@ mod tests {
         assert_eq!(
             update_map[&PathBuf::from("cli/package.json")].0,
             UpdateType::Patch
+        );
+        let log_json =
+            serde_json::to_value(&update_map[&PathBuf::from("cli/package.json")].1[0]).unwrap();
+        assert_eq!(
+            log_json["note"],
+            "Auto-update: depends on 'core' via a local workspace dependency"
         );
     }
 

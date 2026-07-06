@@ -9,6 +9,7 @@ use std::{
     process::Stdio,
     sync::LazyLock,
 };
+use tokio::fs::read_to_string;
 use tokio::process::Command;
 
 use crate::{package::GradlePackage, workspace::GradleWorkspace};
@@ -35,9 +36,14 @@ static SUBPROJECTS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?m)^subprojects:\s*(.+)$").expect("hardcoded regex must compile")
 });
 
+static PROJECT_DEPENDENCY_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"project\(["'](:[^"']+)["']\)"#).expect("hardcoded regex must compile")
+});
+
 #[derive(Debug, Default)]
 pub struct GradleProjectFinder {
     projects: HashMap<PathBuf, Project>,
+    java_available: Option<bool>,
 }
 
 impl GradleProjectFinder {
@@ -45,6 +51,7 @@ impl GradleProjectFinder {
     pub fn new() -> Self {
         Self {
             projects: HashMap::new(),
+            java_available: None,
         }
     }
 }
@@ -156,6 +163,22 @@ fn gradle_subproject_path(relative: &Path) -> Result<String> {
     Ok(parts.join(":"))
 }
 
+fn gradle_dependency_name(project_path: &str) -> Option<String> {
+    project_path
+        .trim_matches(':')
+        .rsplit(':')
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
+fn extract_gradle_project_dependencies(content: &str) -> Vec<String> {
+    PROJECT_DEPENDENCY_PATTERN
+        .captures_iter(content)
+        .filter_map(|caps| caps.get(1).and_then(|m| gradle_dependency_name(m.as_str())))
+        .collect()
+}
+
 /// Get project properties using gradlew command.
 ///
 /// Walks up the directory tree to find `gradlew`, then runs it with the correct
@@ -168,7 +191,16 @@ fn gradle_subproject_path(relative: &Path) -> Result<String> {
 /// to exercise; tarpaulin's Linux-only container cannot guarantee both
 /// platform arms (sh vs cmd) get hit.
 #[cfg(not(tarpaulin_include))]
-async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
+async fn java_is_available() -> bool {
+    let java_home = std::env::var_os("JAVA_HOME");
+    java_home_has_java(java_home.as_deref()).await || which_java().await.is_some()
+}
+
+#[cfg(not(tarpaulin_include))]
+async fn get_gradle_properties(
+    project_dir: &Path,
+    java_available: bool,
+) -> Result<GradleProperties> {
     let (gradlew, gradlew_dir) = find_gradlew(project_dir).await.context(
         "Gradle wrapper (gradlew) not found. \
          Ensure the project root contains gradlew or gradlew.bat.",
@@ -178,9 +210,6 @@ async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
     // letting gradlew produce a confusing "JAVA_HOME is not set" wall of text.
     // `which_java` is now async (it awaits `is_regular_file`), so hoist the
     // short-circuiting OR into a local before feeding `anyhow::ensure!`.
-    let java_home = std::env::var_os("JAVA_HOME");
-    let java_available =
-        java_home_has_java(java_home.as_deref()).await || which_java().await.is_some();
     anyhow::ensure!(
         java_available,
         "Java is required for Gradle projects but JAVA_HOME is not set and 'java' was not found on PATH.\n\
@@ -280,8 +309,20 @@ impl ProjectFinder for GradleProjectFinder {
                 .parent()
                 .with_context(|| format!("Parent not found - {}", path.display()))?;
 
+            let java_available = match self.java_available {
+                Some(value) => value,
+                None => {
+                    let value = java_is_available().await;
+                    self.java_available = Some(value);
+                    value
+                }
+            };
+
             // Get properties from gradlew command
-            let props = get_gradle_properties(project_dir).await?;
+            let props = get_gradle_properties(project_dir, java_available).await?;
+            let dependencies = read_to_string(path)
+                .await
+                .map(|content| extract_gradle_project_dependencies(&content))?;
 
             // Use directory name as fallback for project name
             let name = props.name.or_else(|| {
@@ -304,7 +345,7 @@ impl ProjectFinder for GradleProjectFinder {
             // once again for `*::new`). One shared `path_key` + one
             // `.clone()` into the constructor cuts 4 `PathBuf` allocs to 2.
             let path_key = path.to_path_buf();
-            let project = if is_workspace {
+            let mut project = if is_workspace {
                 Project::Workspace(Box::new(GradleWorkspace::new(
                     name,
                     version,
@@ -319,6 +360,10 @@ impl ProjectFinder for GradleProjectFinder {
                     relative_path.to_path_buf(),
                 )))
             };
+
+            for dependency in dependencies {
+                project.add_dependency(&dependency);
+            }
 
             self.projects.insert(path_key, project);
         }
@@ -747,7 +792,7 @@ version = "1.0.0"
         let subdir = temp_dir.path().join("isolated");
         fs::create_dir_all(&subdir).unwrap();
         // No gradlew anywhere in this subtree → should error
-        let result = get_gradle_properties(&subdir).await;
+        let result = get_gradle_properties(&subdir, true).await;
         // May find a system gradlew higher up; the key contract is it doesn't panic.
         // If no gradlew found at all, it returns Err.
         let _ = result;
@@ -760,7 +805,7 @@ version = "1.0.0"
 
         create_mock_gradlew(temp_dir.path(), MockGradlew::package("myproject", "1.2.3"));
 
-        let props = get_gradle_properties(temp_dir.path()).await.unwrap();
+        let props = get_gradle_properties(temp_dir.path(), true).await.unwrap();
         assert_eq!(props.name, Some("myproject".to_string()));
         assert_eq!(props.version, Some("1.2.3".to_string()));
         assert!(!props.has_subprojects);
@@ -777,7 +822,7 @@ version = "1.0.0"
             MockGradlew::workspace("root", "1.0.0", "[project ':app', project ':lib']"),
         );
 
-        let props = get_gradle_properties(temp_dir.path()).await.unwrap();
+        let props = get_gradle_properties(temp_dir.path(), true).await.unwrap();
         assert_eq!(props.name, Some("root".to_string()));
         assert!(props.has_subprojects);
 
@@ -790,7 +835,7 @@ version = "1.0.0"
 
         create_mock_gradlew(temp_dir.path(), MockGradlew::package("leaf", "1.0.0"));
 
-        let props = get_gradle_properties(temp_dir.path()).await.unwrap();
+        let props = get_gradle_properties(temp_dir.path(), true).await.unwrap();
         assert_eq!(props.name, Some("leaf".to_string()));
         assert!(!props.has_subprojects);
 
@@ -807,7 +852,7 @@ version = "1.0.0"
         // Mock: ignore the :sub1:properties arg, just output properties
         create_mock_gradlew(temp_dir.path(), MockGradlew::package("sub1", "2.0.0"));
 
-        let props = get_gradle_properties(&subproject).await.unwrap();
+        let props = get_gradle_properties(&subproject, true).await.unwrap();
         assert_eq!(props.name, Some("sub1".to_string()));
         assert_eq!(props.version, Some("2.0.0".to_string()));
 
@@ -824,7 +869,7 @@ version = "1.0.0"
         // The mock script receives ":libs:core:properties" "-q" as args.
         create_mock_gradlew(temp_dir.path(), MockGradlew::package("core", "3.1.0"));
 
-        let props = get_gradle_properties(&subproject).await.unwrap();
+        let props = get_gradle_properties(&subproject, true).await.unwrap();
         assert_eq!(props.name, Some("core".to_string()));
         assert_eq!(props.version, Some("3.1.0".to_string()));
 
@@ -836,6 +881,21 @@ version = "1.0.0"
         let relative = Path::new("libs").join("core");
 
         assert_eq!(gradle_subproject_path(&relative).unwrap(), "libs:core");
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_simple_kotlin_and_groovy() {
+        let content = r#"
+dependencies {
+    implementation(project(":lib"))
+    testImplementation(project(':testing:fixtures'))
+    implementation("org.example:external:1.0.0")
+}
+"#;
+
+        let dependencies = extract_gradle_project_dependencies(content);
+
+        assert_eq!(dependencies, vec!["lib", "fixtures"]);
     }
 
     #[cfg(unix)]
@@ -858,7 +918,7 @@ version = "1.0.0"
             MockGradlew::package("unspecified", "unspecified"),
         );
 
-        let props = get_gradle_properties(temp_dir.path()).await.unwrap();
+        let props = get_gradle_properties(temp_dir.path(), true).await.unwrap();
         assert!(props.name.is_none());
         assert!(props.version.is_none());
 
@@ -872,7 +932,7 @@ version = "1.0.0"
         create_failing_gradlew(temp_dir.path());
 
         // gradlew exits non-zero → returns default props (no name, no version)
-        let props = get_gradle_properties(temp_dir.path()).await.unwrap();
+        let props = get_gradle_properties(temp_dir.path(), true).await.unwrap();
         assert!(props.name.is_none());
         assert!(props.version.is_none());
 

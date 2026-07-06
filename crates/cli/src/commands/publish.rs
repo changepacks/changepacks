@@ -306,7 +306,7 @@ async fn execute_dry_run_publish_loop(
     format: &FormatOptions,
 ) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
     let mut result_map = BTreeMap::new();
-    let mut failed_projects: Vec<String> = Vec::new();
+    let mut failed_projects: Vec<String> = Vec::with_capacity(projects.len());
 
     // Pre-compute the set of package names being bumped in this run so that
     // each iteration can cheaply check whether its dependencies overlap.
@@ -423,7 +423,7 @@ async fn execute_publish_loop(
     format: &FormatOptions,
 ) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
     let mut result_map = BTreeMap::new();
-    let mut failed_projects: Vec<String> = Vec::new();
+    let mut failed_projects: Vec<String> = Vec::with_capacity(projects.len());
 
     for project in projects {
         if let FormatOptions::Stdout = format {
