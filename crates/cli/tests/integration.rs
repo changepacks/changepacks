@@ -184,8 +184,7 @@ async fn test_cli_publish_dry_run_bails_on_failure() {
 
     git_add_and_commit(temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -193,8 +192,6 @@ async fn test_cli_publish_dry_run_bails_on_failure() {
         "--dry-run".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_err(), "dry-run should fail when command exits 1");
     let err_msg = result.unwrap_err().to_string();
@@ -236,8 +233,7 @@ async fn test_cli_publish_with_echo() {
 
     git_add_and_commit(temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -245,8 +241,6 @@ async fn test_cli_publish_with_echo() {
         "--yes".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_ok());
 }
@@ -265,8 +259,7 @@ async fn test_cli_publish_no_projects() {
 
     git_add_and_commit(temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -274,8 +267,6 @@ async fn test_cli_publish_no_projects() {
         "--dry-run".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_ok());
 }
@@ -309,8 +300,7 @@ async fn test_cli_publish_json_format() {
 
     git_add_and_commit(temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -320,8 +310,6 @@ async fn test_cli_publish_json_format() {
         "json".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_ok());
 }
@@ -354,8 +342,7 @@ async fn test_cli_update_with_changepack() {
 
     git_add_and_commit(temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -363,8 +350,6 @@ async fn test_cli_update_with_changepack() {
         "--yes".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_ok());
 
@@ -398,13 +383,10 @@ async fn test_cli_check_basic() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec!["changepacks".to_string(), "check".to_string()];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_ok(), "check basic failed: {:?}", result.err());
 }
@@ -430,8 +412,7 @@ async fn test_cli_check_json_format() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -440,8 +421,6 @@ async fn test_cli_check_json_format() {
         "json".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -488,8 +467,7 @@ async fn test_cli_check_tree() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -497,8 +475,6 @@ async fn test_cli_check_tree() {
         "--tree".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_ok(), "check tree failed: {:?}", result.err());
 }
@@ -524,8 +500,7 @@ async fn test_cli_check_filter_package() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -534,8 +509,6 @@ async fn test_cli_check_filter_package() {
         "package".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -572,8 +545,7 @@ async fn test_cli_check_filter_workspace() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -582,8 +554,6 @@ async fn test_cli_check_filter_workspace() {
         "workspace".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -615,13 +585,10 @@ async fn test_cli_check_with_changepack_updates() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec!["changepacks".to_string(), "check".to_string()];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -648,13 +615,10 @@ async fn test_cli_check_no_projects() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec!["changepacks".to_string(), "check".to_string()];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -684,8 +648,7 @@ async fn test_cli_changepacks_with_yes_and_message() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // Use --yes and -m to skip interactive prompts, --update-type to specify patch
     let args = vec![
@@ -697,8 +660,6 @@ async fn test_cli_changepacks_with_yes_and_message() {
         "patch".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -738,8 +699,7 @@ async fn test_cli_changepacks_no_projects() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // With --yes and no projects, it should print "No projects selected"
     let args = vec![
@@ -751,8 +711,6 @@ async fn test_cli_changepacks_no_projects() {
         "patch".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     // Should succeed but not create any log (no projects)
     assert!(
@@ -783,8 +741,7 @@ async fn test_cli_changepacks_empty_notes() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // With empty message, should print "Notes are empty" and succeed
     let args = vec![
@@ -796,8 +753,6 @@ async fn test_cli_changepacks_empty_notes() {
         "patch".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -834,8 +789,7 @@ async fn test_cli_changepacks_with_filter() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -848,8 +802,6 @@ async fn test_cli_changepacks_with_filter() {
         "workspace".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -878,13 +830,10 @@ async fn test_cli_init_already_initialized() {
     .await
     .unwrap();
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec!["changepacks".to_string(), "init".to_string()];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     // Should fail because already initialized
     assert!(result.is_err());
@@ -935,8 +884,7 @@ version = "1.0.0"
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // Only publish Node.js packages
     let args = vec![
@@ -947,8 +895,6 @@ version = "1.0.0"
         "node".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -998,8 +944,7 @@ async fn test_cli_publish_with_project_filter() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // Only publish specific project
     let args = vec![
@@ -1010,8 +955,6 @@ async fn test_cli_publish_with_project_filter() {
         "package.json".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1048,8 +991,7 @@ async fn test_cli_update_json_format() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1059,8 +1001,6 @@ async fn test_cli_update_json_format() {
         "json".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1091,8 +1031,7 @@ async fn test_cli_update_no_updates() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1100,8 +1039,6 @@ async fn test_cli_update_no_updates() {
         "--yes".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1132,8 +1069,7 @@ async fn test_cli_update_json_no_updates() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1143,8 +1079,6 @@ async fn test_cli_update_json_no_updates() {
         "--yes".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1183,13 +1117,10 @@ async fn test_cli_check_with_changed_files() {
         .await
         .unwrap();
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec!["changepacks".to_string(), "check".to_string()];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1252,8 +1183,7 @@ async fn test_cli_check_tree_complex_deps() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1261,8 +1191,6 @@ async fn test_cli_check_tree_complex_deps() {
         "--tree".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1300,8 +1228,7 @@ async fn test_cli_publish_actual_execution() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1311,8 +1238,6 @@ async fn test_cli_publish_actual_execution() {
         "json".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1344,8 +1269,7 @@ async fn test_cli_update_actual_execution() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1355,8 +1279,6 @@ async fn test_cli_update_actual_execution() {
         "json".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1435,8 +1357,7 @@ async fn test_cli_update_with_workspace_deps() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1444,8 +1365,6 @@ async fn test_cli_update_with_workspace_deps() {
         "--yes".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1519,8 +1438,7 @@ async fn test_cli_check_tree_with_updates_and_changes() {
         .await
         .unwrap();
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1528,8 +1446,6 @@ async fn test_cli_check_tree_with_updates_and_changes() {
         "--tree".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1588,8 +1504,7 @@ async fn test_cli_check_tree_with_orphan() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1597,8 +1512,6 @@ async fn test_cli_check_tree_with_orphan() {
         "--tree".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1638,8 +1551,7 @@ async fn test_cli_publish_with_failing_command() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1649,8 +1561,6 @@ async fn test_cli_publish_with_failing_command() {
         "json".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     // Should return error since publish failed (exit code propagation)
     assert!(
@@ -1710,8 +1620,7 @@ async fn test_cli_check_tree_circular_deps() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1719,8 +1628,6 @@ async fn test_cli_check_tree_circular_deps() {
         "--tree".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1748,8 +1655,7 @@ async fn test_cli_publish_json_no_projects() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1758,8 +1664,6 @@ async fn test_cli_publish_json_no_projects() {
         "json".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1802,8 +1706,7 @@ async fn test_cli_check_tree_with_workspace() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1811,8 +1714,6 @@ async fn test_cli_check_tree_with_workspace() {
         "--tree".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1876,8 +1777,7 @@ async fn test_cli_check_tree_deeply_nested() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1885,8 +1785,6 @@ async fn test_cli_check_tree_deeply_nested() {
         "--tree".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -1952,8 +1850,7 @@ async fn test_cli_check_tree_shared_dep_visited_twice() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -1961,8 +1858,6 @@ async fn test_cli_check_tree_shared_dep_visited_twice() {
         "--tree".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -2010,8 +1905,7 @@ async fn test_cli_changepacks_with_package_filter() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // Use --filter package to only select packages (not workspaces)
     let args = vec![
@@ -2025,8 +1919,6 @@ async fn test_cli_changepacks_with_package_filter() {
         "package".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -2066,8 +1958,7 @@ async fn test_cli_publish_dry_run_json() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -2077,8 +1968,6 @@ async fn test_cli_publish_dry_run_json() {
         "json".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -2115,8 +2004,7 @@ async fn test_cli_update_dry_run_json() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -2126,8 +2014,6 @@ async fn test_cli_update_dry_run_json() {
         "json".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -2165,8 +2051,7 @@ async fn test_cli_publish_stdout_execution() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -2174,8 +2059,6 @@ async fn test_cli_publish_stdout_execution() {
         "--yes".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -2212,8 +2095,7 @@ async fn test_cli_update_dry_run_stdout() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // Use default stdout format with dry-run (not JSON)
     let args = vec![
@@ -2222,8 +2104,6 @@ async fn test_cli_update_dry_run_stdout() {
         "--dry-run".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -2264,8 +2144,7 @@ async fn test_cli_update_with_workspace_only() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -2273,8 +2152,6 @@ async fn test_cli_update_with_workspace_only() {
         "--yes".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -2305,8 +2182,7 @@ async fn test_cli_changepacks_without_update_type() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // Run without --update-type, so it will iterate Major, Minor, Patch
     let args = vec![
@@ -2316,8 +2192,6 @@ async fn test_cli_changepacks_without_update_type() {
         "Test without update type".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -2357,8 +2231,7 @@ async fn test_cli_publish_stdout_failing() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // Use stdout format (default) to hit the error eprintln! path
     let args = vec![
@@ -2367,8 +2240,6 @@ async fn test_cli_publish_stdout_failing() {
         "--yes".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     // Publishing fails so command should return error (non-zero exit code)
     assert!(
@@ -2409,8 +2280,7 @@ mod interactive_tests {
 
         git_add_and_commit(&temp_path, "Initial commit");
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&temp_path).unwrap();
+        let _dir_guard = DirGuard::change_to(&temp_path);
 
         let args = PublishArgs {
             dry_run: false,
@@ -2428,9 +2298,6 @@ mod interactive_tests {
         };
 
         let result = handle_publish_with_prompter(&args, &prompter).await;
-
-        std::env::set_current_dir(&original_dir).unwrap();
-
         assert!(result.is_ok(), "publish cancelled should succeed");
     }
 
@@ -2456,8 +2323,7 @@ mod interactive_tests {
 
         git_add_and_commit(&temp_path, "Initial commit");
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&temp_path).unwrap();
+        let _dir_guard = DirGuard::change_to(&temp_path);
 
         let args = PublishArgs {
             dry_run: false,
@@ -2474,9 +2340,6 @@ mod interactive_tests {
         };
 
         let result = handle_publish_with_prompter(&args, &prompter).await;
-
-        std::env::set_current_dir(&original_dir).unwrap();
-
         assert!(result.is_ok(), "publish cancelled json should succeed");
     }
 
@@ -2504,8 +2367,7 @@ mod interactive_tests {
 
         git_add_and_commit(&temp_path, "Initial commit");
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&temp_path).unwrap();
+        let _dir_guard = DirGuard::change_to(&temp_path);
 
         let args = UpdateArgs {
             dry_run: false,
@@ -2521,9 +2383,6 @@ mod interactive_tests {
         };
 
         let result = handle_update_with_prompter(&args, &prompter).await;
-
-        std::env::set_current_dir(&original_dir).unwrap();
-
         assert!(result.is_ok(), "update cancelled should succeed");
     }
 
@@ -2551,8 +2410,7 @@ mod interactive_tests {
 
         git_add_and_commit(&temp_path, "Initial commit");
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&temp_path).unwrap();
+        let _dir_guard = DirGuard::change_to(&temp_path);
 
         let args = UpdateArgs {
             dry_run: false,
@@ -2568,9 +2426,6 @@ mod interactive_tests {
         };
 
         let result = handle_update_with_prompter(&args, &prompter).await;
-
-        std::env::set_current_dir(&original_dir).unwrap();
-
         assert!(result.is_ok(), "update cancelled json should succeed");
     }
 
@@ -2596,8 +2451,7 @@ mod interactive_tests {
 
         git_add_and_commit(&temp_path, "Initial commit");
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&temp_path).unwrap();
+        let _dir_guard = DirGuard::change_to(&temp_path);
 
         let args = ChangepackArgs {
             filter: None,
@@ -2615,9 +2469,6 @@ mod interactive_tests {
         };
 
         let result = handle_changepack_with_prompter(&args, &prompter).await;
-
-        std::env::set_current_dir(&original_dir).unwrap();
-
         assert!(result.is_ok(), "changepacks interactive should succeed");
     }
 
@@ -2643,8 +2494,7 @@ mod interactive_tests {
 
         git_add_and_commit(&temp_path, "Initial commit");
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&temp_path).unwrap();
+        let _dir_guard = DirGuard::change_to(&temp_path);
 
         let args = ChangepackArgs {
             filter: None,
@@ -2662,9 +2512,6 @@ mod interactive_tests {
         };
 
         let result = handle_changepack_with_prompter(&args, &prompter).await;
-
-        std::env::set_current_dir(&original_dir).unwrap();
-
         assert!(result.is_ok(), "changepacks no selection should succeed");
     }
 
@@ -2690,8 +2537,7 @@ mod interactive_tests {
 
         git_add_and_commit(&temp_path, "Initial commit");
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&temp_path).unwrap();
+        let _dir_guard = DirGuard::change_to(&temp_path);
 
         let args = ChangepackArgs {
             filter: None,
@@ -2709,9 +2555,6 @@ mod interactive_tests {
         };
 
         let result = handle_changepack_with_prompter(&args, &prompter).await;
-
-        std::env::set_current_dir(&original_dir).unwrap();
-
         assert!(result.is_ok(), "changepacks text prompt should succeed");
     }
 
@@ -2746,8 +2589,7 @@ mod interactive_tests {
             .await
             .unwrap();
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&temp_path).unwrap();
+        let _dir_guard = DirGuard::change_to(&temp_path);
 
         // Use interactive mode with update_type: None (will iterate Major, Minor, Patch)
         // The changed project should be detected and line 77 will be hit
@@ -2767,9 +2609,6 @@ mod interactive_tests {
         };
 
         let result = handle_changepack_with_prompter(&args, &prompter).await;
-
-        std::env::set_current_dir(&original_dir).unwrap();
-
         assert!(
             result.is_ok(),
             "changepacks with changed project should succeed"
@@ -2808,8 +2647,7 @@ async fn test_cli_check_with_language_filter() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // Filter check to only Node.js
     let args = vec![
@@ -2819,8 +2657,6 @@ async fn test_cli_check_with_language_filter() {
         "node".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -2858,8 +2694,7 @@ async fn test_cli_update_with_language_filter() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // Filter update to only Rust (should filter out the Node package update)
     let args = vec![
@@ -2870,8 +2705,6 @@ async fn test_cli_update_with_language_filter() {
         "rust".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -2918,8 +2751,7 @@ async fn test_cli_changepacks_with_language_filter() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     // Filter to only Node.js and create changepack
     let args = vec![
@@ -2933,8 +2765,6 @@ async fn test_cli_changepacks_with_language_filter() {
         "node".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(
         result.is_ok(),
@@ -2973,8 +2803,7 @@ async fn test_cli_publish_stdout_failing_with_stderr() {
 
     git_add_and_commit(&temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(&temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -2982,8 +2811,6 @@ async fn test_cli_publish_stdout_failing_with_stderr() {
         "--yes".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_err(), "publish with stderr should fail");
 }

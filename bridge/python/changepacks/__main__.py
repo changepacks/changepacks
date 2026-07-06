@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import sys
 import sysconfig
+from importlib import resources
 
 
 def get_last_three_path_parts(path: str) -> list[str]:
@@ -21,14 +22,17 @@ def get_last_three_path_parts(path: str) -> list[str]:
     return parts
 
 
-def find_changepacks_bin() -> str:
-    """Return the changepacks binary path. (ruff code)"""
+def changepacks_exe_names() -> list[str]:
+    """Return platform-specific executable names to probe."""
+    configured_suffix = sysconfig.get_config_var("EXE") or ""
+    names = ["changepacks" + configured_suffix]
+    if os.name == "nt" and configured_suffix.lower() != ".exe":
+        names.append("changepacks.exe")
+    return names
 
-    changepacks_exe = "changepacks" + (sysconfig.get_config_var("EXE") or "")
 
-    scripts_path = os.path.join(sysconfig.get_path("scripts"), changepacks_exe)
-    if os.path.isfile(scripts_path):
-        return scripts_path
+def user_scripts_path() -> str:
+    """Return the preferred per-user scripts directory for this interpreter."""
 
     if sys.version_info >= (3, 10):
         user_scheme = sysconfig.get_preferred_scheme("user")
@@ -39,17 +43,45 @@ def find_changepacks_bin() -> str:
     else:
         user_scheme = "posix_user"
 
-    user_path = os.path.join(
-        sysconfig.get_path("scripts", scheme=user_scheme), changepacks_exe
-    )
-    if os.path.isfile(user_path):
-        return user_path
+    return sysconfig.get_path("scripts", scheme=user_scheme)
 
-    # Search in `bin` adjacent to package root (as created by `pip install --target`).
-    pkg_root = os.path.dirname(os.path.dirname(__file__))
-    target_path = os.path.join(pkg_root, "bin", changepacks_exe)
-    if os.path.isfile(target_path):
-        return target_path
+
+def changepacks_bin_candidates() -> list[str]:
+    """Return executable paths supported by common wheel and target layouts."""
+    package_dir = os.path.dirname(__file__)
+    pkg_root = os.path.dirname(package_dir)
+    search_dirs = [
+        sysconfig.get_path("scripts"),
+        user_scripts_path(),
+        package_dir,
+        pkg_root,
+        os.path.join(pkg_root, "bin"),
+        os.path.join(pkg_root, "Scripts"),
+    ]
+
+    if __package__:
+        package_files = resources.files(__package__)
+        for exe_name in changepacks_exe_names():
+            search_dirs.append(str(package_files.joinpath(exe_name)))
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for candidate in search_dirs:
+        for exe_name in changepacks_exe_names():
+            path = candidate if candidate.endswith(exe_name) else os.path.join(candidate, exe_name)
+            if path not in seen:
+                seen.add(path)
+                paths.append(path)
+    return paths
+
+
+def find_changepacks_bin() -> str:
+    """Return the changepacks binary path. (ruff code)"""
+
+    candidates = changepacks_bin_candidates()
+    for candidate_path in candidates:
+        if os.path.isfile(candidate_path):
+            return candidate_path
 
     # Search for pip-specific build environments.
     #
@@ -70,11 +102,16 @@ def find_changepacks_bin() -> str:
             and maybe_overlay[-2] == "overlay"
         ):
             # The overlay must contain the changepacks binary.
-            candidate = os.path.join(paths[0], changepacks_exe)
-            if os.path.isfile(candidate):
-                return candidate
+            for exe_name in changepacks_exe_names():
+                candidate = os.path.join(paths[0], exe_name)
+                candidates.append(candidate)
+                if os.path.isfile(candidate):
+                    return candidate
 
-    raise FileNotFoundError(scripts_path)
+    raise FileNotFoundError(
+        "Could not find the changepacks executable. Searched: "
+        + os.pathsep.join(candidates)
+    )
 
 
 if __name__ == "__main__":

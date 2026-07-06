@@ -511,12 +511,12 @@ members = ["packages/*"]
             r#"[tool.uv.workspace]
 members = ["packages/*"]
 
-[tool.uv.sources]
-	pkg-a = { path = "packages/pkg-a" }
-	pkg-b = { workspace = true }
-	pkg-c = { git = "https://example.com/pkg-c.git" }
-	pkg-d = { url = "https://example.com/pkg-d.tar.gz" }
-	pkg-e = { workspace = false }
+	[tool.uv.sources]
+		pkg-a = { path = "packages/pkg-a", editable = true }
+		pkg-b = { workspace = true }
+		pkg-c = { git = "https://example.com/pkg-c.git", editable = true }
+		pkg-d = { url = "https://example.com/pkg-d.tar.gz" }
+		pkg-e = { workspace = false }
 
 	[project]
 	name = "test-workspace"

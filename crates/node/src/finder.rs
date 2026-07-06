@@ -451,6 +451,11 @@ mod tests {
   "peerDependencies": {
     "plugin-api": "workspace:*"
   },
+  "peerDependenciesMeta": {
+    "plugin-api": {
+      "optional": true
+    }
+  },
   "optionalDependencies": {
     "native-addon": "workspace:*",
     "native-external": "^2.0.0"

@@ -74,42 +74,58 @@ fn is_workspace_marker(item: &toml_edit::Item) -> bool {
         .unwrap_or(false)
 }
 
-/// Collect names of `[dependencies]` entries declared as
-/// `dep = { workspace = true }` — the shape used by workspace members to
-/// inherit a dependency's version from `[workspace.dependencies]`.
-///
-/// Previously open-coded inside `visit`; extracted so the same
-/// `dep_names` list feeds every branch (workspace / inherits-workspace-
-/// version / plain-package) through one code path. Byte-identical
-/// output to the previous inline walk — the filter is unchanged
-/// (`as_table_like` + `.get("workspace")` + `.as_bool()` defaulting to
-/// `false`), now delegated to the shared [`is_workspace_marker`]
-/// helper so a future TOML shape tweak (e.g. inline vs. dotted key)
-/// needs to touch one helper instead of two spots.
-///
-/// Matches the `package_str` / `workspace_package_str` sibling-helper
-/// idiom already established in this file.
-fn workspace_dep_names(doc: &toml_edit::DocumentMut) -> Vec<String> {
-    let Some(deps) = doc.get("dependencies").and_then(|d| d.as_table_like()) else {
-        // Empty allocation on the no-deps path — matches the previous
-        // `Vec::new()` shape byte-for-byte and lets the with-deps arm
-        // below reserve the exact upper bound without a redundant
-        // outer `Vec::new()` allocation.
-        return Vec::new();
-    };
-    // `deps.len()` is a tight upper bound: the inner loop pushes AT MOST
-    // one name per `(dep_name, value)` pair (`is_workspace_marker` only
-    // filters, never fans out). Matches the preallocation policy already
-    // applied throughout `sort_by_dep.rs`, `filter_project_dirs.rs`,
-    // `gen_update_map.rs`, and `check.rs` — eliminates the log2(N)
-    // geometric-doubling reallocations on `[dependencies]`-heavy
-    // workspaces; byte-identical output.
-    let mut dep_names = Vec::with_capacity(deps.len());
+/// Dependency tables Cargo can use for local package edges.
+const CARGO_DEPENDENCY_TABLES: &[&str] =
+    &["dependencies", "dev-dependencies", "build-dependencies"];
+
+fn collect_workspace_dep_names_from_table(
+    deps: &dyn toml_edit::TableLike,
+    dep_names: &mut Vec<String>,
+) {
     for (dep_name, value) in deps.iter() {
         if is_workspace_marker(value) {
             dep_names.push(dep_name.to_string());
         }
     }
+}
+
+/// Collect names of dependency entries declared as `dep = { workspace = true }`
+/// — the shape used by workspace members to inherit dependency versions from
+/// `[workspace.dependencies]`.
+///
+/// Previously open-coded inside `visit`; extracted so the same
+/// `dep_names` list feeds every branch (workspace / inherits-workspace-
+/// version / plain-package) through one code path. It checks top-level Cargo
+/// dependency tables and target-specific dependency tables so dev, build, and
+/// platform-only local edges still feed publish ordering and reverse updates.
+///
+/// Matches the `package_str` / `workspace_package_str` sibling-helper
+/// idiom already established in this file.
+fn workspace_dep_names(doc: &toml_edit::DocumentMut) -> Vec<String> {
+    let mut dep_names = Vec::new();
+
+    for table_name in CARGO_DEPENDENCY_TABLES {
+        if let Some(deps) = doc.get(table_name).and_then(toml_edit::Item::as_table_like) {
+            collect_workspace_dep_names_from_table(deps, &mut dep_names);
+        }
+    }
+
+    if let Some(targets) = doc.get("target").and_then(toml_edit::Item::as_table_like) {
+        for (_, target) in targets.iter() {
+            let Some(target_table) = target.as_table_like() else {
+                continue;
+            };
+            for table_name in CARGO_DEPENDENCY_TABLES {
+                if let Some(deps) = target_table
+                    .get(table_name)
+                    .and_then(toml_edit::Item::as_table_like)
+                {
+                    collect_workspace_dep_names_from_table(deps, &mut dep_names);
+                }
+            }
+        }
+    }
+
     dep_names
 }
 
@@ -669,6 +685,71 @@ external = "1.0"
                 assert!(deps.contains("utils"));
                 // external is not a workspace dependency
                 assert!(!deps.contains("external"));
+            }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_package_with_workspace_dependencies_from_all_cargo_sections()
+     {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+
+[dependencies]
+runtime-core = { workspace = true }
+external = "1.0"
+
+[dev-dependencies]
+test-support = { workspace = true }
+tempfile = "3"
+
+[build-dependencies]
+build-helper = { workspace = true }
+cc = "1"
+
+[target.'cfg(unix)'.dependencies]
+unix-support = { workspace = true }
+libc = "0.2"
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-test-support = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.build-dependencies]
+wasm-build-helper = { workspace = true }
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Package(pkg) => {
+                let deps = pkg.dependencies();
+                assert_eq!(deps.len(), 6, "expected all workspace deps, got {deps:?}");
+                assert!(deps.contains("runtime-core"));
+                assert!(deps.contains("test-support"));
+                assert!(deps.contains("build-helper"));
+                assert!(deps.contains("unix-support"));
+                assert!(deps.contains("windows-test-support"));
+                assert!(deps.contains("wasm-build-helper"));
+                assert!(!deps.contains("external"));
+                assert!(!deps.contains("tempfile"));
+                assert!(!deps.contains("cc"));
+                assert!(!deps.contains("libc"));
             }
             _ => panic!("Expected Package"),
         }

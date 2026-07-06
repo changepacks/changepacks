@@ -212,18 +212,34 @@ async fn dir_has_solution_file(dir: &Path) -> Option<bool> {
     }
 }
 
-/// Walk a `<ProjectReference Include="...">` element's attributes and
+/// Walk a `<ProjectReference Include="...">` / `Update="..."` element's attributes and
 /// push its extracted project name into `projects`. Shared by both the
 /// `Event::Start` and `Event::Empty` arms of `parse_csproj_metadata` so
 /// the attribute-parsing lives in exactly one place.
 fn collect_project_reference(e: &quick_xml::events::BytesStart<'_>, projects: &mut Vec<String>) {
+    let mut include_name = None;
+    let mut update_name = None;
+
     for attr in e.attributes().flatten() {
-        if attr.key.as_ref() == b"Include"
-            && let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0)
-            && let Some(name) = extract_project_name_from_path(&value)
-        {
-            projects.push(name);
+        let attr_name = attr.key.as_ref();
+        if !matches!(attr_name, b"Include" | b"Update") {
+            continue;
         }
+        let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0) else {
+            continue;
+        };
+        let Some(name) = extract_project_name_from_path(&value) else {
+            continue;
+        };
+        if attr_name == b"Include" {
+            include_name = Some(name);
+        } else {
+            update_name = Some(name);
+        }
+    }
+
+    if let Some(name) = include_name.or(update_name) {
+        projects.push(name);
     }
 }
 
@@ -977,14 +993,29 @@ mod tests {
   <ItemGroup>
     <ProjectReference Include="..\CoreLib\CoreLib.csproj" />
     <ProjectReference Include="..\Utils\Utils.csproj" />
+    <ProjectReference Update="..\Updated\Updated.csproj" />
   </ItemGroup>
 </Project>"#;
         let refs = CSharpProjectFinder::parse_csproj_metadata(content)
             .unwrap()
             .1;
-        assert_eq!(refs.len(), 2);
+        assert_eq!(refs.len(), 3);
         assert!(refs.contains(&"CoreLib".to_string()));
         assert!(refs.contains(&"Utils".to_string()));
+        assert!(refs.contains(&"Updated".to_string()));
+    }
+
+    #[test]
+    fn test_extract_project_references_prefers_include_over_update() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\CoreLib\CoreLib.csproj" Update="..\Fallback\Fallback.csproj" />
+  </ItemGroup>
+</Project>"#;
+        let refs = CSharpProjectFinder::parse_csproj_metadata(content)
+            .unwrap()
+            .1;
+        assert_eq!(refs, vec!["CoreLib".to_string()]);
     }
 
     // The unified `parse_csproj_metadata` MUST return both the version and

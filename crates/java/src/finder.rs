@@ -37,7 +37,9 @@ static SUBPROJECTS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 static PROJECT_DEPENDENCY_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"project\(\s*(?:["'](:[^"']+)["']|path\s*=\s*["'](:[^"']+)["'])\s*\)"#)
+    Regex::new(
+        r#"project\(\s*(?:["'](:[^"']+)["']|path\s*=\s*["'](:[^"']+)["']|path\s*:\s*["'](:[^"']+)["'])\s*\)"#,
+    )
         .expect("hardcoded regex must compile")
 });
 
@@ -176,6 +178,7 @@ fn extract_gradle_project_dependencies(content: &str) -> Vec<String> {
         .filter_map(|caps| {
             caps.get(1)
                 .or_else(|| caps.get(2))
+                .or_else(|| caps.get(3))
                 .and_then(|m| gradle_dependency_name(m.as_str()))
         })
         .collect()
@@ -893,13 +896,17 @@ dependencies {
     testImplementation(project(':testing:fixtures'))
     api(project(path = ":core"))
     runtimeOnly(project(path = ':tools:cli'))
+    implementation(project(path: ':shared'))
     implementation("org.example:external:1.0.0")
 }
 "#;
 
         let dependencies = extract_gradle_project_dependencies(content);
 
-        assert_eq!(dependencies, vec!["lib", "fixtures", "core", "cli"]);
+        assert_eq!(
+            dependencies,
+            vec!["lib", "fixtures", "core", "cli", "shared"]
+        );
     }
 
     #[cfg(unix)]
