@@ -15,7 +15,7 @@ changepacks-cli.workspace = true
 anyhow = "1.0"
 
 [build-dependencies]
-cc = "*"
+cc = "1"
 
 [[bin]]
 name = "changepacks"

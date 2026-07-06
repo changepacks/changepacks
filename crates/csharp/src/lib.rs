@@ -82,6 +82,39 @@ pub(crate) async fn write_csproj_version(
 ) -> Result<()> {
     let csproj_raw = read_to_string(path).await?;
     let updated = xml_utils::update_version_in_xml(&csproj_raw, new_version, has_version)?;
-    write(path, updated).await?;
+    if updated != csproj_raw {
+        write(path, updated).await?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_write_csproj_version_skips_unchanged_readonly_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("NoPropertyGroup.csproj");
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n";
+        tokio::fs::write(&csproj_path, content).await.unwrap();
+
+        let mut permissions = std::fs::metadata(&csproj_path).unwrap().permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&csproj_path, permissions).unwrap();
+
+        let result = write_csproj_version(&csproj_path, "1.2.3", false).await;
+
+        let mut permissions = std::fs::metadata(&csproj_path).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&csproj_path, permissions).unwrap();
+
+        result.unwrap();
+        assert_eq!(
+            tokio::fs::read_to_string(&csproj_path).await.unwrap(),
+            content
+        );
+        temp_dir.close().unwrap();
+    }
 }

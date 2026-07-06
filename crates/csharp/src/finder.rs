@@ -21,19 +21,12 @@ const PROJECT_FILES: &[&str] = &[".csproj"];
 #[derive(Debug, Default)]
 pub struct CSharpProjectFinder {
     projects: HashMap<PathBuf, Project>,
-    /// Memoize `is_workspace` results by the `.csproj`'s parent directory.
+    /// Memoize `is_workspace` results by each scanned ancestor directory.
     ///
-    /// The workspace predicate is "does this directory contain a `.sln`
-    /// sibling", which is a property of the PARENT directory. In a canonical
-    /// .NET solution shape (root holds `Solution.sln` + N sibling `Project*/`
-    /// directories, each with its own `Project*.csproj`) every `.csproj`'s
-    /// parent — its own project directory — is unique, so cache hits are
-    /// rare on the canonical shape. BUT when multiple `.csproj` files sit
-    /// in ONE directory (test-fixture shape used by
-    /// `test_visit_workspace_with_sln`, and any real-world flat-solution
-    /// layout), the previous `Self::is_workspace(path)` re-scanned that
-    /// directory once per `.csproj`. This cache elides the redundant
-    /// `read_dir` on every hit after the first.
+    /// The workspace predicate is "does this directory or one of its
+    /// ancestors contain a `.sln` file". Caching every scanned directory keeps
+    /// flat solutions fast and prevents child-project layouts from re-scanning
+    /// the same solution root for every `.csproj`.
     ///
     /// `HashMap<PathBuf, bool>` mirrors the shape already used for
     /// `self.projects` — no new dependency, no macro, no `Arc`.
@@ -140,7 +133,8 @@ impl CSharpProjectFinder {
     }
 
     /// Check if this project is part of a solution (workspace)
-    /// A project is considered a workspace if there's a .sln file in the same directory.
+    /// A project is considered a workspace if it has a `.sln` file in its
+    /// directory or any ancestor directory.
     ///
     /// Flattened from the previous three-level `if let Some(parent) → if
     /// let Ok(entries) → while let Ok(Some(entry))` pyramid to two
@@ -150,48 +144,55 @@ impl CSharpProjectFinder {
     /// one indentation level. Idiomatic modern Rust (edition 2024) and
     /// matches the same let-else style already used in this crate.
     ///
-    /// Memoized on the PARENT directory (not the `.csproj` path itself):
-    /// the predicate answers "does this directory hold a `.sln`", which
-    /// is a property of the parent. When multiple `.csproj` files share
-    /// a parent — the flat-solution shape and the exact fixture used by
-    /// `test_visit_workspace_with_sln` — the cache elides the
-    /// `read_dir` on every hit after the first. Non-cached paths (no
-    /// parent, no siblings) hit the original scan unchanged.
+    /// Memoized by scanned directory (not the `.csproj` path itself):
+    /// the predicate answers whether that directory holds a `.sln` marker.
+    /// A child project checks its own directory first, then walks upward until
+    /// a solution root is found or all ancestors have been scanned.
     async fn is_workspace(&mut self, path: &Path) -> bool {
         let Some(parent) = path.parent() else {
             return false;
         };
-        if let Some(&cached) = self.is_workspace_cache.get(parent) {
-            return cached;
-        }
-        let Ok(mut entries) = tokio::fs::read_dir(parent).await else {
-            // Do NOT cache read_dir failures: a later visit may succeed
-            // (e.g. transient permission race), and the byte-identical
-            // behavior with the pre-cache code demands each failing call
-            // stays visible as `false` without poisoning the map.
-            return false;
-        };
-        let mut is_workspace = false;
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            // Case-insensitive `.sln` match so a Windows-native
-            // `Solution.SLN` / `Foo.Sln` (mixed-case, common in Windows
-            // tooling) is recognized as a solution the same as lowercase
-            // `.sln`. Mirrors the case-insensitive `.csproj` gate already
-            // applied in `visit` and `extract_project_name_from_path`.
-            if entry
-                .path()
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("sln"))
-            {
-                is_workspace = true;
-                break;
+        for dir in parent.ancestors() {
+            if let Some(&cached) = self.is_workspace_cache.get(dir) {
+                if cached {
+                    return true;
+                }
+                continue;
+            }
+
+            let Some(has_solution) = dir_has_solution_file(dir).await else {
+                continue;
+            };
+            self.is_workspace_cache
+                .insert(dir.to_path_buf(), has_solution);
+            if has_solution {
+                return true;
             }
         }
-        self.is_workspace_cache
-            .insert(parent.to_path_buf(), is_workspace);
-        is_workspace
+        false
     }
+}
+
+async fn dir_has_solution_file(dir: &Path) -> Option<bool> {
+    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+        // Do NOT cache read_dir failures: a later visit may succeed
+        // (e.g. transient permission race), and a failed scan should not
+        // poison ancestor detection for the rest of the finder lifetime.
+        return None;
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        // Case-insensitive `.sln` match so a Windows-native `Solution.SLN` /
+        // `Foo.Sln` is recognized the same as lowercase `.sln`.
+        if entry
+            .path()
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("sln"))
+        {
+            return Some(true);
+        }
+    }
+    Some(false)
 }
 
 /// Walk a `<ProjectReference Include="...">` element's attributes and
@@ -631,6 +632,47 @@ mod tests {
             "expected exactly one cache entry (shared parent), got {:?}",
             finder.is_workspace_cache
         );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_workspace_with_ancestor_sln() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_dir = temp_dir.path().join("Project1");
+        let csproj_path = project_dir.join("Project1.csproj");
+        fs::create_dir_all(&project_dir).unwrap();
+        fs::write(
+            temp_dir.path().join("Solution.sln"),
+            "Microsoft Visual Studio Solution File",
+        )
+        .unwrap();
+        fs::write(
+            &csproj_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&csproj_path, &PathBuf::from("Project1/Project1.csproj"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(
+            matches!(projects[0], Project::Workspace(_)),
+            "expected ancestor .sln to classify child project as Workspace, got {:?}",
+            projects[0]
+        );
+        assert_eq!(finder.is_workspace_cache.get(&project_dir), Some(&false));
+        assert_eq!(finder.is_workspace_cache.get(temp_dir.path()), Some(&true));
 
         temp_dir.close().unwrap();
     }

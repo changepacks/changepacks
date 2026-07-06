@@ -320,25 +320,73 @@ mod tests {
         assert_eq!(finder.projects().len(), 0);
     }
 
-    /// Create a mock gradlew in the given directory that outputs the specified properties.
-    fn create_mock_gradlew(dir: &Path, name: &str, version: &str) {
+    #[derive(Clone, Copy)]
+    struct MockGradlew<'a> {
+        name: &'a str,
+        version: &'a str,
+        subprojects: &'a str,
+    }
+
+    impl<'a> MockGradlew<'a> {
+        fn package(name: &'a str, version: &'a str) -> Self {
+            Self {
+                name,
+                version,
+                subprojects: "[]",
+            }
+        }
+
+        fn workspace(name: &'a str, version: &'a str, subprojects: &'a str) -> Self {
+            Self {
+                name,
+                version,
+                subprojects,
+            }
+        }
+    }
+
+    /// Create a mock gradlew in the given directory that outputs Gradle properties.
+    fn create_mock_gradlew(dir: &Path, mock: MockGradlew<'_>) {
         if cfg!(windows) {
             fs::write(
                 dir.join("gradlew.bat"),
                 format!(
-                    "@echo off\necho name: {name}\necho version: {version}\necho subprojects: []\n"
+                    "@echo off\necho name: {}\necho version: {}\necho subprojects: {}\n",
+                    mock.name, mock.version, mock.subprojects
                 ),
             )
             .unwrap();
         } else {
             let gradlew_path = dir.join("gradlew");
-            fs::write(&gradlew_path, format!("#!/bin/sh\necho 'name: {name}'\necho 'version: {version}'\necho 'subprojects: []'\n")).unwrap();
+            fs::write(
+                &gradlew_path,
+                format!(
+                    "#!/bin/sh\necho 'name: {}'\necho 'version: {}'\necho \"subprojects: {}\"\n",
+                    mock.name, mock.version, mock.subprojects
+                ),
+            )
+            .unwrap();
             #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
+            make_executable(&gradlew_path);
         }
+    }
+
+    fn create_failing_gradlew(dir: &Path) {
+        if cfg!(windows) {
+            fs::write(dir.join("gradlew.bat"), "@echo off\nexit /b 1\n").unwrap();
+        } else {
+            let gradlew_path = dir.join("gradlew");
+            fs::write(&gradlew_path, "#!/bin/sh\nexit 1\n").unwrap();
+            #[cfg(unix)]
+            make_executable(&gradlew_path);
+        }
+    }
+
+    #[cfg(unix)]
+    fn make_executable(path: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     #[tokio::test]
@@ -361,7 +409,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        create_mock_gradlew(&project_dir, "myproject", "1.0.0");
+        create_mock_gradlew(&project_dir, MockGradlew::package("myproject", "1.0.0"));
 
         let mut finder = GradleProjectFinder::new();
         finder
@@ -402,7 +450,7 @@ version = '2.0.0'
         )
         .unwrap();
 
-        create_mock_gradlew(&project_dir, "groovyproject", "2.0.0");
+        create_mock_gradlew(&project_dir, MockGradlew::package("groovyproject", "2.0.0"));
 
         let mut finder = GradleProjectFinder::new();
         finder
@@ -444,17 +492,14 @@ version = "1.0.0"
         .unwrap();
 
         // Mock gradlew that reports subprojects (this is what makes it a workspace)
-        if cfg!(windows) {
-            fs::write(project_dir.join("gradlew.bat"), "@echo off\necho name: multiproject\necho version: 1.0.0\necho subprojects: [project ':subproject1', project ':subproject2']\n").unwrap();
-        } else {
-            let gradlew_path = project_dir.join("gradlew");
-            fs::write(&gradlew_path, "#!/bin/sh\necho 'name: multiproject'\necho 'version: 1.0.0'\necho \"subprojects: [project ':subproject1', project ':subproject2']\"\n").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
+        create_mock_gradlew(
+            &project_dir,
+            MockGradlew::workspace(
+                "multiproject",
+                "1.0.0",
+                "[project ':subproject1', project ':subproject2']",
+            ),
+        );
 
         let mut finder = GradleProjectFinder::new();
         finder
@@ -496,7 +541,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        create_mock_gradlew(&project_dir, "myproject", "1.0.0");
+        create_mock_gradlew(&project_dir, MockGradlew::package("myproject", "1.0.0"));
 
         let mut finder = GradleProjectFinder::new();
         finder
@@ -524,21 +569,7 @@ version = "1.0.0"
         let build_gradle = project_dir.join("build.gradle.kts");
         fs::write(&build_gradle, "version = \"1.0.0\"\n").unwrap();
 
-        if cfg!(windows) {
-            fs::write(
-                project_dir.join("gradlew.bat"),
-                "@echo off\necho name: standalone\necho version: 1.0.0\necho subprojects: []\n",
-            )
-            .unwrap();
-        } else {
-            let gradlew_path = project_dir.join("gradlew");
-            fs::write(&gradlew_path, "#!/bin/sh\necho 'name: standalone'\necho 'version: 1.0.0'\necho 'subprojects: []'\n").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
+        create_mock_gradlew(&project_dir, MockGradlew::package("standalone", "1.0.0"));
 
         let mut finder = GradleProjectFinder::new();
         finder
@@ -584,7 +615,7 @@ version = "1.0.0"
         let build_gradle = project_dir.join("build.gradle.kts");
         fs::write(&build_gradle, "version = \"1.0.0\"\n").unwrap();
 
-        create_mock_gradlew(&project_dir, "myproject", "1.0.0");
+        create_mock_gradlew(&project_dir, MockGradlew::package("myproject", "1.0.0"));
 
         let mut finder = GradleProjectFinder::new();
         finder
@@ -614,7 +645,7 @@ version = "1.0.0"
         let build_gradle = project_dir.join("build.gradle.kts");
         fs::write(&build_gradle, "version = \"1.0.0\"\n").unwrap();
 
-        create_mock_gradlew(&project_dir, "myproject", "1.0.0");
+        create_mock_gradlew(&project_dir, MockGradlew::package("myproject", "1.0.0"));
 
         let mut finder = GradleProjectFinder::new();
         finder
@@ -699,28 +730,7 @@ version = "1.0.0"
     async fn test_get_gradle_properties_with_mock() {
         let temp_dir = TempDir::new().unwrap();
 
-        // Create mock gradlew that outputs properties
-        if cfg!(windows) {
-            let gradlew_path = temp_dir.path().join("gradlew.bat");
-            fs::write(
-                &gradlew_path,
-                "@echo off\necho name: myproject\necho version: 1.2.3\n",
-            )
-            .unwrap();
-        } else {
-            let gradlew_path = temp_dir.path().join("gradlew");
-            fs::write(
-                &gradlew_path,
-                "#!/bin/sh\necho 'name: myproject'\necho 'version: 1.2.3'\n",
-            )
-            .unwrap();
-            // Make executable on Unix
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
+        create_mock_gradlew(temp_dir.path(), MockGradlew::package("myproject", "1.2.3"));
 
         let props = get_gradle_properties(temp_dir.path()).await.unwrap();
         assert_eq!(props.name, Some("myproject".to_string()));
@@ -734,17 +744,10 @@ version = "1.0.0"
     async fn test_get_gradle_properties_with_subprojects() {
         let temp_dir = TempDir::new().unwrap();
 
-        if cfg!(windows) {
-            fs::write(temp_dir.path().join("gradlew.bat"), "@echo off\necho name: root\necho version: 1.0.0\necho subprojects: [project ':app', project ':lib']\n").unwrap();
-        } else {
-            let gradlew_path = temp_dir.path().join("gradlew");
-            fs::write(&gradlew_path, "#!/bin/sh\necho 'name: root'\necho 'version: 1.0.0'\necho \"subprojects: [project ':app', project ':lib']\"\n").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
+        create_mock_gradlew(
+            temp_dir.path(),
+            MockGradlew::workspace("root", "1.0.0", "[project ':app', project ':lib']"),
+        );
 
         let props = get_gradle_properties(temp_dir.path()).await.unwrap();
         assert_eq!(props.name, Some("root".to_string()));
@@ -757,25 +760,7 @@ version = "1.0.0"
     async fn test_get_gradle_properties_empty_subprojects() {
         let temp_dir = TempDir::new().unwrap();
 
-        if cfg!(windows) {
-            fs::write(
-                temp_dir.path().join("gradlew.bat"),
-                "@echo off\necho name: leaf\necho version: 1.0.0\necho subprojects: []\n",
-            )
-            .unwrap();
-        } else {
-            let gradlew_path = temp_dir.path().join("gradlew");
-            fs::write(
-                &gradlew_path,
-                "#!/bin/sh\necho 'name: leaf'\necho 'version: 1.0.0'\necho 'subprojects: []'\n",
-            )
-            .unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
+        create_mock_gradlew(temp_dir.path(), MockGradlew::package("leaf", "1.0.0"));
 
         let props = get_gradle_properties(temp_dir.path()).await.unwrap();
         assert_eq!(props.name, Some("leaf".to_string()));
@@ -791,27 +776,8 @@ version = "1.0.0"
         fs::create_dir_all(&subproject).unwrap();
 
         // Place gradlew at root, query from subproject dir
-        if cfg!(windows) {
-            let gradlew_path = temp_dir.path().join("gradlew.bat");
-            // Mock: ignore the :sub1:properties arg, just output properties
-            fs::write(
-                &gradlew_path,
-                "@echo off\necho name: sub1\necho version: 2.0.0\n",
-            )
-            .unwrap();
-        } else {
-            let gradlew_path = temp_dir.path().join("gradlew");
-            fs::write(
-                &gradlew_path,
-                "#!/bin/sh\necho 'name: sub1'\necho 'version: 2.0.0'\n",
-            )
-            .unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
+        // Mock: ignore the :sub1:properties arg, just output properties
+        create_mock_gradlew(temp_dir.path(), MockGradlew::package("sub1", "2.0.0"));
 
         let props = get_gradle_properties(&subproject).await.unwrap();
         assert_eq!(props.name, Some("sub1".to_string()));
@@ -827,27 +793,8 @@ version = "1.0.0"
         fs::create_dir_all(&subproject).unwrap();
 
         // Place gradlew at root, query from libs/core/
-        if cfg!(windows) {
-            let gradlew_path = temp_dir.path().join("gradlew.bat");
-            // The mock script receives ":libs:core:properties" "-q" as args
-            fs::write(
-                &gradlew_path,
-                "@echo off\necho name: core\necho version: 3.1.0\n",
-            )
-            .unwrap();
-        } else {
-            let gradlew_path = temp_dir.path().join("gradlew");
-            fs::write(
-                &gradlew_path,
-                "#!/bin/sh\necho 'name: core'\necho 'version: 3.1.0'\n",
-            )
-            .unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
+        // The mock script receives ":libs:core:properties" "-q" as args.
+        create_mock_gradlew(temp_dir.path(), MockGradlew::package("core", "3.1.0"));
 
         let props = get_gradle_properties(&subproject).await.unwrap();
         assert_eq!(props.name, Some("core".to_string()));
@@ -860,26 +807,10 @@ version = "1.0.0"
     async fn test_get_gradle_properties_unspecified() {
         let temp_dir = TempDir::new().unwrap();
 
-        if cfg!(windows) {
-            let gradlew_path = temp_dir.path().join("gradlew.bat");
-            fs::write(
-                &gradlew_path,
-                "@echo off\necho name: unspecified\necho version: unspecified\n",
-            )
-            .unwrap();
-        } else {
-            let gradlew_path = temp_dir.path().join("gradlew");
-            fs::write(
-                &gradlew_path,
-                "#!/bin/sh\necho 'name: unspecified'\necho 'version: unspecified'\n",
-            )
-            .unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
+        create_mock_gradlew(
+            temp_dir.path(),
+            MockGradlew::package("unspecified", "unspecified"),
+        );
 
         let props = get_gradle_properties(temp_dir.path()).await.unwrap();
         assert!(props.name.is_none());
@@ -892,18 +823,7 @@ version = "1.0.0"
     async fn test_get_gradle_properties_gradlew_fails() {
         let temp_dir = TempDir::new().unwrap();
 
-        if cfg!(windows) {
-            let gradlew_path = temp_dir.path().join("gradlew.bat");
-            fs::write(&gradlew_path, "@echo off\nexit /b 1\n").unwrap();
-        } else {
-            let gradlew_path = temp_dir.path().join("gradlew");
-            fs::write(&gradlew_path, "#!/bin/sh\nexit 1\n").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
+        create_failing_gradlew(temp_dir.path());
 
         // gradlew exits non-zero → returns default props (no name, no version)
         let props = get_gradle_properties(temp_dir.path()).await.unwrap();
@@ -951,21 +871,7 @@ version = "1.0.0"
         fs::write(&build_gradle, "version = \"1.0.0\"\n").unwrap();
 
         // Mock gradlew that returns unspecified name (filtered to None)
-        if cfg!(windows) {
-            fs::write(
-                project_dir.join("gradlew.bat"),
-                "@echo off\necho name: unspecified\necho version: 1.0.0\necho subprojects: []\n",
-            )
-            .unwrap();
-        } else {
-            let gradlew_path = project_dir.join("gradlew");
-            fs::write(&gradlew_path, "#!/bin/sh\necho 'name: unspecified'\necho 'version: 1.0.0'\necho 'subprojects: []'\n").unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&gradlew_path, fs::Permissions::from_mode(0o755)).unwrap();
-            }
-        }
+        create_mock_gradlew(&project_dir, MockGradlew::package("unspecified", "1.0.0"));
 
         let mut finder = GradleProjectFinder::new();
         finder

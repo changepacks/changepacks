@@ -8,7 +8,7 @@ import sysconfig
 def find_changepacks_bin() -> str:
     """Return the changepacks binary path. (ruff code)"""
 
-    changepacks_exe = "changepacks" + sysconfig.get_config_var("EXE")
+    changepacks_exe = "changepacks" + (sysconfig.get_config_var("EXE") or "")
 
     scripts_path = os.path.join(sysconfig.get_path("scripts"), changepacks_exe)
     if os.path.isfile(scripts_path):
@@ -18,7 +18,7 @@ def find_changepacks_bin() -> str:
         user_scheme = sysconfig.get_preferred_scheme("user")
     elif os.name == "nt":
         user_scheme = "nt_user"
-    elif sys.platform == "darwin" and sys._framework:
+    elif sys.platform == "darwin" and getattr(sys, "_framework", None):
         user_scheme = "osx_framework_user"
     else:
         user_scheme = "posix_user"

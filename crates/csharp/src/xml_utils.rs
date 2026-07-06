@@ -35,6 +35,7 @@ pub fn update_version_in_xml(
     let mut in_version = false;
     let mut version_updated = false;
     let mut first_property_group_ended = false;
+    let mut property_group_close_ws: Option<String> = None;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -42,6 +43,7 @@ pub fn update_version_in_xml(
                 let name = e.local_name();
                 if name.as_ref() == b"PropertyGroup" {
                     in_property_group = true;
+                    property_group_close_ws = None;
                 } else if in_property_group && name.as_ref() == b"Version" {
                     in_version = true;
                 }
@@ -74,15 +76,19 @@ pub fn update_version_in_xml(
                         } else {
                             detected
                         };
-                        let trailing = format!("\n{indent}");
+                        let fallback_trailing = format!("\n{indent}");
+                        let trailing = property_group_close_ws
+                            .as_deref()
+                            .unwrap_or(&fallback_trailing);
                         writer.write_event(Event::Text(BytesText::new(indent)))?;
                         writer.write_event(Event::Start(BytesStart::new("Version")))?;
                         writer.write_event(Event::Text(BytesText::new(new_version)))?;
                         writer.write_event(Event::End(BytesEnd::new("Version")))?;
-                        writer.write_event(Event::Text(BytesText::new(&trailing)))?;
+                        writer.write_event(Event::Text(BytesText::new(trailing)))?;
                         version_updated = true;
                     }
                     in_property_group = false;
+                    property_group_close_ws = None;
                     first_property_group_ended = true;
                 } else if name.as_ref() == b"Version" {
                     in_version = false;
@@ -95,32 +101,27 @@ pub fn update_version_in_xml(
                     writer.write_event(Event::Text(BytesText::new(new_version)))?;
                     version_updated = true;
                 } else {
+                    if in_property_group {
+                        let decoded = e.decode().context("Failed to decode XML text")?;
+                        property_group_close_ws = decoded
+                            .chars()
+                            .all(char::is_whitespace)
+                            .then(|| decoded.into_owned());
+                    }
                     writer.write_event(Event::Text(e.clone()))?;
                 }
             }
-            Ok(Event::Empty(e)) => {
-                writer.write_event(Event::Empty(e.clone()))?;
-            }
-            Ok(Event::Comment(e)) => {
-                writer.write_event(Event::Comment(e.clone()))?;
-            }
-            Ok(Event::CData(e)) => {
-                writer.write_event(Event::CData(e.clone()))?;
-            }
-            Ok(Event::Decl(e)) => {
-                writer.write_event(Event::Decl(e.clone()))?;
-            }
-            Ok(Event::PI(e)) => {
-                writer.write_event(Event::PI(e.clone()))?;
-            }
-            Ok(Event::DocType(e)) => {
-                writer.write_event(Event::DocType(e.clone()))?;
-            }
-            Ok(Event::GeneralRef(e)) => {
-                writer.write_event(Event::GeneralRef(e.clone()))?;
-            }
             Ok(Event::Eof) => break,
             Err(e) => return Err(anyhow::anyhow!("XML parsing error: {e}")),
+            // Pass-through arms for every event that carries no state and
+            // does not need in-place rewriting: Empty, Comment, CData, Decl,
+            // PI, DocType, GeneralRef. Any future variant with no
+            // customization requirement falls into this arm automatically;
+            // a variant that DOES need customization must be added above
+            // (Start / End / Text) before this wildcard.
+            Ok(event) => {
+                writer.write_event(event)?;
+            }
         }
         buf.clear();
     }
@@ -277,5 +278,22 @@ mod tests {
             result.contains("</Version>\n\t</PropertyGroup>"),
             "expected tab reindent before </PropertyGroup>:\n{result}",
         );
+    }
+
+    #[test]
+    fn test_add_new_version_preserves_zero_indent_property_group_close() {
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n<PropertyGroup>\n    <OutputType>Exe</OutputType>\n</PropertyGroup>\n</Project>";
+        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        assert!(
+            result.contains("</Version>\n</PropertyGroup>"),
+            "expected zero-indent close tag to stay at column 0:\n{result}",
+        );
+    }
+
+    #[test]
+    fn test_update_version_without_property_group_returns_input() {
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n";
+        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        assert_eq!(result, content);
     }
 }
