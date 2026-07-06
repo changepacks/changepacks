@@ -63,12 +63,13 @@ fn handle_inquire_result<T>(result: Result<T, inquire::InquireError>) -> Result<
 }
 
 /// Score function for project selection: changed projects rank higher in the list.
-pub(crate) fn score_project(project: &Project) -> Option<i64> {
-    if project.is_changed() {
-        Some(100)
-    } else {
-        Some(0)
-    }
+///
+/// Total function — every project maps to a concrete score, so the return type is
+/// a bare `i64`. inquire's scorer signal (`Option<i64>`, where `None` filters an
+/// option out) is an API-boundary concern wrapped at the closure in `multi_select`,
+/// not a property of the domain scorer.
+pub(crate) fn score_project(project: &Project) -> i64 {
+    if project.is_changed() { 100 } else { 0 }
 }
 
 /// Format selected projects as a newline-separated display string.
@@ -109,7 +110,7 @@ impl Prompter for InquirePrompter {
         selector.page_size = 15;
         selector.default = Some(defaults);
         selector.scorer =
-            &|_input, option, _string_value, _idx| -> Option<i64> { score_project(option) };
+            &|_input, option, _string_value, _idx| -> Option<i64> { Some(score_project(option)) };
         selector.formatter = &|option| {
             let projects: Vec<&Project> = option.iter().map(|o| *o.value).collect();
             format_selected_projects(&projects)
@@ -308,9 +309,9 @@ mod tests {
     // Changed projects rank higher (score 100) so they appear at the top
     // of the multi-select list; unchanged ones score 0.
     #[rstest]
-    #[case(true, Some(100))]
-    #[case(false, Some(0))]
-    fn test_score_project(#[case] changed: bool, #[case] expected: Option<i64>) {
+    #[case(true, 100)]
+    #[case(false, 0)]
+    fn test_score_project(#[case] changed: bool, #[case] expected: i64) {
         let project = Project::Package(Box::new(MockTestPackage::new("pkg", changed)));
         assert_eq!(score_project(&project), expected);
     }

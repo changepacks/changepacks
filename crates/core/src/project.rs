@@ -191,9 +191,9 @@ impl Project {
         // Workspace → "[Workspace - {lang}]", Package → "[{lang}]". Destructure
         // once so a future label/formatting change only needs to be applied in
         // one place.
-        let (label_prefix, lang, name, rel_path) = match self {
-            Self::Workspace(w) => ("Workspace - ", w.language(), w.name(), w.relative_path()),
-            Self::Package(p) => ("", p.language(), p.name(), p.relative_path()),
+        let (label_prefix, lang, rel_path) = match self {
+            Self::Workspace(w) => ("Workspace - ", w.language(), w.relative_path()),
+            Self::Package(p) => ("", p.language(), p.relative_path()),
         };
         // Route the None-override branch through `self.version_display()` so
         // the "unknown"/"v{v}" formatting policy lives in exactly one place —
@@ -202,7 +202,7 @@ impl Project {
         format!(
             "{} {} {} {} {}",
             format!("[{label_prefix}{lang}]").bright_blue().bold(),
-            name.unwrap_or("noname").bright_white().bold(),
+            self.name_or_noname().bright_white().bold(),
             format!("({version})").bright_green(),
             "-".bright_cyan(),
             rel_path.display().to_string().bright_black(),
