@@ -4,6 +4,7 @@ use changepacks_core::{Project, ProjectFinder};
 use regex::Regex;
 use std::{
     collections::HashMap,
+    ffi::OsStr,
     path::{Path, PathBuf},
     process::Stdio,
     sync::LazyLock,
@@ -84,6 +85,20 @@ async fn which_java() -> Option<PathBuf> {
     None
 }
 
+#[cfg(not(tarpaulin_include))]
+async fn java_home_has_java(java_home: Option<&OsStr>) -> bool {
+    let Some(java_home) = java_home else {
+        return false;
+    };
+    if java_home.is_empty() {
+        return false;
+    }
+
+    let java_name = if cfg!(windows) { "java.exe" } else { "java" };
+    let candidate = Path::new(java_home).join("bin").join(java_name);
+    changepacks_core::is_regular_file(&candidate).await
+}
+
 /// Find gradlew executable by walking up the directory tree.
 ///
 /// In multi-module Gradle builds, `gradlew` lives at the root while subprojects
@@ -126,6 +141,21 @@ async fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     }
 }
 
+#[cfg(not(tarpaulin_include))]
+fn gradle_subproject_path(relative: &Path) -> Result<String> {
+    let mut parts = Vec::with_capacity(relative.components().count());
+    for component in relative.components() {
+        let value = component.as_os_str().to_str().with_context(|| {
+            format!(
+                "Gradle subproject path contains a non-Unicode component: {}",
+                relative.display()
+            )
+        })?;
+        parts.push(value);
+    }
+    Ok(parts.join(":"))
+}
+
 /// Get project properties using gradlew command.
 ///
 /// Walks up the directory tree to find `gradlew`, then runs it with the correct
@@ -148,7 +178,9 @@ async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
     // letting gradlew produce a confusing "JAVA_HOME is not set" wall of text.
     // `which_java` is now async (it awaits `is_regular_file`), so hoist the
     // short-circuiting OR into a local before feeding `anyhow::ensure!`.
-    let java_available = std::env::var_os("JAVA_HOME").is_some() || which_java().await.is_some();
+    let java_home = std::env::var_os("JAVA_HOME");
+    let java_available =
+        java_home_has_java(java_home.as_deref()).await || which_java().await.is_some();
     anyhow::ensure!(
         java_available,
         "Java is required for Gradle projects but JAVA_HOME is not set and 'java' was not found on PATH.\n\
@@ -164,11 +196,7 @@ async fn get_gradle_properties(project_dir: &Path) -> Result<GradleProperties> {
         let relative = project_dir
             .strip_prefix(&gradlew_dir)
             .context("Failed to compute subproject path")?;
-        let gradle_path = relative
-            .components()
-            .filter_map(|c| c.as_os_str().to_str())
-            .collect::<Vec<_>>()
-            .join(":");
+        let gradle_path = gradle_subproject_path(relative)?;
         vec![format!(":{gradle_path}:properties"), "-q".to_string()]
     };
 
@@ -803,6 +831,24 @@ version = "1.0.0"
         temp_dir.close().unwrap();
     }
 
+    #[test]
+    fn test_gradle_subproject_path_nested_unicode() {
+        let relative = Path::new("libs").join("core");
+
+        assert_eq!(gradle_subproject_path(&relative).unwrap(), "libs:core");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_gradle_subproject_path_rejects_non_unicode_component() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid = PathBuf::from(OsString::from_vec(vec![0x66, 0x80, 0x6f]));
+
+        assert!(gradle_subproject_path(&invalid).is_err());
+    }
+
     #[tokio::test]
     async fn test_get_gradle_properties_unspecified() {
         let temp_dir = TempDir::new().unwrap();
@@ -858,6 +904,36 @@ version = "1.0.0"
             // SAFETY: restoring original value, single-threaded test context.
             unsafe { std::env::set_var("PATH", p) };
         }
+    }
+
+    #[tokio::test]
+    async fn test_java_home_has_java_rejects_empty_value() {
+        assert!(!java_home_has_java(None).await);
+        assert!(!java_home_has_java(Some(std::ffi::OsStr::new(""))).await);
+    }
+
+    #[tokio::test]
+    async fn test_java_home_has_java_rejects_invalid_home() {
+        let temp_dir = TempDir::new().unwrap();
+        let invalid_home = temp_dir.path().join("missing-java");
+        fs::create_dir_all(&invalid_home).unwrap();
+
+        assert!(!java_home_has_java(Some(invalid_home.as_os_str())).await);
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_java_home_has_java_accepts_bin_java() {
+        let temp_dir = TempDir::new().unwrap();
+        let java_name = if cfg!(windows) { "java.exe" } else { "java" };
+        let java_path = temp_dir.path().join("bin").join(java_name);
+        fs::create_dir_all(java_path.parent().unwrap()).unwrap();
+        fs::write(&java_path, "").unwrap();
+
+        assert!(java_home_has_java(Some(temp_dir.path().as_os_str())).await);
+
+        temp_dir.close().unwrap();
     }
 
     #[tokio::test]

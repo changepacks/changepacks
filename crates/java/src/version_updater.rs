@@ -36,11 +36,11 @@ pub fn update_version_in_kts(content: &str, new_version: &str) -> String {
 }
 
 static GROOVY_ASSIGN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?m)^(version\s*=\s*)['"][^'"]+['"]"#).expect("hardcoded regex must compile")
+    Regex::new(r#"(?m)^(\s*version\s*=\s*)(['"])[^'"]+['"]"#).expect("hardcoded regex must compile")
 });
 
 static GROOVY_SPACE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?m)^(version\s+)['"][^'"]+['"]"#).expect("hardcoded regex must compile")
+    Regex::new(r#"(?m)^(\s*version\s+)(['"])[^'"]+['"]"#).expect("hardcoded regex must compile")
 });
 
 /// Update version in build.gradle (Groovy) content
@@ -49,14 +49,14 @@ pub fn update_version_in_groovy(content: &str, new_version: &str) -> String {
     // Pattern 1: version = '1.0.0' or version = "1.0.0"
     if GROOVY_ASSIGN_PATTERN.is_match(content) {
         return GROOVY_ASSIGN_PATTERN
-            .replace(content, format!(r"${{1}}'{new_version}'"))
+            .replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
             .to_string();
     }
 
     // Pattern 2: version '1.0.0' or version "1.0.0"
     if GROOVY_SPACE_PATTERN.is_match(content) {
         return GROOVY_SPACE_PATTERN
-            .replace(content, format!(r"${{1}}'{new_version}'"))
+            .replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
             .to_string();
     }
 
@@ -159,6 +159,37 @@ version '3.0.0'
 "#;
         let updated = update_version_in_groovy(content, "3.0.1");
         assert!(updated.contains("version '3.0.1'"));
+    }
+
+    #[test]
+    fn test_update_version_in_groovy_assign_preserves_double_quotes() {
+        let content = r#"
+group = 'com.example'
+version = "2.0.0"
+"#;
+        let updated = update_version_in_groovy(content, "2.0.1");
+        assert!(updated.contains(r#"version = "2.0.1""#));
+    }
+
+    #[test]
+    fn test_update_version_in_groovy_space_preserves_double_quotes() {
+        let content = r#"
+group = 'com.example'
+version "3.0.0"
+"#;
+        let updated = update_version_in_groovy(content, "3.0.1");
+        assert!(updated.contains(r#"version "3.0.1""#));
+    }
+
+    #[test]
+    fn test_update_version_in_groovy_assign_preserves_indentation() {
+        let content = r#"
+plugins {
+    version = '1.0.0'
+}
+"#;
+        let updated = update_version_in_groovy(content, "1.0.1");
+        assert!(updated.contains("    version = '1.0.1'"));
     }
 
     #[test]

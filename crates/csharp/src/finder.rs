@@ -180,19 +180,30 @@ async fn dir_has_solution_file(dir: &Path) -> Option<bool> {
         // poison ancestor detection for the rest of the finder lifetime.
         return None;
     };
-    while let Ok(Some(entry)) = entries.next_entry().await {
-        // Case-insensitive `.sln` match so a Windows-native `Solution.SLN` /
-        // `Foo.Sln` is recognized the same as lowercase `.sln`.
-        if entry
-            .path()
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("sln"))
-        {
-            return Some(true);
+    loop {
+        match entries.next_entry().await {
+            Ok(Some(entry)) => {
+                // Case-insensitive `.sln` match so a Windows-native `Solution.SLN` /
+                // `Foo.Sln` is recognized the same as lowercase `.sln`.
+                let has_sln_extension = entry
+                    .path()
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("sln"));
+                if has_sln_extension {
+                    let Ok(file_type) = entry.file_type().await else {
+                        return None;
+                    };
+                    if !file_type.is_file() {
+                        continue;
+                    }
+                    return Some(true);
+                }
+            }
+            Ok(None) => return Some(false),
+            Err(_) => return None,
         }
     }
-    Some(false)
 }
 
 /// Walk a `<ProjectReference Include="...">` element's attributes and
@@ -463,6 +474,73 @@ mod tests {
             }
             _ => panic!("Expected Workspace (uppercase .SLN must be recognized)"),
         }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dir_has_solution_file_returns_true_for_sln_file() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join("Solution.sln"),
+            "Microsoft Visual Studio Solution File",
+        )
+        .unwrap();
+
+        assert_eq!(dir_has_solution_file(temp_dir.path()).await, Some(true));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dir_has_solution_file_returns_false_without_sln() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("README.md"), "not a solution").unwrap();
+
+        assert_eq!(dir_has_solution_file(temp_dir.path()).await, Some(false));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dir_has_solution_file_ignores_sln_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::create_dir(temp_dir.path().join("Fake.sln")).unwrap();
+
+        assert_eq!(dir_has_solution_file(temp_dir.path()).await, Some(false));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_package_ignores_sln_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("TestProject.csproj");
+        fs::create_dir(temp_dir.path().join("Fake.sln")).unwrap();
+        fs::write(
+            &csproj_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&csproj_path, &PathBuf::from("TestProject.csproj"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(
+            matches!(projects[0], Project::Package(_)),
+            "expected Package when only a .sln directory exists, got {:?}",
+            projects[0]
+        );
 
         temp_dir.close().unwrap();
     }
