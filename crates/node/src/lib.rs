@@ -15,7 +15,7 @@ pub use finder::NodeProjectFinder;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use changepacks_core::UpdateType;
+use changepacks_core::{Config, Language, UpdateType, is_regular_file};
 use changepacks_utils::{detect_indent_str, finalize_content, next_version_or_default};
 use serde::Serialize;
 use tokio::fs::{read_to_string, write};
@@ -216,6 +216,25 @@ pub fn node_modules_bin_dirs(start_dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
+/// Async equivalent of [`node_modules_bin_dirs`] for publish flows that are
+/// already running inside Tokio.
+pub async fn node_modules_bin_dirs_async(start_dir: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let mut current = Some(start_dir);
+    while let Some(dir) = current {
+        let bin = dir.join("node_modules").join(".bin");
+        if tokio::fs::metadata(&bin)
+            .await
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false)
+        {
+            dirs.push(bin);
+        }
+        current = dir.parent();
+    }
+    dirs
+}
+
 /// Detects the package manager by checking for lock files in the given directory
 /// Priority: bun.lockb/bun.lock > pnpm-lock.yaml > yarn.lock > npm (default; a lone
 /// package-lock.json is resolved by `detect_package_manager_recursive`)
@@ -231,6 +250,20 @@ pub fn detect_package_manager(dir: &Path) -> PackageManager {
         // No bun/pnpm/yarn lockfile: default to npm. This also covers the
         // package-lock.json case (npm), so no separate stat is needed here —
         // detect_package_manager_recursive does its own package-lock.json check.
+        PackageManager::Npm
+    }
+}
+
+/// Async equivalent of [`detect_package_manager`] for publish flows.
+pub async fn detect_package_manager_async(dir: &Path) -> PackageManager {
+    if is_regular_file(&dir.join("bun.lockb")).await || is_regular_file(&dir.join("bun.lock")).await
+    {
+        PackageManager::Bun
+    } else if is_regular_file(&dir.join("pnpm-lock.yaml")).await {
+        PackageManager::Pnpm
+    } else if is_regular_file(&dir.join("yarn.lock")).await {
+        PackageManager::Yarn
+    } else {
         PackageManager::Npm
     }
 }
@@ -253,6 +286,64 @@ pub fn detect_package_manager_recursive(path: &Path) -> PackageManager {
     }
 
     PackageManager::Npm
+}
+
+/// Async equivalent of [`detect_package_manager_recursive`] for publish flows.
+pub async fn detect_package_manager_recursive_async(path: &Path) -> PackageManager {
+    let mut current = if is_regular_file(path).await {
+        path.parent()
+    } else {
+        Some(path)
+    };
+
+    while let Some(dir) = current {
+        let pm = detect_package_manager_async(dir).await;
+        if pm != PackageManager::Npm || is_regular_file(&dir.join("package-lock.json")).await {
+            return pm;
+        }
+        current = dir.parent();
+    }
+
+    PackageManager::Npm
+}
+
+fn config_command(
+    map: &std::collections::HashMap<String, String>,
+    relative_path: &Path,
+) -> Option<String> {
+    map.get(relative_path.to_string_lossy().as_ref())
+        .cloned()
+        .or_else(|| map.get(Language::Node.publish_key()).cloned())
+}
+
+pub(crate) async fn publish_command_for_path(
+    path: &Path,
+    relative_path: &Path,
+    config: &Config,
+) -> String {
+    if let Some(command) = config_command(&config.publish, relative_path) {
+        return command;
+    }
+    detect_package_manager_recursive_async(path)
+        .await
+        .publish_command()
+        .to_string()
+}
+
+pub(crate) async fn dry_run_publish_command_for_path(
+    path: &Path,
+    relative_path: &Path,
+    config: &Config,
+) -> Option<String> {
+    if let Some(command) = config_command(&config.publish_dry_run, relative_path) {
+        return Some(command);
+    }
+    Some(
+        detect_package_manager_recursive_async(path)
+            .await
+            .dry_run_publish_command()
+            .to_string(),
+    )
 }
 
 #[cfg(test)]

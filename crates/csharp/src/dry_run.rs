@@ -175,16 +175,8 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
     // Explicit close on the happy path so any cleanup failure is surfaced
     // (TempDir::drop swallows errors). On the error path above, RAII Drop
     // still handles it.
-    if let Err(e) = pack_dir.close() {
-        combined.stderr.push_str(&format!(
-            "\n[changepacks dry-run] pack tempdir cleanup error: {e}\n"
-        ));
-    }
-    if let Err(e) = feed_dir.close() {
-        combined.stderr.push_str(&format!(
-            "\n[changepacks dry-run] feed tempdir cleanup error: {e}\n"
-        ));
-    }
+    note_tempdir_close_error(pack_dir, "pack", &mut combined.stderr);
+    note_tempdir_close_error(feed_dir, "feed", &mut combined.stderr);
 
     Ok(combined)
 }
@@ -192,7 +184,7 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
 /// Asynchronously enumerate `*.nupkg` files in `dir` (non-recursive).
 async fn collect_nupkgs(dir: &Path) -> Result<Vec<String>> {
     let mut entries = read_dir(dir).await?;
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(4);
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
         let is_nupkg = path
@@ -231,6 +223,20 @@ fn prefixed(label: &str, mut output: PublishOutput) -> PublishOutput {
         }
     }
     output
+}
+
+/// Close a [`TempDir`] on the happy path and, if cleanup fails, append a
+/// labeled note to the combined `stderr` capture. Both `pack_dir` and
+/// `feed_dir` used byte-identical inline blocks before this helper existed
+/// — extracting them keeps the note format in a single place so future
+/// edits (label prefix, newline handling, error shape) land once instead
+/// of drifting between two call sites.
+fn note_tempdir_close_error(dir: TempDir, label: &str, stderr: &mut String) {
+    if let Err(e) = dir.close() {
+        stderr.push_str(&format!(
+            "\n[changepacks dry-run] {label} tempdir cleanup error: {e}\n"
+        ));
+    }
 }
 
 #[cfg(test)]

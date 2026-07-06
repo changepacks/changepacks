@@ -49,10 +49,7 @@ pub struct GradleProjectFinder {
 impl GradleProjectFinder {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            projects: HashMap::new(),
-            java_available: None,
-        }
+        Self::default()
     }
 }
 
@@ -300,7 +297,7 @@ impl ProjectFinder for GradleProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        if self.matches_project_file(path).await? {
+        if self.matches_project_file(path).await {
             if self.projects.contains_key(path) {
                 return Ok(());
             }

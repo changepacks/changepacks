@@ -153,27 +153,25 @@ fn apply_update_on_rules(
         // is deliberate.
         let mut updated_paths: Vec<Cow<'_, str>> = Vec::with_capacity(update_map.len());
         updated_paths.extend(update_map.keys().map(|p| p.to_string_lossy()));
-        // `Filter`'s `size_hint` is `(0, Some(len))` and `Vec::from_iter`
-        // reserves against the LOWER bound, so a plain `.collect()` here
-        // incurs geometric-doubling reallocations on repos with many
-        // `updateOn` triggers. `config.update_on.len()` is the exact
-        // upper bound because the filter keeps AT MOST one entry per
-        // trigger. Matches the preallocation policy already applied to
-        // `path_to_name` / `reverse_deps` / `packages_to_add` in the
-        // sibling `apply_reverse_dependencies`, and to `paths` /
-        // `update_map` in `gen_update_map` above.
-        let mut out = Vec::with_capacity(config.update_on.len());
-        out.extend(config.update_on.iter().filter(|(trigger_pattern, _)| {
+        let mut compiled_patterns = Vec::with_capacity(config.update_on.len());
+        for (trigger_pattern, dependents) in &config.update_on {
             match Pattern::new(trigger_pattern) {
-                Ok(pattern) => updated_paths.iter().any(|s| pattern.matches(s.as_ref())),
+                Ok(pattern) => compiled_patterns.push((trigger_pattern, dependents, pattern)),
                 Err(_) => {
                     eprintln!(
                         "warning: invalid glob pattern in updateOn config: {trigger_pattern}"
                     );
-                    false
                 }
             }
-        }));
+        }
+
+        let mut out = Vec::with_capacity(compiled_patterns.len());
+        out.extend(
+            compiled_patterns
+                .iter()
+                .filter(|(_, _, pattern)| updated_paths.iter().any(|s| pattern.matches(s.as_ref())))
+                .map(|(trigger_pattern, dependents, _)| (*trigger_pattern, *dependents)),
+        );
         out
     };
 

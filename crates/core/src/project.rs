@@ -282,6 +282,18 @@ mod tests {
     use rstest::rstest;
     use std::path::PathBuf;
 
+    macro_rules! impl_test_publish_commands {
+        () => {
+            fn default_publish_command(&self) -> String {
+                "echo publish".to_string()
+            }
+
+            fn default_dry_run_publish_command(&self) -> Option<String> {
+                Some("echo publish --dry-run".to_string())
+            }
+        };
+    }
+
     #[derive(Debug)]
     struct MockWorkspace {
         name: Option<String>,
@@ -325,12 +337,7 @@ mod tests {
         fn add_dependency(&mut self, dependency: &str) {
             self.dependencies.insert(dependency.to_string());
         }
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
-        }
+        impl_test_publish_commands!();
     }
 
     #[derive(Debug)]
@@ -376,12 +383,7 @@ mod tests {
         fn add_dependency(&mut self, dependency: &str) {
             self.dependencies.insert(dependency.to_string());
         }
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
-        }
+        impl_test_publish_commands!();
     }
 
     fn ws(name: Option<&str>, version: Option<&str>, language: Language) -> Project {

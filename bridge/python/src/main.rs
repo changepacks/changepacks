@@ -9,14 +9,8 @@
 #[tokio::main]
 #[cfg(not(tarpaulin_include))]
 async fn main() -> anyhow::Result<()> {
-    if let Err(e) = changepacks_cli::main(&std::env::args().collect::<Vec<String>>()).await {
-        // Consolidated "graceful cancellation → exit(0)" check via the
-        // shared `changepacks_cli::is_user_cancelled` helper — mirroring
-        // `bridge/node/src/lib.rs` and `crates/changepacks/src/main.rs`
-        // through the same one-liner.
-        if changepacks_cli::is_user_cancelled(&e) {
-            std::process::exit(0);
-        }
+    if let Err(e) = changepacks_cli::main_from_env(false).await {
+        changepacks_cli::exit_if_user_cancelled(&e);
         return Err(e);
     }
     Ok(())

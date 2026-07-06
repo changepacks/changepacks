@@ -124,12 +124,7 @@ pub struct RustProjectFinder {
 impl RustProjectFinder {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            projects: HashMap::new(),
-            workspace_package_version: None,
-            workspace_root_path: None,
-            pending_workspace_packages: Vec::new(),
-        }
+        Self::default()
     }
 }
 
@@ -142,7 +137,7 @@ impl ProjectFinder for RustProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        if self.matches_project_file(path).await? {
+        if self.matches_project_file(path).await {
             if self.projects.contains_key(path) {
                 return Ok(());
             }

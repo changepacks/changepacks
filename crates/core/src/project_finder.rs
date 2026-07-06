@@ -358,7 +358,7 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()>;
     /// Whether `path` is a project manifest file recognized by this finder.
     ///
-    /// Returns `Ok(false)` for directories and files whose name is not in
+    /// Returns `false` for directories and files whose name is not in
     /// `project_files()`. Used by language-specific `visit()` implementations
     /// to gate manifest parsing on file-name matching. `CSharpProjectFinder`
     /// intentionally uses `.extension()` matching instead and does not call
@@ -374,21 +374,19 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// semantically identical to the previous with_context error paths
     /// — which were unreachable for git-index-derived paths.
     ///
-    /// # Errors
-    /// Currently never returns an error; the `Result` return is preserved
-    /// so future implementations may return their own errors without a
-    /// signature break.
-    async fn matches_project_file(&self, path: &Path) -> Result<bool> {
+    /// This check is infallible: stat errors are normalized to `false` by
+    /// [`is_regular_file`].
+    async fn matches_project_file(&self, path: &Path) -> bool {
         let Some(name_os) = path.file_name() else {
-            return Ok(false);
+            return false;
         };
         let Some(name) = name_os.to_str() else {
-            return Ok(false);
+            return false;
         };
         if !self.project_files().contains(&name) {
-            return Ok(false);
+            return false;
         }
-        Ok(is_regular_file(path).await)
+        is_regular_file(path).await
     }
     /// # Errors
     /// Returns error if checking changed status fails for any project.

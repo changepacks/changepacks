@@ -47,11 +47,12 @@ pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
         }
         paths.push(file.path());
     }
-    let results: Vec<_> = futures::future::join_all(paths.into_iter().map(remove_file)).await;
-    let error_details: Vec<String> = results
-        .iter()
-        .filter_map(|r| r.as_ref().err().map(std::string::ToString::to_string))
-        .collect();
+    let mut error_details = Vec::new();
+    for result in futures::future::join_all(paths.into_iter().map(remove_file)).await {
+        if let Err(err) = result {
+            error_details.push(err.to_string());
+        }
+    }
     if error_details.is_empty() {
         Ok(())
     } else {

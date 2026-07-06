@@ -1,5 +1,5 @@
 use serial_test::serial;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 fn init_git_repo(path: &Path) {
@@ -33,6 +33,24 @@ fn git_add_and_commit(path: &Path, message: &str) {
         .unwrap();
 }
 
+struct DirGuard {
+    original: PathBuf,
+}
+
+impl DirGuard {
+    fn change_to(path: &Path) -> Self {
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(path).unwrap();
+        Self { original }
+    }
+}
+
+impl Drop for DirGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.original);
+    }
+}
+
 #[tokio::test]
 #[serial]
 async fn test_cli_init_dry_run() {
@@ -41,8 +59,7 @@ async fn test_cli_init_dry_run() {
 
     init_git_repo(temp_path);
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -50,8 +67,6 @@ async fn test_cli_init_dry_run() {
         "--dry-run".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_ok());
     assert!(!temp_path.join(".changepacks/config.json").exists());
@@ -65,13 +80,10 @@ async fn test_cli_init_creates_config() {
 
     init_git_repo(temp_path);
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(temp_path);
 
     let args = vec!["changepacks".to_string(), "init".to_string()];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_ok());
     assert!(temp_path.join(".changepacks/config.json").exists());
@@ -85,13 +97,10 @@ async fn test_cli_config() {
 
     init_git_repo(temp_path);
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(temp_path);
 
     let args = vec!["changepacks".to_string(), "config".to_string()];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_ok());
 }
@@ -125,8 +134,7 @@ async fn test_cli_publish_dry_run() {
 
     git_add_and_commit(temp_path, "Initial commit");
 
-    let original_dir = std::env::current_dir().unwrap();
-    std::env::set_current_dir(temp_path).unwrap();
+    let _dir_guard = DirGuard::change_to(temp_path);
 
     let args = vec![
         "changepacks".to_string(),
@@ -134,8 +142,6 @@ async fn test_cli_publish_dry_run() {
         "--dry-run".to_string(),
     ];
     let result = changepacks_cli::main(&args).await;
-
-    std::env::set_current_dir(&original_dir).unwrap();
 
     assert!(result.is_ok());
 }

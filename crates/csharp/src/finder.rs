@@ -36,10 +36,7 @@ pub struct CSharpProjectFinder {
 impl CSharpProjectFinder {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            projects: HashMap::new(),
-            is_workspace_cache: HashMap::new(),
-        }
+        Self::default()
     }
 
     /// Extract the project name from the .csproj file path (filename without extension)

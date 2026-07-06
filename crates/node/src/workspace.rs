@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use changepacks_core::{Language, UpdateType, Workspace};
+use changepacks_core::{Config, Language, UpdateType, Workspace};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -63,6 +63,41 @@ impl Workspace for NodeWorkspace {
     // one place — expansion is byte-identical to the previous
     // hand-rolled bodies.
     changepacks_core::impl_dependencies_accessors!();
+
+    async fn publish(&self, config: &Config) -> Result<changepacks_core::publish::PublishOutput> {
+        let command =
+            crate::publish_command_for_path(&self.path, &self.relative_path, config).await;
+        let path_dirs = match self.path.parent() {
+            Some(parent) => crate::node_modules_bin_dirs_async(parent).await,
+            None => Vec::new(),
+        };
+        changepacks_core::publish::run_publish_flow(
+            &command,
+            &self.path,
+            &path_dirs,
+            "Workspace directory not found",
+        )
+        .await
+    }
+
+    async fn dry_run_publish(
+        &self,
+        config: &Config,
+    ) -> Result<Option<changepacks_core::publish::PublishOutput>> {
+        let command =
+            crate::dry_run_publish_command_for_path(&self.path, &self.relative_path, config).await;
+        let path_dirs = match self.path.parent() {
+            Some(parent) => crate::node_modules_bin_dirs_async(parent).await,
+            None => Vec::new(),
+        };
+        changepacks_core::publish::run_dry_run_publish_flow(
+            command.as_deref(),
+            &self.path,
+            &path_dirs,
+            "Workspace directory not found",
+        )
+        .await
+    }
 }
 
 #[cfg(test)]

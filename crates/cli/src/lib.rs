@@ -27,6 +27,26 @@ pub mod prompter;
 
 pub use prompter::{UserCancelled, is_user_cancelled};
 
+/// Collect process arguments and run the CLI.
+///
+/// # Errors
+/// Returns error if command execution fails.
+pub async fn main_from_env(skip_binary: bool) -> Result<()> {
+    let args: Vec<String> = if skip_binary {
+        std::env::args().skip(1).collect()
+    } else {
+        std::env::args().collect()
+    };
+    main(&args).await
+}
+
+/// Exit successfully when `error` represents an intentional user cancellation.
+pub fn exit_if_user_cancelled(error: &anyhow::Error) {
+    if is_user_cancelled(error) {
+        std::process::exit(0);
+    }
+}
+
 #[derive(ValueEnum, Debug, Clone)]
 enum CliUpdateType {
     Major,

@@ -38,9 +38,7 @@ pub struct PythonProjectFinder {
 impl PythonProjectFinder {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            projects: HashMap::new(),
-        }
+        Self::default()
     }
 }
 
@@ -59,7 +57,7 @@ impl ProjectFinder for PythonProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        if self.matches_project_file(path).await? {
+        if self.matches_project_file(path).await {
             if self.projects.contains_key(path) {
                 return Ok(());
             }
