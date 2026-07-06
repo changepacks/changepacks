@@ -81,15 +81,7 @@ mod tests {
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 
-    #[tokio::test]
-    async fn test_gradle_workspace_new() {
-        let workspace = GradleWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/build.gradle.kts"),
-            PathBuf::from("test/build.gradle.kts"),
-        );
-
+    fn assert_gradle_workspace_defaults(workspace: &GradleWorkspace) {
         assert_eq!(workspace.name(), Some("test-workspace"));
         assert_eq!(workspace.version(), Some("1.0.0"));
         assert_eq!(workspace.path(), PathBuf::from("/test/build.gradle.kts"));
@@ -118,6 +110,18 @@ mod tests {
                 Some("./gradlew publishToMavenLocal")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_gradle_workspace_new() {
+        let workspace = GradleWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/build.gradle.kts"),
+            PathBuf::from("test/build.gradle.kts"),
+        );
+
+        assert_gradle_workspace_defaults(&workspace);
     }
 
     #[tokio::test]

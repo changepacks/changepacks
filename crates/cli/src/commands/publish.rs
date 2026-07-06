@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::PathBuf,
+};
 
 use anyhow::Result;
 use changepacks_core::{Config, Project, PublishOutput, PublishResult};
@@ -306,6 +309,41 @@ fn record_publish_failure(
     failed_projects.push(project.to_string());
 }
 
+fn failed_dependency<'a>(
+    project: &'a Project,
+    failed_project_names: &HashSet<String>,
+) -> Option<&'a str> {
+    project
+        .dependencies()
+        .iter()
+        .find(|dep| failed_project_names.contains(dep.as_str()))
+        .map(String::as_str)
+}
+
+fn record_dependency_skip(
+    result_map: &mut BTreeMap<PathBuf, PublishResult>,
+    failed_projects: &mut Vec<String>,
+    failed_project_names: &mut HashSet<String>,
+    project: &Project,
+    dependency: &str,
+    failure_label: &str,
+    format: &FormatOptions,
+) {
+    let error = anyhow::anyhow!("skipped because dependency failed: {dependency}");
+    record_publish_failure(
+        result_map,
+        failed_projects,
+        project,
+        None,
+        Some(&error),
+        failure_label,
+        format,
+    );
+    if let Some(name) = project.name() {
+        failed_project_names.insert(name.to_string());
+    }
+}
+
 enum ProjectPublishOutcome {
     Success(PublishOutput),
     Failure(PublishOutput),
@@ -320,10 +358,11 @@ fn record_publish_outcome(
     success_label: &str,
     failure_label: &str,
     format: &FormatOptions,
-) {
+) -> bool {
     match outcome {
         ProjectPublishOutcome::Success(output) => {
             record_publish_success(result_map, project, output, success_label, format);
+            false
         }
         ProjectPublishOutcome::Failure(output) => {
             record_publish_failure(
@@ -335,6 +374,7 @@ fn record_publish_outcome(
                 failure_label,
                 format,
             );
+            true
         }
         ProjectPublishOutcome::Error(error) => {
             record_publish_failure(
@@ -346,6 +386,7 @@ fn record_publish_outcome(
                 failure_label,
                 format,
             );
+            true
         }
     }
 }
@@ -357,6 +398,7 @@ async fn execute_dry_run_publish_loop(
 ) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
     let mut result_map = BTreeMap::new();
     let mut failed_projects: Vec<String> = Vec::with_capacity(projects.len());
+    let mut failed_project_names: HashSet<String> = HashSet::with_capacity(projects.len());
 
     // Pre-compute the set of package names being bumped in this run so that
     // each iteration can cheaply check whether its dependencies overlap.
@@ -400,6 +442,18 @@ async fn execute_dry_run_publish_loop(
             }
             continue;
         }
+        if let Some(dependency) = failed_dependency(project, &failed_project_names) {
+            record_dependency_skip(
+                &mut result_map,
+                &mut failed_projects,
+                &mut failed_project_names,
+                project,
+                dependency,
+                "Dry-run skipped for",
+                format,
+            );
+            continue;
+        }
         if let FormatOptions::Stdout = format {
             println!("Dry-run publishing {project}...");
         }
@@ -410,7 +464,7 @@ async fn execute_dry_run_publish_loop(
                 } else {
                     ProjectPublishOutcome::Failure(output)
                 };
-                record_publish_outcome(
+                if record_publish_outcome(
                     &mut result_map,
                     &mut failed_projects,
                     project,
@@ -418,7 +472,10 @@ async fn execute_dry_run_publish_loop(
                     "Dry-run succeeded for",
                     "Dry-run failed for",
                     format,
-                );
+                ) && let Some(name) = project.name()
+                {
+                    failed_project_names.insert(name.to_string());
+                }
             }
             Ok(None) => {
                 // Ok(None) stays inline: dry-run unsupported is a warning,
@@ -447,7 +504,7 @@ async fn execute_dry_run_publish_loop(
                 }
             }
             Err(e) => {
-                record_publish_outcome(
+                if record_publish_outcome(
                     &mut result_map,
                     &mut failed_projects,
                     project,
@@ -455,7 +512,10 @@ async fn execute_dry_run_publish_loop(
                     "Dry-run succeeded for",
                     "Dry-run failed for",
                     format,
-                );
+                ) && let Some(name) = project.name()
+                {
+                    failed_project_names.insert(name.to_string());
+                }
             }
         }
     }
@@ -470,8 +530,21 @@ async fn execute_publish_loop(
 ) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
     let mut result_map = BTreeMap::new();
     let mut failed_projects: Vec<String> = Vec::with_capacity(projects.len());
+    let mut failed_project_names: HashSet<String> = HashSet::with_capacity(projects.len());
 
     for project in projects {
+        if let Some(dependency) = failed_dependency(project, &failed_project_names) {
+            record_dependency_skip(
+                &mut result_map,
+                &mut failed_projects,
+                &mut failed_project_names,
+                project,
+                dependency,
+                "Skipped publish for",
+                format,
+            );
+            continue;
+        }
         if let FormatOptions::Stdout = format {
             println!("Publishing {project}...");
         }
@@ -482,7 +555,7 @@ async fn execute_publish_loop(
                 } else {
                     ProjectPublishOutcome::Failure(output)
                 };
-                record_publish_outcome(
+                if record_publish_outcome(
                     &mut result_map,
                     &mut failed_projects,
                     project,
@@ -490,10 +563,13 @@ async fn execute_publish_loop(
                     "Successfully published",
                     "Failed to publish",
                     format,
-                );
+                ) && let Some(name) = project.name()
+                {
+                    failed_project_names.insert(name.to_string());
+                }
             }
             Err(e) => {
-                record_publish_outcome(
+                if record_publish_outcome(
                     &mut result_map,
                     &mut failed_projects,
                     project,
@@ -501,7 +577,10 @@ async fn execute_publish_loop(
                     "Successfully published",
                     "Failed to publish",
                     format,
-                );
+                ) && let Some(name) = project.name()
+                {
+                    failed_project_names.insert(name.to_string());
+                }
             }
         }
     }
@@ -975,6 +1054,129 @@ mod tests {
             deps: deps.iter().map(|d| (*d).to_string()).collect(),
         };
         Project::Package(Box::new(pkg))
+    }
+
+    #[derive(Debug)]
+    struct PublishCascadePackage {
+        name: String,
+        relative_path: PathBuf,
+        deps: HashSet<String>,
+        succeeds: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Package for PublishCascadePackage {
+        fn name(&self) -> Option<&str> {
+            Some(&self.name)
+        }
+        fn version(&self) -> Option<&str> {
+            Some("1.0.0")
+        }
+        fn path(&self) -> &std::path::Path {
+            &self.relative_path
+        }
+        fn relative_path(&self) -> &std::path::Path {
+            &self.relative_path
+        }
+        async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
+            Ok(())
+        }
+        fn is_changed(&self) -> bool {
+            false
+        }
+        fn language(&self) -> Language {
+            Language::Node
+        }
+        fn dependencies(&self) -> &HashSet<String> {
+            &self.deps
+        }
+        fn add_dependency(&mut self, dep: &str) {
+            self.deps.insert(dep.to_string());
+        }
+        fn set_changed(&mut self, _changed: bool) {}
+        fn default_publish_command(&self) -> String {
+            "npm publish".to_string()
+        }
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("npm publish --dry-run".to_string())
+        }
+        async fn publish(&self, _config: &Config) -> anyhow::Result<PublishOutput> {
+            Ok(PublishOutput {
+                success: self.succeeds,
+                stdout: format!("publish {}", self.name),
+                stderr: String::new(),
+            })
+        }
+        async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
+            Ok(Some(PublishOutput {
+                success: self.succeeds,
+                stdout: format!("dry-run {}", self.name),
+                stderr: String::new(),
+            }))
+        }
+    }
+
+    fn make_publish_cascade_mock(
+        name: &str,
+        relative_path: &str,
+        deps: &[&str],
+        succeeds: bool,
+    ) -> Project {
+        let pkg = PublishCascadePackage {
+            name: name.to_string(),
+            relative_path: PathBuf::from(relative_path),
+            deps: deps.iter().map(|d| (*d).to_string()).collect(),
+            succeeds,
+        };
+        Project::Package(Box::new(pkg))
+    }
+
+    #[tokio::test]
+    async fn test_execute_publish_loop_skips_dependent_after_failed_dependency() {
+        let dependency = make_publish_cascade_mock("pkg-a", "packages/a/package.json", &[], false);
+        let dependent =
+            make_publish_cascade_mock("pkg-b", "packages/b/package.json", &["pkg-a"], true);
+        let independent = make_publish_cascade_mock("pkg-c", "packages/c/package.json", &[], true);
+        let projects: Vec<&Project> = vec![&dependency, &dependent, &independent];
+        let config = Config::default();
+
+        let (result_map, failed) =
+            execute_publish_loop(&projects, &config, &FormatOptions::Json).await;
+
+        assert_eq!(failed.len(), 2);
+        assert!(failed[0].contains("pkg-a"));
+        assert!(failed[1].contains("pkg-b"));
+        let dependent_entry = result_map
+            .get(std::path::Path::new("packages/b/package.json"))
+            .expect("dependent should be recorded as skipped failure");
+        let dependent_serialized = serde_json::to_string(dependent_entry).expect("serialize");
+        assert!(dependent_serialized.contains("skipped because dependency failed: pkg-a"));
+        let independent_entry = result_map
+            .get(std::path::Path::new("packages/c/package.json"))
+            .expect("independent project should still publish");
+        let independent_serialized = serde_json::to_string(independent_entry).expect("serialize");
+        assert!(independent_serialized.contains("publish pkg-c"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_dry_run_loop_skips_dependent_after_failed_dependency() {
+        let dependency = make_publish_cascade_mock("pkg-a", "packages/a/package.json", &[], false);
+        let dependent =
+            make_publish_cascade_mock("pkg-b", "packages/b/package.json", &["pkg-a"], true);
+        let projects: Vec<&Project> = vec![&dependency, &dependent];
+        let config = Config::default();
+
+        let (result_map, failed) =
+            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Json).await;
+
+        assert_eq!(failed.len(), 2);
+        assert!(failed[0].contains("pkg-a"));
+        assert!(failed[1].contains("pkg-b"));
+        let dependent_entry = result_map
+            .get(std::path::Path::new("packages/b/package.json"))
+            .expect("dependent should be recorded as skipped dry-run failure");
+        let dependent_serialized = serde_json::to_string(dependent_entry).expect("serialize");
+        assert!(dependent_serialized.contains("skipped because dependency failed: pkg-a"));
     }
 
     #[test]

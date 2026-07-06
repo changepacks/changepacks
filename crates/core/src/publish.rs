@@ -1,7 +1,10 @@
 use crate::{Config, Language};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+};
 
 /// Output captured from a publish command execution.
 #[derive(Debug)]
@@ -32,13 +35,8 @@ fn lookup_by_path_or_language(
 
 /// Resolve the publish command from config, language, or default.
 ///
-/// `default_command_fn` is a `FnOnce` closure so the language-specific
-/// default (e.g. Node's `detect_package_manager_recursive`, which walks
-/// the ancestor chain doing sync `is_dir` stats) is only invoked on the
-/// cache-miss path where both the per-path and per-language `config`
-/// entries are absent. On the common override case the closure is dropped
-/// unused, saving one `String` allocation per call across every language
-/// crate and — for Node — the ancestor-walking filesystem probe.
+/// `default_command_fn` is only invoked when neither a per-path nor
+/// per-language override exists.
 pub fn resolve_publish_command<F: FnOnce() -> String>(
     relative_path: &Path,
     language: Language,
@@ -247,6 +245,30 @@ pub async fn run_publish_command_argv(
     working_dir: &Path,
     kill_on_drop: bool,
 ) -> Result<PublishOutput> {
+    run_publish_command_os_args(
+        program,
+        args.iter().map(|arg| OsStr::new(*arg)),
+        working_dir,
+        kill_on_drop,
+    )
+    .await
+}
+
+/// Execute a command by argv with path-safe OS string arguments.
+///
+/// # Errors
+/// Returns error if the command fails to spawn. A non-zero exit code is
+/// reported via `PublishOutput::success = false`, not as an error.
+pub async fn run_publish_command_os_args<I, S>(
+    program: &str,
+    args: I,
+    working_dir: &Path,
+    kill_on_drop: bool,
+) -> Result<PublishOutput>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args).current_dir(working_dir);
     cmd.kill_on_drop(kill_on_drop);

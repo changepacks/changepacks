@@ -15,31 +15,25 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
         return projects;
     }
 
-    // Map from project name to index. Every finder that populates
-    // dependencies stores them as *names* (JSON dep keys / `[tool.uv.sources]`
-    // keys / Cargo `[dependencies]` workspace entries / pubspec dep keys /
-    // `.csproj` filename stems), never as relative paths — so the historical
-    // path-side lookup was dead code and its `to_string_lossy().into_owned()`
-    // per project was pure allocation waste. Name lookup is sufficient.
-    //
-    // Keys are borrowed `&str` from `project.name()` — the input `projects`
-    // slice lives for the whole function scope so borrowing is sound, and it
-    // eliminates N `String` allocations (one per project) on every
-    // `publish` / `check --tree` invocation.
-    // Preallocate for the same `projects.len()` upper bound that the sibling
-    // `sorted_indices: Vec::with_capacity(projects.len())` below already
-    // uses. Every project inserts at most once (only when `project.name()`
-    // is `Some`), so `projects.len()` is a tight upper bound and removes
-    // the `HashMap::new()` geometric-doubling reallocations that were pure
-    // waste on monorepos with dozens of packages.
+    // Dependencies are stored as package names, so name lookup is the ordering key.
     let mut name_to_index: HashMap<&str, usize> = HashMap::with_capacity(projects.len());
+    let mut duplicate_names: Vec<&str> = Vec::new();
     for (idx, project) in projects.iter().enumerate() {
         if let Some(name) = project.name() {
-            name_to_index.insert(name, idx);
+            if duplicate_names.contains(&name) {
+                continue;
+            }
+            if name_to_index.insert(name, idx).is_some() {
+                name_to_index.remove(name);
+                duplicate_names.push(name);
+            }
         }
     }
 
     // Build dependency graph: for each project, find which projects depend on it
+    // Duplicate names are ambiguous across polyglot publish sets. Store only
+    // unique names so an ambiguous dependency cannot silently bind to whichever
+    // duplicate happened to appear last in discovery order.
     // in_degree[i] = number of dependencies that project i has
     let mut in_degree: Vec<usize> = vec![0; projects.len()];
     // graph[i] = list of projects that depend on project i
@@ -48,10 +42,6 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     for (idx, project) in projects.iter().enumerate() {
         let deps = project.dependencies();
         for dep in deps {
-            // `dep: &String` — call `.as_str()` so the borrow-key lookup on
-            // `HashMap<&str, usize>` resolves without an intermediate
-            // `String` alloc. (`.get(&String)` needs `&str: Borrow<String>`,
-            // which is not implemented; the borrow direction is the reverse.)
             if let Some(&dep_idx) = name_to_index.get(dep.as_str()) {
                 // Project at idx depends on project at dep_idx
                 // So dep_idx should come before idx
@@ -274,6 +264,19 @@ mod tests {
         assert!(names.contains(&Some("p1")));
         assert!(names.contains(&Some("p2")));
         // Since both have no valid dependencies (p1's dependency doesn't exist), order may vary
+    }
+
+    #[test]
+    fn test_sort_duplicate_dependency_name_is_ignored() {
+        let core_a = create_project("core", vec![]);
+        let core_b = create_project("core", vec![]);
+        let app = create_project("app", vec!["core"]);
+
+        let projects = vec![&app, &core_a, &core_b];
+        let sorted = sort_by_dependencies(projects);
+
+        let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
+        assert_eq!(names, vec![Some("app"), Some("core"), Some("core")]);
     }
 
     #[test]

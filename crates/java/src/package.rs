@@ -62,15 +62,7 @@ mod tests {
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 
-    #[tokio::test]
-    async fn test_gradle_package_new() {
-        let package = GradlePackage::new(
-            Some("test-package".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/build.gradle.kts"),
-            PathBuf::from("test/build.gradle.kts"),
-        );
-
+    fn assert_gradle_package_defaults(package: &GradlePackage) {
         assert_eq!(package.name(), Some("test-package"));
         assert_eq!(package.version(), Some("1.0.0"));
         assert_eq!(package.path(), PathBuf::from("/test/build.gradle.kts"));
@@ -96,6 +88,18 @@ mod tests {
                 Some("./gradlew publishToMavenLocal")
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_gradle_package_new() {
+        let package = GradlePackage::new(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/build.gradle.kts"),
+            PathBuf::from("test/build.gradle.kts"),
+        );
+
+        assert_gradle_package_defaults(&package);
     }
 
     #[tokio::test]

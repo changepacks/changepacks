@@ -10,7 +10,7 @@ use changepacks_core::{ChangePackLog, ChangePackResultLog, Config, Project, Upda
 use glob::Pattern;
 use tokio::fs::{read_dir, read_to_string};
 
-use crate::is_changepack_log_json_name;
+use crate::{get_relative_path, is_changepack_log_json_name};
 
 /// Generate update map from changepack logs
 ///
@@ -235,10 +235,9 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     let mut reverse_deps: HashMap<String, Vec<(PathBuf, String)>> =
         HashMap::with_capacity(projects.len());
     for project in projects {
-        let Ok(rel_path) = project.path().strip_prefix(repo_root_path) else {
+        let Ok(rel_path_buf) = get_relative_path(repo_root_path, project.path()) else {
             continue;
         };
-        let rel_path_buf = rel_path.to_path_buf();
 
         // Hoist the name lookup ONCE per project. Previously this loop
         // called `project.name()` twice (once via `if let Some(name)` for
@@ -293,56 +292,22 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // insert and once again for the vec push in the old shape).
     let mut packages_to_add: HashMap<PathBuf, String> = HashMap::with_capacity(projects.len());
 
-    // Initial set of updated package names via O(1) path -> name lookup.
-    // Collect straight into the DFS work queue: dedup at THIS step is
-    // unnecessary (update_map keys are unique, path_to_name is 1-to-1
-    // PathBuf -> String, so filter_map yields each name at most once) AND
-    // the DFS loop below already guards against reprocessing via the
-    // `!update_map.contains_key(dep_path) && !packages_to_add.contains_key(dep_path)`
-    // check. Skipping the intermediate `HashSet<String>` -> `Vec<String>`
-    // hop removes one HashMap-backed allocation per call
-    // (`apply_reverse_dependencies` runs on every `changepacks update` and
-    // every `changepacks check`).
-    //
-    // Preallocate against `update_map.len()` — an UPPER bound, not a
-    // tight fit. Two independent reasons the actual seed count can be
-    // strictly LESS than `update_map.len()`:
-    //   (a) `filter_map` drops any `update_map` key that isn't present in
-    //       `path_to_name` (an unrecognized project path — e.g. a stale
-    //       changepack log referring to a package that was later removed
-    //       from the workspace, or an `updateOn`-injected dependent path
-    //       whose project row hasn't been visited yet).
-    //   (b) The DFS loop below `push`es additional names as it discovers
-    //       reverse-dep edges, so the working capacity may still grow past
-    //       the initial reservation — the `with_capacity` here just
-    //       eliminates the geometric-doubling reallocations for the seed
-    //       fill, matching the `Vec::from_iter` note below.
-    // `.collect::<Vec<_>>()` on a `filter_map` reports `size_hint = (0,
-    // Some(update_map.len()))` and `Vec::from_iter` reserves against the
-    // LOWER bound, so on repos with many `updateOn` triggers the collect
-    // hits 2-3 geometric-doubling reallocations. Matches the preallocation
-    // policy already applied to `path_to_name`, `reverse_deps`, and
-    // `packages_to_add` in this same function.
-    //
-    // Traversal order is DFS, not BFS: `Vec::pop` yields the last-pushed
-    // element (LIFO), so a `to_process.push(dep_name.clone())` inside the
-    // loop below re-visits its subtree before falling back to
-    // earlier-queued names. This is deterministic-in-shape and correct for
-    // reachability (which is all `packages_to_add` cares about); the
-    // `HashMap`-backed `reverse_deps` never guaranteed a particular order
-    // anyway.
+    // Seed the DFS with names already scheduled for update. The DFS guards
+    // against reprocessing through `update_map` and `packages_to_add`.
     let mut to_process: Vec<String> = Vec::with_capacity(update_map.len());
     to_process.extend(
         update_map
             .keys()
             .filter_map(|path| path_to_name.get(path).cloned()),
     );
-    while let Some(pkg_name) = to_process.pop() {
-        if let Some(dependents) = reverse_deps.get(&pkg_name) {
-            for (dep_path, dep_name) in dependents {
-                if !update_map.contains_key(dep_path) && !packages_to_add.contains_key(dep_path) {
-                    packages_to_add.insert(dep_path.clone(), pkg_name.clone());
-                    to_process.push(dep_name.clone());
+    while let Some(trigger_name) = to_process.pop() {
+        if let Some(dependents) = reverse_deps.get(&trigger_name) {
+            for (dependent_path, dependent_name) in dependents {
+                if !update_map.contains_key(dependent_path)
+                    && !packages_to_add.contains_key(dependent_path)
+                {
+                    packages_to_add.insert(dependent_path.clone(), trigger_name.clone());
+                    to_process.push(dependent_name.clone());
                 }
             }
         }

@@ -28,11 +28,14 @@
 //! `Child` handle is dropped — preventing the Windows case where a running
 //! child holds a directory open and silently defeats `remove_dir_all`.
 
-use std::path::Path;
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use changepacks_core::publish::{
-    resolve_dry_run_publish_command, run_publish_command, run_publish_command_argv,
+    resolve_dry_run_publish_command, run_publish_command, run_publish_command_os_args,
 };
 use changepacks_core::{Config, Language, PublishOutput};
 use tempfile::TempDir;
@@ -102,20 +105,15 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
     let feed_dir =
         TempDir::new().context("Failed to create temporary directory for local NuGet feed")?;
 
-    // `to_string_lossy` returns `Cow<'_, str>`. Both `TempDir` handles live
-    // for the full function scope (they are the caller's cleanup source, not
-    // dropped early), so a borrowed `Cow` is sound across every `.await`.
-    // Skipping `.into_owned()` avoids 2 `String` allocations per managed
-    // dry-run on the valid-UTF-8 happy path (every filesystem `changepacks`
-    // targets on Windows/Unix). Downstream sites use `&pack_path` /
-    // `&feed_path` which deref-coerce to `&str` at the argv boundary, and
-    // `{pack_path}` in `format!` uses `Cow<str>`'s `Display` impl.
-    let pack_path = pack_dir.path().to_string_lossy();
-    let feed_path = feed_dir.path().to_string_lossy();
-
-    let pack_output = run_publish_command_argv(
+    let pack_output = run_publish_command_os_args(
         "dotnet",
-        &["pack", "-c", "Release", "-o", &pack_path],
+        [
+            OsStr::new("pack"),
+            OsStr::new("-c"),
+            OsStr::new("Release"),
+            OsStr::new("-o"),
+            pack_dir.path().as_os_str(),
+        ],
         working_dir,
         true,
     )
@@ -129,9 +127,12 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
     }
 
     // Enumerate produced .nupkg files in Rust — no shell glob involved.
-    let nupkgs = collect_nupkgs(pack_dir.path())
-        .await
-        .with_context(|| format!("Failed to enumerate .nupkg files in {pack_path}"))?;
+    let nupkgs = collect_nupkgs(pack_dir.path()).await.with_context(|| {
+        format!(
+            "Failed to enumerate .nupkg files in {}",
+            pack_dir.path().display()
+        )
+    })?;
 
     let mut combined = prefixed("dotnet pack", pack_output);
 
@@ -149,23 +150,23 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
     }
 
     for nupkg in &nupkgs {
-        let push_output = run_publish_command_argv(
+        let push_output = run_publish_command_os_args(
             "dotnet",
-            &[
-                "nuget",
-                "push",
-                nupkg.as_str(),
-                "-s",
-                &feed_path,
-                "--skip-duplicate",
+            [
+                OsStr::new("nuget"),
+                OsStr::new("push"),
+                nupkg.as_os_str(),
+                OsStr::new("-s"),
+                feed_dir.path().as_os_str(),
+                OsStr::new("--skip-duplicate"),
             ],
             working_dir,
             true,
         )
         .await
-        .with_context(|| format!("Failed to spawn `dotnet nuget push {nupkg}`"))?;
+        .with_context(|| format!("Failed to spawn `dotnet nuget push {}`", nupkg.display()))?;
 
-        let label = format!("dotnet nuget push {nupkg}");
+        let label = format!("dotnet nuget push {}", nupkg.display());
         let prefixed_output = prefixed(&label, push_output);
         combined.success &= prefixed_output.success;
         combined.stdout.push_str(&prefixed_output.stdout);
@@ -182,7 +183,7 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
 }
 
 /// Asynchronously enumerate `*.nupkg` files in `dir` (non-recursive).
-async fn collect_nupkgs(dir: &Path) -> Result<Vec<String>> {
+async fn collect_nupkgs(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut entries = read_dir(dir).await?;
     let mut out = Vec::with_capacity(4);
     while let Some(entry) = entries.next_entry().await? {
@@ -197,12 +198,9 @@ async fn collect_nupkgs(dir: &Path) -> Result<Vec<String>> {
         // filter alone is sufficient; no explicit `is_snupkg` guard needed.
         // `dotnet nuget push` would otherwise reject them as primary packages.
         if is_nupkg {
-            out.push(path.to_string_lossy().into_owned());
+            out.push(path);
         }
     }
-    // Unique `.nupkg` path strings from one directory — no equal-but-distinct
-    // elements, so stability is not observable; `sort_unstable` skips the
-    // stable-sort bookkeeping (mirrors check.rs's roots/deps rationale).
     out.sort_unstable();
     Ok(out)
 }
@@ -289,7 +287,7 @@ mod tests {
         assert!(found[0].ends_with("a.nupkg"));
         assert!(found[1].ends_with("b.nupkg"));
         for p in &found {
-            assert!(!p.to_lowercase().ends_with(".snupkg"));
+            assert_ne!(p.extension().and_then(|e| e.to_str()), Some("snupkg"));
         }
     }
 

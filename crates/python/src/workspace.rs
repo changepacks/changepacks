@@ -58,15 +58,7 @@ mod tests {
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 
-    #[tokio::test]
-    async fn test_python_workspace_new() {
-        let workspace = PythonWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/pyproject.toml"),
-            PathBuf::from("test/pyproject.toml"),
-        );
-
+    fn assert_python_workspace_defaults(workspace: &PythonWorkspace) {
         assert_eq!(workspace.name(), Some("test-workspace"));
         assert_eq!(workspace.version(), Some("1.0.0"));
         assert_eq!(workspace.path(), PathBuf::from("/test/pyproject.toml"));
@@ -81,6 +73,18 @@ mod tests {
             workspace.default_dry_run_publish_command().as_deref(),
             Some("uv publish --dry-run")
         );
+    }
+
+    #[tokio::test]
+    async fn test_python_workspace_new() {
+        let workspace = PythonWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("test/pyproject.toml"),
+        );
+
+        assert_python_workspace_defaults(&workspace);
     }
 
     #[tokio::test]

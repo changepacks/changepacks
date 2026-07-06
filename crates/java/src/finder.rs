@@ -4,7 +4,7 @@ use changepacks_core::{Project, ProjectFinder};
 use regex::Regex;
 use std::{
     collections::HashMap,
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Stdio,
     sync::LazyLock,
@@ -221,48 +221,27 @@ async fn get_gradle_properties(
          Please set the JAVA_HOME environment variable or add java to your PATH."
     );
 
-    // Build the command args based on whether this is the root or a subproject
-    let args: Vec<String> = if gradlew_dir == project_dir {
-        // Root project: ./gradlew properties -q
-        vec!["properties".to_string(), "-q".to_string()]
-    } else {
-        // Subproject: ./gradlew :sub:path:properties -q
-        let relative = project_dir
-            .strip_prefix(&gradlew_dir)
-            .context("Failed to compute subproject path")?;
-        let gradle_path = gradle_subproject_path(relative)?;
-        vec![format!(":{gradle_path}:properties"), "-q".to_string()]
-    };
-
-    // On Unix, invoke via `sh` to avoid issues when gradlew lacks execute permission
-    // (common after git clone with core.fileMode=false or on some CI systems).
-    let output = if cfg!(windows) {
-        Command::new(&gradlew)
-            .args(&args)
-            .current_dir(&gradlew_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .await
-    } else {
-        Command::new("sh")
-            .arg(&gradlew)
-            .args(&args)
-            .current_dir(&gradlew_dir)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .await
-    }
-    .map_err(|e| {
-        anyhow::anyhow!(
-            "Failed to execute gradlew for '{}' (gradlew: '{}'): {e}",
-            project_dir.display(),
-            gradlew.display(),
-        )
-    })?;
+    let args = gradle_properties_args(project_dir, &gradlew_dir)?;
+    let command_spec = GradleCommandSpec::new(&gradlew, &gradlew_dir, &args);
+    let output = command_spec
+        .command()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to execute gradlew for '{}' (gradlew: '{}'): {e}",
+                project_dir.display(),
+                gradlew.display(),
+            )
+        })?;
 
     if !output.status.success() {
+        eprintln!(
+            "{}",
+            gradle_failure_diagnostic(project_dir, &gradlew, output.status, &output.stderr)
+        );
         return Ok(GradleProperties::default());
     }
 
@@ -294,6 +273,76 @@ async fn get_gradle_properties(
     }
 
     Ok(props)
+}
+
+fn gradle_properties_args(project_dir: &Path, gradlew_dir: &Path) -> Result<Vec<String>> {
+    if gradlew_dir == project_dir {
+        return Ok(vec!["properties".to_string(), "-q".to_string()]);
+    }
+
+    let relative = project_dir
+        .strip_prefix(gradlew_dir)
+        .context("Failed to compute subproject path")?;
+    let gradle_path = gradle_subproject_path(relative)?;
+    Ok(vec![format!(":{gradle_path}:properties"), "-q".to_string()])
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct GradleCommandSpec {
+    program: OsString,
+    args: Vec<OsString>,
+    current_dir: PathBuf,
+}
+
+impl GradleCommandSpec {
+    fn new(gradlew: &Path, gradlew_dir: &Path, gradle_args: &[String]) -> Self {
+        let mut args = Vec::with_capacity(gradle_args.len() + usize::from(!cfg!(windows)));
+        let program = if cfg!(windows) {
+            gradlew.as_os_str().to_owned()
+        } else {
+            args.push(gradlew.as_os_str().to_owned());
+            OsString::from("sh")
+        };
+        args.extend(gradle_args.iter().map(OsString::from));
+
+        Self {
+            program,
+            args,
+            current_dir: gradlew_dir.to_path_buf(),
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command.args(&self.args).current_dir(&self.current_dir);
+        command
+    }
+}
+
+fn gradle_failure_diagnostic(
+    project_dir: &Path,
+    gradlew: &Path,
+    status: std::process::ExitStatus,
+    stderr: &[u8],
+) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        format!(
+            "Gradle properties failed for '{}' using '{}' with status {}; falling back to default metadata.",
+            project_dir.display(),
+            gradlew.display(),
+            status
+        )
+    } else {
+        format!(
+            "Gradle properties failed for '{}' using '{}' with status {}; falling back to default metadata. stderr: {}",
+            project_dir.display(),
+            gradlew.display(),
+            status,
+            stderr
+        )
+    }
 }
 
 #[async_trait]
@@ -458,6 +507,82 @@ mod tests {
             #[cfg(unix)]
             make_executable(&gradlew_path);
         }
+    }
+
+    #[cfg(unix)]
+    fn failed_exit_status() -> std::process::ExitStatus {
+        use std::os::unix::process::ExitStatusExt;
+
+        std::process::ExitStatus::from_raw(256)
+    }
+
+    #[cfg(windows)]
+    fn failed_exit_status() -> std::process::ExitStatus {
+        use std::os::windows::process::ExitStatusExt;
+
+        std::process::ExitStatus::from_raw(1)
+    }
+
+    #[test]
+    fn test_gradle_failure_diagnostic_includes_context_and_stderr() {
+        let msg = gradle_failure_diagnostic(
+            Path::new("apps/demo"),
+            Path::new("gradlew"),
+            failed_exit_status(),
+            b"broken build script\n",
+        );
+
+        assert!(msg.contains("apps/demo"));
+        assert!(msg.contains("gradlew"));
+        assert!(msg.contains("falling back to default metadata"));
+        assert!(msg.contains("broken build script"));
+    }
+
+    #[test]
+    fn test_gradle_properties_args_root_project() {
+        let root = Path::new("repo");
+
+        let args = gradle_properties_args(root, root).unwrap();
+
+        assert_eq!(args, vec!["properties", "-q"]);
+    }
+
+    #[test]
+    fn test_gradle_properties_args_subproject() {
+        let root = Path::new("repo");
+        let subproject = root.join("libs").join("core");
+
+        let args = gradle_properties_args(&subproject, root).unwrap();
+
+        assert_eq!(args, vec![":libs:core:properties", "-q"]);
+    }
+
+    #[test]
+    fn test_gradle_command_spec_matches_active_platform_layout() {
+        let gradlew = Path::new("repo").join(if cfg!(windows) {
+            "gradlew.bat"
+        } else {
+            "gradlew"
+        });
+        let args = vec!["properties".to_string(), "-q".to_string()];
+
+        let spec = GradleCommandSpec::new(&gradlew, Path::new("repo"), &args);
+
+        if cfg!(windows) {
+            assert_eq!(spec.program, gradlew.as_os_str());
+            assert_eq!(
+                spec.args,
+                vec![OsString::from("properties"), OsString::from("-q")]
+            );
+        } else {
+            assert_eq!(spec.program, OsString::from("sh"));
+            assert_eq!(spec.args[0], gradlew.as_os_str());
+            assert_eq!(
+                spec.args[1..],
+                [OsString::from("properties"), OsString::from("-q")]
+            );
+        }
+        assert_eq!(spec.current_dir, PathBuf::from("repo"));
     }
 
     #[cfg(unix)]

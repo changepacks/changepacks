@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -8,8 +8,8 @@ use changepacks_core::{
     ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType, Workspace,
 };
 use changepacks_utils::{
-    apply_reverse_dependencies, clear_update_logs, display_update, find_project_dirs,
-    gen_changepack_result_map, gen_update_map, get_relative_path,
+    apply_reverse_dependencies, clear_applied_update_logs, clear_update_logs, display_update,
+    find_project_dirs, gen_changepack_result_map, gen_update_map, get_relative_path,
 };
 use clap::Args;
 
@@ -77,18 +77,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     )
     .await?;
 
-    // Apply reverse dependency updates (workspace:* dependencies)
-    //
-    // Preallocate: `FlatMap`'s `size_hint` is `(0, None)` — no upper
-    // bound — so `Vec::from_iter` reserves nothing and every flatten
-    // grows via geometric doubling. `all_finders.iter().map(|f|
-    // f.projects().len()).sum::<usize>()` is a tight upper bound
-    // (each nested iterator yields exactly `projects().len()` refs).
-    // Matches the identical idiom already used a few lines below at
-    // `let cap: usize = project_finders.iter().map(|f| f.projects()
-    // .len()).sum();`, and the preallocation policy applied
-    // throughout `sort_by_dep.rs`, `gen_update_map.rs`, and
-    // `apply_reverse_dependencies`. Byte-identical output.
+    // Apply reverse dependency updates across all discovered projects.
     let cap: usize = all_finders.iter().map(|f| f.projects().len()).sum();
     let mut all_projects: Vec<&Project> = Vec::with_capacity(cap);
     all_projects.extend(all_finders.iter().flat_map(|finder| finder.projects()));
@@ -112,7 +101,8 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // of the previous O(N×M) any() closure that re-computed a `PathBuf` per
     // (map entry × project) pair — dropping allocations from `M × N` to
     // `N` (one PathBuf per project) plus `M` HashMap lookups.
-    if !args.language.is_empty() {
+    let language_filter_active = !args.language.is_empty();
+    if language_filter_active {
         // Preallocate: `HashMap::from_iter` (via `collect`) does NOT use
         // `size_hint` to reserve capacity (unlike `Vec`), so on a
         // language-filtered `changepacks update -l rust` against a large
@@ -194,7 +184,12 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
 
     // Clear files
-    clear_update_logs(&ctx.changepacks_dir).await?;
+    if language_filter_active {
+        let applied_paths = update_map.keys().cloned().collect::<HashSet<_>>();
+        clear_applied_update_logs(&ctx.changepacks_dir, &applied_paths).await?;
+    } else {
+        clear_update_logs(&ctx.changepacks_dir).await?;
+    }
 
     Ok(())
 }
