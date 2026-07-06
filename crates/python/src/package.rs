@@ -15,21 +15,13 @@ pub struct PythonPackage {
 }
 
 impl PythonPackage {
-    // Byte-identical `#[must_use] pub fn new(name, version, path,
-    // relative_path)` constructor body shared with every other
-    // "plain 5-basic-field" language crate's `Package` / `Workspace`.
-    // Consolidated via `impl_default_new!()` in `changepacks-core` — see
-    // that macro's doc for the exact struct-field contract.
+    // Standard package/workspace constructor.
     changepacks_core::impl_default_new!();
 }
 
 #[async_trait]
 impl Package for PythonPackage {
-    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
-    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
-    // bodies with every other language crate's `Package` / `Workspace`
-    // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
-    // — expansion is byte-identical to the previous hand-rolled bodies.
+    // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
 
     // `update_version` shares its body with `PythonWorkspace` — only the
@@ -44,34 +36,16 @@ impl Package for PythonPackage {
         crate::update_version_from_fields(&mut self.version, &self.path, update_type, false).await
     }
 
-    // Byte-identical `fn language(&self) -> Language { Language::Python }`
-    // one-liner shared with every other language crate's `Package` /
-    // `Workspace` impl. Consolidated via `impl_language!()` in
-    // `changepacks-core` alongside the other accessor macros.
+    // Fixed language accessor.
     changepacks_core::impl_language!(Language::Python);
 
-    // `default_publish_command` / `default_dry_run_publish_command` share
-    // their const-based shape with every other const-driven language
-    // crate's `Package` and `Workspace` impl (Dart, Java, and — via the
-    // single-arg variant — CSharp). Consolidated via
-    // `impl_const_publish_commands!()` in `changepacks-core` so future
-    // shape tweaks land in one place — expansion is byte-identical to the
-    // previous hand-rolled bodies. `uv publish --dry-run` is `uv`'s
-    // built-in non-mutating publish preview; users who prefer a different
-    // verification flow (e.g. `uv publish --check-url ...`, `uv build`,
-    // or `twine check`) can override via `publishDryRun` in config.
+    // Const publish defaults; `publishDryRun` can override this preview command.
     changepacks_core::impl_const_publish_commands!(
         crate::PUBLISH_COMMAND,
         crate::DRY_RUN_PUBLISH_COMMAND
     );
 
-    // `dependencies()` / `add_dependency()` share their byte-identical
-    // body with every other language crate's `Package` and `Workspace`
-    // impl (all use `dependencies: HashSet<String>` as their backing
-    // store). Consolidated via the `impl_dependencies_accessors!()`
-    // macro in `changepacks-core` so future accessor tweaks land in
-    // one place — expansion is byte-identical to the previous
-    // hand-rolled bodies.
+    // Dependency set accessors.
     changepacks_core::impl_dependencies_accessors!();
 }
 

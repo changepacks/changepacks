@@ -38,9 +38,10 @@ fn add_workspace_dependencies(project: &mut Project, package_json: &serde_json::
             continue;
         };
         for (dep_name, value) in deps {
-            // Only track workspace:* dependencies (exact version sync).
-            // workspace:^ uses semver ranges so doesn't need forced updates.
-            if value.as_str() == Some("workspace:*") {
+            if value
+                .as_str()
+                .is_some_and(|version| version.starts_with("workspace:"))
+            {
                 project.add_dependency(dep_name);
             }
         }
@@ -440,6 +441,8 @@ mod tests {
   "dependencies": {
     "core": "workspace:*",
     "utils": "workspace:^",
+    "cli": "workspace:~",
+    "api": "workspace:^1.2.3",
     "external": "^1.0.0"
   },
   "devDependencies": {
@@ -468,14 +471,14 @@ mod tests {
 
         let project = projects.first().unwrap();
         let deps = project.dependencies();
-        // Only workspace:* dependencies should be tracked
-        assert_eq!(deps.len(), 4);
+        assert_eq!(deps.len(), 7);
         assert!(deps.contains("core"));
+        assert!(deps.contains("utils"));
+        assert!(deps.contains("cli"));
+        assert!(deps.contains("api"));
         assert!(deps.contains("test-utils"));
         assert!(deps.contains("plugin-api"));
         assert!(deps.contains("native-addon"));
-        // workspace:^ and external deps should not be tracked
-        assert!(!deps.contains("utils"));
         assert!(!deps.contains("external"));
         assert!(!deps.contains("native-external"));
 

@@ -143,8 +143,15 @@ impl ProjectFinder for PythonProjectFinder {
                 .and_then(|u| u.get("sources"))
                 .and_then(toml_edit::Item::as_table_like)
             {
-                for (dep_name, _) in sources.iter() {
-                    project.add_dependency(dep_name);
+                for (dep_name, source) in sources.iter() {
+                    let is_local_source = source.as_table_like().is_some_and(|source| {
+                        source.contains_key("path")
+                            || source.get("workspace").and_then(toml_edit::Item::as_bool)
+                                == Some(true)
+                    });
+                    if is_local_source {
+                        project.add_dependency(dep_name);
+                    }
                 }
             }
 
@@ -505,11 +512,14 @@ members = ["packages/*"]
 members = ["packages/*"]
 
 [tool.uv.sources]
-pkg-a = { path = "packages/pkg-a" }
-pkg-b = { workspace = true }
+	pkg-a = { path = "packages/pkg-a" }
+	pkg-b = { workspace = true }
+	pkg-c = { git = "https://example.com/pkg-c.git" }
+	pkg-d = { url = "https://example.com/pkg-d.tar.gz" }
+	pkg-e = { workspace = false }
 
-[project]
-name = "test-workspace"
+	[project]
+	name = "test-workspace"
 version = "1.0.0"
 "#,
         )
@@ -529,10 +539,13 @@ version = "1.0.0"
                 assert_eq!(
                     deps.len(),
                     2,
-                    "expected both tool.uv.sources entries, got {deps:?}"
+                    "expected only local tool.uv.sources entries, got {deps:?}"
                 );
                 assert!(deps.contains("pkg-a"), "missing pkg-a in {deps:?}");
                 assert!(deps.contains("pkg-b"), "missing pkg-b in {deps:?}");
+                assert!(!deps.contains("pkg-c"), "unexpected pkg-c in {deps:?}");
+                assert!(!deps.contains("pkg-d"), "unexpected pkg-d in {deps:?}");
+                assert!(!deps.contains("pkg-e"), "unexpected pkg-e in {deps:?}");
             }
             _ => panic!("Expected Workspace"),
         }

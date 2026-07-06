@@ -203,26 +203,29 @@ impl PackageManager {
 /// itself, so it replicates that behaviour to keep `prepare` / `prepack`
 /// hooks such as `husky` resolving during publish and dry-run.
 #[must_use]
-pub fn node_modules_bin_dirs(start_dir: &Path) -> Vec<PathBuf> {
+fn node_modules_bin_candidates(start_dir: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     let mut current = Some(start_dir);
     while let Some(dir) = current {
-        let bin = dir.join("node_modules").join(".bin");
-        if bin.is_dir() {
-            dirs.push(bin);
-        }
+        dirs.push(dir.join("node_modules").join(".bin"));
         current = dir.parent();
     }
     dirs
+}
+
+#[must_use]
+pub fn node_modules_bin_dirs(start_dir: &Path) -> Vec<PathBuf> {
+    node_modules_bin_candidates(start_dir)
+        .into_iter()
+        .filter(|bin| bin.is_dir())
+        .collect()
 }
 
 /// Async equivalent of [`node_modules_bin_dirs`] for publish flows that are
 /// already running inside Tokio.
 pub async fn node_modules_bin_dirs_async(start_dir: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    let mut current = Some(start_dir);
-    while let Some(dir) = current {
-        let bin = dir.join("node_modules").join(".bin");
+    for bin in node_modules_bin_candidates(start_dir) {
         if tokio::fs::metadata(&bin)
             .await
             .map(|metadata| metadata.is_dir())
@@ -230,7 +233,6 @@ pub async fn node_modules_bin_dirs_async(start_dir: &Path) -> Vec<PathBuf> {
         {
             dirs.push(bin);
         }
-        current = dir.parent();
     }
     dirs
 }
@@ -344,6 +346,42 @@ pub(crate) async fn dry_run_publish_command_for_path(
             .dry_run_publish_command()
             .to_string(),
     )
+}
+
+async fn publish_path_dirs_for_path(path: &Path) -> Vec<PathBuf> {
+    match path.parent() {
+        Some(parent) => node_modules_bin_dirs_async(parent).await,
+        None => Vec::new(),
+    }
+}
+
+pub(crate) async fn run_publish_for_path(
+    path: &Path,
+    relative_path: &Path,
+    config: &Config,
+    missing_dir_message: &'static str,
+) -> Result<changepacks_core::publish::PublishOutput> {
+    let command = publish_command_for_path(path, relative_path, config).await;
+    let path_dirs = publish_path_dirs_for_path(path).await;
+    changepacks_core::publish::run_publish_flow(&command, path, &path_dirs, missing_dir_message)
+        .await
+}
+
+pub(crate) async fn run_dry_run_publish_for_path(
+    path: &Path,
+    relative_path: &Path,
+    config: &Config,
+    missing_dir_message: &'static str,
+) -> Result<Option<changepacks_core::publish::PublishOutput>> {
+    let command = dry_run_publish_command_for_path(path, relative_path, config).await;
+    let path_dirs = publish_path_dirs_for_path(path).await;
+    changepacks_core::publish::run_dry_run_publish_flow(
+        command.as_deref(),
+        path,
+        &path_dirs,
+        missing_dir_message,
+    )
+    .await
 }
 
 #[cfg(test)]

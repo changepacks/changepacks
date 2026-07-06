@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder, is_regular_file};
 use quick_xml::Reader;
@@ -54,7 +54,7 @@ impl CSharpProjectFinder {
     /// `.csproj` files (Unity / dotnet monorepos) with no behavior
     /// change. The two thin wrappers below preserve the existing rstest
     /// surface, so no test edit is required.
-    fn parse_csproj_metadata(content: &str) -> (Option<String>, Vec<String>) {
+    fn parse_csproj_metadata(content: &str) -> Result<(Option<String>, Vec<String>)> {
         let mut reader = Reader::from_str(content);
         // Preallocate the XML event buffer to skip the first few
         // geometric-doubling reallocations. Mirrors the
@@ -69,6 +69,7 @@ impl CSharpProjectFinder {
         let mut buf = Vec::with_capacity(256);
         let mut in_property_group = false;
         let mut in_version = false;
+        let mut element_depth = 0usize;
         let mut version: Option<String> = None;
         // Preallocate against the typical `<ProjectReference>` fan-out
         // observed in test fixtures (2 refs in
@@ -86,6 +87,7 @@ impl CSharpProjectFinder {
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) => {
+                    element_depth += 1;
                     let name = e.local_name();
                     if name.as_ref() == b"PropertyGroup" {
                         in_property_group = true;
@@ -99,6 +101,9 @@ impl CSharpProjectFinder {
                     collect_project_reference(&e, &mut projects);
                 }
                 Ok(Event::End(e)) => {
+                    element_depth = element_depth
+                        .checked_sub(1)
+                        .context("unexpected XML end tag")?;
                     let name = e.local_name();
                     if name.as_ref() == b"PropertyGroup" {
                         in_property_group = false;
@@ -121,12 +126,16 @@ impl CSharpProjectFinder {
                         }
                     }
                 }
-                Ok(Event::Eof) | Err(_) => break,
+                Ok(Event::Eof) => {
+                    anyhow::ensure!(element_depth == 0, "unexpected end of XML document");
+                    break;
+                }
+                Err(error) => return Err(error.into()),
                 _ => {}
             }
             buf.clear();
         }
-        (version, projects)
+        Ok((version, projects))
     }
 
     /// Check if this project is part of a solution (workspace)
@@ -301,7 +310,8 @@ impl ProjectFinder for CSharpProjectFinder {
         // pair that each constructed its own `quick_xml::Reader` and
         // walked the identical XML bytes. Halves parse work per
         // `.csproj` (meaningful on Unity/dotnet monorepos).
-        let (version, project_refs) = Self::parse_csproj_metadata(&csproj_content);
+        let (version, project_refs) = Self::parse_csproj_metadata(&csproj_content)
+            .with_context(|| format!("Failed to parse C# project XML: {}", path.display()))?;
         let is_workspace = self.is_workspace(path).await;
 
         // Hoist the map key allocation out of both arms: the old shape
@@ -930,7 +940,9 @@ mod tests {
     #[case(XML_VERSION_AFTER_COMMENT, Some("4.0.0"))]
     fn test_extract_version(#[case] content: &str, #[case] expected: Option<&str>) {
         assert_eq!(
-            CSharpProjectFinder::parse_csproj_metadata(content).0,
+            CSharpProjectFinder::parse_csproj_metadata(content)
+                .unwrap()
+                .0,
             expected.map(std::string::ToString::to_string)
         );
     }
@@ -938,8 +950,25 @@ mod tests {
     #[test]
     fn test_extract_version_malformed_xml() {
         let content = "<Project><PropertyGroup><Version>1.0.0";
-        // Should not panic - either returns Some or None
-        let _ = CSharpProjectFinder::parse_csproj_metadata(content).0;
+        assert!(CSharpProjectFinder::parse_csproj_metadata(content).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_visit_malformed_xml_returns_path_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Broken.csproj");
+        fs::write(&csproj_path, "<Project><PropertyGroup><Version>1.0.0").unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        let error = finder
+            .visit(&csproj_path, &PathBuf::from("Broken.csproj"))
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("Failed to parse C# project XML"));
+        assert!(message.contains("Broken.csproj"));
+
+        temp_dir.close().unwrap();
     }
 
     #[test]
@@ -950,7 +979,9 @@ mod tests {
     <ProjectReference Include="..\Utils\Utils.csproj" />
   </ItemGroup>
 </Project>"#;
-        let refs = CSharpProjectFinder::parse_csproj_metadata(content).1;
+        let refs = CSharpProjectFinder::parse_csproj_metadata(content)
+            .unwrap()
+            .1;
         assert_eq!(refs.len(), 2);
         assert!(refs.contains(&"CoreLib".to_string()));
         assert!(refs.contains(&"Utils".to_string()));
@@ -977,7 +1008,7 @@ mod tests {
     <ProjectReference Include="..\Utils\Utils.csproj" />
   </ItemGroup>
 </Project>"#;
-        let (version, refs) = CSharpProjectFinder::parse_csproj_metadata(content);
+        let (version, refs) = CSharpProjectFinder::parse_csproj_metadata(content).unwrap();
         assert_eq!(version, Some("1.5.0".to_string()));
         assert_eq!(refs.len(), 2);
         assert!(refs.contains(&"CoreLib".to_string()));

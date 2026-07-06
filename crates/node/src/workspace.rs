@@ -15,21 +15,13 @@ pub struct NodeWorkspace {
 }
 
 impl NodeWorkspace {
-    // Byte-identical `#[must_use] pub fn new(name, version, path,
-    // relative_path)` constructor body shared with every other
-    // "plain 5-basic-field" language crate's `Package` / `Workspace`.
-    // Consolidated via `impl_default_new!()` in `changepacks-core` — see
-    // that macro's doc for the exact struct-field contract.
+    // Standard package/workspace constructor.
     changepacks_core::impl_default_new!();
 }
 
 #[async_trait]
 impl Workspace for NodeWorkspace {
-    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
-    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
-    // bodies with every other language crate's `Package` / `Workspace`
-    // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
-    // — expansion is byte-identical to the previous hand-rolled bodies.
+    // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
 
     // `update_version` shares its byte-identical body with `NodePackage`.
@@ -42,39 +34,20 @@ impl Workspace for NodeWorkspace {
         crate::update_version_from_fields(&mut self.version, &self.path, update_type).await
     }
 
-    // Byte-identical `fn language(&self) -> Language { Language::Node }`
-    // one-liner shared with every other language crate's `Package` /
-    // `Workspace` impl. Consolidated via `impl_language!()` in
-    // `changepacks-core` alongside the other accessor macros.
+    // Fixed language accessor.
     changepacks_core::impl_language!(Language::Node);
 
-    // `default_publish_command`, `default_dry_run_publish_command`, and
-    // `publish_path_dirs` share their byte-identical bodies with
-    // `NodePackage`. Consolidated via `impl_node_publish_wiring!()` in
-    // `crates/node/src/lib.rs` — expansion is byte-identical to the
-    // previous hand-rolled bodies.
+    // Node publish defaults and PATH wiring.
     crate::impl_node_publish_wiring!();
 
-    // `dependencies()` / `add_dependency()` share their byte-identical
-    // body with every other language crate's `Package` and `Workspace`
-    // impl (all use `dependencies: HashSet<String>` as their backing
-    // store). Consolidated via the `impl_dependencies_accessors!()`
-    // macro in `changepacks-core` so future accessor tweaks land in
-    // one place — expansion is byte-identical to the previous
-    // hand-rolled bodies.
+    // Dependency set accessors.
     changepacks_core::impl_dependencies_accessors!();
 
     async fn publish(&self, config: &Config) -> Result<changepacks_core::publish::PublishOutput> {
-        let command =
-            crate::publish_command_for_path(&self.path, &self.relative_path, config).await;
-        let path_dirs = match self.path.parent() {
-            Some(parent) => crate::node_modules_bin_dirs_async(parent).await,
-            None => Vec::new(),
-        };
-        changepacks_core::publish::run_publish_flow(
-            &command,
+        crate::run_publish_for_path(
             &self.path,
-            &path_dirs,
+            &self.relative_path,
+            config,
             "Workspace directory not found",
         )
         .await
@@ -84,16 +57,10 @@ impl Workspace for NodeWorkspace {
         &self,
         config: &Config,
     ) -> Result<Option<changepacks_core::publish::PublishOutput>> {
-        let command =
-            crate::dry_run_publish_command_for_path(&self.path, &self.relative_path, config).await;
-        let path_dirs = match self.path.parent() {
-            Some(parent) => crate::node_modules_bin_dirs_async(parent).await,
-            None => Vec::new(),
-        };
-        changepacks_core::publish::run_dry_run_publish_flow(
-            command.as_deref(),
+        crate::run_dry_run_publish_for_path(
             &self.path,
-            &path_dirs,
+            &self.relative_path,
+            config,
             "Workspace directory not found",
         )
         .await

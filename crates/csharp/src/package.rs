@@ -19,21 +19,13 @@ pub struct CSharpPackage {
 }
 
 impl CSharpPackage {
-    // Byte-identical `#[must_use] pub fn new(name, version, path,
-    // relative_path)` constructor body shared with every other
-    // "plain 5-basic-field" language crate's `Package` / `Workspace`.
-    // Consolidated via `impl_default_new!()` in `changepacks-core` — see
-    // that macro's doc for the exact struct-field contract.
+    // Standard package/workspace constructor.
     changepacks_core::impl_default_new!();
 }
 
 #[async_trait]
 impl Package for CSharpPackage {
-    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
-    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
-    // bodies with every other language crate's `Package` / `Workspace`
-    // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
-    // — expansion is byte-identical to the previous hand-rolled bodies.
+    // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
 
     // `update_version` shares its byte-identical body with `CSharpWorkspace`.
@@ -46,10 +38,7 @@ impl Package for CSharpPackage {
         crate::update_version_from_fields(&mut self.version, &self.path, update_type).await
     }
 
-    // Byte-identical `fn language(&self) -> Language { Language::CSharp }`
-    // one-liner shared with every other language crate's `Package` /
-    // `Workspace` impl. Consolidated via `impl_language!()` in
-    // `changepacks-core` alongside the other accessor macros.
+    // Fixed language accessor.
     changepacks_core::impl_language!(Language::CSharp);
 
     // `default_publish_command` returns the const from `crate` (see
@@ -61,10 +50,6 @@ impl Package for CSharpPackage {
     // lives in `dry_run_publish` below (delegates to
     // `dry_run::resolve_and_run_dry_run`, which honors the `publishDryRun`
     // override first).
-    //
-    // Consolidated via the single-arg form of
-    // `impl_const_publish_commands!()` in `changepacks-core` — expansion
-    // is byte-identical to the previous hand-rolled bodies.
     changepacks_core::impl_const_publish_commands!(crate::PUBLISH_COMMAND);
 
     /// Managed dry-run for C#/.NET packages.
@@ -85,13 +70,7 @@ impl Package for CSharpPackage {
         .await
     }
 
-    // `dependencies()` / `add_dependency()` share their byte-identical
-    // body with every other language crate's `Package` and `Workspace`
-    // impl (all use `dependencies: HashSet<String>` as their backing
-    // store). Consolidated via the `impl_dependencies_accessors!()`
-    // macro in `changepacks-core` so future accessor tweaks land in
-    // one place — expansion is byte-identical to the previous
-    // hand-rolled bodies.
+    // Dependency set accessors.
     changepacks_core::impl_dependencies_accessors!();
 }
 

@@ -300,6 +300,50 @@ fn record_publish_failure(
     failed_projects.push(project.to_string());
 }
 
+enum ProjectPublishOutcome {
+    Success(PublishOutput),
+    Failure(PublishOutput),
+    Error(anyhow::Error),
+}
+
+fn record_publish_outcome(
+    result_map: &mut BTreeMap<PathBuf, PublishResult>,
+    failed_projects: &mut Vec<String>,
+    project: &Project,
+    outcome: ProjectPublishOutcome,
+    success_label: &str,
+    failure_label: &str,
+    format: &FormatOptions,
+) {
+    match outcome {
+        ProjectPublishOutcome::Success(output) => {
+            record_publish_success(result_map, project, output, success_label, format);
+        }
+        ProjectPublishOutcome::Failure(output) => {
+            record_publish_failure(
+                result_map,
+                failed_projects,
+                project,
+                Some(output),
+                None,
+                failure_label,
+                format,
+            );
+        }
+        ProjectPublishOutcome::Error(error) => {
+            record_publish_failure(
+                result_map,
+                failed_projects,
+                project,
+                None,
+                Some(&error),
+                failure_label,
+                format,
+            );
+        }
+    }
+}
+
 async fn execute_dry_run_publish_loop(
     projects: &[&Project],
     config: &Config,
@@ -354,22 +398,18 @@ async fn execute_dry_run_publish_loop(
             println!("Dry-run publishing {project}...");
         }
         match project.dry_run_publish(config).await {
-            Ok(Some(output)) if output.success => {
-                record_publish_success(
-                    &mut result_map,
-                    project,
-                    output,
-                    "Dry-run succeeded for",
-                    format,
-                );
-            }
             Ok(Some(output)) => {
-                record_publish_failure(
+                let outcome = if output.success {
+                    ProjectPublishOutcome::Success(output)
+                } else {
+                    ProjectPublishOutcome::Failure(output)
+                };
+                record_publish_outcome(
                     &mut result_map,
                     &mut failed_projects,
                     project,
-                    Some(output),
-                    None,
+                    outcome,
+                    "Dry-run succeeded for",
                     "Dry-run failed for",
                     format,
                 );
@@ -401,12 +441,12 @@ async fn execute_dry_run_publish_loop(
                 }
             }
             Err(e) => {
-                record_publish_failure(
+                record_publish_outcome(
                     &mut result_map,
                     &mut failed_projects,
                     project,
-                    None,
-                    Some(&e),
+                    ProjectPublishOutcome::Error(e),
+                    "Dry-run succeeded for",
                     "Dry-run failed for",
                     format,
                 );
@@ -430,33 +470,29 @@ async fn execute_publish_loop(
             println!("Publishing {project}...");
         }
         match project.publish(config).await {
-            Ok(output) if output.success => {
-                record_publish_success(
-                    &mut result_map,
-                    project,
-                    output,
-                    "Successfully published",
-                    format,
-                );
-            }
             Ok(output) => {
-                record_publish_failure(
+                let outcome = if output.success {
+                    ProjectPublishOutcome::Success(output)
+                } else {
+                    ProjectPublishOutcome::Failure(output)
+                };
+                record_publish_outcome(
                     &mut result_map,
                     &mut failed_projects,
                     project,
-                    Some(output),
-                    None,
+                    outcome,
+                    "Successfully published",
                     "Failed to publish",
                     format,
                 );
             }
             Err(e) => {
-                record_publish_failure(
+                record_publish_outcome(
                     &mut result_map,
                     &mut failed_projects,
                     project,
-                    None,
-                    Some(&e),
+                    ProjectPublishOutcome::Error(e),
+                    "Successfully published",
                     "Failed to publish",
                     format,
                 );
