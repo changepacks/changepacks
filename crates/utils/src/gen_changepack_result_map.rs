@@ -96,11 +96,7 @@ mod tests {
         let repo_root = temp_dir.path();
 
         // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(repo_root);
 
         let project_path = repo_root.join("project1");
         fs::create_dir_all(&project_path).unwrap();
@@ -169,11 +165,7 @@ mod tests {
         let repo_root = temp_dir.path();
 
         // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(repo_root);
 
         let project_path = repo_root.join("project2");
         fs::create_dir_all(&project_path).unwrap();
@@ -233,11 +225,7 @@ mod tests {
         let repo_root = temp_dir.path();
 
         // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(repo_root);
 
         // Create first project
         let project1_path = repo_root.join("project1");
@@ -336,11 +324,7 @@ mod tests {
         let repo_root = temp_dir.path();
 
         // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(repo_root);
 
         let project_path = repo_root.join("project3");
         fs::create_dir_all(&project_path).unwrap();
@@ -394,11 +378,7 @@ mod tests {
         let repo_root = temp_dir.path();
 
         // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(repo_root);
 
         let project_path = repo_root.join("project4");
         fs::create_dir_all(&project_path).unwrap();
@@ -452,11 +432,7 @@ mod tests {
         let repo_root = temp_dir.path();
 
         // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(repo_root);
 
         let project_path = repo_root.join("project5");
         fs::create_dir_all(&project_path).unwrap();
@@ -508,11 +484,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(repo_root);
 
         let mut update_result = HashMap::new();
         let projects: Vec<&Project> = vec![];
@@ -528,11 +500,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(repo_root);
 
         let project_path = repo_root.join("projectA");
         fs::create_dir_all(&project_path).unwrap();
@@ -582,11 +550,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(repo_root);
 
         let project_path = repo_root.join("project_empty_ver");
         fs::create_dir_all(&project_path).unwrap();

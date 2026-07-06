@@ -72,11 +72,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         // Create .changepacks directory
         let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
@@ -94,11 +90,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         // Test clearing logs when .changepacks directory doesn't exist
         let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
@@ -113,11 +105,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         // Create .changepacks directory
         let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
@@ -140,11 +128,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         // Create .changepacks directory
         let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
@@ -182,11 +166,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         // Create .changepacks directory
         let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
@@ -227,11 +207,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         // Create .changepacks directory
         let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
@@ -262,11 +238,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
         fs::create_dir_all(&changepacks_dir).unwrap();
@@ -304,11 +276,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         // Create .changepacks directory
         let changepacks_dir = get_changepacks_dir(temp_path).unwrap();

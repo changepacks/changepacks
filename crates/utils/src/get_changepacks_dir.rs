@@ -30,11 +30,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let result = get_changepacks_dir(temp_path);
         assert!(result.is_ok());
@@ -52,11 +48,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let result = get_changepacks_dir(temp_path);
         assert!(result.is_ok());
@@ -89,11 +81,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let result = get_changepacks_dir(temp_path);
         assert!(result.is_ok());
@@ -114,11 +102,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         // Create a nested subdirectory
         let nested_dir = temp_path.join("src").join("subdir");

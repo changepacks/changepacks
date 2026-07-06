@@ -56,11 +56,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let inside_path = temp_path.join("inside_absolute_path.txt");
         fs::write(&inside_path, "inside content").unwrap();

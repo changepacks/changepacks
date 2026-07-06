@@ -56,11 +56,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         {
             let result = find_current_git_repo(temp_path);
@@ -83,11 +79,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let deep_subdir = temp_path.join("a").join("b").join("c").join("d");
         fs::create_dir_all(&deep_subdir).await.unwrap();
@@ -105,11 +97,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let repo = find_current_git_repo(temp_path).unwrap();
         let work_dir = repo.work_dir().unwrap();

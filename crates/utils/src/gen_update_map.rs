@@ -379,11 +379,7 @@ mod tests {
         let config = Config::default();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
         // Create .changepacks directory
         let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).await.unwrap();
@@ -506,11 +502,7 @@ mod tests {
         let temp_path = temp_dir.path();
         let config = Config::default();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).await.unwrap();
@@ -545,11 +537,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         // Create .changepacks directory
         let changepacks_dir = temp_path.join(".changepacks");

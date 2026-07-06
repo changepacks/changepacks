@@ -61,11 +61,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let config = get_changepacks_config(temp_path).await.unwrap();
         assert_eq!(config.ignore, Vec::<String>::new());
@@ -79,11 +75,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
@@ -107,11 +99,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
@@ -132,11 +120,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
@@ -160,11 +144,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();

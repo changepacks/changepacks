@@ -28,3 +28,18 @@ pub(crate) fn create_project(name: &str, dependencies: Vec<&str>) -> Project {
     }
     Project::Package(Box::new(package))
 }
+
+/// Initialize a plain git repository at `path` for tests that exercise
+/// git-backed discovery.
+///
+/// This is the single source of truth for the plain `git init` incantation that
+/// this crate's unit-test modules would otherwise open-code identically. The
+/// distinct `git init -b main` + user-config setup in `filter_project_dirs.rs`
+/// is intentionally kept separate.
+pub(crate) fn init_git_repo(path: &std::path::Path) {
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(path)
+        .output()
+        .unwrap();
+}
