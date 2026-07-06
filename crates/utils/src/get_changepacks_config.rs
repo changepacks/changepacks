@@ -35,7 +35,12 @@ pub async fn get_changepacks_config_at(changepacks_dir: &Path) -> Result<Config>
         }
     }
 
-    let content = read_to_string(&config_file).await?;
+    let content = read_to_string(&config_file).await.with_context(|| {
+        format!(
+            "Failed to read changepacks config {}",
+            config_file.display()
+        )
+    })?;
 
     // If file is empty or only whitespace, return default config
     if content.trim().is_empty() {
@@ -43,7 +48,12 @@ pub async fn get_changepacks_config_at(changepacks_dir: &Path) -> Result<Config>
     }
 
     // Parse JSON config, merging with defaults
-    let config: Config = serde_json::from_str(&content).context("Failed to parse config.json")?;
+    let config: Config = serde_json::from_str(&content).with_context(|| {
+        format!(
+            "Failed to parse changepacks config {}",
+            config_file.display()
+        )
+    })?;
 
     Ok(config)
 }
@@ -163,6 +173,27 @@ mod tests {
 
         let config = get_changepacks_config(temp_path).await.unwrap();
         assert_eq!(config, Config::default());
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_get_changepacks_config_malformed_json_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        crate::test_support::init_git_repo(temp_path);
+
+        let changepacks_dir = temp_path.join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+        let config_file = changepacks_dir.join("config.json");
+
+        write(&config_file, "{").await.unwrap();
+
+        let err = get_changepacks_config(temp_path).await.unwrap_err();
+        let rendered = format!("{err:#}");
+        assert!(rendered.contains(".changepacks"));
+        assert!(rendered.contains("config.json"));
 
         temp_dir.close().unwrap();
     }

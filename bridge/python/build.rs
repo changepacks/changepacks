@@ -17,7 +17,9 @@ fn main() {
         build.compile("endian_helper");
 
         // Get the output directory for the library
-        let out_dir = std::env::var("OUT_DIR").unwrap();
+        let out_dir = std::env::var("OUT_DIR").unwrap_or_else(|err| {
+            panic!("Cargo must set OUT_DIR for python bridge build script: {err}")
+        });
 
         // Tell Cargo where to find the library
         println!("cargo:rustc-link-search=native={out_dir}");

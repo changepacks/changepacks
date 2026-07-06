@@ -95,11 +95,11 @@ def find_changepacks_bin() -> str:
         maybe_normal = get_last_three_path_parts(paths[1])
         if (
             len(maybe_normal) >= 3
-            and maybe_normal[-1].startswith("pip-build-env-")
-            and maybe_normal[-2] == "normal"
+            and maybe_normal[0] == "normal"
+            and maybe_normal[1].startswith("pip-build-env-")
             and len(maybe_overlay) >= 3
-            and maybe_overlay[-1].startswith("pip-build-env-")
-            and maybe_overlay[-2] == "overlay"
+            and maybe_overlay[0] == "overlay"
+            and maybe_overlay[1].startswith("pip-build-env-")
         ):
             # The overlay must contain the changepacks binary.
             for exe_name in changepacks_exe_names():

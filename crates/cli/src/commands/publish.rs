@@ -51,11 +51,17 @@ pub async fn handle_publish_with_prompter(
 ) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
 
-    let mut projects: Vec<_> = ctx
+    let project_count = ctx
         .project_finders
         .iter()
-        .flat_map(|finder| finder.projects())
-        .collect();
+        .map(|finder| finder.projects().len())
+        .sum();
+    let mut projects = Vec::with_capacity(project_count);
+    projects.extend(
+        ctx.project_finders
+            .iter()
+            .flat_map(|finder| finder.projects()),
+    );
 
     // Filter by language if specified
     retain_by_language(&args.language, &mut projects);
