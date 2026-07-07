@@ -153,10 +153,15 @@ fn apply_update_on_rules(
         // is deliberate.
         let mut updated_paths: Vec<Cow<'_, str>> = Vec::with_capacity(update_map.len());
         updated_paths.extend(update_map.keys().map(|p| p.to_string_lossy()));
-        let mut compiled_patterns = Vec::with_capacity(config.update_on.len());
+
+        let mut out = Vec::with_capacity(config.update_on.len());
         for (trigger_pattern, dependents) in &config.update_on {
             match Pattern::new(trigger_pattern) {
-                Ok(pattern) => compiled_patterns.push((trigger_pattern, dependents, pattern)),
+                Ok(pattern) => {
+                    if updated_paths.iter().any(|s| pattern.matches(s.as_ref())) {
+                        out.push((trigger_pattern, dependents));
+                    }
+                }
                 Err(_) => {
                     eprintln!(
                         "warning: invalid glob pattern in updateOn config: {trigger_pattern}"
@@ -164,14 +169,6 @@ fn apply_update_on_rules(
                 }
             }
         }
-
-        let mut out = Vec::with_capacity(compiled_patterns.len());
-        out.extend(
-            compiled_patterns
-                .iter()
-                .filter(|(_, _, pattern)| updated_paths.iter().any(|s| pattern.matches(s.as_ref())))
-                .map(|(trigger_pattern, dependents, _)| (*trigger_pattern, *dependents)),
-        );
         out
     };
 

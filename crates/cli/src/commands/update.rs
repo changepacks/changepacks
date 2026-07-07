@@ -167,8 +167,11 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     drop(update_projects);
 
     // Snapshot applied paths before gen_changepack_result_map drains update_map
-    let applied_paths =
-        language_filter_active.then(|| update_map.keys().cloned().collect::<HashSet<_>>());
+    let applied_paths = language_filter_active.then(|| {
+        let mut set = HashSet::with_capacity(update_map.len());
+        set.extend(update_map.keys().cloned());
+        set
+    });
 
     if let FormatOptions::Json = args.format {
         println!(

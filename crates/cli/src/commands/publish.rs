@@ -424,6 +424,11 @@ async fn execute_dry_run_publish_loop(
     let mut failed_projects: Vec<String> = Vec::with_capacity(projects.len());
     let mut failed_project_names: HashSet<String> = HashSet::with_capacity(projects.len());
 
+    const DRY_RUN_LABELS: PublishOutcomeLabels = PublishOutcomeLabels {
+        success: "Dry-run succeeded for",
+        failure: "Dry-run failed for",
+    };
+
     // Pre-compute the set of package names being bumped in this run so that
     // each iteration can cheaply check whether its dependencies overlap.
     // Borrow the names directly from the projects (which outlive the loop)
@@ -444,14 +449,13 @@ async fn execute_dry_run_publish_loop(
 
     for project in projects {
         if skip_dry_run_due_to_workspace_internal_dep(project, &bumped_package_names) {
-            let msg = format!(
-                "Dry-run skipped for {project}: depends on workspace member also being \
-                 published in this run. `cargo publish --dry-run` cannot resolve the \
-                 not-yet-published version (rust-lang/cargo#1169). The real publish \
-                 will run in topological order and succeed."
-            );
             if let FormatOptions::Stdout = format {
-                eprintln!("{msg}");
+                eprintln!(
+                    "Dry-run skipped for {project}: depends on workspace member also being \
+                     published in this run. `cargo publish --dry-run` cannot resolve the \
+                     not-yet-published version (rust-lang/cargo#1169). The real publish \
+                     will run in topological order and succeed."
+                );
             }
             if let FormatOptions::Json = format {
                 result_map.insert(
@@ -494,10 +498,7 @@ async fn execute_dry_run_publish_loop(
                     &mut failed_project_names,
                     project,
                     outcome,
-                    PublishOutcomeLabels {
-                        success: "Dry-run succeeded for",
-                        failure: "Dry-run failed for",
-                    },
+                    DRY_RUN_LABELS,
                     format,
                 );
             }
@@ -534,10 +535,7 @@ async fn execute_dry_run_publish_loop(
                     &mut failed_project_names,
                     project,
                     ProjectPublishOutcome::Error(e),
-                    PublishOutcomeLabels {
-                        success: "Dry-run succeeded for",
-                        failure: "Dry-run failed for",
-                    },
+                    DRY_RUN_LABELS,
                     format,
                 );
             }
@@ -555,6 +553,11 @@ async fn execute_publish_loop(
     let mut result_map = BTreeMap::new();
     let mut failed_projects: Vec<String> = Vec::with_capacity(projects.len());
     let mut failed_project_names: HashSet<String> = HashSet::with_capacity(projects.len());
+
+    const PUBLISH_LABELS: PublishOutcomeLabels = PublishOutcomeLabels {
+        success: "Successfully published",
+        failure: "Failed to publish",
+    };
 
     for project in projects {
         if let Some(dependency) = failed_dependency(project, &failed_project_names) {
@@ -585,10 +588,7 @@ async fn execute_publish_loop(
                     &mut failed_project_names,
                     project,
                     outcome,
-                    PublishOutcomeLabels {
-                        success: "Successfully published",
-                        failure: "Failed to publish",
-                    },
+                    PUBLISH_LABELS,
                     format,
                 );
             }
@@ -599,10 +599,7 @@ async fn execute_publish_loop(
                     &mut failed_project_names,
                     project,
                     ProjectPublishOutcome::Error(e),
-                    PublishOutcomeLabels {
-                        success: "Successfully published",
-                        failure: "Failed to publish",
-                    },
+                    PUBLISH_LABELS,
                     format,
                 );
             }
