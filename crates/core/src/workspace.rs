@@ -144,6 +144,15 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
         )
     }
 
+    /// Updates workspace-level dependency versions after package versions are bumped.
+    ///
+    /// This is an intentional no-op in the default implementation. Only `RustWorkspace`
+    /// overrides this method to sync `[workspace.dependencies]` path-dependency versions
+    /// with their corresponding package versions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if a language override's dependency rewrite fails.
     #[cfg(not(tarpaulin_include))]
     async fn update_workspace_dependencies(&self, _packages: &[&dyn Package]) -> Result<()> {
         Ok(())

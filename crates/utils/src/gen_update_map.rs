@@ -192,7 +192,7 @@ fn apply_update_on_rules(
     }
 }
 
-/// Apply reverse dependency updates: if package A depends on package B (via workspace:*),
+/// Apply reverse dependency updates: if package A depends on package B (via a local workspace dependency),
 /// and B is being updated, then A should also be updated as PATCH.
 ///
 /// Excluded from coverage: traverses the full project graph using
