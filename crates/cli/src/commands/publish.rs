@@ -97,7 +97,7 @@ pub async fn handle_publish_with_prompter(
     let projects = sort_by_dependencies(projects);
 
     if projects.is_empty() {
-        args.format.print("No projects found", "{}");
+        args.format.print("No projects found");
         return Ok(());
     }
 
@@ -131,7 +131,7 @@ pub async fn handle_publish_with_prompter(
         prompter.confirm("Are you sure you want to publish the packages?")?
     };
     if !confirm {
-        args.format.print("Publish cancelled", "{}");
+        args.format.print("Publish cancelled");
         return Ok(());
     }
 

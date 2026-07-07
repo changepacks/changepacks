@@ -85,7 +85,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     merge_workspace_inherited_updates(&mut update_map, &all_finders, &ctx.repo_root_path);
 
     if update_map.is_empty() {
-        args.format.print("No updates found", "{}");
+        args.format.print("No updates found");
         return Ok(());
     }
 
@@ -147,7 +147,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
 
     if args.dry_run {
-        args.format.print("Dry run, no updates will be made", "{}");
+        args.format.print("Dry run, no updates will be made");
         return Ok(());
     }
 
@@ -159,7 +159,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     };
 
     if !confirm {
-        args.format.print("Update cancelled", "{}");
+        args.format.print("Update cancelled");
         return Ok(());
     }
 

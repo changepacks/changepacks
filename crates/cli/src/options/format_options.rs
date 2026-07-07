@@ -14,10 +14,10 @@ pub enum FormatOptions {
 }
 
 impl FormatOptions {
-    pub fn print(&self, stdout_msg: &str, json_msg: &str) {
+    pub fn print(&self, stdout_msg: &str) {
         match self {
             Self::Stdout => println!("{stdout_msg}"),
-            Self::Json => println!("{json_msg}"),
+            Self::Json => println!("{{}}"),
         }
     }
 }
