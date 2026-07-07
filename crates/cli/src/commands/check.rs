@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     CommandContext,
+    finders::collect_projects,
     options::{CliLanguage, FilterOptions, FormatOptions, retain_by_language},
 };
 
@@ -49,11 +50,7 @@ pub struct CheckArgs {
 pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
 
-    let mut projects = ctx
-        .project_finders
-        .iter()
-        .flat_map(|finder| finder.projects())
-        .collect::<Vec<_>>();
+    let mut projects = collect_projects(&ctx.project_finders);
     if let Some(filter) = &args.filter {
         projects.retain(|p| filter.matches(p));
     }

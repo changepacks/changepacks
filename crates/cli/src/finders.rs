@@ -1,4 +1,4 @@
-use changepacks_core::ProjectFinder;
+use changepacks_core::{Project, ProjectFinder};
 use changepacks_csharp::CSharpProjectFinder;
 use changepacks_dart::DartProjectFinder;
 use changepacks_java::GradleProjectFinder;
@@ -23,6 +23,15 @@ pub fn get_finders() -> Vec<Box<dyn ProjectFinder>> {
 #[must_use]
 pub fn total_project_count(finders: &[Box<dyn ProjectFinder>]) -> usize {
     finders.iter().map(|f| f.projects().len()).sum()
+}
+
+/// Collect all projects from finders into a single Vec with pre-allocated capacity.
+#[must_use]
+pub fn collect_projects(finders: &[Box<dyn ProjectFinder>]) -> Vec<&Project> {
+    let cap = total_project_count(finders);
+    let mut projects = Vec::with_capacity(cap);
+    projects.extend(finders.iter().flat_map(|finder| finder.projects()));
+    projects
 }
 
 #[cfg(test)]

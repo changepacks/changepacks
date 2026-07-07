@@ -15,7 +15,7 @@ use clap::Args;
 
 use crate::{
     CommandContext,
-    finders::{get_finders, total_project_count},
+    finders::{collect_projects, get_finders, total_project_count},
     options::{CliLanguage, FormatOptions, language_slice_contains},
     prompter::{InquirePrompter, Prompter},
 };
@@ -78,9 +78,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     .await?;
 
     // Apply reverse dependency updates across all discovered projects.
-    let cap: usize = total_project_count(&all_finders);
-    let mut all_projects: Vec<&Project> = Vec::with_capacity(cap);
-    all_projects.extend(all_finders.iter().flat_map(|finder| finder.projects()));
+    let all_projects = collect_projects(&all_finders);
     apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
 
     // Merge workspace-inherited package updates into workspace entries
@@ -172,11 +170,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         println!(
             "{}",
             serde_json::to_string_pretty(&gen_changepack_result_map(
-                project_finders
-                    .iter()
-                    .flat_map(|finder| finder.projects())
-                    .collect::<Vec<_>>()
-                    .as_slice(),
+                collect_projects(&project_finders).as_slice(),
                 &ctx.repo_root_path,
                 &mut update_map,
             )?)?

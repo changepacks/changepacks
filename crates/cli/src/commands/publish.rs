@@ -10,7 +10,7 @@ use clap::Args;
 
 use crate::{
     CommandContext,
-    finders::total_project_count,
+    finders::collect_projects,
     options::{FormatOptions, retain_by_language},
     prompter::{InquirePrompter, Prompter},
 };
@@ -55,13 +55,7 @@ pub async fn handle_publish_with_prompter(
 ) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
 
-    let project_count = total_project_count(&ctx.project_finders);
-    let mut projects = Vec::with_capacity(project_count);
-    projects.extend(
-        ctx.project_finders
-            .iter()
-            .flat_map(|finder| finder.projects()),
-    );
+    let mut projects = collect_projects(&ctx.project_finders);
 
     // Filter by language if specified
     retain_by_language(&args.language, &mut projects);

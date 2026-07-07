@@ -40,12 +40,10 @@ pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
     // Two-phase collect+delete, mirroring `gen_update_map`:
     //   Phase 1: single directory walk to collect the paths of every matching
     //            `changepack_log_*.json` entry — pure name filtering, no IO body.
-    //   Phase 2: build a `Vec::with_capacity(paths.len())` of `remove_file`
-    //            futures and hand them to `futures::future::join_all` as today.
+    //   Phase 2: map the collected paths into `remove_file` futures and hand
+    //            the exact-size iterator to `futures::future::join_all`.
     //   Keeping the reader (`gen_update_map`) and cleaner (`clear_update_logs`)
-    //   in lock-step on the shape reinforces the shared-predicate invariant
-    //   and drops the geometric-doubling reallocations the un-hinted
-    //   `vec![]` incurs on repos with many pending changepack logs.
+    //   in lock-step on the shape reinforces the shared-predicate invariant.
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut entries = read_dir(changepacks_dir).await?;
     while let Some(file) = entries.next_entry().await? {

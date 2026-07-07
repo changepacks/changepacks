@@ -8,6 +8,7 @@ use anyhow::Result;
 
 use crate::{
     CommandContext,
+    finders::collect_projects,
     options::{CliLanguage, FilterOptions, retain_by_language},
     prompter::{InquirePrompter, Prompter},
 };
@@ -42,11 +43,7 @@ pub async fn handle_changepack_with_prompter(
 ) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
 
-    let mut projects = ctx
-        .project_finders
-        .iter()
-        .flat_map(|finder| finder.projects())
-        .collect::<Vec<_>>();
+    let mut projects = collect_projects(&ctx.project_finders);
 
     // Hide packages that inherit their version from workspace root.
     // They are updated automatically when the workspace version bumps.
