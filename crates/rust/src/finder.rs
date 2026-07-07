@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Package, Project, ProjectFinder, is_regular_file};
 use std::{
@@ -158,8 +158,12 @@ impl ProjectFinder for RustProjectFinder {
                 return Ok(());
             }
             // read Cargo.toml
-            let cargo_toml = read_to_string(path).await?;
-            let cargo_toml: toml_edit::DocumentMut = cargo_toml.parse()?;
+            let cargo_toml = read_to_string(path)
+                .await
+                .with_context(|| format!("Failed to read Cargo.toml {}", path.display()))?;
+            let cargo_toml: toml_edit::DocumentMut = cargo_toml
+                .parse()
+                .with_context(|| format!("Failed to parse Cargo.toml {}", path.display()))?;
 
             // Collect workspace dependencies for this file — the same
             // `dep_names` list feeds every branch below (workspace /
@@ -1067,5 +1071,33 @@ version.workspace = true
             .find(|p| p.name() == Some("my-crate"))
             .unwrap();
         assert_eq!(pkg.version(), Some("0.2.0"));
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_malformed_cargo_toml() {
+        // Given: a malformed Cargo.toml file
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, "invalid toml [[[").unwrap();
+
+        // When: visit is called on the malformed manifest
+        let mut finder = RustProjectFinder::new();
+        let result = finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await;
+
+        // Then: the error includes both the manifest path and "Failed to parse Cargo.toml"
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Failed to parse Cargo.toml"),
+            "error message should contain 'Failed to parse Cargo.toml', got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains(cargo_toml.to_string_lossy().as_ref()),
+            "error message should contain the manifest path, got: {err_msg}"
+        );
+
+        temp_dir.close().unwrap();
     }
 }

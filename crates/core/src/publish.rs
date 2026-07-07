@@ -25,6 +25,7 @@ pub struct PublishOutput {
 ///
 /// Language crates delegate their own config lookup to this helper to avoid
 /// duplicating the path-first, language-fallback logic.
+#[must_use]
 pub fn lookup_by_path_or_language(
     map: &HashMap<String, String>,
     relative_path: &Path,
@@ -40,6 +41,7 @@ pub fn lookup_by_path_or_language(
 ///
 /// `default_command_fn` is only invoked when neither a per-path nor
 /// per-language override exists.
+#[must_use]
 pub fn resolve_publish_command<F: FnOnce() -> String>(
     relative_path: &Path,
     language: Language,
@@ -61,6 +63,7 @@ pub fn resolve_publish_command<F: FnOnce() -> String>(
 /// `default_dry_run_command_fn` is a `FnOnce` closure so the language
 /// crate's default is only invoked on the cache-miss path, mirroring
 /// [`resolve_publish_command`].
+#[must_use]
 pub fn resolve_dry_run_publish_command<F: FnOnce() -> Option<String>>(
     relative_path: &Path,
     language: Language,

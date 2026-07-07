@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
 use std::{
@@ -69,8 +69,11 @@ impl ProjectFinder for NodeProjectFinder {
                 return Ok(());
             }
             // read package.json
-            let package_json = read_to_string(path).await?;
-            let package_json: serde_json::Value = serde_json::from_str(&package_json)?;
+            let package_json = read_to_string(path)
+                .await
+                .with_context(|| format!("Failed to read package.json {}", path.display()))?;
+            let package_json: serde_json::Value = serde_json::from_str(&package_json)
+                .with_context(|| format!("Failed to parse package.json {}", path.display()))?;
             // Both branches use the same name/version and the same path;
             // hoist so each branch collapses to a single constructor call.
             let version = package_json["version"]
@@ -486,6 +489,25 @@ mod tests {
         assert!(deps.contains("native-addon"));
         assert!(!deps.contains("external"));
         assert!(!deps.contains("native-external"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_project_finder_visit_malformed_package_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(&package_json, r#"{ "name": "test", invalid json }"#).unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        let result = finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await;
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("Failed to parse package.json"));
+        assert!(error_msg.contains(package_json.to_string_lossy().as_ref()));
 
         temp_dir.close().unwrap();
     }

@@ -377,7 +377,8 @@ impl ProjectFinder for GradleProjectFinder {
             let props = get_gradle_properties(project_dir, java_available).await?;
             let dependencies = read_to_string(path)
                 .await
-                .map(|content| extract_gradle_project_dependencies(&content))?;
+                .map(|content| extract_gradle_project_dependencies(&content))
+                .with_context(|| format!("Failed to read Gradle build file {}", path.display()))?;
 
             // Use directory name as fallback for project name
             let name = props.name.or_else(|| {

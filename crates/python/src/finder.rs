@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
 use std::{
@@ -62,8 +62,12 @@ impl ProjectFinder for PythonProjectFinder {
                 return Ok(());
             }
             // read pyproject.toml
-            let pyproject_toml = read_to_string(path).await?;
-            let pyproject_toml: toml_edit::DocumentMut = pyproject_toml.parse()?;
+            let pyproject_toml = read_to_string(path)
+                .await
+                .with_context(|| format!("Failed to read pyproject.toml {}", path.display()))?;
+            let pyproject_toml: toml_edit::DocumentMut = pyproject_toml
+                .parse()
+                .with_context(|| format!("Failed to parse pyproject.toml {}", path.display()))?;
             // `[project]` is OPTIONAL: uv workspace-only roots (the docs'
             // canonical example) declare just `[tool.uv.workspace]` at the
             // repo root and no `[project]` table. Match the tolerant
@@ -549,6 +553,34 @@ version = "1.0.0"
             }
             _ => panic!("Expected Workspace"),
         }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_project_finder_visit_malformed_manifest() {
+        // Regression: malformed pyproject.toml must fail with path-aware
+        // error context. The error message must include both the manifest
+        // path and "Failed to parse pyproject.toml".
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(&pyproject_toml, "invalid toml [[[").unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        let result = finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await;
+
+        assert!(result.is_err(), "Expected error for malformed manifest");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("Failed to parse pyproject.toml"),
+            "Error message missing 'Failed to parse pyproject.toml': {error_msg}"
+        );
+        assert!(
+            error_msg.contains(pyproject_toml.to_string_lossy().as_ref()),
+            "Error message missing path: {error_msg}"
+        );
 
         temp_dir.close().unwrap();
     }

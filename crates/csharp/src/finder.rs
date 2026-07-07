@@ -318,7 +318,9 @@ impl ProjectFinder for CSharpProjectFinder {
         }
 
         // Read .csproj content
-        let csproj_content = read_to_string(path).await?;
+        let csproj_content = read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read C# project {}", path.display()))?;
 
         let name = Self::extract_name_from_path(path);
         // Single-pass metadata extraction — replaces the previous

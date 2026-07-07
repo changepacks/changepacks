@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
 use std::{
@@ -62,8 +62,11 @@ impl ProjectFinder for DartProjectFinder {
                 return Ok(());
             }
             // read pubspec.yaml
-            let pubspec_yaml = read_to_string(path).await?;
-            let pubspec: yaml_serde::Value = yaml_serde::from_str(&pubspec_yaml)?;
+            let pubspec_yaml = read_to_string(path)
+                .await
+                .with_context(|| format!("Failed to read pubspec.yaml {}", path.display()))?;
+            let pubspec: yaml_serde::Value = yaml_serde::from_str(&pubspec_yaml)
+                .with_context(|| format!("Failed to parse pubspec.yaml {}", path.display()))?;
 
             // Check if this is a workspace (melos workspace or similar).
             // Short-circuit: when the pubspec's inline `workspace:` field is
@@ -505,6 +508,36 @@ dependencies:
             }
             _ => panic!("Expected Package"),
         }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_malformed_pubspec_yaml() {
+        // Regression: a malformed pubspec.yaml must produce an error
+        // that includes both the manifest path and the "Failed to parse
+        // pubspec.yaml" context message.
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(&pubspec_path, "invalid: yaml: content: [").unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        let result = finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await;
+
+        assert!(result.is_err());
+        let error_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            error_msg.contains("Failed to parse pubspec.yaml"),
+            "error message should contain 'Failed to parse pubspec.yaml', got: {}",
+            error_msg
+        );
+        assert!(
+            error_msg.contains(pubspec_path.to_string_lossy().as_ref()),
+            "error message should contain the manifest path, got: {}",
+            error_msg
+        );
 
         temp_dir.close().unwrap();
     }
