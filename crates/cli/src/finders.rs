@@ -22,7 +22,7 @@ pub fn get_finders() -> Vec<Box<dyn ProjectFinder>> {
 /// Calculate total project count across all finders for capacity hints.
 #[must_use]
 pub fn total_project_count(finders: &[Box<dyn ProjectFinder>]) -> usize {
-    finders.iter().map(|f| f.projects().len()).sum()
+    finders.iter().map(|f| f.project_count()).sum()
 }
 
 /// Collect all projects from finders into a single Vec with pre-allocated capacity.

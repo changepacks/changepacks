@@ -4,7 +4,7 @@ use crate::project::Project;
 use anyhow::Result;
 use async_trait::async_trait;
 
-/// Generates `projects()` and `projects_mut()` for finders backed by a
+/// Generates `projects()`, `projects_mut()`, and `project_count()` for finders backed by a
 /// `projects: HashMap<PathBuf, Project>` field.
 #[macro_export]
 macro_rules! impl_projects_hashmap_accessors {
@@ -14,6 +14,9 @@ macro_rules! impl_projects_hashmap_accessors {
         }
         fn projects_mut(&mut self) -> ::std::vec::Vec<&mut $crate::Project> {
             self.projects.values_mut().collect::<::std::vec::Vec<_>>()
+        }
+        fn project_count(&self) -> ::std::primitive::usize {
+            self.projects.len()
         }
     };
 }
@@ -156,6 +159,9 @@ pub async fn is_regular_file(path: &Path) -> bool {
 pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     fn projects(&self) -> Vec<&Project>;
     fn projects_mut(&mut self) -> Vec<&mut Project>;
+    fn project_count(&self) -> usize {
+        self.projects().len()
+    }
     fn project_files(&self) -> &[&str];
     /// # Errors
     /// Returns error if the file visitation fails.

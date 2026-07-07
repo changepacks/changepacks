@@ -184,6 +184,13 @@ fn extract_gradle_project_dependencies(content: &str) -> Vec<String> {
         .collect()
 }
 
+/// Returns true when a Java runtime is available via JAVA_HOME or PATH.
+#[cfg(not(tarpaulin_include))]
+async fn java_is_available() -> bool {
+    let java_home = std::env::var_os("JAVA_HOME");
+    java_home_has_java(java_home.as_deref()).await || which_java().await.is_some()
+}
+
 /// Get project properties using gradlew command.
 ///
 /// Walks up the directory tree to find `gradlew`, then runs it with the correct
@@ -195,12 +202,6 @@ fn extract_gradle_project_dependencies(content: &str) -> Vec<String> {
 /// Excluded from coverage: requires a real Gradle wrapper + Java runtime
 /// to exercise; tarpaulin's Linux-only container cannot guarantee both
 /// platform arms (sh vs cmd) get hit.
-#[cfg(not(tarpaulin_include))]
-async fn java_is_available() -> bool {
-    let java_home = std::env::var_os("JAVA_HOME");
-    java_home_has_java(java_home.as_deref()).await || which_java().await.is_some()
-}
-
 #[cfg(not(tarpaulin_include))]
 async fn get_gradle_properties(
     project_dir: &Path,
