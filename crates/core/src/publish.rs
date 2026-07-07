@@ -74,7 +74,7 @@ pub fn resolve_dry_run_publish_command<F: FnOnce() -> Option<String>>(
 /// Convert a completed child-process `Output` into a `PublishOutput`.
 ///
 /// Shared by both `run_publish_command_with_path_dirs` and
-/// `run_publish_command_argv` so a future change to output handling (e.g.
+/// `run_publish_command_os_args` so a future change to output handling (e.g.
 /// lossy → strict UTF-8, extra logging) touches ONE place.
 ///
 /// On the common valid-UTF-8 case we consume `output.stdout` / `output.stderr`
@@ -230,34 +230,13 @@ pub async fn run_dry_run_publish_flow(
     ))
 }
 
-/// Execute a command by argv (no shell) with optional `kill_on_drop`.
+/// Execute a command by argv with path-safe OS string arguments.
 ///
 /// Use this when callers need cross-platform argument passing without shell
 /// quoting concerns (e.g., paths with spaces, wildcards that should not be
 /// shell-expanded, untrusted user-supplied paths). With `kill_on_drop = true`,
 /// if the returned future is cancelled the child process is terminated before
-/// the `Child` handle is dropped — important when the caller relies on RAII to
-/// clean up temporary directories the child has open.
-///
-/// # Errors
-/// Returns error if the command fails to spawn. A non-zero exit code is
-/// reported via `PublishOutput::success = false`, not as an error.
-pub async fn run_publish_command_argv(
-    program: &str,
-    args: &[&str],
-    working_dir: &Path,
-    kill_on_drop: bool,
-) -> Result<PublishOutput> {
-    run_publish_command_os_args(
-        program,
-        args.iter().map(|arg| OsStr::new(*arg)),
-        working_dir,
-        kill_on_drop,
-    )
-    .await
-}
-
-/// Execute a command by argv with path-safe OS string arguments.
+/// the `Child` handle is dropped.
 ///
 /// # Errors
 /// Returns error if the command fails to spawn. A non-zero exit code is
@@ -547,49 +526,6 @@ mod tests {
         let joined = prepend_path_dirs(std::slice::from_ref(&dir)).expect("some PATH");
         let parsed: Vec<PathBuf> = std::env::split_paths(&joined).collect();
         assert_eq!(parsed.first(), Some(&dir));
-    }
-
-    #[tokio::test]
-    async fn test_run_publish_command_argv_success() {
-        let temp_dir = std::env::temp_dir();
-        // `cmd.exe /C echo hi` on Windows; `/bin/echo hi` on Unix.
-        let (program, args): (&str, Vec<&str>) = if cfg!(target_os = "windows") {
-            ("cmd", vec!["/C", "echo", "argv-ok"])
-        } else {
-            ("echo", vec!["argv-ok"])
-        };
-        let output = run_publish_command_argv(program, &args, &temp_dir, true)
-            .await
-            .unwrap();
-        assert!(output.success);
-        assert!(output.stdout.contains("argv-ok"));
-    }
-
-    #[tokio::test]
-    async fn test_run_publish_command_argv_failure() {
-        let temp_dir = std::env::temp_dir();
-        let (program, args): (&str, Vec<&str>) = if cfg!(target_os = "windows") {
-            ("cmd", vec!["/C", "exit", "1"])
-        } else {
-            ("sh", vec!["-c", "exit 1"])
-        };
-        let output = run_publish_command_argv(program, &args, &temp_dir, true)
-            .await
-            .unwrap();
-        assert!(!output.success);
-    }
-
-    #[tokio::test]
-    async fn test_run_publish_command_argv_spawn_error() {
-        let temp_dir = std::env::temp_dir();
-        let result = run_publish_command_argv(
-            "this-binary-does-not-exist-changepacks-test",
-            &[],
-            &temp_dir,
-            true,
-        )
-        .await;
-        assert!(result.is_err());
     }
 
     #[test]

@@ -8,7 +8,7 @@
 //! ## Why this avoids the shell-quoting / glob pitfalls
 //!
 //! Both `dotnet pack` and `dotnet nuget push` are spawned via
-//! [`run_publish_command_argv`], which uses `tokio::process::Command::args`
+//! [`run_publish_command_os_args`], which uses `tokio::process::Command::args`
 //! directly — no shell, no quoting bugs, no platform-specific globbing. The
 //! `.nupkg` enumeration between the two steps is done in Rust via
 //! [`tokio::fs::read_dir`].
@@ -23,7 +23,7 @@
 //! - `panic!` unwind (the workspace builds with `panic = "unwind"`),
 //! - future cancellation (caller drops the future mid-`.await`).
 //!
-//! `run_publish_command_argv` is called with `kill_on_drop = true`, so a
+//! `run_publish_command_os_args` is called with `kill_on_drop = true`, so a
 //! cancelled future also terminates the child `dotnet` process before its
 //! `Child` handle is dropped — preventing the Windows case where a running
 //! child holds a directory open and silently defeats `remove_dir_all`.
@@ -97,7 +97,7 @@ pub(crate) async fn resolve_and_run_dry_run(
 ///
 /// Excluded from coverage: this orchestration requires a real .NET SDK to
 /// exercise meaningfully; the building blocks (`collect_nupkgs`,
-/// `prefixed`, `run_publish_command_argv`) are covered by their own tests.
+/// `prefixed`, `run_publish_command_os_args`) are covered by their own tests.
 #[cfg(not(tarpaulin_include))]
 pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
     let pack_dir =
