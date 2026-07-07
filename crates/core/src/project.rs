@@ -278,21 +278,10 @@ impl Display for Project {
 mod tests {
     use super::*;
     use crate::Language;
+    use crate::package::tests::impl_test_publish_commands;
     use async_trait::async_trait;
     use rstest::rstest;
     use std::path::PathBuf;
-
-    macro_rules! impl_test_publish_commands {
-        () => {
-            fn default_publish_command(&self) -> String {
-                "echo publish".to_string()
-            }
-
-            fn default_dry_run_publish_command(&self) -> Option<String> {
-                Some("echo publish --dry-run".to_string())
-            }
-        };
-    }
 
     #[derive(Debug)]
     struct MockWorkspace {

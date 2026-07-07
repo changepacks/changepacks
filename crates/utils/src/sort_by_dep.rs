@@ -1,5 +1,5 @@
 use changepacks_core::Project;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Sort projects by their dependencies using topological sort.
 /// Projects with no dependencies or whose dependencies are already published will come first.
@@ -17,15 +17,15 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
 
     // Dependencies are stored as package names, so name lookup is the ordering key.
     let mut name_to_index: HashMap<&str, usize> = HashMap::with_capacity(projects.len());
-    let mut duplicate_names: Vec<&str> = Vec::new();
+    let mut duplicate_names: HashSet<&str> = HashSet::new();
     for (idx, project) in projects.iter().enumerate() {
         if let Some(name) = project.name() {
-            if duplicate_names.contains(&name) {
+            if duplicate_names.contains(name) {
                 continue;
             }
             if name_to_index.insert(name, idx).is_some() {
                 name_to_index.remove(name);
-                duplicate_names.push(name);
+                duplicate_names.insert(name);
             }
         }
     }

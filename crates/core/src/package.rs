@@ -156,7 +156,7 @@ pub trait Package: std::fmt::Debug + Send + Sync {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use rstest::rstest;
     use std::collections::HashMap;
@@ -173,6 +173,8 @@ mod tests {
             }
         };
     }
+
+    pub(crate) use impl_test_publish_commands;
 
     #[derive(Debug)]
     struct MockPackage {
