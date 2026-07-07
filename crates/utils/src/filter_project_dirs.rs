@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use changepacks_core::{Config, ProjectFinder};
+use changepacks_core::{Config, Project, ProjectFinder};
 use gix::{ThreadSafeRepository, bstr::ByteSlice, features::progress};
 use ignore::gitignore::GitignoreBuilder;
 use std::{
@@ -146,7 +146,7 @@ pub async fn find_project_dirs(
     // package.json / Cargo.toml / pyproject.toml carries a `name` field),
     // `targets` is empty and we skip the `try_find_remote("origin")` git
     // config walk + URL parsing chain entirely.
-    let mut targets: Vec<&mut changepacks_core::Project> = project_finders
+    let mut targets: Vec<&mut Project> = project_finders
         .iter_mut()
         .flat_map(|f| f.projects_mut())
         .filter(|p| p.name().is_none())
