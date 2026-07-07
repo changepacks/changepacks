@@ -2,6 +2,7 @@ use anyhow::Result;
 use changepacks_core::UpdateType;
 use changepacks_utils::next_version;
 use regex::Regex;
+use std::borrow::Cow;
 use std::path::Path;
 use std::sync::LazyLock;
 use tokio::fs::{read_to_string, write};
@@ -19,17 +20,17 @@ static KTS_FALLBACK_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 #[must_use]
 pub fn update_version_in_kts(content: &str, new_version: &str) -> String {
     // Pattern 1: version = "1.0.0"
-    if KTS_SIMPLE_PATTERN.is_match(content) {
-        return KTS_SIMPLE_PATTERN
-            .replace(content, format!(r#"${{1}}"{new_version}""#))
-            .into_owned();
+    if let Cow::Owned(updated) =
+        KTS_SIMPLE_PATTERN.replace(content, format!(r#"${{1}}"{new_version}""#))
+    {
+        return updated;
     }
 
     // Pattern 2: version = project.findProperty("...") ?: "1.0.0"
-    if KTS_FALLBACK_PATTERN.is_match(content) {
-        return KTS_FALLBACK_PATTERN
-            .replace(content, format!(r#"${{1}}"{new_version}""#))
-            .into_owned();
+    if let Cow::Owned(updated) =
+        KTS_FALLBACK_PATTERN.replace(content, format!(r#"${{1}}"{new_version}""#))
+    {
+        return updated;
     }
 
     content.to_string()
@@ -47,17 +48,17 @@ static GROOVY_SPACE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 #[must_use]
 pub fn update_version_in_groovy(content: &str, new_version: &str) -> String {
     // Pattern 1: version = '1.0.0' or version = "1.0.0"
-    if GROOVY_ASSIGN_PATTERN.is_match(content) {
-        return GROOVY_ASSIGN_PATTERN
-            .replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
-            .into_owned();
+    if let Cow::Owned(updated) =
+        GROOVY_ASSIGN_PATTERN.replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
+    {
+        return updated;
     }
 
     // Pattern 2: version '1.0.0' or version "1.0.0"
-    if GROOVY_SPACE_PATTERN.is_match(content) {
-        return GROOVY_SPACE_PATTERN
-            .replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
-            .into_owned();
+    if let Cow::Owned(updated) =
+        GROOVY_SPACE_PATTERN.replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
+    {
+        return updated;
     }
 
     content.to_string()

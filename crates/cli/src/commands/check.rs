@@ -6,7 +6,7 @@ use changepacks_utils::{
     get_relative_path,
 };
 use clap::Args;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::path::{Path, PathBuf};
 
 use crate::{
@@ -322,21 +322,17 @@ fn cached_project_line<'a, 'ctx>(
     ctx: &'ctx mut TreeContext<'a>,
 ) -> Result<&'ctx str> {
     let project_name = project.name_or_noname();
-    if !ctx.line_cache.contains_key(project_name) {
-        let line = format_project_line(
-            project,
-            ctx.repo_root_path,
-            ctx.update_map,
-            ctx.name_to_project,
-        )?;
-        ctx.line_cache.insert(project_name, line);
-    }
-
-    match ctx.line_cache.get(project_name) {
-        Some(line) => Ok(line),
-        None => Err(anyhow::anyhow!(
-            "failed to cache tree display line for {project_name}"
-        )),
+    match ctx.line_cache.entry(project_name) {
+        Entry::Occupied(entry) => Ok(entry.into_mut().as_str()),
+        Entry::Vacant(entry) => {
+            let line = format_project_line(
+                project,
+                ctx.repo_root_path,
+                ctx.update_map,
+                ctx.name_to_project,
+            )?;
+            Ok(entry.insert(line).as_str())
+        }
     }
 }
 
@@ -380,6 +376,7 @@ fn display_tree_node<'a>(
     // `.sort()` — meaningful on diamond graphs where the same subtree is
     // re-descended under multiple parents.
     if let Some(deps) = ctx.graph.get(project_name) {
+        let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
         for (idx, dep_name) in deps.iter().enumerate() {
             // `deps: &Vec<&str>` now, so `deps.iter()` yields
             // `dep_name: &&str`. Deref once with `*dep_name` at the two
@@ -393,7 +390,6 @@ fn display_tree_node<'a>(
                 // is O(1); the vestigial `sorted_deps_count` binding just
                 // added a name without hiding a real cost.
                 let is_last_dep = idx == deps.len() - 1;
-                let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
                 // Use a separate visited set for dependencies to avoid infinite loops
                 // but still show all dependencies
                 if visited.contains(*dep_name) {

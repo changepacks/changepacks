@@ -56,8 +56,8 @@ impl Workspace for RustWorkspace {
 
         if has_package {
             cargo_toml["package"]["version"] = new_version.as_str().into();
-            let fallback_name = self.name.as_deref().unwrap_or("_");
             if cargo_toml["package"].get("name").is_none() {
+                let fallback_name = self.name.as_deref().unwrap_or("_");
                 cargo_toml["package"]["name"] = fallback_name.into();
             }
         } else {
