@@ -242,11 +242,11 @@ pub async fn node_modules_bin_dirs_async(start_dir: &Path) -> Vec<PathBuf> {
 /// package-lock.json is resolved by `detect_package_manager_recursive`)
 #[must_use]
 pub fn detect_package_manager(dir: &Path) -> PackageManager {
-    if dir.join("bun.lockb").exists() || dir.join("bun.lock").exists() {
+    if dir.join("bun.lockb").is_file() || dir.join("bun.lock").is_file() {
         PackageManager::Bun
-    } else if dir.join("pnpm-lock.yaml").exists() {
+    } else if dir.join("pnpm-lock.yaml").is_file() {
         PackageManager::Pnpm
-    } else if dir.join("yarn.lock").exists() {
+    } else if dir.join("yarn.lock").is_file() {
         PackageManager::Yarn
     } else {
         // No bun/pnpm/yarn lockfile: default to npm. This also covers the
@@ -281,7 +281,7 @@ pub fn detect_package_manager_recursive(path: &Path) -> PackageManager {
 
     while let Some(dir) = current {
         let pm = detect_package_manager(dir);
-        if pm != PackageManager::Npm || dir.join("package-lock.json").exists() {
+        if pm != PackageManager::Npm || dir.join("package-lock.json").is_file() {
             return pm;
         }
         current = dir.parent();
