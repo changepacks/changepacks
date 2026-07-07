@@ -330,6 +330,24 @@ fn record_dependency_skip(
     }
 }
 
+/// Records a dry-run skip as a JSON success entry with the provided note.
+/// For JSON format, inserts a `PublishResult` with `success = true`, the given
+/// `note` as the error message, and empty stdout/stderr. For Stdout format,
+/// does nothing (the caller handles stdout output separately).
+fn record_json_skip(
+    result_map: &mut BTreeMap<PathBuf, PublishResult>,
+    project: &Project,
+    note: &str,
+    format: &FormatOptions,
+) {
+    if let FormatOptions::Json = format {
+        result_map.insert(
+            project.relative_path().to_path_buf(),
+            PublishResult::new(true, Some(note.to_string()), String::new(), String::new()),
+        );
+    }
+}
+
 enum ProjectPublishOutcome {
     Success(PublishOutput),
     Failure(PublishOutput),
@@ -457,17 +475,12 @@ async fn execute_dry_run_publish_loop(
                      will run in topological order and succeed."
                 );
             }
-            if let FormatOptions::Json = format {
-                result_map.insert(
-                    project.relative_path().to_path_buf(),
-                    PublishResult::new(
-                        true,
-                        Some("dry-run skipped (workspace-internal dep)".to_string()),
-                        String::new(),
-                        String::new(),
-                    ),
-                );
-            }
+            record_json_skip(
+                &mut result_map,
+                project,
+                "dry-run skipped (workspace-internal dep)",
+                format,
+            );
             continue;
         }
         if let Some(dependency) = failed_dependency(project, &failed_project_names) {
@@ -516,17 +529,12 @@ async fn execute_dry_run_publish_loop(
                          to provide a custom dry-run command."
                     );
                 }
-                if let FormatOptions::Json = format {
-                    result_map.insert(
-                        project.relative_path().to_path_buf(),
-                        PublishResult::new(
-                            true,
-                            Some("dry-run not supported; skipped".to_string()),
-                            String::new(),
-                            String::new(),
-                        ),
-                    );
-                }
+                record_json_skip(
+                    &mut result_map,
+                    project,
+                    "dry-run not supported; skipped",
+                    format,
+                );
             }
             Err(e) => {
                 record_outcome_track_failure(

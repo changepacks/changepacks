@@ -1,4 +1,7 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+use anyhow::Result;
+use tokio::fs::read_dir;
 
 /// Returns `true` iff `file_name` names a changepack log JSON file — i.e. it
 /// is NOT `config.json` and its extension matches `.json` case-insensitively.
@@ -22,6 +25,27 @@ pub(crate) fn is_changepack_log_json_name(file_name: &str) -> bool {
         && Path::new(file_name)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+}
+
+/// Collect all changepack log file paths from the `.changepacks/` directory.
+///
+/// Walks the directory once, filtering by [`is_changepack_log_json_name`],
+/// and returns the collected paths. Used by [`crate::gen_update_map`],
+/// [`crate::clear_update_logs`], and [`crate::clear_applied_update_logs`]
+/// to ensure all three sites use the same predicate.
+///
+/// # Errors
+/// Returns error if the directory cannot be read.
+pub(crate) async fn collect_changepack_log_paths(changepacks_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut entries = read_dir(changepacks_dir).await?;
+    while let Some(file) = entries.next_entry().await? {
+        let file_name = file.file_name();
+        if is_changepack_log_json_name(file_name.to_string_lossy().as_ref()) {
+            paths.push(file.path());
+        }
+    }
+    Ok(paths)
 }
 
 #[cfg(test)]

@@ -67,7 +67,7 @@ mod split_version;
 mod test_support;
 mod trailing_newline;
 
-pub(crate) use is_changepack_log::is_changepack_log_json_name;
+pub(crate) use is_changepack_log::collect_changepack_log_paths;
 
 // Re-export the concrete `gix` handle type so downstream crates (e.g.
 // `changepacks-cli`) can hold onto it (e.g. caching on `CommandContext`)
@@ -75,7 +75,7 @@ pub(crate) use is_changepack_log::is_changepack_log_json_name;
 // wraps every other gix touch point.
 pub use gix::ThreadSafeRepository;
 
-pub use clear_update_logs::clear_update_logs;
+pub use clear_update_logs::{clear_applied_update_logs, clear_update_logs};
 pub use detect_indent::detect_indent_str;
 pub use display_update::display_update;
 pub use filter_project_dirs::find_project_dirs;

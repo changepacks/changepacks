@@ -4,9 +4,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use tokio::fs::{read_dir, read_to_string, remove_file, write};
+use tokio::fs::{read_to_string, remove_file, write};
 
-use crate::is_changepack_log_json_name;
+use crate::collect_changepack_log_paths;
 
 /// Check if the changepacks directory exists.
 ///
@@ -25,7 +25,7 @@ async fn changepacks_dir_exists(changepacks_dir: &Path) -> Result<bool> {
 
 /// Remove all update logs without confirmation
 ///
-/// Uses [`is_changepack_log_json_name`] — the same predicate
+/// Uses [`collect_changepack_log_paths`] — which applies the same predicate
 /// [`gen_update_map`](crate::gen_update_map) uses — so the cleaner and the
 /// reader stay in lock-step. A file the reader intentionally ignores
 /// (`.gitkeep`, `README.md`, etc.) is not silently destroyed the first time
@@ -44,16 +44,7 @@ pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
     //            the exact-size iterator to `futures::future::join_all`.
     //   Keeping the reader (`gen_update_map`) and cleaner (`clear_update_logs`)
     //   in lock-step on the shape reinforces the shared-predicate invariant.
-    let mut paths: Vec<PathBuf> = Vec::new();
-    let mut entries = read_dir(changepacks_dir).await?;
-    while let Some(file) = entries.next_entry().await? {
-        let file_name = file.file_name();
-        let file_name_lossy = file_name.to_string_lossy();
-        if !is_changepack_log_json_name(file_name_lossy.as_ref()) {
-            continue;
-        }
-        paths.push(file.path());
-    }
+    let paths = collect_changepack_log_paths(changepacks_dir).await?;
     let mut error_details = Vec::new();
     for result in futures::future::join_all(paths.into_iter().map(remove_file)).await {
         if let Err(err) = result {
@@ -88,15 +79,8 @@ pub async fn clear_applied_update_logs(
         return Ok(());
     }
 
-    let mut entries = read_dir(changepacks_dir).await?;
-    while let Some(file) = entries.next_entry().await? {
-        let file_name = file.file_name();
-        let file_name_lossy = file_name.to_string_lossy();
-        if !is_changepack_log_json_name(file_name_lossy.as_ref()) {
-            continue;
-        }
-
-        let path = file.path();
+    let paths = collect_changepack_log_paths(changepacks_dir).await?;
+    for path in paths {
         let content = read_to_string(&path)
             .await
             .with_context(|| format!("Failed to read update log {}", path.display()))?;

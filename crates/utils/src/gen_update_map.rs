@@ -8,9 +8,9 @@ use std::{
 use anyhow::{Context, Result};
 use changepacks_core::{ChangePackLog, ChangePackResultLog, Config, Project, UpdateType};
 use glob::Pattern;
-use tokio::fs::{read_dir, read_to_string};
+use tokio::fs::read_to_string;
 
-use crate::{get_relative_path, is_changepack_log_json_name};
+use crate::{collect_changepack_log_paths, get_relative_path};
 
 /// Generate update map from changepack logs
 ///
@@ -32,14 +32,7 @@ pub async fn gen_update_map(
     //            already collapses duplicates across files — so parallelizing
     //            the reads is deterministic and cannot change the observable
     //            update_map for any input.
-    let mut paths: Vec<PathBuf> = Vec::new();
-    let mut entries = read_dir(&changepacks_dir).await?;
-    while let Some(file) = entries.next_entry().await? {
-        let file_name = file.file_name();
-        if is_changepack_log_json_name(file_name.to_string_lossy().as_ref()) {
-            paths.push(file.path());
-        }
-    }
+    let paths = collect_changepack_log_paths(changepacks_dir).await?;
     // Preallocate against `paths.len()` — a tight lower bound because each
     // changepack log's `changes` map usually names one or more distinct
     // project paths. Matches the preallocation policy already applied in
