@@ -56,7 +56,7 @@ impl ProjectFinder for DartProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        // glob all the pubspec.yaml in the root without .gitignore
+        // Parse this manifest if it is a recognized project file not already visited.
         if self.matches_project_file(path).await {
             if self.projects.contains_key(path) {
                 return Ok(());
@@ -527,7 +527,7 @@ dependencies:
             .await;
 
         assert!(result.is_err());
-        let error_msg = format!("{:?}", result.unwrap_err());
+        let error_msg = result.unwrap_err().to_string();
         assert!(
             error_msg.contains("Failed to parse pubspec.yaml"),
             "error message should contain 'Failed to parse pubspec.yaml', got: {}",

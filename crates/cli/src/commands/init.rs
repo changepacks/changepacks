@@ -1,7 +1,7 @@
 use changepacks_core::Config;
 use tokio::fs::{create_dir_all, write};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use changepacks_utils::get_changepacks_dir;
 use clap::Args;
 
@@ -30,7 +30,12 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
     }
     // create config.json file
     let config_file = changepacks_dir.join("config.json");
-    if tokio::fs::try_exists(&config_file).await.unwrap_or(false) {
+    if tokio::fs::try_exists(&config_file).await.with_context(|| {
+        format!(
+            "Failed to check changepacks config {}",
+            config_file.display()
+        )
+    })? {
         Err(anyhow::anyhow!("changepacks project already initialized"))
     } else {
         if !args.dry_run {
