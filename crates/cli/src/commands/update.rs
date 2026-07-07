@@ -166,6 +166,10 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     apply_updates(&mut update_projects, &workspace_projects).await?;
     drop(update_projects);
 
+    // Snapshot applied paths before gen_changepack_result_map drains update_map
+    let applied_paths =
+        language_filter_active.then(|| update_map.keys().cloned().collect::<HashSet<_>>());
+
     if let FormatOptions::Json = args.format {
         println!(
             "{}",
@@ -178,11 +182,9 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
 
     // Clear files
-    if language_filter_active {
-        let applied_paths = update_map.keys().cloned().collect::<HashSet<_>>();
-        clear_applied_update_logs(&ctx.changepacks_dir, &applied_paths).await?;
-    } else {
-        clear_update_logs(&ctx.changepacks_dir).await?;
+    match applied_paths {
+        Some(applied) => clear_applied_update_logs(&ctx.changepacks_dir, &applied).await?,
+        None => clear_update_logs(&ctx.changepacks_dir).await?,
     }
 
     Ok(())

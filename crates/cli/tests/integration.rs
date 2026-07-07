@@ -1009,6 +1009,79 @@ async fn test_cli_update_json_format() {
     );
 }
 
+// Test update with language filter and JSON format clears applied changepack logs
+#[tokio::test]
+#[serial]
+async fn test_cli_update_language_filter_json_clears_logs() {
+    // Given: a temp directory with a Rust package and a changepack log targeting it
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    init_git_repo(&temp_path);
+
+    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
+        .await
+        .unwrap();
+
+    // Create Rust package with version 1.0.0
+    tokio::fs::write(
+        temp_path.join("Cargo.toml"),
+        "[package]\nname = \"rust-pkg\"\nversion = \"1.0.0\"\n",
+    )
+    .await
+    .unwrap();
+
+    // Create changepack log targeting the Rust package
+    tokio::fs::write(
+        temp_path.join(".changepacks/changepack_log_test.json"),
+        r#"{"changes": {"Cargo.toml": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+    )
+    .await
+    .unwrap();
+
+    git_add_and_commit(&temp_path, "Initial commit");
+
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: running update with language filter (rust) and JSON format
+    let args = vec![
+        "changepacks".to_string(),
+        "update".to_string(),
+        "--yes".to_string(),
+        "--language".to_string(),
+        "rust".to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+    ];
+    let result = changepacks_cli::main(&args).await;
+
+    // Then: the command succeeds
+    assert!(
+        result.is_ok(),
+        "update with language filter and JSON format failed: {:?}",
+        result.err()
+    );
+
+    // And: the changepack log file should be removed (applied and cleared)
+    let log_exists = tokio::fs::try_exists(temp_path.join(".changepacks/changepack_log_test.json"))
+        .await
+        .unwrap();
+    assert!(
+        !log_exists,
+        "changepack log should be removed after applied update with language filter and JSON format"
+    );
+
+    // And: the Cargo.toml version should be bumped to 1.0.1 (Patch bump)
+    let cargo_content = tokio::fs::read_to_string(temp_path.join("Cargo.toml"))
+        .await
+        .unwrap();
+    assert!(
+        cargo_content.contains("version = \"1.0.1\""),
+        "Cargo.toml version should be bumped to 1.0.1, got: {}",
+        cargo_content
+    );
+}
+
 // Test update with no updates found
 #[tokio::test]
 #[serial]

@@ -251,15 +251,14 @@ fn record_publish_success(
 
 /// Shared per-project failure recorder for both publish loops.
 ///
-/// Handles BOTH the "non-zero-exit `Ok(output)`" case (`output_opt = Some`,
-/// `err_opt = None`) and the "spawn error `Err(e)`" case (`output_opt =
-/// None`, `err_opt = Some`). Preserves the subtle stdout distinction the
-/// old loops maintained:
+/// Handles BOTH the "non-zero-exit `Ok(output)`" case and the "spawn error
+/// `Err(e)`" case via the `PublishFailureCause` enum. Preserves the subtle
+/// stdout distinction the old loops maintained:
 ///
-///   - `Ok(output)` with `output.success == false` prints
+///   - `PublishFailureCause::Output(output)` prints
 ///     `print_publish_output(&output); eprintln!("{label} {project}");`
-///   - `Err(e)` prints `eprintln!("{label} {project}: {e}");` (with the
-///     `: {e}` suffix).
+///   - `PublishFailureCause::Error(e)` prints `eprintln!("{label} {project}: {e}");`
+///     (with the `: {e}` suffix).
 ///
 /// Byte-identical to the pre-refactor arms — including the trailing
 /// `failed_projects.push(format!("{project}"))` shared by both. Ok(None)
@@ -269,28 +268,25 @@ fn record_publish_failure(
     result_map: &mut BTreeMap<PathBuf, PublishResult>,
     failed_projects: &mut Vec<String>,
     project: &Project,
-    output_opt: Option<PublishOutput>,
-    err_opt: Option<&anyhow::Error>,
+    cause: PublishFailureCause,
     failure_label: &str,
     format: &FormatOptions,
 ) {
     if let FormatOptions::Stdout = format {
-        match (&output_opt, err_opt) {
-            (Some(output), _) => {
+        match &cause {
+            PublishFailureCause::Output(output) => {
                 print_publish_output(output);
                 eprintln!("{failure_label} {project}");
             }
-            (None, Some(e)) => {
+            PublishFailureCause::Error(e) => {
                 eprintln!("{failure_label} {project}: {e}");
             }
-            (None, None) => {}
         }
     }
     if let FormatOptions::Json = format {
-        let (stdout, stderr, err_msg) = match (output_opt, err_opt) {
-            (Some(output), _) => (output.stdout, output.stderr, None),
-            (None, Some(e)) => (String::new(), String::new(), Some(e.to_string())),
-            (None, None) => (String::new(), String::new(), None),
+        let (stdout, stderr, err_msg) = match cause {
+            PublishFailureCause::Output(output) => (output.stdout, output.stderr, None),
+            PublishFailureCause::Error(e) => (String::new(), String::new(), Some(e.to_string())),
         };
         result_map.insert(
             project.relative_path().to_path_buf(),
@@ -325,8 +321,7 @@ fn record_dependency_skip(
         result_map,
         failed_projects,
         project,
-        None,
-        Some(&error),
+        PublishFailureCause::Error(&error),
         failure_label,
         format,
     );
@@ -339,6 +334,13 @@ enum ProjectPublishOutcome {
     Success(PublishOutput),
     Failure(PublishOutput),
     Error(anyhow::Error),
+}
+
+/// Represents the failure cause for a publish operation.
+/// Either a non-zero exit with captured output, or a spawn/execution error.
+enum PublishFailureCause<'a> {
+    Output(PublishOutput),
+    Error(&'a anyhow::Error),
 }
 
 struct PublishOutcomeLabels {
@@ -393,8 +395,7 @@ fn record_publish_outcome(
                 result_map,
                 failed_projects,
                 project,
-                Some(output),
-                None,
+                PublishFailureCause::Output(output),
                 failure_label,
                 format,
             );
@@ -405,8 +406,7 @@ fn record_publish_outcome(
                 result_map,
                 failed_projects,
                 project,
-                None,
-                Some(&error),
+                PublishFailureCause::Error(&error),
                 failure_label,
                 format,
             );

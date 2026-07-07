@@ -563,9 +563,8 @@ mod tests {
         let project = Project::Workspace(Box::new(workspace));
         let config = Config::default();
 
-        // MockWorkspace.default_publish_command() == "echo publish" and
-        // Language::Node.dry_run_flag() == Some("--dry-run"), so the
-        // derived dry-run command is "echo publish --dry-run".
+        // MockWorkspace.default_dry_run_publish_command() returns
+        // Some("echo publish --dry-run").
         let output = project.dry_run_publish(&config).await.unwrap();
         assert!(output.is_some());
         let output = output.unwrap();
