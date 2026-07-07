@@ -208,19 +208,19 @@ async fn collect_nupkgs(dir: &Path) -> Result<Vec<PathBuf>> {
 /// Prefix every captured chunk with a section header so a combined
 /// `PublishOutput` remains diagnosable.
 fn prefixed(label: &str, mut output: PublishOutput) -> PublishOutput {
-    if !output.stdout.is_empty() {
-        output.stdout = format!("===== {label} (stdout) =====\n{}", output.stdout);
-        if !output.stdout.ends_with('\n') {
-            output.stdout.push('\n');
-        }
-    }
-    if !output.stderr.is_empty() {
-        output.stderr = format!("===== {label} (stderr) =====\n{}", output.stderr);
-        if !output.stderr.ends_with('\n') {
-            output.stderr.push('\n');
-        }
-    }
+    prefix_stream(&mut output.stdout, label, "stdout");
+    prefix_stream(&mut output.stderr, label, "stderr");
     output
+}
+
+fn prefix_stream(stream: &mut String, label: &str, kind: &str) {
+    if !stream.is_empty() {
+        let body = std::mem::take(stream);
+        *stream = format!("===== {label} ({kind}) =====\n{body}");
+        if !stream.ends_with('\n') {
+            stream.push('\n');
+        }
+    }
 }
 
 /// Close a [`TempDir`] on the happy path and, if cleanup fails, append a

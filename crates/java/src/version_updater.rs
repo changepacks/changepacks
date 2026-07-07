@@ -22,14 +22,14 @@ pub fn update_version_in_kts(content: &str, new_version: &str) -> String {
     if KTS_SIMPLE_PATTERN.is_match(content) {
         return KTS_SIMPLE_PATTERN
             .replace(content, format!(r#"${{1}}"{new_version}""#))
-            .to_string();
+            .into_owned();
     }
 
     // Pattern 2: version = project.findProperty("...") ?: "1.0.0"
     if KTS_FALLBACK_PATTERN.is_match(content) {
         return KTS_FALLBACK_PATTERN
             .replace(content, format!(r#"${{1}}"{new_version}""#))
-            .to_string();
+            .into_owned();
     }
 
     content.to_string()
@@ -50,14 +50,14 @@ pub fn update_version_in_groovy(content: &str, new_version: &str) -> String {
     if GROOVY_ASSIGN_PATTERN.is_match(content) {
         return GROOVY_ASSIGN_PATTERN
             .replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
-            .to_string();
+            .into_owned();
     }
 
     // Pattern 2: version '1.0.0' or version "1.0.0"
     if GROOVY_SPACE_PATTERN.is_match(content) {
         return GROOVY_SPACE_PATTERN
             .replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
-            .to_string();
+            .into_owned();
     }
 
     content.to_string()

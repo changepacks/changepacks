@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn test_build_shell_command() {
         let cmd = build_shell_command("echo hello");
-        let program = cmd.as_std().get_program().to_string_lossy().to_string();
+        let program = cmd.as_std().get_program().to_string_lossy().into_owned();
         #[cfg(target_os = "windows")]
         assert_eq!(program, "cmd");
         #[cfg(not(target_os = "windows"))]
