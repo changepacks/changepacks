@@ -37,6 +37,10 @@ pub fn lookup_by_path_or_language(
     relative_path: &Path,
     language: Language,
 ) -> Option<String> {
+    // Empty publish maps can only miss; avoid path conversion and hash work.
+    if map.is_empty() {
+        return None;
+    }
     if let Some(cmd) = map.get(relative_path.to_string_lossy().as_ref()) {
         return Some(cmd.clone());
     }
