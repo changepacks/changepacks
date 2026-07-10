@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Package, Project, ProjectFinder, is_regular_file};
 use std::{
@@ -173,12 +173,7 @@ impl ProjectFinder for RustProjectFinder {
             return Ok(());
         }
         // read Cargo.toml
-        let cargo_toml = read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read Cargo.toml {}", path.display()))?;
-        let cargo_toml: toml_edit::DocumentMut = cargo_toml
-            .parse()
-            .with_context(|| format!("Failed to parse Cargo.toml {}", path.display()))?;
+        let (_cargo_toml_raw, cargo_toml) = crate::read_and_parse_cargo_toml(path).await?;
 
         // Collect workspace dependencies for this file — the same
         // `dep_names` list feeds every branch below (workspace /

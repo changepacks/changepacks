@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
 use changepacks_utils::{
@@ -6,8 +6,7 @@ use changepacks_utils::{
 };
 use std::collections::HashSet;
 use std::path::PathBuf;
-use tokio::fs::{read_to_string, write};
-use toml_edit::DocumentMut;
+use tokio::fs::write;
 
 #[derive(Debug)]
 pub struct RustWorkspace {
@@ -49,12 +48,7 @@ impl Workspace for RustWorkspace {
         let old_version = self.version.as_deref().unwrap_or("0.0.0");
         let new_version = next_version(old_version, update_type)?;
 
-        let cargo_toml_raw = read_to_string(&self.path)
-            .await
-            .with_context(|| format!("Failed to read Cargo.toml {}", self.path.display()))?;
-        let mut cargo_toml: DocumentMut = cargo_toml_raw
-            .parse::<DocumentMut>()
-            .with_context(|| format!("Failed to parse Cargo.toml {}", self.path.display()))?;
+        let (cargo_toml_raw, mut cargo_toml) = crate::read_and_parse_cargo_toml(&self.path).await?;
 
         let has_package = cargo_toml.get("package").is_some();
 
@@ -207,12 +201,7 @@ impl Workspace for RustWorkspace {
         {
             return Ok(());
         }
-        let cargo_toml_raw = read_to_string(&self.path)
-            .await
-            .with_context(|| format!("Failed to read Cargo.toml {}", self.path.display()))?;
-        let mut cargo_toml: DocumentMut = cargo_toml_raw
-            .parse::<DocumentMut>()
-            .with_context(|| format!("Failed to parse Cargo.toml {}", self.path.display()))?;
+        let (cargo_toml_raw, mut cargo_toml) = crate::read_and_parse_cargo_toml(&self.path).await?;
 
         // check has workspace.dependencies section
         //

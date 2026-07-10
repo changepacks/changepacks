@@ -16,7 +16,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use changepacks_utils::finalize_content;
-use tokio::fs::{read_to_string, write};
+use tokio::fs::write;
 use toml_edit::DocumentMut;
 
 /// Default publish command for a single-crate `Cargo.toml`.
@@ -48,6 +48,23 @@ pub(crate) const WORKSPACE_PUBLISH_COMMAND: &str = "cargo publish --workspace";
 /// Paired with `WORKSPACE_PUBLISH_COMMAND` for the workspace-scope callers.
 pub(crate) const WORKSPACE_DRY_RUN_PUBLISH_COMMAND: &str = "cargo publish --workspace --dry-run";
 
+/// Read and parse a Cargo.toml file, preserving the raw content for format finalization.
+///
+/// Returns both the raw file content and the parsed `DocumentMut` to enable
+/// [`finalize_content`] to preserve formatting, comments, and trailing newlines.
+///
+/// # Errors
+/// Returns error if the file cannot be read or the TOML cannot be parsed.
+pub(crate) async fn read_and_parse_cargo_toml(path: &Path) -> Result<(String, DocumentMut)> {
+    let cargo_toml_raw = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read Cargo.toml {}", path.display()))?;
+    let cargo_toml: DocumentMut = cargo_toml_raw
+        .parse::<DocumentMut>()
+        .with_context(|| format!("Failed to parse Cargo.toml {}", path.display()))?;
+    Ok((cargo_toml_raw, cargo_toml))
+}
+
 /// Update the `[package].version` key of the `Cargo.toml` at `path` to
 /// `new_version`, using `toml_edit` to preserve the file's formatting,
 /// comments, and trailing-newline shape.
@@ -68,12 +85,7 @@ pub(crate) const WORKSPACE_DRY_RUN_PUBLISH_COMMAND: &str = "cargo publish --work
 /// Returns error if the file cannot be read, the TOML cannot be parsed,
 /// or the write fails.
 pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) -> Result<()> {
-    let cargo_toml_raw = read_to_string(path)
-        .await
-        .with_context(|| format!("Failed to read Cargo.toml {}", path.display()))?;
-    let mut cargo_toml: DocumentMut = cargo_toml_raw
-        .parse::<DocumentMut>()
-        .with_context(|| format!("Failed to parse Cargo.toml {}", path.display()))?;
+    let (cargo_toml_raw, mut cargo_toml) = read_and_parse_cargo_toml(path).await?;
     cargo_toml["package"]["version"] = new_version.into();
     write(
         path,

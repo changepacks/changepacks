@@ -52,6 +52,26 @@ pub(crate) async fn update_version_from_fields(
     Ok(())
 }
 
+/// Read and parse a `package.json` file, returning both the raw content and
+/// the parsed JSON value.
+///
+/// Used by both `write_package_json_version` and `NodeProjectFinder::visit`
+/// to consolidate the "read file, parse JSON, attach context" sequence into
+/// a single source of truth.
+///
+/// # Errors
+/// Returns error if the file cannot be read or is not valid JSON.
+pub(crate) async fn read_and_parse_package_json(
+    path: &Path,
+) -> Result<(String, serde_json::Value)> {
+    let package_json_raw = read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read package.json {}", path.display()))?;
+    let package_json: serde_json::Value = serde_json::from_str(&package_json_raw)
+        .with_context(|| format!("Failed to parse package.json {}", path.display()))?;
+    Ok((package_json_raw, package_json))
+}
+
 /// Update `package.json` at `path` to set its `version` field to `new_version`,
 /// preserving the file's original indent size (via `detect_indent`) and its
 /// trailing-newline shape (via `trailing_newline`).
@@ -63,12 +83,8 @@ pub(crate) async fn update_version_from_fields(
 /// Returns error if the file cannot be read, is not valid JSON, or the write
 /// fails.
 pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -> Result<()> {
-    let package_json_raw = read_to_string(path)
-        .await
-        .with_context(|| format!("Failed to read package.json {}", path.display()))?;
+    let (package_json_raw, mut package_json) = read_and_parse_package_json(path).await?;
     let indent_str = detect_indent_str(&package_json_raw);
-    let mut package_json: serde_json::Value = serde_json::from_str(&package_json_raw)
-        .with_context(|| format!("Failed to parse package.json {}", path.display()))?;
     package_json["version"] = serde_json::Value::String(new_version.to_string());
     let ind = indent_str.as_bytes();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);

@@ -1,13 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
-use tokio::fs::read_to_string;
 
-use crate::{package::PythonPackage, workspace::PythonWorkspace};
+use crate::{package::PythonPackage, read_and_parse_pyproject_toml, workspace::PythonWorkspace};
 
 /// Manifest filenames this finder recognizes. Static because the list is
 /// compile-time constant — no per-instance heap `Vec` is needed and the
@@ -63,13 +62,8 @@ impl ProjectFinder for PythonProjectFinder {
         if self.projects.contains_key(path) {
             return Ok(());
         }
-        // read pyproject.toml
-        let pyproject_toml = read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read pyproject.toml {}", path.display()))?;
-        let pyproject_toml: toml_edit::DocumentMut = pyproject_toml
-            .parse()
-            .with_context(|| format!("Failed to parse pyproject.toml {}", path.display()))?;
+        // read and parse pyproject.toml
+        let (_raw, pyproject_toml) = read_and_parse_pyproject_toml(path).await?;
         // `[project]` is OPTIONAL: uv workspace-only roots (the docs'
         // canonical example) declare just `[tool.uv.workspace]` at the
         // repo root and no `[project]` table. Match the tolerant

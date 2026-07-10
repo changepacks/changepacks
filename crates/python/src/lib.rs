@@ -22,12 +22,28 @@ pub(crate) const PUBLISH_COMMAND: &str = "uv publish";
 pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "uv publish --dry-run";
 
 use std::path::Path;
+use tokio::fs::read_to_string;
 
 use anyhow::{Context, Result};
 use changepacks_core::UpdateType;
 use changepacks_utils::{finalize_content, next_version_or_default};
-use tokio::fs::{read_to_string, write};
+use tokio::fs::write;
 use toml_edit::DocumentMut;
+
+/// Read and parse a pyproject.toml file, returning both the raw content
+/// (for trailing-newline preservation) and the parsed TOML document.
+///
+/// # Errors
+/// Returns error if the file cannot be read or is not valid TOML.
+pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String, DocumentMut)> {
+    let raw = read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read pyproject.toml {}", path.display()))?;
+    let parsed = raw
+        .parse::<DocumentMut>()
+        .with_context(|| format!("Failed to parse pyproject.toml {}", path.display()))?;
+    Ok((raw, parsed))
+}
 
 /// Shared body for `PythonPackage::update_version` and
 /// `PythonWorkspace::update_version`.
@@ -85,12 +101,7 @@ pub(crate) async fn write_pyproject_version(
     new_version: &str,
     ensure_project_table: bool,
 ) -> Result<()> {
-    let pyproject_toml_raw = read_to_string(path)
-        .await
-        .with_context(|| format!("Failed to read pyproject.toml {}", path.display()))?;
-    let mut pyproject_toml: DocumentMut = pyproject_toml_raw
-        .parse::<DocumentMut>()
-        .with_context(|| format!("Failed to parse pyproject.toml {}", path.display()))?;
+    let (pyproject_toml_raw, mut pyproject_toml) = read_and_parse_pyproject_toml(path).await?;
     if ensure_project_table && pyproject_toml.get("project").is_none() {
         pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
     }

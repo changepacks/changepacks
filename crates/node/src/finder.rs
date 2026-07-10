@@ -1,13 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
-use tokio::fs::read_to_string;
 
-use crate::{package::NodePackage, workspace::NodeWorkspace};
+use crate::{package::NodePackage, read_and_parse_package_json, workspace::NodeWorkspace};
 
 /// Manifest filenames this finder recognizes. Static because the list is
 /// compile-time constant — no per-instance heap `Vec` is needed and the
@@ -70,11 +69,7 @@ impl ProjectFinder for NodeProjectFinder {
             return Ok(());
         }
         // read package.json
-        let package_json = read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read package.json {}", path.display()))?;
-        let package_json: serde_json::Value = serde_json::from_str(&package_json)
-            .with_context(|| format!("Failed to parse package.json {}", path.display()))?;
+        let (_package_json_raw, package_json) = read_and_parse_package_json(path).await?;
         // Both branches use the same name/version and the same path;
         // hoist so each branch collapses to a single constructor call.
         let version = package_json["version"]
