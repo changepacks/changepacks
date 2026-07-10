@@ -2,35 +2,37 @@ use serial_test::serial;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+fn run_git(path: &Path, args: &[&str]) {
+    // Prepend hermetic config so these fixtures never depend on the developer's
+    // global git config. In particular `commit.gpgsign=true` would make `git
+    // commit` block on a GPG passphrase (hanging the test) or fail; disabling it
+    // keeps commits non-interactive. Asserting `status.success()` also turns a
+    // silent git failure (which would otherwise leave the repo with no `main`
+    // branch and break downstream ref lookups) into a loud, actionable panic.
+    let output = std::process::Command::new("git")
+        .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
+        .args(args)
+        .current_dir(path)
+        .output()
+        .unwrap_or_else(|err| panic!("failed to spawn `git {}`: {err}", args.join(" ")));
+    assert!(
+        output.status.success(),
+        "`git {}` failed ({}):\n{}",
+        args.join(" "),
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 fn init_git_repo(path: &Path) {
-    std::process::Command::new("git")
-        .args(["init", "-b", "main"])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.email", "test@test.com"])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(path)
-        .output()
-        .unwrap();
+    run_git(path, &["init", "-b", "main"]);
+    run_git(path, &["config", "user.email", "test@test.com"]);
+    run_git(path, &["config", "user.name", "Test"]);
 }
 
 fn git_add_and_commit(path: &Path, message: &str) {
-    std::process::Command::new("git")
-        .args(["add", "."])
-        .current_dir(path)
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["commit", "-m", message])
-        .current_dir(path)
-        .output()
-        .unwrap();
+    run_git(path, &["add", "."]);
+    run_git(path, &["commit", "-m", message]);
 }
 
 struct DirGuard {
