@@ -19,17 +19,15 @@ static KTS_FALLBACK_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 /// Update version in build.gradle.kts content
 #[must_use]
 pub fn update_version_in_kts<'a>(content: &'a str, new_version: &str) -> Cow<'a, str> {
+    let replacement = format!(r#"${{1}}"{new_version}""#);
+
     // Pattern 1: version = "1.0.0"
-    if let Cow::Owned(updated) =
-        KTS_SIMPLE_PATTERN.replace(content, format!(r#"${{1}}"{new_version}""#))
-    {
+    if let Cow::Owned(updated) = KTS_SIMPLE_PATTERN.replace(content, replacement.as_str()) {
         return Cow::Owned(updated);
     }
 
     // Pattern 2: version = project.findProperty("...") ?: "1.0.0"
-    if let Cow::Owned(updated) =
-        KTS_FALLBACK_PATTERN.replace(content, format!(r#"${{1}}"{new_version}""#))
-    {
+    if let Cow::Owned(updated) = KTS_FALLBACK_PATTERN.replace(content, replacement.as_str()) {
         return Cow::Owned(updated);
     }
 
@@ -47,17 +45,15 @@ static GROOVY_SPACE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 /// Update version in build.gradle (Groovy) content
 #[must_use]
 pub fn update_version_in_groovy<'a>(content: &'a str, new_version: &str) -> Cow<'a, str> {
+    let replacement = format!(r"${{1}}${{2}}{new_version}${{2}}");
+
     // Pattern 1: version = '1.0.0' or version = "1.0.0"
-    if let Cow::Owned(updated) =
-        GROOVY_ASSIGN_PATTERN.replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
-    {
+    if let Cow::Owned(updated) = GROOVY_ASSIGN_PATTERN.replace(content, replacement.as_str()) {
         return Cow::Owned(updated);
     }
 
     // Pattern 2: version '1.0.0' or version "1.0.0"
-    if let Cow::Owned(updated) =
-        GROOVY_SPACE_PATTERN.replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
-    {
+    if let Cow::Owned(updated) = GROOVY_SPACE_PATTERN.replace(content, replacement.as_str()) {
         return Cow::Owned(updated);
     }
 

@@ -82,7 +82,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
 
     // Merge workspace-inherited package updates into workspace entries
-    merge_workspace_inherited_updates(&mut update_map, &all_finders, &ctx.repo_root_path);
+    merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
 
     if update_map.is_empty() {
         args.format.print("No updates found");
@@ -295,31 +295,27 @@ async fn apply_updates(
 /// removed from the update map since their Cargo.toml doesn't need changes.
 fn merge_workspace_inherited_updates(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-    project_finders: &[Box<dyn ProjectFinder>],
+    projects: &[&Project],
     repo_root_path: &Path,
 ) {
     // Collect (pkg_rel_path, ws_rel_path) pairs to merge.
     // Preallocate: the loop below pushes AT MOST one entry per project
-    // across every finder. Summing `finder.projects().len()` yields a
-    // tight upper bound that avoids `Vec`'s geometric-doubling
-    // reallocations on vespera-shaped monorepos with many
-    // workspace-inheriting members. Matches the preallocation policy
-    // already applied throughout `sort_by_dep.rs`, `filter_project_dirs`,
-    // and the sibling `apply_reverse_dependencies`.
-    let cap: usize = total_project_count(project_finders);
-    let mut merge_targets: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(cap);
+    // in the slice, so `projects.len()` is a tight upper bound that
+    // avoids `Vec`'s geometric-doubling reallocations on vespera-shaped
+    // monorepos with many workspace-inheriting members. Matches the
+    // preallocation policy already applied throughout `sort_by_dep.rs`,
+    // `filter_project_dirs`, and the sibling `apply_reverse_dependencies`.
+    let mut merge_targets: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(projects.len());
 
-    for finder in project_finders {
-        for project in finder.projects() {
-            if let Project::Package(pkg) = project
-                && pkg.inherits_workspace_version()
-                && let Ok(rel_path) = get_relative_path(repo_root_path, pkg.path())
-                && update_map.contains_key(&rel_path)
-                && let Some(ws_root) = pkg.workspace_root_path()
-                && let Ok(ws_rel_path) = get_relative_path(repo_root_path, ws_root)
-            {
-                merge_targets.push((rel_path, ws_rel_path));
-            }
+    for &project in projects {
+        if let Project::Package(pkg) = project
+            && pkg.inherits_workspace_version()
+            && let Ok(rel_path) = get_relative_path(repo_root_path, pkg.path())
+            && update_map.contains_key(&rel_path)
+            && let Some(ws_root) = pkg.workspace_root_path()
+            && let Ok(ws_rel_path) = get_relative_path(repo_root_path, ws_root)
+        {
+            merge_targets.push((rel_path, ws_rel_path));
         }
     }
 
@@ -340,7 +336,7 @@ fn merge_workspace_inherited_updates(
 
 #[cfg(test)]
 mod tests {
-    use super::{UpdateArgs, merge_workspace_inherited_updates};
+    use super::{UpdateArgs, collect_projects, merge_workspace_inherited_updates};
     use anyhow::Result;
     use async_trait::async_trait;
     use changepacks_core::{
@@ -525,7 +521,11 @@ mod tests {
             )]))];
 
         let before = summarize_update_map(&update_map);
-        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+        merge_workspace_inherited_updates(
+            &mut update_map,
+            &collect_projects(&project_finders),
+            repo_root,
+        );
 
         assert_eq!(summarize_update_map(&update_map), before);
         assert!(update_map.contains_key(&pkg_rel_path));
@@ -549,7 +549,11 @@ mod tests {
                 Some("/repo/Cargo.toml"),
             )]))];
 
-        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+        merge_workspace_inherited_updates(
+            &mut update_map,
+            &collect_projects(&project_finders),
+            repo_root,
+        );
 
         assert!(!update_map.contains_key(&pkg_rel_path));
         let (update_type, logs) = update_map
@@ -591,7 +595,11 @@ mod tests {
             ),
         ]))];
 
-        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+        merge_workspace_inherited_updates(
+            &mut update_map,
+            &collect_projects(&project_finders),
+            repo_root,
+        );
 
         assert!(!update_map.contains_key(&pkg1_rel_path));
         assert!(!update_map.contains_key(&pkg2_rel_path));
@@ -619,7 +627,11 @@ mod tests {
             )]))];
 
         let before = summarize_update_map(&update_map);
-        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+        merge_workspace_inherited_updates(
+            &mut update_map,
+            &collect_projects(&project_finders),
+            repo_root,
+        );
 
         assert_eq!(summarize_update_map(&update_map), before);
         assert!(!update_map.contains_key(&PathBuf::from("Cargo.toml")));
@@ -649,7 +661,11 @@ mod tests {
                 Some("/repo/Cargo.toml"),
             )]))];
 
-        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+        merge_workspace_inherited_updates(
+            &mut update_map,
+            &collect_projects(&project_finders),
+            repo_root,
+        );
 
         assert!(!update_map.contains_key(&pkg_rel_path));
         let (update_type, logs) = update_map
@@ -694,7 +710,11 @@ mod tests {
             ),
         ]))];
 
-        merge_workspace_inherited_updates(&mut update_map, &project_finders, repo_root);
+        merge_workspace_inherited_updates(
+            &mut update_map,
+            &collect_projects(&project_finders),
+            repo_root,
+        );
 
         assert!(!update_map.contains_key(&pkg1_rel_path));
         assert!(!update_map.contains_key(&pkg2_rel_path));
