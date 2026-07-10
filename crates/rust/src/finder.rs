@@ -74,6 +74,19 @@ fn is_workspace_marker(item: &toml_edit::Item) -> bool {
         .unwrap_or(false)
 }
 
+/// Return `true` for a `toml_edit::Item` whose value is table-like with a
+/// `path` key — the shape Cargo uses for direct local-path dependencies
+/// (`dep = { path = "../dep" }`, optionally alongside `version`). Sibling
+/// of [`is_workspace_marker`]: local-path edges are in-repo dependencies
+/// just like workspace-inherited ones, so they must feed publish ordering
+/// and reverse updates too. Registry dependencies (`dep = "1.0"`) are
+/// scalars, so `as_table_like()` returns `None` and they are excluded.
+fn is_local_path_dep(value: &toml_edit::Item) -> bool {
+    value
+        .as_table_like()
+        .is_some_and(|table| table.contains_key("path"))
+}
+
 /// Dependency tables Cargo can use for local package edges.
 const CARGO_DEPENDENCY_TABLES: &[&str] =
     &["dependencies", "dev-dependencies", "build-dependencies"];
@@ -83,7 +96,7 @@ fn collect_workspace_dep_names_from_table(
     dep_names: &mut Vec<String>,
 ) {
     for (dep_name, value) in deps.iter() {
-        if is_workspace_marker(value) {
+        if is_workspace_marker(value) || is_local_path_dep(value) {
             dep_names.push(dep_name.to_string());
         }
     }
@@ -689,6 +702,48 @@ external = "1.0"
                 assert!(deps.contains("core"));
                 assert!(deps.contains("utils"));
                 // external is not a workspace dependency
+                assert!(!deps.contains("external"));
+            }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_package_with_path_dependencies() {
+        // Given: a package manifest with a direct local-path dependency and a
+        // registry dependency
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+
+[dependencies]
+foo = { path = "../foo", version = "0.1" }
+external = "1.0"
+"#,
+        )
+        .unwrap();
+
+        // When: the finder visits the manifest
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+
+        // Then: the path dependency is tracked, the registry one is not
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Package(pkg) => {
+                let deps = pkg.dependencies();
+                assert_eq!(deps.len(), 1, "expected only the path dep, got {deps:?}");
+                assert!(deps.contains("foo"));
                 assert!(!deps.contains("external"));
             }
             _ => panic!("Expected Package"),

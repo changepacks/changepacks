@@ -38,10 +38,9 @@ fn add_workspace_dependencies(project: &mut Project, package_json: &serde_json::
             continue;
         };
         for (dep_name, value) in deps {
-            if value
-                .as_str()
-                .is_some_and(|version| version.starts_with("workspace:"))
-            {
+            if value.as_str().is_some_and(|version| {
+                version.starts_with("workspace:") || version.starts_with("file:")
+            }) {
                 project.add_dependency(dep_name);
             }
         }
@@ -490,6 +489,41 @@ mod tests {
         assert!(deps.contains("native-addon"));
         assert!(!deps.contains("external"));
         assert!(!deps.contains("native-external"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_project_finder_visit_package_with_file_dependencies() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-package",
+  "version": "1.0.0",
+  "dependencies": {
+    "foo": "file:../foo",
+    "bar": "^1.0.0"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+
+        let deps = projects.first().unwrap().dependencies();
+        assert_eq!(deps.len(), 1);
+        assert!(deps.contains("foo"));
+        assert!(!deps.contains("bar"));
 
         temp_dir.close().unwrap();
     }
