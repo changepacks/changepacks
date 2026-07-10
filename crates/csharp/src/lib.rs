@@ -14,7 +14,7 @@ mod xml_utils;
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use changepacks_core::UpdateType;
 use changepacks_utils::next_version_or_default;
 use tokio::fs::{read_to_string, write};
@@ -80,7 +80,9 @@ pub(crate) async fn write_csproj_version(
     new_version: &str,
     has_version: bool,
 ) -> Result<()> {
-    let csproj_raw = read_to_string(path).await?;
+    let csproj_raw = read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read C# project {}", path.display()))?;
     let updated = xml_utils::update_version_in_xml(&csproj_raw, new_version, has_version)?;
     if updated != csproj_raw {
         write(path, updated).await?;

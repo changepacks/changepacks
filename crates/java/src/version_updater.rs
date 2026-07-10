@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use changepacks_core::UpdateType;
 use changepacks_utils::next_version;
 use regex::Regex;
@@ -80,7 +80,9 @@ pub async fn update_gradle_version_at(
 ) -> Result<String> {
     let new_version = next_version(current_version, update_type)?;
 
-    let content = read_to_string(path).await?;
+    let content = read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read Gradle build file {}", path.display()))?;
     // `Path::extension()` already returns the trailing extension component,
     // so the previous `file_name().and_then(to_str) → Path::new(...).extension()`
     // trip through a fresh `Path` was redundant. Behaviour is preserved on

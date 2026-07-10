@@ -87,7 +87,9 @@ pub(crate) async fn write_pubspec_version(
     new_version: &str,
     existing_version: bool,
 ) -> Result<()> {
-    let pubspec_yaml_raw = read_to_string(path).await?;
+    let pubspec_yaml_raw = read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read pubspec.yaml {}", path.display()))?;
     let patch = if existing_version {
         yamlpatch::Patch {
             operation: yamlpatch::Op::Replace(yaml_serde::Value::String(new_version.to_string())),
@@ -103,7 +105,8 @@ pub(crate) async fn write_pubspec_version(
         }
     };
     let patched = yamlpatch::apply_yaml_patches(
-        &yamlpath::Document::new(&pubspec_yaml_raw).context("Failed to parse YAML")?,
+        &yamlpath::Document::new(&pubspec_yaml_raw)
+            .with_context(|| format!("Failed to parse pubspec.yaml {}", path.display()))?,
         &[patch],
     )?;
     write(path, finalize_content(patched.source(), &pubspec_yaml_raw)).await?;

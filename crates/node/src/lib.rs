@@ -14,7 +14,7 @@ pub use finder::NodeProjectFinder;
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use changepacks_core::{Config, Language, UpdateType, is_regular_file};
 use changepacks_utils::{detect_indent_str, finalize_content, next_version_or_default};
 use serde::Serialize;
@@ -63,9 +63,12 @@ pub(crate) async fn update_version_from_fields(
 /// Returns error if the file cannot be read, is not valid JSON, or the write
 /// fails.
 pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -> Result<()> {
-    let package_json_raw = read_to_string(path).await?;
+    let package_json_raw = read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read package.json {}", path.display()))?;
     let indent_str = detect_indent_str(&package_json_raw);
-    let mut package_json: serde_json::Value = serde_json::from_str(&package_json_raw)?;
+    let mut package_json: serde_json::Value = serde_json::from_str(&package_json_raw)
+        .with_context(|| format!("Failed to parse package.json {}", path.display()))?;
     package_json["version"] = serde_json::Value::String(new_version.to_string());
     let ind = indent_str.as_bytes();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);

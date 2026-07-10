@@ -23,7 +23,7 @@ pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "uv publish --dry-run";
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use changepacks_core::UpdateType;
 use changepacks_utils::{finalize_content, next_version_or_default};
 use tokio::fs::{read_to_string, write};
@@ -85,8 +85,12 @@ pub(crate) async fn write_pyproject_version(
     new_version: &str,
     ensure_project_table: bool,
 ) -> Result<()> {
-    let pyproject_toml_raw = read_to_string(path).await?;
-    let mut pyproject_toml: DocumentMut = pyproject_toml_raw.parse::<DocumentMut>()?;
+    let pyproject_toml_raw = read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read pyproject.toml {}", path.display()))?;
+    let mut pyproject_toml: DocumentMut = pyproject_toml_raw
+        .parse::<DocumentMut>()
+        .with_context(|| format!("Failed to parse pyproject.toml {}", path.display()))?;
     if ensure_project_table && pyproject_toml.get("project").is_none() {
         pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
