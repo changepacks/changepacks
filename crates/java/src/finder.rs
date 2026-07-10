@@ -150,7 +150,7 @@ async fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
 
 #[cfg(not(tarpaulin_include))]
 fn gradle_subproject_path(relative: &Path) -> Result<String> {
-    let mut parts = Vec::with_capacity(relative.components().count());
+    let mut path = String::new();
     for component in relative.components() {
         let value = component.as_os_str().to_str().with_context(|| {
             format!(
@@ -158,9 +158,12 @@ fn gradle_subproject_path(relative: &Path) -> Result<String> {
                 relative.display()
             )
         })?;
-        parts.push(value);
+        if !path.is_empty() {
+            path.push(':');
+        }
+        path.push_str(value);
     }
-    Ok(parts.join(":"))
+    Ok(path)
 }
 
 fn gradle_dependency_name(project_path: &str) -> Option<String> {

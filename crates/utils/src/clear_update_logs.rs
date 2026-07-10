@@ -94,7 +94,7 @@ pub async fn clear_applied_update_logs(
             continue;
         };
 
-        changes.retain(|change_path, _| !applied_paths.contains(&PathBuf::from(change_path)));
+        changes.retain(|change_path, _| !applied_paths.contains(std::path::Path::new(change_path)));
         if changes.is_empty() {
             remove_file(&path)
                 .await
