@@ -98,13 +98,21 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     // components hit, so the `format!` outputs stay unchanged.
     let parse = |s: &str| -> Result<u64> { s.parse::<u64>().map_err(|_| invalid_version(version)) };
 
+    // Parse all three numeric base components up front. This validates that
+    // major, minor, and patch are all valid u64 integers before any bump is
+    // applied. The parse closure routes all failures through `invalid_version`,
+    // ensuring consistent error messages across all three components.
+    let major_num = parse(major)?;
+    let minor_num = parse(minor)?;
+    let patch_num = parse(patch)?;
+
     // Rebuild via `format!` — one allocation for the result string, no
     // per-part heap traffic. Lower components reset to `0` for Major /
     // Minor bumps, matching the previous "reset lower parts to 0" loop.
     let mut result = match update_type {
-        UpdateType::Major => format!("{}.0.0", parse(major)? + 1),
-        UpdateType::Minor => format!("{major}.{}.0", parse(minor)? + 1),
-        UpdateType::Patch => format!("{major}.{minor}.{}", parse(patch)? + 1),
+        UpdateType::Major => format!("{}.0.0", major_num + 1),
+        UpdateType::Minor => format!("{}.{}.0", major_num, minor_num + 1),
+        UpdateType::Patch => format!("{}.{}.{}", major_num, minor_num, patch_num + 1),
     };
 
     if let Some(p) = plus_part {
@@ -152,6 +160,10 @@ mod tests {
     #[case("1.2", UpdateType::Minor)]
     #[case("1.2.3.4", UpdateType::Patch)]
     #[case("1.2.wrong", UpdateType::Patch)]
+    #[case("x.2.3", UpdateType::Patch)]
+    #[case("1.y.3", UpdateType::Patch)]
+    #[case("1.y.3", UpdateType::Major)]
+    #[case("1.y.3", UpdateType::Minor)]
     fn test_next_version_invalid_input(#[case] version: &str, #[case] update_type: UpdateType) {
         let result = next_version(version, update_type);
         assert!(result.is_err());
