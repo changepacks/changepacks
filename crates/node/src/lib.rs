@@ -150,6 +150,15 @@ pub enum PackageManager {
     Bun,
 }
 
+/// Lockfile filenames and package-manager priority table.
+/// Ordered: Bun (bun.lockb, bun.lock), Pnpm (pnpm-lock.yaml), Yarn (yarn.lock).
+/// Used by both sync and async detectors to avoid duplication.
+const LOCKFILE_MANAGERS: &[(&[&str], PackageManager)] = &[
+    (&["bun.lockb", "bun.lock"], PackageManager::Bun),
+    (&["pnpm-lock.yaml"], PackageManager::Pnpm),
+    (&["yarn.lock"], PackageManager::Yarn),
+];
+
 impl PackageManager {
     /// Returns the publish command for this package manager.
     ///
@@ -242,32 +251,27 @@ pub async fn node_modules_bin_dirs_async(start_dir: &Path) -> Vec<PathBuf> {
 /// package-lock.json is resolved by `detect_package_manager_recursive`)
 #[must_use]
 pub fn detect_package_manager(dir: &Path) -> PackageManager {
-    if dir.join("bun.lockb").is_file() || dir.join("bun.lock").is_file() {
-        PackageManager::Bun
-    } else if dir.join("pnpm-lock.yaml").is_file() {
-        PackageManager::Pnpm
-    } else if dir.join("yarn.lock").is_file() {
-        PackageManager::Yarn
-    } else {
-        // No bun/pnpm/yarn lockfile: default to npm. This also covers the
-        // package-lock.json case (npm), so no separate stat is needed here —
-        // detect_package_manager_recursive does its own package-lock.json check.
-        PackageManager::Npm
+    for (lockfiles, pm) in LOCKFILE_MANAGERS {
+        if lockfiles.iter().any(|f| dir.join(f).is_file()) {
+            return *pm;
+        }
     }
+    // No bun/pnpm/yarn lockfile: default to npm. This also covers the
+    // package-lock.json case (npm), so no separate stat is needed here —
+    // detect_package_manager_recursive does its own package-lock.json check.
+    PackageManager::Npm
 }
 
 /// Async equivalent of [`detect_package_manager`] for publish flows.
 pub async fn detect_package_manager_async(dir: &Path) -> PackageManager {
-    if is_regular_file(&dir.join("bun.lockb")).await || is_regular_file(&dir.join("bun.lock")).await
-    {
-        PackageManager::Bun
-    } else if is_regular_file(&dir.join("pnpm-lock.yaml")).await {
-        PackageManager::Pnpm
-    } else if is_regular_file(&dir.join("yarn.lock")).await {
-        PackageManager::Yarn
-    } else {
-        PackageManager::Npm
+    for (lockfiles, pm) in LOCKFILE_MANAGERS {
+        for lockfile in *lockfiles {
+            if is_regular_file(&dir.join(lockfile)).await {
+                return *pm;
+            }
+        }
     }
+    PackageManager::Npm
 }
 
 /// Detects the package manager by searching from the given path up to the root

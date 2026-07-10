@@ -284,20 +284,22 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
 
     // Seed the DFS with names already scheduled for update. The DFS guards
     // against reprocessing through `update_map` and `packages_to_add`.
-    let mut to_process: Vec<String> = Vec::with_capacity(update_map.len());
+    // Use borrowed &str in the worklist to avoid cloning String names during
+    // traversal; only clone when inserting into packages_to_add.
+    let mut to_process: Vec<&str> = Vec::with_capacity(update_map.len());
     to_process.extend(
         update_map
             .keys()
-            .filter_map(|path| path_to_name.get(path).cloned()),
+            .filter_map(|path| path_to_name.get(path).map(String::as_str)),
     );
     while let Some(trigger_name) = to_process.pop() {
-        if let Some(dependents) = reverse_deps.get(&trigger_name) {
+        if let Some(dependents) = reverse_deps.get(trigger_name) {
             for (dependent_path, dependent_name) in dependents {
                 if !update_map.contains_key(dependent_path)
                     && !packages_to_add.contains_key(dependent_path)
                 {
-                    packages_to_add.insert(dependent_path.clone(), trigger_name.clone());
-                    to_process.push(dependent_name.clone());
+                    packages_to_add.insert(dependent_path.clone(), trigger_name.to_string());
+                    to_process.push(dependent_name.as_str());
                 }
             }
         }
