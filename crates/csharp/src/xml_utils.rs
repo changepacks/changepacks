@@ -47,7 +47,7 @@ pub fn update_version_in_xml(
                 } else if in_property_group && name.as_ref() == b"Version" {
                     in_version = true;
                 }
-                writer.write_event(Event::Start(e.clone()))?;
+                writer.write_event(Event::Start(e))?;
             }
             Ok(Event::End(e)) => {
                 let name = e.local_name();
@@ -93,7 +93,7 @@ pub fn update_version_in_xml(
                 } else if name.as_ref() == b"Version" {
                     in_version = false;
                 }
-                writer.write_event(Event::End(e.clone()))?;
+                writer.write_event(Event::End(e))?;
             }
             Ok(Event::Text(e)) => {
                 if in_version && !version_updated {
@@ -108,7 +108,7 @@ pub fn update_version_in_xml(
                             .all(char::is_whitespace)
                             .then(|| decoded.into_owned());
                     }
-                    writer.write_event(Event::Text(e.clone()))?;
+                    writer.write_event(Event::Text(e))?;
                 }
             }
             Ok(Event::Eof) => break,

@@ -64,7 +64,7 @@ pub async fn handle_changepack_with_prompter(
     // workspace first
     projects.sort();
 
-    let mut update_map = HashMap::<PathBuf, UpdateType>::new();
+    let mut update_map = HashMap::<PathBuf, UpdateType>::with_capacity(projects.len());
 
     let update_types: &[UpdateType] = if let Some(update_type) = args.update_type.as_ref() {
         std::slice::from_ref(update_type)

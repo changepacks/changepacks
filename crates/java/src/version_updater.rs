@@ -18,22 +18,22 @@ static KTS_FALLBACK_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Update version in build.gradle.kts content
 #[must_use]
-pub fn update_version_in_kts(content: &str, new_version: &str) -> String {
+pub fn update_version_in_kts<'a>(content: &'a str, new_version: &str) -> Cow<'a, str> {
     // Pattern 1: version = "1.0.0"
     if let Cow::Owned(updated) =
         KTS_SIMPLE_PATTERN.replace(content, format!(r#"${{1}}"{new_version}""#))
     {
-        return updated;
+        return Cow::Owned(updated);
     }
 
     // Pattern 2: version = project.findProperty("...") ?: "1.0.0"
     if let Cow::Owned(updated) =
         KTS_FALLBACK_PATTERN.replace(content, format!(r#"${{1}}"{new_version}""#))
     {
-        return updated;
+        return Cow::Owned(updated);
     }
 
-    content.to_string()
+    Cow::Borrowed(content)
 }
 
 static GROOVY_ASSIGN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
@@ -46,22 +46,22 @@ static GROOVY_SPACE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Update version in build.gradle (Groovy) content
 #[must_use]
-pub fn update_version_in_groovy(content: &str, new_version: &str) -> String {
+pub fn update_version_in_groovy<'a>(content: &'a str, new_version: &str) -> Cow<'a, str> {
     // Pattern 1: version = '1.0.0' or version = "1.0.0"
     if let Cow::Owned(updated) =
         GROOVY_ASSIGN_PATTERN.replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
     {
-        return updated;
+        return Cow::Owned(updated);
     }
 
     // Pattern 2: version '1.0.0' or version "1.0.0"
     if let Cow::Owned(updated) =
         GROOVY_SPACE_PATTERN.replace(content, format!(r"${{1}}${{2}}{new_version}${{2}}"))
     {
-        return updated;
+        return Cow::Owned(updated);
     }
 
-    content.to_string()
+    Cow::Borrowed(content)
 }
 
 /// Read a Gradle build file, compute its next version, apply the right
@@ -99,15 +99,15 @@ pub async fn update_gradle_version_at(
     };
 
     // Both `update_version_in_kts` and `update_version_in_groovy` return
-    // `content.to_string()` unchanged when neither of their regexes match
+    // `Cow::Borrowed(content)` unchanged when neither of their regexes match
     // (legitimate for build files with no `version = ...` line — e.g. a root
     // `settings.gradle.kts` that defers versioning to sub-projects). Guarding
     // the write avoids a mtime bump + a syscall pair on those byte-identical
     // no-ops. The returned `new_version` reflects the computed bump so the
     // caller's version state is preserved regardless of whether the file was
     // actually touched.
-    if updated_content != content {
-        write(path, updated_content).await?;
+    if updated_content.as_ref() != content {
+        write(path, updated_content.as_ref()).await?;
     }
     Ok(new_version)
 }
