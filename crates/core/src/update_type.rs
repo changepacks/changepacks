@@ -40,7 +40,7 @@ mod tests {
     #[case(UpdateType::Minor, "Minor")]
     #[case(UpdateType::Patch, "Patch")]
     fn test_update_type_display(#[case] update_type: UpdateType, #[case] expected: &str) {
-        let display = format!("{}", update_type);
+        let display = update_type.to_string();
         assert!(display.contains(expected));
     }
 }
