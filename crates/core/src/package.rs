@@ -90,7 +90,7 @@ pub trait Package: std::fmt::Debug + Send + Sync {
             &command,
             self.path(),
             &self.publish_path_dirs(),
-            "Package directory not found",
+            crate::publish::PACKAGE_DIR_NOT_FOUND,
         )
         .await
     }
@@ -116,7 +116,7 @@ pub trait Package: std::fmt::Debug + Send + Sync {
             command.as_deref(),
             self.path(),
             &self.publish_path_dirs(),
-            "Package directory not found",
+            crate::publish::PACKAGE_DIR_NOT_FOUND,
         )
         .await
     }

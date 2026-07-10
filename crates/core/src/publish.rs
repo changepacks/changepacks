@@ -6,6 +6,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Error context when a package directory cannot be determined.
+pub const PACKAGE_DIR_NOT_FOUND: &str = "Package directory not found";
+
+/// Error context when a workspace directory cannot be determined.
+pub const WORKSPACE_DIR_NOT_FOUND: &str = "Workspace directory not found";
+
 /// Output captured from a publish command execution.
 #[derive(Debug)]
 pub struct PublishOutput {

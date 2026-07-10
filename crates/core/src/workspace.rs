@@ -80,7 +80,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
             &command,
             self.path(),
             &self.publish_path_dirs(),
-            "Workspace directory not found",
+            crate::publish::WORKSPACE_DIR_NOT_FOUND,
         )
         .await
     }
@@ -106,7 +106,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
             command.as_deref(),
             self.path(),
             &self.publish_path_dirs(),
-            "Workspace directory not found",
+            crate::publish::WORKSPACE_DIR_NOT_FOUND,
         )
         .await
     }

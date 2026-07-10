@@ -48,7 +48,7 @@ impl Package for NodePackage {
             &self.path,
             &self.relative_path,
             config,
-            "Package directory not found",
+            changepacks_core::publish::PACKAGE_DIR_NOT_FOUND,
         )
         .await
     }
@@ -61,7 +61,7 @@ impl Package for NodePackage {
             &self.path,
             &self.relative_path,
             config,
-            "Package directory not found",
+            changepacks_core::publish::PACKAGE_DIR_NOT_FOUND,
         )
         .await
     }

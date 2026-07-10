@@ -72,7 +72,7 @@ impl Workspace for CSharpWorkspace {
             self.path(),
             self.relative_path(),
             config,
-            "Workspace directory not found",
+            changepacks_core::publish::WORKSPACE_DIR_NOT_FOUND,
         )
         .await
     }
