@@ -20,8 +20,8 @@ pub(crate) fn create_project(name: &str, dependencies: Vec<&str>) -> Project {
     let mut package = NodePackage::new(
         Some(name.to_string()),
         Some("1.0.0".to_string()),
-        PathBuf::from(format!("/test/{}/package.json", name)),
-        PathBuf::from(format!("{}/package.json", name)),
+        PathBuf::from(format!("/test/{name}/package.json")),
+        PathBuf::from(format!("{name}/package.json")),
     );
     for dep in dependencies {
         package.add_dependency(dep);

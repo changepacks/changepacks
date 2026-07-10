@@ -181,7 +181,7 @@ mod tests {
         };
 
         // Test Debug trait
-        let debug_str = format!("{:?}", args);
+        let debug_str = format!("{args:?}");
         assert!(debug_str.contains("ChangepackArgs"));
     }
 

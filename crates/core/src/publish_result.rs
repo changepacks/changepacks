@@ -56,7 +56,7 @@ mod tests {
     #[test]
     fn test_publish_result_debug() {
         let result = PublishResult::new(true, None, String::new(), String::new());
-        let debug_str = format!("{:?}", result);
+        let debug_str = format!("{result:?}");
         assert!(debug_str.contains("PublishResult"));
     }
 }

@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn test_changepack_result_log_new() {
         let log = ChangePackResultLog::new(UpdateType::Minor, "Add new API endpoint".to_string());
-        let debug_str = format!("{:?}", log);
+        let debug_str = format!("{log:?}");
 
         assert!(debug_str.contains("ChangePackResultLog"));
         assert!(debug_str.contains("Minor"));
@@ -109,7 +109,7 @@ mod tests {
             true,
             PathBuf::from("crates/core/Cargo.toml"),
         );
-        let debug_str = format!("{:?}", result);
+        let debug_str = format!("{result:?}");
 
         assert!(debug_str.contains("ChangePackResult"));
         assert!(debug_str.contains("1.0.0"));
@@ -177,7 +177,7 @@ mod tests {
             true,
             PathBuf::from("crates/core/Cargo.toml"),
         );
-        let debug_str = format!("{:?}", result);
+        let debug_str = format!("{result:?}");
         let json: Value = serde_json::to_value(&result).unwrap();
 
         assert!(debug_str.contains("logs: []"));

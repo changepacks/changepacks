@@ -65,7 +65,7 @@ mod tests {
     #[case(Language::CSharp, "C#")]
     #[case(Language::Java, "Java")]
     fn test_language_display(#[case] language: Language, #[case] expected: &str) {
-        let display = format!("{}", language);
+        let display = format!("{language}");
         assert!(display.contains(expected));
     }
 

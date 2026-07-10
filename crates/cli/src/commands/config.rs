@@ -37,7 +37,7 @@ mod tests {
     #[test]
     fn test_config_args_debug() {
         let args = ConfigArgs {};
-        let debug_str = format!("{:?}", args);
+        let debug_str = format!("{args:?}");
         assert!(debug_str.contains("ConfigArgs"));
     }
 }
