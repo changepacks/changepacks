@@ -237,8 +237,9 @@ pub fn node_modules_bin_dirs(start_dir: &Path) -> Vec<PathBuf> {
 /// Async equivalent of [`node_modules_bin_dirs`] for publish flows that are
 /// already running inside Tokio.
 pub async fn node_modules_bin_dirs_async(start_dir: &Path) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    for bin in node_modules_bin_candidates(start_dir) {
+    let candidates = node_modules_bin_candidates(start_dir);
+    let mut dirs = Vec::with_capacity(candidates.len());
+    for bin in candidates {
         if tokio::fs::metadata(&bin)
             .await
             .map(|metadata| metadata.is_dir())

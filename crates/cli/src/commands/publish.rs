@@ -449,21 +449,27 @@ async fn execute_dry_run_publish_loop(
 
     // Pre-compute the set of package names being bumped in this run so that
     // each iteration can cheaply check whether its dependencies overlap.
-    // Borrow the names directly from the projects (which outlive the loop)
-    // to skip the per-name `String` allocation the old `HashSet<String>`
-    // version paid on every publish call.
-    // Preallocate: `HashSet::from_iter` (via `collect`) does NOT use
-    // `size_hint` to reserve capacity (unlike `Vec`), so it incurs
-    // geometric-doubling reallocations. `projects.len()` is a tight upper
-    // bound (the `filter_map` only drops nameless projects).
-    // `HashSet::extend(iter)` reuses the existing `with_capacity` allocation
-    // and matches the idiom already used across the utils crate (e.g.
-    // `unique_files.extend(diff)` in `filter_project_dirs.rs`) — collapses
-    // the 4-line loop + `Option::Some` guard to a single call while
-    // preserving the same borrow-the-name-out-of-the-project semantics.
+    // Only populated when a Rust project exists in the batch, since the set
+    // is consulted solely by `skip_dry_run_due_to_workspace_internal_dep`,
+    // which returns `false` for all non-Rust projects. Borrow the names
+    // directly from the projects (which outlive the loop) to skip the
+    // per-name `String` allocation the old `HashSet<String>` version paid.
+    // When populated: `projects.len()` is a tight upper bound for the
+    // capacity (the `filter_map` only drops nameless projects), and
+    // `HashSet::extend(iter)` reuses the reserved allocation, matching the
+    // idiom already used across the utils crate (e.g. `unique_files.extend(diff)`
+    // in `filter_project_dirs.rs`) — collapses the 4-line loop + `Option::Some`
+    // guard to a single call while preserving the same borrow-the-name-out-of-the-project
+    // semantics.
     let mut bumped_package_names: std::collections::HashSet<&str> =
-        std::collections::HashSet::with_capacity(projects.len());
-    bumped_package_names.extend(projects.iter().filter_map(|p| p.name()));
+        std::collections::HashSet::new();
+    if projects
+        .iter()
+        .any(|p| p.language() == changepacks_core::Language::Rust)
+    {
+        bumped_package_names.reserve(projects.len());
+        bumped_package_names.extend(projects.iter().filter_map(|p| p.name()));
+    }
 
     for project in projects {
         if skip_dry_run_due_to_workspace_internal_dep(project, &bumped_package_names) {
