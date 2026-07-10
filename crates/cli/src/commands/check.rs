@@ -353,10 +353,7 @@ fn display_tree_node<'a>(
     // + `.clone()` pair collapses two heap ops per tree node down to a
     // pointer copy.
     let project_name: &'a str = project.name_or_noname();
-    let is_first_visit = !visited.contains(project_name);
-    if is_first_visit {
-        visited.insert(project_name);
-    }
+    let is_first_visit = visited.insert(project_name);
 
     // Only print the project line if this is the first time visiting it
     if is_first_visit {
@@ -386,9 +383,7 @@ fn display_tree_node<'a>(
             // previous `dep_name.as_str()` chain on `&String`.
             if let Some(dep_project) = ctx.name_to_project.get(*dep_name) {
                 // `deps.iter().enumerate()` guarantees `deps.len() >= 1`
-                // inside the loop, so plain subtraction is safe. `Vec::len()`
-                // is O(1); the vestigial `sorted_deps_count` binding just
-                // added a name without hiding a real cost.
+                // inside the loop, so plain subtraction is safe.
                 let is_last_dep = idx == deps.len() - 1;
                 // Use a separate visited set for dependencies to avoid infinite loops
                 // but still show all dependencies
