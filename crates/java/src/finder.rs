@@ -20,6 +20,13 @@ use crate::{package::GradlePackage, workspace::GradleWorkspace};
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["build.gradle.kts", "build.gradle"];
 
+/// OS-specific Java executable filename, used by `which_java` and
+/// `java_home_has_java` to avoid repeating the `cfg!(windows)` branch.
+#[cfg(windows)]
+const JAVA_EXECUTABLE: &str = "java.exe";
+#[cfg(not(windows))]
+const JAVA_EXECUTABLE: &str = "java";
+
 /// Cached regexes for parsing gradlew `properties -q` output. `LazyLock`
 /// mirrors the idiom already used in `crates/java/src/version_updater.rs`
 /// (`KTS_SIMPLE_PATTERN` et al.) — the pattern strings are compile-time
@@ -73,11 +80,7 @@ struct GradleProperties {
 async fn which_java() -> Option<PathBuf> {
     let path_var = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path_var) {
-        let candidate = if cfg!(windows) {
-            dir.join("java.exe")
-        } else {
-            dir.join("java")
-        };
+        let candidate = dir.join(JAVA_EXECUTABLE);
         // AGENTS.md rule: never blocking I/O in async — replace the blocking
         // `candidate.is_file()` stat with the shared async
         // `changepacks_core::is_regular_file` (a `tokio::fs::metadata` probe).
@@ -101,8 +104,7 @@ async fn java_home_has_java(java_home: Option<&OsStr>) -> bool {
         return false;
     }
 
-    let java_name = if cfg!(windows) { "java.exe" } else { "java" };
-    let candidate = Path::new(java_home).join("bin").join(java_name);
+    let candidate = Path::new(java_home).join("bin").join(JAVA_EXECUTABLE);
     changepacks_core::is_regular_file(&candidate).await
 }
 
@@ -329,24 +331,19 @@ fn gradle_failure_diagnostic(
     status: std::process::ExitStatus,
     stderr: &[u8],
 ) -> String {
+    let mut msg = format!(
+        "Gradle properties failed for '{}' using '{}' with status {}; falling back to default metadata.",
+        project_dir.display(),
+        gradlew.display(),
+        status
+    );
     let stderr = String::from_utf8_lossy(stderr);
     let stderr = stderr.trim();
-    if stderr.is_empty() {
-        format!(
-            "Gradle properties failed for '{}' using '{}' with status {}; falling back to default metadata.",
-            project_dir.display(),
-            gradlew.display(),
-            status
-        )
-    } else {
-        format!(
-            "Gradle properties failed for '{}' using '{}' with status {}; falling back to default metadata. stderr: {}",
-            project_dir.display(),
-            gradlew.display(),
-            status,
-            stderr
-        )
+    if !stderr.is_empty() {
+        msg.push_str(" stderr: ");
+        msg.push_str(stderr);
     }
+    msg
 }
 
 #[async_trait]
