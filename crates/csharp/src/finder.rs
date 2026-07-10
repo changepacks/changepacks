@@ -339,19 +339,20 @@ impl ProjectFinder for CSharpProjectFinder {
         // `.clone()` into the constructor cuts 4 `PathBuf` allocs to 2.
         // Mirror of the same fix in `crates/java/src/finder.rs::visit`.
         let path_key = path.to_path_buf();
+        let relative_path_key = relative_path.to_path_buf();
         let mut project = if is_workspace {
             Project::Workspace(Box::new(CSharpWorkspace::new(
                 name,
                 version,
                 path_key.clone(),
-                relative_path.to_path_buf(),
+                relative_path_key,
             )))
         } else {
             Project::Package(Box::new(CSharpPackage::new(
                 name,
                 version,
                 path_key.clone(),
-                relative_path.to_path_buf(),
+                relative_path_key,
             )))
         };
 
