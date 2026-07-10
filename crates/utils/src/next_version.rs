@@ -164,6 +164,8 @@ mod tests {
     #[case("1.y.3", UpdateType::Patch)]
     #[case("1.y.3", UpdateType::Major)]
     #[case("1.y.3", UpdateType::Minor)]
+    #[case("1.2.wrong", UpdateType::Major)]
+    #[case("1.2.wrong", UpdateType::Minor)]
     fn test_next_version_invalid_input(#[case] version: &str, #[case] update_type: UpdateType) {
         let result = next_version(version, update_type);
         assert!(result.is_err());
