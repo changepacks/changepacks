@@ -52,8 +52,7 @@ impl CSharpProjectFinder {
     /// ran two independent `quick_xml::Reader` passes over the identical
     /// bytes; merging them halves the parse cost on repos with many
     /// `.csproj` files (Unity / dotnet monorepos) with no behavior
-    /// change. The two thin wrappers below preserve the existing rstest
-    /// surface, so no test edit is required.
+    /// change.
     fn parse_csproj_metadata(content: &str) -> Result<(Option<String>, Vec<String>)> {
         let mut reader = Reader::from_str(content);
         // Preallocate the XML event buffer to skip the first few
