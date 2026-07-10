@@ -47,13 +47,7 @@ pub async fn handle_changepack_with_prompter(
 
     // Hide packages that inherit their version from workspace root.
     // They are updated automatically when the workspace version bumps.
-    projects.retain(|p| {
-        if let Project::Package(pkg) = p {
-            !pkg.inherits_workspace_version()
-        } else {
-            true
-        }
-    });
+    projects.retain(|p| !matches!(p, Project::Package(pkg) if pkg.inherits_workspace_version()));
 
     if let Some(filter) = &args.filter {
         projects.retain(|p| filter.matches(p));
