@@ -12,7 +12,7 @@ pub fn get_changepacks_dir(current_dir: &Path) -> Result<PathBuf> {
     let repo = find_current_git_repo(current_dir)?;
     let changepacks_dir = repo
         .work_dir()
-        .context("Failed to find current git repository")?
+        .context("Git repository has no working directory (bare repository is not supported)")?
         .join(".changepacks");
     Ok(changepacks_dir)
 }
