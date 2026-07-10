@@ -18,7 +18,7 @@ pub fn update_version_in_xml(
     has_version: bool,
 ) -> Result<String> {
     let mut reader = Reader::from_str(content);
-    let mut writer = Writer::new(Cursor::new(Vec::new()));
+    let mut writer = Writer::new(Cursor::new(Vec::with_capacity(content.len())));
 
     // Preallocate the XML event buffer to skip the first few
     // geometric-doubling reallocations on the every-`changepacks update`

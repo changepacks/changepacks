@@ -72,7 +72,7 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
     package_json["version"] = serde_json::Value::String(new_version.to_string());
     let ind = indent_str.as_bytes();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);
-    let writer = Vec::new();
+    let writer = Vec::with_capacity(package_json_raw.len());
     let mut ser = serde_json::Serializer::with_formatter(writer, formatter);
     package_json.serialize(&mut ser)?;
     write(
@@ -217,12 +217,12 @@ impl PackageManager {
 /// hooks such as `husky` resolving during publish and dry-run.
 #[must_use]
 fn node_modules_bin_candidates(start_dir: &Path) -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    let mut current = Some(start_dir);
-    while let Some(dir) = current {
-        dirs.push(dir.join("node_modules").join(".bin"));
-        current = dir.parent();
-    }
+    let mut dirs = Vec::with_capacity(start_dir.ancestors().count());
+    dirs.extend(
+        start_dir
+            .ancestors()
+            .map(|dir| dir.join("node_modules").join(".bin")),
+    );
     dirs
 }
 
