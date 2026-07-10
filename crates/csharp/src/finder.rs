@@ -191,8 +191,8 @@ async fn dir_has_solution_file(dir: &Path) -> Option<bool> {
             Ok(Some(entry)) => {
                 // Case-insensitive `.sln` match so a Windows-native `Solution.SLN` /
                 // `Foo.Sln` is recognized the same as lowercase `.sln`.
-                let has_sln_extension = entry
-                    .path()
+                let file_name = entry.file_name();
+                let has_sln_extension = Path::new(&file_name)
                     .extension()
                     .and_then(|e| e.to_str())
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("sln"));

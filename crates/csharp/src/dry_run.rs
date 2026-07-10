@@ -187,8 +187,8 @@ async fn collect_nupkgs(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut entries = read_dir(dir).await?;
     let mut out = Vec::with_capacity(4);
     while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        let is_nupkg = path
+        let file_name = entry.file_name();
+        let is_nupkg = Path::new(&file_name)
             .extension()
             .and_then(|e| e.to_str())
             .is_some_and(|e| e.eq_ignore_ascii_case("nupkg"));
@@ -198,7 +198,7 @@ async fn collect_nupkgs(dir: &Path) -> Result<Vec<PathBuf>> {
         // filter alone is sufficient; no explicit `is_snupkg` guard needed.
         // `dotnet nuget push` would otherwise reject them as primary packages.
         if is_nupkg {
-            out.push(path);
+            out.push(entry.path());
         }
     }
     out.sort_unstable();
