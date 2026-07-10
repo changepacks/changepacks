@@ -120,7 +120,6 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
 /// Consumer requirement: the struct must have a `path: PathBuf` field
 /// with that exact spelling. Both `NodePackage` and `NodeWorkspace`
 /// satisfy this — the only two intended callers.
-#[macro_export]
 macro_rules! impl_node_publish_wiring {
     () => {
         fn default_publish_command(&self) -> ::std::string::String {
@@ -143,6 +142,8 @@ macro_rules! impl_node_publish_wiring {
         }
     };
 }
+
+pub(crate) use impl_node_publish_wiring;
 
 /// Represents the detected Node.js package manager
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

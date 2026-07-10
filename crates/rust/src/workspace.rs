@@ -191,19 +191,6 @@ impl Workspace for RustWorkspace {
     changepacks_core::impl_dependencies_accessors!();
 
     async fn update_workspace_dependencies(&self, packages: &[&dyn Package]) -> Result<()> {
-        // Zero-cost trivial-empty guard: on an empty `packages` slice the
-        // `.any(...)` below correctly returns `false`, but its predicate
-        // (`p.language() == Language::Rust && p.name().is_some()`) is
-        // wasted work per element on non-empty short-circuit paths. The
-        // dedicated `is_empty()` check short-circuits the predicate
-        // evaluation entirely — meaningful on the common `changepacks
-        // update` shape where no packages were queued for update. Matches
-        // the "fast-path for the dominant no-op case" pattern already
-        // applied to `apply_reverse_dependencies` and
-        // `apply_update_on_rules` in `changepacks-utils`.
-        if packages.is_empty() {
-            return Ok(());
-        }
         // Fast-path: if the caller feeds a cross-language `packages` slice
         // with zero eligible Rust entries (a common shape when the Node /
         // Python / Dart workspaces of a polyglot monorepo are updated in the
