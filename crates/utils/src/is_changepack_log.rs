@@ -13,14 +13,15 @@ use tokio::fs::read_dir;
 /// those variants as changepack logs and let `clear_update_logs` silently
 /// delete the user's config file — a data-loss shape.
 ///
-/// Shared by [`crate::clear_update_logs`] (the cleaner) and
-/// [`crate::gen_update_map`] (the reader) so a future change to what counts
-/// as a changepack log updates both in lock-step. Any drift between the two
-/// filters would either (a) let the cleaner wipe a file the reader was still
-/// going to parse, or (b) let the reader parse a file the cleaner would have
+/// Consumed transitively by [`crate::clear_update_logs`] and
+/// [`crate::clear_applied_update_logs`] (the cleaners) and [`crate::gen_update_map`]
+/// (the reader) through [`collect_changepack_log_paths`], ensuring a future change
+/// to what counts as a changepack log updates all three in lock-step. Any drift
+/// between the filters would either (a) let the cleaner wipe a file the reader was
+/// still going to parse, or (b) let the reader parse a file the cleaner would have
 /// deleted — both silent-data-loss shapes.
 #[must_use]
-pub(crate) fn is_changepack_log_json_name(file_name: &str) -> bool {
+fn is_changepack_log_json_name(file_name: &str) -> bool {
     !file_name.eq_ignore_ascii_case("config.json")
         && Path::new(file_name)
             .extension()

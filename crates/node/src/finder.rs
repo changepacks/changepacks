@@ -64,70 +64,71 @@ impl ProjectFinder for NodeProjectFinder {
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
         // Parse this manifest if it is a recognized project file not already visited.
-        if self.matches_project_file(path).await {
-            if self.projects.contains_key(path) {
-                return Ok(());
-            }
-            // read package.json
-            let package_json = read_to_string(path)
-                .await
-                .with_context(|| format!("Failed to read package.json {}", path.display()))?;
-            let package_json: serde_json::Value = serde_json::from_str(&package_json)
-                .with_context(|| format!("Failed to parse package.json {}", path.display()))?;
-            // Both branches use the same name/version and the same path;
-            // hoist so each branch collapses to a single constructor call.
-            let version = package_json["version"]
-                .as_str()
-                .map(std::string::ToString::to_string);
-            let name = package_json["name"]
-                .as_str()
-                .map(std::string::ToString::to_string);
-            // Rename `path_buf` → `path_key` to align with the Java, CSharp,
-            // and (post-#4) Python finders' local naming convention: the
-            // value is used once as the `HashMap` insert key (the "key"
-            // role), while the branch constructors take their own owned
-            // `PathBuf` via `.clone()`. Pure rename — clone count is
-            // unchanged.
-            let path_key = path.to_path_buf();
-            // Rename `relative_path_buf` → `relative_path_key` to match the
-            // Dart, Java, and CSharp finders' local naming convention
-            // (matches the docstring at `crates/dart/src/finder.rs`
-            // claiming "Node, Python, CSharp, Java, and post-item-2 Rust"
-            // all use this name). Pure rename — behavior unchanged.
-            let relative_path_key = relative_path.to_path_buf();
-            // Workspace detection is short-circuited: a `workspaces` field in
-            // `package.json` (npm / yarn / bun monorepos — the common case)
-            // is enough on its own, so only fall back to a `pnpm-workspace.yaml`
-            // stat when that field is absent. Shared with the Dart finder via
-            // `changepacks_utils::is_workspace_by_sibling` — the one source of
-            // truth for the "declared field OR fixed sibling file" policy
-            // (stat error → not-a-workspace; all file ops via `tokio::fs`).
-            let is_workspace = changepacks_utils::is_workspace_by_sibling(
-                package_json.get("workspaces").is_some(),
-                path,
-                "pnpm-workspace.yaml",
-            )
-            .await?;
-            let mut project = if is_workspace {
-                Project::Workspace(Box::new(NodeWorkspace::new(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path_key,
-                )))
-            } else {
-                Project::Package(Box::new(NodePackage::new(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path_key,
-                )))
-            };
-
-            add_workspace_dependencies(&mut project, &package_json);
-
-            self.projects.insert(path_key, project);
+        if !self.matches_project_file(path).await {
+            return Ok(());
         }
+        if self.projects.contains_key(path) {
+            return Ok(());
+        }
+        // read package.json
+        let package_json = read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read package.json {}", path.display()))?;
+        let package_json: serde_json::Value = serde_json::from_str(&package_json)
+            .with_context(|| format!("Failed to parse package.json {}", path.display()))?;
+        // Both branches use the same name/version and the same path;
+        // hoist so each branch collapses to a single constructor call.
+        let version = package_json["version"]
+            .as_str()
+            .map(std::string::ToString::to_string);
+        let name = package_json["name"]
+            .as_str()
+            .map(std::string::ToString::to_string);
+        // Rename `path_buf` → `path_key` to align with the Java, CSharp,
+        // and (post-#4) Python finders' local naming convention: the
+        // value is used once as the `HashMap` insert key (the "key"
+        // role), while the branch constructors take their own owned
+        // `PathBuf` via `.clone()`. Pure rename — clone count is
+        // unchanged.
+        let path_key = path.to_path_buf();
+        // Rename `relative_path_buf` → `relative_path_key` to match the
+        // Dart, Java, and CSharp finders' local naming convention
+        // (matches the docstring at `crates/dart/src/finder.rs`
+        // claiming "Node, Python, CSharp, Java, and post-item-2 Rust"
+        // all use this name). Pure rename — behavior unchanged.
+        let relative_path_key = relative_path.to_path_buf();
+        // Workspace detection is short-circuited: a `workspaces` field in
+        // `package.json` (npm / yarn / bun monorepos — the common case)
+        // is enough on its own, so only fall back to a `pnpm-workspace.yaml`
+        // stat when that field is absent. Shared with the Dart finder via
+        // `changepacks_utils::is_workspace_by_sibling` — the one source of
+        // truth for the "declared field OR fixed sibling file" policy
+        // (stat error → not-a-workspace; all file ops via `tokio::fs`).
+        let is_workspace = changepacks_utils::is_workspace_by_sibling(
+            package_json.get("workspaces").is_some(),
+            path,
+            "pnpm-workspace.yaml",
+        )
+        .await?;
+        let mut project = if is_workspace {
+            Project::Workspace(Box::new(NodeWorkspace::new(
+                name,
+                version,
+                path_key.clone(),
+                relative_path_key,
+            )))
+        } else {
+            Project::Package(Box::new(NodePackage::new(
+                name,
+                version,
+                path_key.clone(),
+                relative_path_key,
+            )))
+        };
+
+        add_workspace_dependencies(&mut project, &package_json);
+
+        self.projects.insert(path_key, project);
         Ok(())
     }
 }

@@ -358,74 +358,76 @@ impl ProjectFinder for GradleProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        if self.matches_project_file(path).await {
-            if self.projects.contains_key(path) {
-                return Ok(());
-            }
-
-            let project_dir = path
-                .parent()
-                .with_context(|| format!("Parent not found - {}", path.display()))?;
-
-            let java_available = match self.java_available {
-                Some(value) => value,
-                None => {
-                    let value = java_is_available().await;
-                    self.java_available = Some(value);
-                    value
-                }
-            };
-
-            // Get properties from gradlew command
-            let props = get_gradle_properties(project_dir, java_available).await?;
-            let dependencies = read_to_string(path)
-                .await
-                .map(|content| extract_gradle_project_dependencies(&content))
-                .with_context(|| format!("Failed to read Gradle build file {}", path.display()))?;
-
-            // Use directory name as fallback for project name
-            let name = props.name.or_else(|| {
-                project_dir
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .map(std::string::ToString::to_string)
-            });
-
-            let version = props.version;
-
-            // Workspace detection: gradlew reports non-empty subprojects list.
-            // Previous approach (checking for settings.gradle.kts existence) caused
-            // false positives in composite builds and subprojects with IDE-generated files.
-            let is_workspace = props.has_subprojects;
-
-            // Hoist the map key allocation out of both arms: the old shape
-            // built a `(PathBuf, Project)` tuple, which forced each branch
-            // to call `path.to_path_buf()` TWICE (once for the tuple slot,
-            // once again for `*::new`). One shared `path_key` + one
-            // `.clone()` into the constructor cuts 4 `PathBuf` allocs to 2.
-            let path_key = path.to_path_buf();
-            let mut project = if is_workspace {
-                Project::Workspace(Box::new(GradleWorkspace::new(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path.to_path_buf(),
-                )))
-            } else {
-                Project::Package(Box::new(GradlePackage::new(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path.to_path_buf(),
-                )))
-            };
-
-            for dependency in dependencies {
-                project.add_dependency(&dependency);
-            }
-
-            self.projects.insert(path_key, project);
+        if !self.matches_project_file(path).await {
+            return Ok(());
         }
+
+        if self.projects.contains_key(path) {
+            return Ok(());
+        }
+
+        let project_dir = path
+            .parent()
+            .with_context(|| format!("Parent not found - {}", path.display()))?;
+
+        let java_available = match self.java_available {
+            Some(value) => value,
+            None => {
+                let value = java_is_available().await;
+                self.java_available = Some(value);
+                value
+            }
+        };
+
+        // Get properties from gradlew command
+        let props = get_gradle_properties(project_dir, java_available).await?;
+        let dependencies = read_to_string(path)
+            .await
+            .map(|content| extract_gradle_project_dependencies(&content))
+            .with_context(|| format!("Failed to read Gradle build file {}", path.display()))?;
+
+        // Use directory name as fallback for project name
+        let name = props.name.or_else(|| {
+            project_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(std::string::ToString::to_string)
+        });
+
+        let version = props.version;
+
+        // Workspace detection: gradlew reports non-empty subprojects list.
+        // Previous approach (checking for settings.gradle.kts existence) caused
+        // false positives in composite builds and subprojects with IDE-generated files.
+        let is_workspace = props.has_subprojects;
+
+        // Hoist the map key allocation out of both arms: the old shape
+        // built a `(PathBuf, Project)` tuple, which forced each branch
+        // to call `path.to_path_buf()` TWICE (once for the tuple slot,
+        // once again for `*::new`). One shared `path_key` + one
+        // `.clone()` into the constructor cuts 4 `PathBuf` allocs to 2.
+        let path_key = path.to_path_buf();
+        let mut project = if is_workspace {
+            Project::Workspace(Box::new(GradleWorkspace::new(
+                name,
+                version,
+                path_key.clone(),
+                relative_path.to_path_buf(),
+            )))
+        } else {
+            Project::Package(Box::new(GradlePackage::new(
+                name,
+                version,
+                path_key.clone(),
+                relative_path.to_path_buf(),
+            )))
+        };
+
+        for dependency in dependencies {
+            project.add_dependency(&dependency);
+        }
+
+        self.projects.insert(path_key, project);
         Ok(())
     }
 }

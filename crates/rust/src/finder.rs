@@ -153,140 +153,141 @@ impl ProjectFinder for RustProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        if self.matches_project_file(path).await {
-            if self.projects.contains_key(path) {
-                return Ok(());
+        if !self.matches_project_file(path).await {
+            return Ok(());
+        }
+        if self.projects.contains_key(path) {
+            return Ok(());
+        }
+        // read Cargo.toml
+        let cargo_toml = read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read Cargo.toml {}", path.display()))?;
+        let cargo_toml: toml_edit::DocumentMut = cargo_toml
+            .parse()
+            .with_context(|| format!("Failed to parse Cargo.toml {}", path.display()))?;
+
+        // Collect workspace dependencies for this file — the same
+        // `dep_names` list feeds every branch below (workspace /
+        // inherits-workspace-version / plain-package).
+        let dep_names = workspace_dep_names(&cargo_toml);
+
+        // if workspace
+        if cargo_toml.get("workspace").is_some() {
+            // Read [workspace.package].version if present
+            let ws_pkg_version = workspace_package_str(&cargo_toml, "version");
+            if ws_pkg_version.is_some() {
+                self.workspace_package_version = ws_pkg_version;
+                self.workspace_root_path = Some(path.to_path_buf());
             }
-            // read Cargo.toml
-            let cargo_toml = read_to_string(path)
-                .await
-                .with_context(|| format!("Failed to read Cargo.toml {}", path.display()))?;
-            let cargo_toml: toml_edit::DocumentMut = cargo_toml
-                .parse()
-                .with_context(|| format!("Failed to parse Cargo.toml {}", path.display()))?;
 
-            // Collect workspace dependencies for this file — the same
-            // `dep_names` list feeds every branch below (workspace /
-            // inherits-workspace-version / plain-package).
-            let dep_names = workspace_dep_names(&cargo_toml);
+            let version = package_str(&cargo_toml, "version");
+            let name = package_str(&cargo_toml, "name");
+            // Hoist the shared `PathBuf` into one binding: `path_key` seeds
+            // both the `RustWorkspace::new(...)` constructor slot and the
+            // `self.projects.insert(...)` map key. Mirror of the same
+            // pattern already used by the `inherits_workspace` and
+            // plain-package `else` arms below, and by
+            // `crates/csharp/src/finder.rs::visit` /
+            // `crates/java/src/finder.rs::visit`. Byte-identical
+            // semantics — the same `PathBuf` bytes flow into
+            // `RustWorkspace::new` and the map key, just materialized
+            // once up front.
+            let path_key = path.to_path_buf();
+            let mut project = Project::Workspace(Box::new(RustWorkspace::new(
+                name,
+                version,
+                path_key.clone(),
+                relative_path.to_path_buf(),
+            )));
+            for dep_name in &dep_names {
+                project.add_dependency(dep_name);
+            }
+            self.projects.insert(path_key, project);
 
-            // if workspace
-            if cargo_toml.get("workspace").is_some() {
-                // Read [workspace.package].version if present
-                let ws_pkg_version = workspace_package_str(&cargo_toml, "version");
-                if ws_pkg_version.is_some() {
-                    self.workspace_package_version = ws_pkg_version;
-                    self.workspace_root_path = Some(path.to_path_buf());
+            // Resolve any pending packages that were visited before this workspace
+            let pending = std::mem::take(&mut self.pending_workspace_packages);
+            for p in pending {
+                let mut pkg = RustPackage::new_with_workspace_version(
+                    p.name,
+                    self.workspace_package_version.clone(),
+                    p.abs_path.clone(),
+                    p.relative_path,
+                    self.workspace_root_path.clone(),
+                );
+                for dep in &p.dependencies {
+                    pkg.add_dependency(dep);
                 }
+                self.projects
+                    .insert(p.abs_path, Project::Package(Box::new(pkg)));
+            }
+        } else {
+            // Check if version.workspace = true — same table-like +
+            // `workspace = true` shape as `workspace_dep_names`
+            // above, so both call sites share the [`is_workspace_marker`]
+            // decoder. Byte-identical to the previous
+            // six-`.and_then` chain because `is_some_and(...)`
+            // short-circuits on the same `None` cases and its final
+            // `.unwrap_or(false)` matches.
+            let inherits_workspace = cargo_toml
+                .get("package")
+                .and_then(|p| p.get("version"))
+                .is_some_and(is_workspace_marker);
 
+            let name = package_str(&cargo_toml, "name");
+
+            // Hoist BOTH shared `PathBuf`s once for every non-workspace
+            // arm: `path_key` / `relative_path_key` seed both the
+            // constructor slot (`RustPackage::new*` /
+            // `PendingWorkspacePackage`) AND the
+            // `self.projects.insert(...)` map key (for `path_key`),
+            // mirroring the same pattern already used in the
+            // workspace arm above and by every peer finder (Node,
+            // Python, CSharp, Java, Dart). Each branch clones each
+            // key into non-final slots and moves it into the LAST-
+            // used slot — one `PathBuf` allocation per key per visit
+            // instead of two-to-three, byte-identical output.
+            let path_key = path.to_path_buf();
+            let relative_path_key = relative_path.to_path_buf();
+
+            if inherits_workspace {
+                if self.workspace_package_version.is_some() {
+                    // Workspace already visited — resolve immediately
+                    let mut pkg = RustPackage::new_with_workspace_version(
+                        name,
+                        self.workspace_package_version.clone(),
+                        path_key.clone(),
+                        relative_path_key,
+                        self.workspace_root_path.clone(),
+                    );
+                    for dep_name in &dep_names {
+                        pkg.add_dependency(dep_name);
+                    }
+                    self.projects
+                        .insert(path_key, Project::Package(Box::new(pkg)));
+                } else {
+                    // Workspace not yet visited — defer
+                    self.pending_workspace_packages
+                        .push(PendingWorkspacePackage {
+                            name,
+                            abs_path: path_key,
+                            relative_path: relative_path_key,
+                            dependencies: dep_names,
+                        });
+                }
+            } else {
                 let version = package_str(&cargo_toml, "version");
-                let name = package_str(&cargo_toml, "name");
-                // Hoist the shared `PathBuf` into one binding: `path_key` seeds
-                // both the `RustWorkspace::new(...)` constructor slot and the
-                // `self.projects.insert(...)` map key. Mirror of the same
-                // pattern already used by the `inherits_workspace` and
-                // plain-package `else` arms below, and by
-                // `crates/csharp/src/finder.rs::visit` /
-                // `crates/java/src/finder.rs::visit`. Byte-identical
-                // semantics — the same `PathBuf` bytes flow into
-                // `RustWorkspace::new` and the map key, just materialized
-                // once up front.
-                let path_key = path.to_path_buf();
-                let mut project = Project::Workspace(Box::new(RustWorkspace::new(
+                let mut project = Project::Package(Box::new(RustPackage::new(
                     name,
                     version,
                     path_key.clone(),
-                    relative_path.to_path_buf(),
+                    relative_path_key,
                 )));
                 for dep_name in &dep_names {
                     project.add_dependency(dep_name);
                 }
                 self.projects.insert(path_key, project);
-
-                // Resolve any pending packages that were visited before this workspace
-                let pending = std::mem::take(&mut self.pending_workspace_packages);
-                for p in pending {
-                    let mut pkg = RustPackage::new_with_workspace_version(
-                        p.name,
-                        self.workspace_package_version.clone(),
-                        p.abs_path.clone(),
-                        p.relative_path,
-                        self.workspace_root_path.clone(),
-                    );
-                    for dep in &p.dependencies {
-                        pkg.add_dependency(dep);
-                    }
-                    self.projects
-                        .insert(p.abs_path, Project::Package(Box::new(pkg)));
-                }
-            } else {
-                // Check if version.workspace = true — same table-like +
-                // `workspace = true` shape as `workspace_dep_names`
-                // above, so both call sites share the [`is_workspace_marker`]
-                // decoder. Byte-identical to the previous
-                // six-`.and_then` chain because `is_some_and(...)`
-                // short-circuits on the same `None` cases and its final
-                // `.unwrap_or(false)` matches.
-                let inherits_workspace = cargo_toml
-                    .get("package")
-                    .and_then(|p| p.get("version"))
-                    .is_some_and(is_workspace_marker);
-
-                let name = package_str(&cargo_toml, "name");
-
-                // Hoist BOTH shared `PathBuf`s once for every non-workspace
-                // arm: `path_key` / `relative_path_key` seed both the
-                // constructor slot (`RustPackage::new*` /
-                // `PendingWorkspacePackage`) AND the
-                // `self.projects.insert(...)` map key (for `path_key`),
-                // mirroring the same pattern already used in the
-                // workspace arm above and by every peer finder (Node,
-                // Python, CSharp, Java, Dart). Each branch clones each
-                // key into non-final slots and moves it into the LAST-
-                // used slot — one `PathBuf` allocation per key per visit
-                // instead of two-to-three, byte-identical output.
-                let path_key = path.to_path_buf();
-                let relative_path_key = relative_path.to_path_buf();
-
-                if inherits_workspace {
-                    if self.workspace_package_version.is_some() {
-                        // Workspace already visited — resolve immediately
-                        let mut pkg = RustPackage::new_with_workspace_version(
-                            name,
-                            self.workspace_package_version.clone(),
-                            path_key.clone(),
-                            relative_path_key,
-                            self.workspace_root_path.clone(),
-                        );
-                        for dep_name in &dep_names {
-                            pkg.add_dependency(dep_name);
-                        }
-                        self.projects
-                            .insert(path_key, Project::Package(Box::new(pkg)));
-                    } else {
-                        // Workspace not yet visited — defer
-                        self.pending_workspace_packages
-                            .push(PendingWorkspacePackage {
-                                name,
-                                abs_path: path_key,
-                                relative_path: relative_path_key,
-                                dependencies: dep_names,
-                            });
-                    }
-                } else {
-                    let version = package_str(&cargo_toml, "version");
-                    let mut project = Project::Package(Box::new(RustPackage::new(
-                        name,
-                        version,
-                        path_key.clone(),
-                        relative_path_key,
-                    )));
-                    for dep_name in &dep_names {
-                        project.add_dependency(dep_name);
-                    }
-                    self.projects.insert(path_key, project);
-                }
-            };
+            }
         }
         Ok(())
     }
