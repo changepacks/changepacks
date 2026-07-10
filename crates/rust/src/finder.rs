@@ -91,13 +91,13 @@ fn is_local_path_dep(value: &toml_edit::Item) -> bool {
 const CARGO_DEPENDENCY_TABLES: &[&str] =
     &["dependencies", "dev-dependencies", "build-dependencies"];
 
-fn collect_workspace_dep_names_from_table(
-    deps: &dyn toml_edit::TableLike,
-    dep_names: &mut Vec<String>,
+fn collect_workspace_dep_names_from_table<'a>(
+    deps: &'a dyn toml_edit::TableLike,
+    dep_names: &mut Vec<&'a str>,
 ) {
     for (dep_name, value) in deps.iter() {
         if is_workspace_marker(value) || is_local_path_dep(value) {
-            dep_names.push(dep_name.to_string());
+            dep_names.push(dep_name);
         }
     }
 }
@@ -114,7 +114,7 @@ fn collect_workspace_dep_names_from_table(
 ///
 /// Matches the `package_str` / `workspace_package_str` sibling-helper
 /// idiom already established in this file.
-fn workspace_dep_names(doc: &toml_edit::DocumentMut) -> Vec<String> {
+fn workspace_dep_names(doc: &toml_edit::DocumentMut) -> Vec<&str> {
     let mut dep_names = Vec::new();
 
     for table_name in CARGO_DEPENDENCY_TABLES {
@@ -213,7 +213,7 @@ impl ProjectFinder for RustProjectFinder {
                 path_key.clone(),
                 relative_path.to_path_buf(),
             )));
-            for dep_name in &dep_names {
+            for &dep_name in &dep_names {
                 project.add_dependency(dep_name);
             }
             self.projects.insert(path_key, project);
@@ -273,7 +273,7 @@ impl ProjectFinder for RustProjectFinder {
                         relative_path_key,
                         self.workspace_root_path.clone(),
                     );
-                    for dep_name in &dep_names {
+                    for &dep_name in &dep_names {
                         pkg.add_dependency(dep_name);
                     }
                     self.projects
@@ -285,7 +285,7 @@ impl ProjectFinder for RustProjectFinder {
                             name,
                             abs_path: path_key,
                             relative_path: relative_path_key,
-                            dependencies: dep_names,
+                            dependencies: dep_names.iter().map(|s| s.to_string()).collect(),
                         });
                 }
             } else {
@@ -296,7 +296,7 @@ impl ProjectFinder for RustProjectFinder {
                     path_key.clone(),
                     relative_path_key,
                 )));
-                for dep_name in &dep_names {
+                for &dep_name in &dep_names {
                     project.add_dependency(dep_name);
                 }
                 self.projects.insert(path_key, project);
