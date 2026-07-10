@@ -57,110 +57,110 @@ impl ProjectFinder for PythonProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        if self.matches_project_file(path).await {
-            if self.projects.contains_key(path) {
-                return Ok(());
-            }
-            // read pyproject.toml
-            let pyproject_toml = read_to_string(path)
-                .await
-                .with_context(|| format!("Failed to read pyproject.toml {}", path.display()))?;
-            let pyproject_toml: toml_edit::DocumentMut = pyproject_toml
-                .parse()
-                .with_context(|| format!("Failed to parse pyproject.toml {}", path.display()))?;
-            // `[project]` is OPTIONAL: uv workspace-only roots (the docs'
-            // canonical example) declare just `[tool.uv.workspace]` at the
-            // repo root and no `[project]` table. Match the tolerant
-            // extraction that `PythonWorkspace::update_version` already
-            // uses (see `ensure_project_table` in `crates/python/src/lib.rs`).
-            // Both name and version fall through to `None` when the table
-            // is missing, exactly like the constructor arguments accept.
-            // Renamed from `project` to `project_table` to match the field
-            // it represents (`[project]` TOML table) and eliminate the
-            // visual clash with the `let mut project = if pyproject_toml
-            // .get("tool")...` binding a dozen lines below (which holds a
-            // `changepacks_core::Project`, not an `Option<&Item>`).
-            // Matches the sibling Rust finder's `package_str(doc, field)`
-            // pattern where the lookup target is passed in rather than
-            // aliased into a shadowed binding. Pure rename.
-            let project_table = pyproject_toml.get("project");
+        if !self.matches_project_file(path).await {
+            return Ok(());
+        }
+        if self.projects.contains_key(path) {
+            return Ok(());
+        }
+        // read pyproject.toml
+        let pyproject_toml = read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read pyproject.toml {}", path.display()))?;
+        let pyproject_toml: toml_edit::DocumentMut = pyproject_toml
+            .parse()
+            .with_context(|| format!("Failed to parse pyproject.toml {}", path.display()))?;
+        // `[project]` is OPTIONAL: uv workspace-only roots (the docs'
+        // canonical example) declare just `[tool.uv.workspace]` at the
+        // repo root and no `[project]` table. Match the tolerant
+        // extraction that `PythonWorkspace::update_version` already
+        // uses (see `ensure_project_table` in `crates/python/src/lib.rs`).
+        // Both name and version fall through to `None` when the table
+        // is missing, exactly like the constructor arguments accept.
+        // Renamed from `project` to `project_table` to match the field
+        // it represents (`[project]` TOML table) and eliminate the
+        // visual clash with the `let mut project = if pyproject_toml
+        // .get("tool")...` binding a dozen lines below (which holds a
+        // `changepacks_core::Project`, not an `Option<&Item>`).
+        // Matches the sibling Rust finder's `package_str(doc, field)`
+        // pattern where the lookup target is passed in rather than
+        // aliased into a shadowed binding. Pure rename.
+        let project_table = pyproject_toml.get("project");
 
-            // Both branches use the same name/version and the same path;
-            // hoist so each branch collapses to a single constructor call.
-            let version = project_str(project_table, "version");
-            let name = project_str(project_table, "name");
-            // Rename `path_buf` → `path_key` to align with the Java and
-            // CSharp finders' local naming convention: the value is used
-            // once as the `HashMap` insert key (the "key" role), while
-            // the branch constructors take their own owned `PathBuf` via
-            // `.clone()`. Pure rename — clone count is unchanged.
-            let path_key = path.to_path_buf();
-            // Rename `relative_path_buf` → `relative_path_key` to match the
-            // Dart, Java, and CSharp finders' local naming convention
-            // (matches the docstring at `crates/dart/src/finder.rs`
-            // claiming "Node, Python, CSharp, Java, and post-item-2 Rust"
-            // all use this name). Pure rename — behavior unchanged.
-            let relative_path_key = relative_path.to_path_buf();
+        // Both branches use the same name/version and the same path;
+        // hoist so each branch collapses to a single constructor call.
+        let version = project_str(project_table, "version");
+        let name = project_str(project_table, "name");
+        // Rename `path_buf` → `path_key` to align with the Java and
+        // CSharp finders' local naming convention: the value is used
+        // once as the `HashMap` insert key (the "key" role), while
+        // the branch constructors take their own owned `PathBuf` via
+        // `.clone()`. Pure rename — clone count is unchanged.
+        let path_key = path.to_path_buf();
+        // Rename `relative_path_buf` → `relative_path_key` to match the
+        // Dart, Java, and CSharp finders' local naming convention
+        // (matches the docstring at `crates/dart/src/finder.rs`
+        // claiming "Node, Python, CSharp, Java, and post-item-2 Rust"
+        // all use this name). Pure rename — behavior unchanged.
+        let relative_path_key = relative_path.to_path_buf();
 
-            // Hoist the `[tool.uv]` lookup ONCE: both the workspace guard
-            // below and the `[tool.uv.sources]` walk further down previously
-            // walked the identical `pyproject_toml.get("tool").and_then(|t|
-            // t.get("uv"))` chain independently. `Option<&Item>` is `Copy`,
-            // so caching the intermediate binding lets both call sites reuse
-            // it — saves one HashMap-style lookup per Python-project visit
-            // on every `check` / `update` / `publish` invocation. Behavior
-            // is byte-identical: both branches short-circuit on the same
-            // `None` positions.
-            let uv_table = pyproject_toml.get("tool").and_then(|t| t.get("uv"));
+        // Hoist the `[tool.uv]` lookup ONCE: both the workspace guard
+        // below and the `[tool.uv.sources]` walk further down previously
+        // walked the identical `pyproject_toml.get("tool").and_then(|t|
+        // t.get("uv"))` chain independently. `Option<&Item>` is `Copy`,
+        // so caching the intermediate binding lets both call sites reuse
+        // it — saves one HashMap-style lookup per Python-project visit
+        // on every `check` / `update` / `publish` invocation. Behavior
+        // is byte-identical: both branches short-circuit on the same
+        // `None` positions.
+        let uv_table = pyproject_toml.get("tool").and_then(|t| t.get("uv"));
 
-            // if workspace
-            //
-            // Flat `.and_then` chain matches the sibling Rust finder's
-            // `workspace_package_str` idiom (crates/rust/src/finder.rs) and
-            // the `[tool.uv.sources]` walk a few lines below, restoring
-            // stylistic parity across the finder module. Byte-identical
-            // to the previous nested closure: both short-circuit on the
-            // same `None` positions.
-            let mut project = if uv_table.and_then(|u| u.get("workspace")).is_some() {
-                Project::Workspace(Box::new(PythonWorkspace::new(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path_key,
-                )))
-            } else {
-                Project::Package(Box::new(PythonPackage::new(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path_key,
-                )))
-            };
+        // if workspace
+        //
+        // Flat `.and_then` chain matches the sibling Rust finder's
+        // `workspace_package_str` idiom (crates/rust/src/finder.rs) and
+        // the `[tool.uv.sources]` walk a few lines below, restoring
+        // stylistic parity across the finder module. Byte-identical
+        // to the previous nested closure: both short-circuit on the
+        // same `None` positions.
+        let mut project = if uv_table.and_then(|u| u.get("workspace")).is_some() {
+            Project::Workspace(Box::new(PythonWorkspace::new(
+                name,
+                version,
+                path_key.clone(),
+                relative_path_key,
+            )))
+        } else {
+            Project::Package(Box::new(PythonPackage::new(
+                name,
+                version,
+                path_key.clone(),
+                relative_path_key,
+            )))
+        };
 
-            // read tool.uv.sources section
-            //
-            // `[tool.uv.sources]` is a TOML **table** keyed by dependency name
-            // (e.g. `pkg-a = { path = "../pkg-a" }`), not an array of strings.
-            // Iterate it as a table so Python packages actually register their
-            // workspace deps for topological publish ordering.
-            if let Some(sources) = uv_table
-                .and_then(|u| u.get("sources"))
-                .and_then(toml_edit::Item::as_table_like)
-            {
-                for (dep_name, source) in sources.iter() {
-                    let is_local_source = source.as_table_like().is_some_and(|source| {
-                        source.contains_key("path")
-                            || source.get("workspace").and_then(toml_edit::Item::as_bool)
-                                == Some(true)
-                    });
-                    if is_local_source {
-                        project.add_dependency(dep_name);
-                    }
+        // read tool.uv.sources section
+        //
+        // `[tool.uv.sources]` is a TOML **table** keyed by dependency name
+        // (e.g. `pkg-a = { path = "../pkg-a" }`), not an array of strings.
+        // Iterate it as a table so Python packages actually register their
+        // workspace deps for topological publish ordering.
+        if let Some(sources) = uv_table
+            .and_then(|u| u.get("sources"))
+            .and_then(toml_edit::Item::as_table_like)
+        {
+            for (dep_name, source) in sources.iter() {
+                let is_local_source = source.as_table_like().is_some_and(|source| {
+                    source.contains_key("path")
+                        || source.get("workspace").and_then(toml_edit::Item::as_bool) == Some(true)
+                });
+                if is_local_source {
+                    project.add_dependency(dep_name);
                 }
             }
-
-            self.projects.insert(path_key, project);
         }
+
+        self.projects.insert(path_key, project);
         Ok(())
     }
 }

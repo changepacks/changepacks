@@ -38,17 +38,9 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
     })? {
         Err(anyhow::anyhow!("changepacks project already initialized"))
     } else {
-        if !args.dry_run {
-            write(
-                config_file,
-                serde_json::to_string_pretty(&Config::default())?,
-            )
-            .await?;
-        }
-
         if args.dry_run {
             // Dry-run skipped both the `create_dir_all` (line above) and the
-            // `write` of `config.json` (line above), so nothing has actually
+            // `write` of `config.json` (line below), so nothing has actually
             // been initialized — the message must reflect that or a user
             // running `changepacks init --dry-run` cannot distinguish the
             // preview from a real init.
@@ -57,6 +49,11 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
                 changepacks_dir.display()
             );
         } else {
+            write(
+                config_file,
+                serde_json::to_string_pretty(&Config::default())?,
+            )
+            .await?;
             println!(
                 "changepacks project initialized in {}",
                 changepacks_dir.display()

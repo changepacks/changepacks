@@ -57,92 +57,93 @@ impl ProjectFinder for DartProjectFinder {
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
         // Parse this manifest if it is a recognized project file not already visited.
-        if self.matches_project_file(path).await {
-            if self.projects.contains_key(path) {
-                return Ok(());
-            }
-            // read pubspec.yaml
-            let pubspec_yaml = read_to_string(path)
-                .await
-                .with_context(|| format!("Failed to read pubspec.yaml {}", path.display()))?;
-            let pubspec: yaml_serde::Value = yaml_serde::from_str(&pubspec_yaml)
-                .with_context(|| format!("Failed to parse pubspec.yaml {}", path.display()))?;
+        if !self.matches_project_file(path).await {
+            return Ok(());
+        }
+        if self.projects.contains_key(path) {
+            return Ok(());
+        }
+        // read pubspec.yaml
+        let pubspec_yaml = read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read pubspec.yaml {}", path.display()))?;
+        let pubspec: yaml_serde::Value = yaml_serde::from_str(&pubspec_yaml)
+            .with_context(|| format!("Failed to parse pubspec.yaml {}", path.display()))?;
 
-            // Check if this is a workspace (melos workspace or similar).
-            // Short-circuit: when the pubspec's inline `workspace:` field is
-            // already present, skip the sibling `melos.yaml` stat. Shared with
-            // the Node finder via `changepacks_utils::is_workspace_by_sibling`
-            // — the one source of truth for the "declared field OR fixed
-            // sibling file" policy (stat error → not-a-workspace; all file ops
-            // via `tokio::fs`).
-            let is_workspace = changepacks_utils::is_workspace_by_sibling(
-                pubspec.get("workspace").is_some(),
-                path,
-                "melos.yaml",
-            )
-            .await?;
+        // Check if this is a workspace (melos workspace or similar).
+        // Short-circuit: when the pubspec's inline `workspace:` field is
+        // already present, skip the sibling `melos.yaml` stat. Shared with
+        // the Node finder via `changepacks_utils::is_workspace_by_sibling`
+        // — the one source of truth for the "declared field OR fixed
+        // sibling file" policy (stat error → not-a-workspace; all file ops
+        // via `tokio::fs`).
+        let is_workspace = changepacks_utils::is_workspace_by_sibling(
+            pubspec.get("workspace").is_some(),
+            path,
+            "melos.yaml",
+        )
+        .await?;
 
-            // Both branches use the same name/version and the same path;
-            // hoist so each branch collapses to a single constructor call.
-            // `path_key` / `relative_path_key` naming matches every other
-            // finder (Node, Python, CSharp, Java, and post-item-2 Rust) so
-            // grepping for the "shared hoisted key" idiom finds every
-            // finder at once.
-            //
-            // Delegate the `.get(...).and_then(as_str).map(...)` chain to
-            // the module-private `pubspec_str` helper — mirrors the
-            // `project_str` / `package_str` sibling helpers in
-            // `crates/python/src/finder.rs` and `crates/rust/src/finder.rs`
-            // so the manifest-shape assumption lives in exactly one place
-            // per finder. Semantically identical to the inline chain:
-            // `yaml_serde::Value`'s `Index` impl returns `Value::Null` for
-            // missing keys, and `Value::Null.as_str()` is `None`, so both
-            // present-string and missing-field shapes round-trip
-            // unchanged.
-            let version = pubspec_str(&pubspec, "version");
-            let name = pubspec_str(&pubspec, "name");
-            let path_key = path.to_path_buf();
-            let relative_path_key = relative_path.to_path_buf();
+        // Both branches use the same name/version and the same path;
+        // hoist so each branch collapses to a single constructor call.
+        // `path_key` / `relative_path_key` naming matches every other
+        // finder (Node, Python, CSharp, Java, and post-item-2 Rust) so
+        // grepping for the "shared hoisted key" idiom finds every
+        // finder at once.
+        //
+        // Delegate the `.get(...).and_then(as_str).map(...)` chain to
+        // the module-private `pubspec_str` helper — mirrors the
+        // `project_str` / `package_str` sibling helpers in
+        // `crates/python/src/finder.rs` and `crates/rust/src/finder.rs`
+        // so the manifest-shape assumption lives in exactly one place
+        // per finder. Semantically identical to the inline chain:
+        // `yaml_serde::Value`'s `Index` impl returns `Value::Null` for
+        // missing keys, and `Value::Null.as_str()` is `None`, so both
+        // present-string and missing-field shapes round-trip
+        // unchanged.
+        let version = pubspec_str(&pubspec, "version");
+        let name = pubspec_str(&pubspec, "name");
+        let path_key = path.to_path_buf();
+        let relative_path_key = relative_path.to_path_buf();
 
-            let mut project = if is_workspace {
-                Project::Workspace(Box::new(DartWorkspace::new(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path_key,
-                )))
-            } else {
-                Project::Package(Box::new(DartPackage::new(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path_key,
-                )))
-            };
+        let mut project = if is_workspace {
+            Project::Workspace(Box::new(DartWorkspace::new(
+                name,
+                version,
+                path_key.clone(),
+                relative_path_key,
+            )))
+        } else {
+            Project::Package(Box::new(DartPackage::new(
+                name,
+                version,
+                path_key.clone(),
+                relative_path_key,
+            )))
+        };
 
-            // read dependencies section — track only LOCAL monorepo deps
-            // (entries whose value is a mapping containing a `path:` key).
-            // Bare version strings like `http: ^1.0.0` point at pub.dev and
-            // cannot be resolved by `sort_by_dependencies` (which filters
-            // via `name_to_index` over local project names), so tracking
-            // them just burns a `HashSet` insertion + a `String` allocation
-            // per external dep. This also aligns Dart with every other
-            // finder: Node keeps only `workspace:*`, Python only
-            // `[tool.uv.sources]`, Rust only `dep.workspace == true`, and
-            // C# only `<ProjectReference Include="..." />`.
-            if let Some(dependencies) = pubspec.get("dependencies").and_then(|d| d.as_mapping()) {
-                for (dep_name, dep_value) in dependencies {
-                    if let Some(dep_str) = dep_name.as_str()
-                        && dep_value
-                            .as_mapping()
-                            .is_some_and(|m| m.contains_key("path"))
-                    {
-                        project.add_dependency(dep_str);
-                    }
+        // read dependencies section — track only LOCAL monorepo deps
+        // (entries whose value is a mapping containing a `path:` key).
+        // Bare version strings like `http: ^1.0.0` point at pub.dev and
+        // cannot be resolved by `sort_by_dependencies` (which filters
+        // via `name_to_index` over local project names), so tracking
+        // them just burns a `HashSet` insertion + a `String` allocation
+        // per external dep. This also aligns Dart with every other
+        // finder: Node keeps only `workspace:*`, Python only
+        // `[tool.uv.sources]`, Rust only `dep.workspace == true`, and
+        // C# only `<ProjectReference Include="..." />`.
+        if let Some(dependencies) = pubspec.get("dependencies").and_then(|d| d.as_mapping()) {
+            for (dep_name, dep_value) in dependencies {
+                if let Some(dep_str) = dep_name.as_str()
+                    && dep_value
+                        .as_mapping()
+                        .is_some_and(|m| m.contains_key("path"))
+                {
+                    project.add_dependency(dep_str);
                 }
             }
-            self.projects.insert(path_key, project);
         }
+        self.projects.insert(path_key, project);
         Ok(())
     }
 }
