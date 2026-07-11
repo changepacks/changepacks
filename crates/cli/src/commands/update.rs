@@ -430,12 +430,12 @@ fn merge_workspace_inherited_updates(
     for &project in projects {
         if let Project::Package(pkg) = project
             && pkg.inherits_workspace_version()
-            && let Ok(rel_path) = get_relative_path(repo_root_path, pkg.path())
-            && update_map.contains_key(&rel_path)
+            && let Ok(rel_path) = get_relative_path_ref(repo_root_path, pkg.path())
+            && update_map.contains_key(rel_path)
             && let Some(ws_root) = pkg.workspace_root_path()
             && let Ok(ws_rel_path) = get_relative_path(repo_root_path, ws_root)
         {
-            merge_targets.push((rel_path, ws_rel_path));
+            merge_targets.push((rel_path.to_path_buf(), ws_rel_path));
         }
     }
 

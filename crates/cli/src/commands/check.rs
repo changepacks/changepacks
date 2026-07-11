@@ -233,19 +233,21 @@ fn display_tree(
     // Build sorted_roots directly by filtering projects and sorting, which
     // achieves the same deduplication as the previous HashSet approach.
     // `sort_unstable()` + `dedup()` collapses duplicates identically to what
-    // the HashSet collapsed, and since roots are project names (unique by
-    // construction from the projects slice), dedup is a no-op but kept for
-    // semantic clarity.
+    // the HashSet collapsed. Roots are project NAMES, not unique keys: two
+    // distinct projects can legitimately share a name (e.g. a Node `core` and
+    // a Rust `core`, which `sort_by_dependencies` explicitly supports), so
+    // both push the same `"core"` string here. `dedup()` is therefore
+    // load-bearing — after the sort it collapses those duplicate name entries
+    // so a shared-name root renders once, not once per project sharing it.
     //
     // Sort roots for consistent output. `Vec<&str>` sorts identically to
     // `Vec<String>` for the same name strings (byte-identical order), and
     // `name_to_project.get(root)` still resolves because the map keys on
     // `&str` (the loop below derefs `&&str` → `&str` to match).
     //
-    // `sort_unstable`: roots are project names (distinct by construction
-    // from the projects slice), and `str::cmp` is a total order — stability
-    // is not observable in the printed tree. Skips the stability bookkeeping
-    // the stable sort pays for.
+    // `sort_unstable`: `str::cmp` is a total order and any equal names are
+    // byte-identical strings, so their relative order is not observable in the
+    // printed tree. Skips the stability bookkeeping the stable sort pays for.
     //
     // Preallocate: `projects.len()` is the tight upper bound for roots
     // (at most all projects are roots if none have dependencies). Making
