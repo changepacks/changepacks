@@ -392,11 +392,11 @@ struct PublishOutcomeLabels {
     failure: &'static str,
 }
 
-/// Calls [`record_publish_outcome`] and, when it returns `true` (failure),
+/// Records `outcome` into `result_map` / `failed_projects` via
+/// `record_publish_success` / `record_publish_failure`, then — on failure —
 /// inserts `project.name()` into `failed_project_names` if the project has a
-/// name. Collapses the four identical
-/// `record_publish_outcome(...) && let Some(name) = project.name()` blocks
-/// that appeared in both publish loops.
+/// name. Collapses the four identical "record the outcome, then track its name
+/// on failure" blocks that appeared in both publish loops.
 fn record_outcome_track_failure(
     result_map: &mut BTreeMap<PathBuf, PublishResult>,
     failed_projects: &mut Vec<String>,
@@ -406,32 +406,9 @@ fn record_outcome_track_failure(
     labels: PublishOutcomeLabels,
     format: &FormatOptions,
 ) {
-    if record_publish_outcome(
-        result_map,
-        failed_projects,
-        project,
-        outcome,
-        labels.success,
-        labels.failure,
-        format,
-    ) && let Some(name) = project.name()
-    {
-        failed_project_names.insert(name.to_string());
-    }
-}
-
-fn record_publish_outcome(
-    result_map: &mut BTreeMap<PathBuf, PublishResult>,
-    failed_projects: &mut Vec<String>,
-    project: &Project,
-    outcome: ProjectPublishOutcome,
-    success_label: &str,
-    failure_label: &str,
-    format: &FormatOptions,
-) -> bool {
-    match outcome {
+    let failed = match outcome {
         ProjectPublishOutcome::Success(output) => {
-            record_publish_success(result_map, project, output, success_label, format);
+            record_publish_success(result_map, project, output, labels.success, format);
             false
         }
         ProjectPublishOutcome::Failure(output) => {
@@ -440,7 +417,7 @@ fn record_publish_outcome(
                 failed_projects,
                 project,
                 PublishFailureCause::Output(output),
-                failure_label,
+                labels.failure,
                 format,
             );
             true
@@ -451,11 +428,14 @@ fn record_publish_outcome(
                 failed_projects,
                 project,
                 PublishFailureCause::Error(&error),
-                failure_label,
+                labels.failure,
                 format,
             );
             true
         }
+    };
+    if failed && let Some(name) = project.name() {
+        failed_project_names.insert(name.to_string());
     }
 }
 

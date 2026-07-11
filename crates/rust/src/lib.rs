@@ -95,3 +95,27 @@ pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) 
     .with_context(|| format!("Failed to write Cargo.toml {}", path.display()))?;
     Ok(())
 }
+
+/// Return `true` for a `toml_edit::Item` whose value is table-like with
+/// `workspace = true` — the shape Cargo uses to mark either a
+/// `[dependencies]` entry as inheriting from `[workspace.dependencies]`
+/// (`dep = { workspace = true }`) or a `[package]` scalar as inheriting
+/// from `[workspace.package]` (`version.workspace = true`, which `toml_edit`
+/// parses as a dotted-key table `version = { workspace = true }`).
+///
+/// Shared by [`finder`](crate::finder) (`workspace_dep_names` and the
+/// `inherits_workspace` chain in `visit`) and [`workspace`](crate::workspace)
+/// (`RustWorkspace::update_version`'s hybrid-root inheritance guard) so the
+/// "is this an inherited-version / inherited-dep marker" decision lives in ONE
+/// place — matching the repo-wide "one decoder, one place" convention
+/// (`is_regular_file`, `should_mark_changed`, `lookup_by_path_or_language`, …).
+/// Byte-identical semantics to the previous hand-rolled chains:
+/// `as_table_like()` returns `None` for scalars, `.get("workspace")` returns
+/// `None` when the key is missing, `.as_bool()` returns `None` for non-bool
+/// values, and each `None` path collapses to `false` via `.unwrap_or(false)`.
+pub(crate) fn is_workspace_marker(item: &toml_edit::Item) -> bool {
+    item.as_table_like()
+        .and_then(|t| t.get("workspace"))
+        .and_then(|w| w.as_bool())
+        .unwrap_or(false)
+}

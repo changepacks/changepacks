@@ -59,17 +59,13 @@ impl Workspace for RustWorkspace {
             // Rewriting `[package].version` with a plain string here would clobber
             // that inheritance marker — the same file-format break already guarded
             // against for member crates in `RustPackage::update_version`. Detect the
-            // marker with the same `as_table_like → get("workspace") → as_bool`
-            // decode as `finder.rs::is_workspace_marker`; when present, skip the
-            // `[package].version` write (the `[workspace.package].version` sync
-            // below drives the inherited bump).
-            let inherits_workspace_version =
-                cargo_toml["package"].get("version").is_some_and(|v| {
-                    v.as_table_like()
-                        .and_then(|t| t.get("workspace"))
-                        .and_then(|w| w.as_bool())
-                        .unwrap_or(false)
-                });
+            // marker with the shared `crate::is_workspace_marker` decoder (the same
+            // one `finder.rs` uses for `[dependencies]`/`[package]` inheritance);
+            // when present, skip the `[package].version` write (the
+            // `[workspace.package].version` sync below drives the inherited bump).
+            let inherits_workspace_version = cargo_toml["package"]
+                .get("version")
+                .is_some_and(crate::is_workspace_marker);
             if !inherits_workspace_version {
                 cargo_toml["package"]["version"] = new_version.as_str().into();
             }

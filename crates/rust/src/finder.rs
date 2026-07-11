@@ -52,32 +52,10 @@ fn workspace_package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<St
         .map(String::from)
 }
 
-/// Return `true` for a `toml_edit::Item` whose value is table-like with
-/// `workspace = true` — the shape Cargo uses to mark either a
-/// `[dependencies]` entry as inheriting from `[workspace.dependencies]`
-/// (`dep = { workspace = true }`) or a `[package]` scalar as inheriting
-/// from `[workspace.package]` (`version.workspace = true`, which
-/// `toml_edit` parses as a dotted-key table `version = { workspace =
-/// true }`). Extracted so both call sites — `workspace_dep_names` below
-/// and the `inherits_workspace` chain in `visit` — share exactly one
-/// decoder for that shape. Byte-identical semantics to both previous
-/// hand-rolled chains: `as_table_like()` returns `None` for scalars,
-/// `.get("workspace")` returns `None` when the key is missing,
-/// `.as_bool()` returns `None` for non-bool values, and each `None`
-/// path collapses to `false` via `.unwrap_or(false)` — matching the
-/// `&&`-chain in `workspace_dep_names` and the `.and_then` chain in
-/// `visit`.
-fn is_workspace_marker(item: &toml_edit::Item) -> bool {
-    item.as_table_like()
-        .and_then(|t| t.get("workspace"))
-        .and_then(|w| w.as_bool())
-        .unwrap_or(false)
-}
-
 /// Return `true` for a `toml_edit::Item` whose value is table-like with a
 /// `path` key — the shape Cargo uses for direct local-path dependencies
 /// (`dep = { path = "../dep" }`, optionally alongside `version`). Sibling
-/// of [`is_workspace_marker`]: local-path edges are in-repo dependencies
+/// of [`crate::is_workspace_marker`]: local-path edges are in-repo dependencies
 /// just like workspace-inherited ones, so they must feed publish ordering
 /// and reverse updates too. Registry dependencies (`dep = "1.0"`) are
 /// scalars, so `as_table_like()` returns `None` and they are excluded.
@@ -96,7 +74,7 @@ fn collect_workspace_dep_names_from_table<'a>(
     dep_names: &mut Vec<&'a str>,
 ) {
     for (dep_name, value) in deps.iter() {
-        if is_workspace_marker(value) || is_local_path_dep(value) {
+        if crate::is_workspace_marker(value) || is_local_path_dep(value) {
             dep_names.push(dep_name);
         }
     }
@@ -256,7 +234,7 @@ impl ProjectFinder for RustProjectFinder {
             let inherits_workspace = cargo_toml
                 .get("package")
                 .and_then(|p| p.get("version"))
-                .is_some_and(is_workspace_marker);
+                .is_some_and(crate::is_workspace_marker);
 
             let name = package_str(&cargo_toml, "name");
 
@@ -355,6 +333,20 @@ impl ProjectFinder for RustProjectFinder {
             // seed. Using the iterator lets the walk-up terminate cleanly with
             // a plain `break` instead of a mutable `dir` slot juggled by hand.
             for parent in first_pkg.abs_path.ancestors().skip(2) {
+                // Bound the fallback walk to the `git_root` computed above:
+                // never climb PAST the repository root and adopt an out-of-repo
+                // `Cargo.toml` (e.g. a parent Rust project this repo is nested
+                // inside), which would silently rewrite inherited-version
+                // resolution for every member. `ancestors()` still yields
+                // `git_root` itself — `starts_with` is true there, so the real
+                // root stays reachable — then its parents, where `starts_with`
+                // turns false and the walk stops. Mirrors the git-scoped bound
+                // the C# finder applies in `is_workspace`
+                // (`parent.ancestors().take(max_depth)` in
+                // `crates/csharp/src/finder.rs`).
+                if !parent.starts_with(&git_root) {
+                    break;
+                }
                 let candidate = parent.join("Cargo.toml");
                 // AGENTS.md rule: all file ops via `tokio::fs`. A stat error
                 // is treated as "does not exist", matching the previous
@@ -1168,6 +1160,88 @@ version.workspace = true
             .find(|p| p.name() == Some("my-crate"))
             .unwrap();
         assert_eq!(pkg.version(), Some("0.2.0"));
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_finalize_ignores_cargo_toml_above_git_root() {
+        // Regression: when the workspace root is NOT visited (e.g. excluded by
+        // ignore patterns), finalize() walks up from the first pending member
+        // looking for a `Cargo.toml` carrying `[workspace.package].version`.
+        // That walk must be BOUNDED to the git root — it must never climb past
+        // the repository root and adopt an out-of-repo `Cargo.toml` (e.g. a
+        // parent Rust project this repo is nested inside), which would silently
+        // rewrite inherited-version resolution for every member. Mirrors the
+        // C# finder's `test_visit_package_ignores_sln_above_repo_root`.
+        let temp_dir = TempDir::new().unwrap();
+
+        // Decoy workspace root ABOVE the simulated repo root. If the walk were
+        // unbounded it would climb here and adopt version "9.9.9".
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["repo/crates/*"]
+
+[workspace.package]
+version = "9.9.9"
+edition = "2024"
+"#,
+        )
+        .unwrap();
+
+        // Simulated repo root at <temp>/repo — deliberately has NO Cargo.toml,
+        // so the bounded walk finds nothing in-repo and must stop at the root
+        // instead of escaping to the decoy above it. The member sits two levels
+        // below, and its relative path (3 components) pins the git root to
+        // <temp>/repo via the `ancestors().nth(components)` derivation.
+        let member_dir = temp_dir.path().join("repo").join("crates").join("mycrate");
+        fs::create_dir_all(&member_dir).unwrap();
+        let member_toml = member_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            r#"[package]
+name = "mycrate"
+version.workspace = true
+edition.workspace = true
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&member_toml, &PathBuf::from("crates/mycrate/Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        let projects = finder.projects();
+        // No synthetic workspace is adopted from the out-of-repo decoy, so the
+        // member stays the only project.
+        assert_eq!(
+            projects.len(),
+            1,
+            "a Cargo.toml above the git root must not be adopted as the workspace"
+        );
+        assert!(
+            !projects.iter().any(|p| matches!(p, Project::Workspace(_))),
+            "no synthetic workspace should be created from an out-of-repo Cargo.toml"
+        );
+
+        let pkg = projects
+            .iter()
+            .find(|p| p.name() == Some("mycrate"))
+            .expect("member package should exist");
+        assert_ne!(
+            pkg.version(),
+            Some("9.9.9"),
+            "member must not inherit the decoy workspace version from above the repo root"
+        );
+        assert_eq!(
+            pkg.version(),
+            None,
+            "with no in-repo workspace root found, the member version stays unresolved"
+        );
+
+        temp_dir.close().unwrap();
     }
 
     #[tokio::test]
