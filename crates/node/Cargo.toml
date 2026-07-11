@@ -21,3 +21,6 @@ tokio = { version = "1.52", features = ["fs"] }
 tempfile = "3.27"
 tokio = { version = "1.52", features = ["test-util", "macros"] }
 rstest = "0.26"
+
+[lints]
+workspace = true
