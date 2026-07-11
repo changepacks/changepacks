@@ -246,7 +246,7 @@ async fn apply_updates(
     )
     .await
     .into_iter()
-    .collect::<Result<Vec<_>>>()?;
+    .collect::<Result<()>>()?;
 
     // Fast-path the dominant no-op case: a package-only repo has zero
     // workspaces, so the `Vec<&dyn Package>` build + walk below and the
@@ -284,7 +284,7 @@ async fn apply_updates(
     )
     .await
     .into_iter()
-    .collect::<Result<Vec<_>>>()?;
+    .collect::<Result<()>>()?;
 
     Ok(())
 }
