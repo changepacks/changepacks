@@ -220,37 +220,23 @@ impl PackageManager {
     }
 }
 
-/// Collect `node_modules/.bin` directories from `start_dir` up to the
-/// filesystem root, nearest first.
+/// Collect the existing `node_modules/.bin` directories from `start_dir` up
+/// to the filesystem root, nearest first.
 ///
 /// npm, yarn, pnpm, and `bun install` all prepend these directories to `PATH`
 /// when running package scripts, but `bun publish` / `bun pm pack` do not
 /// (oven-sh/bun#16071, #18055, #23594). changepacks runs the publish command
 /// itself, so it replicates that behaviour to keep `prepare` / `prepack`
 /// hooks such as `husky` resolving during publish and dry-run.
-#[must_use]
-fn node_modules_bin_candidates(start_dir: &Path) -> Vec<PathBuf> {
-    let mut dirs = Vec::with_capacity(start_dir.ancestors().count());
-    dirs.extend(
-        start_dir
-            .ancestors()
-            .map(|dir| dir.join("node_modules").join(".bin")),
-    );
-    dirs
-}
-
-/// Collect the existing `node_modules/.bin` directories from `start_dir` up
-/// to the filesystem root, nearest first — the ancestor candidates produced
-/// by `node_modules_bin_candidates`, filtered to those that exist on disk.
 ///
 /// Used by the publish / dry-run flow (`run_publish_for_path` /
 /// `run_dry_run_publish_for_path`) to prepend `node_modules/.bin` to `PATH`
 /// so lifecycle hooks such as `husky` resolve during `bun publish` / `bun pm
 /// pack` (oven-sh/bun#16071, #18055, #23594).
 pub async fn node_modules_bin_dirs_async(start_dir: &Path) -> Vec<PathBuf> {
-    let candidates = node_modules_bin_candidates(start_dir);
-    let mut dirs = Vec::with_capacity(candidates.len());
-    for bin in candidates {
+    let mut dirs = Vec::new();
+    for dir in start_dir.ancestors() {
+        let bin = dir.join("node_modules").join(".bin");
         if tokio::fs::metadata(&bin)
             .await
             .map(|metadata| metadata.is_dir())

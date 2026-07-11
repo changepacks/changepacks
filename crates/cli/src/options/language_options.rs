@@ -143,8 +143,8 @@ mod tests {
     /// filters exactly the expected subset, byte-identical to the removed
     /// `Vec<Language>` + `Vec::contains` version.
     ///
-    /// Fixture is intentionally the "two languages, four projects" case
-    /// called out by the batch plan: input `[Node, Rust]` against `{Python,
+    /// Fixture is intentionally the "two languages, four projects" case:
+    /// input `[Node, Rust]` against `{Python,
     /// Node, Rust, Dart}` must keep exactly the Node and Rust projects,
     /// in their original order (`Vec::retain` is order-preserving).
     #[test]

@@ -2,11 +2,17 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
-/// Get the relative path from a git root to an absolute path
+/// Get the relative path from a git root to an absolute path, returning a borrowed reference.
+///
+/// This is the zero-copy variant; use when the result is only needed for lookups
+/// (e.g., `HashMap<PathBuf, V>::get(&path)`). For owned ownership, use [`get_relative_path`].
 ///
 /// # Errors
 /// Returns error if the absolute path is not within the git root directory.
-pub fn get_relative_path(git_root_path: &Path, absolute_path: &Path) -> Result<PathBuf> {
+pub fn get_relative_path_ref<'a>(
+    git_root_path: &Path,
+    absolute_path: &'a Path,
+) -> Result<&'a Path> {
     // Idiomatic anyhow shape used throughout the workspace
     // (`find_current_git_repo`, `changepacks_core::publish::run_publish_flow`
     // etc.): map the successful `strip_prefix` result then attach lazy
@@ -14,16 +20,23 @@ pub fn get_relative_path(git_root_path: &Path, absolute_path: &Path) -> Result<P
     // `anyhow::anyhow!(...)` construction so any downstream
     // `.to_string().contains(...)` assertions stay stable, and future
     // callers can chain additional `.with_context(...)` uniformly.
-    absolute_path
-        .strip_prefix(git_root_path)
-        .map(Path::to_path_buf)
-        .with_context(|| {
-            format!(
-                "Failed to get relative path: '{}' is not within '{}'",
-                absolute_path.display(),
-                git_root_path.display()
-            )
-        })
+    absolute_path.strip_prefix(git_root_path).with_context(|| {
+        format!(
+            "Failed to get relative path: '{}' is not within '{}'",
+            absolute_path.display(),
+            git_root_path.display()
+        )
+    })
+}
+
+/// Get the relative path from a git root to an absolute path, returning an owned `PathBuf`.
+///
+/// For lookup-only use cases, prefer [`get_relative_path_ref`] to avoid allocation.
+///
+/// # Errors
+/// Returns error if the absolute path is not within the git root directory.
+pub fn get_relative_path(git_root_path: &Path, absolute_path: &Path) -> Result<PathBuf> {
+    get_relative_path_ref(git_root_path, absolute_path).map(Path::to_path_buf)
 }
 
 #[cfg(test)]

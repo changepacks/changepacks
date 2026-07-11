@@ -10,6 +10,7 @@ use changepacks_core::{
 use changepacks_utils::{
     apply_reverse_dependencies, clear_applied_update_logs, clear_update_logs, display_update,
     find_project_dirs, gen_changepack_result_map, gen_update_map, get_relative_path,
+    get_relative_path_ref,
 };
 use clap::Args;
 
@@ -80,9 +81,10 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // only the `ignore` filter (so nothing is filtered out here) while
     // preserving the rest of the user's config — critically `base_branch`, so a
     // repo with a custom `baseBranch` and no `main` is still walked correctly.
+    // `ctx.config` is not read after this point, so move it instead of cloning.
     let all_config = changepacks_core::Config {
         ignore: Vec::new(),
-        ..ctx.config.clone()
+        ..ctx.config
     };
     find_project_dirs(&ctx.repo, &mut all_finders, &all_config, args.remote).await?;
 
@@ -220,7 +222,7 @@ fn collect_update_projects<'a>(
     for finder in project_finders {
         for project in finder.projects_mut() {
             if let Some((update_type, _)) =
-                update_map.get(&get_relative_path(repo_root_path, project.path())?)
+                update_map.get(get_relative_path_ref(repo_root_path, project.path())?)
             {
                 update_projects.push((project, *update_type));
             }

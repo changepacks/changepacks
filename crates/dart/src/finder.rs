@@ -87,7 +87,7 @@ impl ProjectFinder for DartProjectFinder {
         // Both branches use the same name/version and the same path;
         // hoist so each branch collapses to a single constructor call.
         // `path_key` / `relative_path_key` naming matches every other
-        // finder (Node, Python, CSharp, Java, and post-item-2 Rust) so
+        // finder (Node, Python, CSharp, Java, and Rust) so
         // grepping for the "shared hoisted key" idiom finds every
         // finder at once.
         //

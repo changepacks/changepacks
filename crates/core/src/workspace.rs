@@ -426,7 +426,8 @@ mod tests {
 
     #[test]
     fn test_set_name_updates_via_impl_basic_accessors_macro() {
-        // Regression guard for item 10 — see the sibling test in
+        // Regression guard for the shared-macro accessor contract — see the
+        // sibling test in
         // `package.rs::tests::test_set_name_updates_via_impl_basic_accessors_macro`
         // for the full rationale. The mock's `Workspace` impl uses
         // `crate::impl_basic_accessors!()`, so `set_name` MUST update the

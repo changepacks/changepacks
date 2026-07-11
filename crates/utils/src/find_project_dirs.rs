@@ -120,6 +120,16 @@ pub async fn find_project_dirs(
             continue;
         }
 
+        // Skip if no finder can visit this path — avoids allocating abs_path
+        // when it would be immediately dropped. The filtered try_join_all below
+        // will re-check the same predicate for matching files (intended).
+        if !project_finders
+            .iter()
+            .any(|finder| finder_can_visit_path(finder.as_ref(), path))
+        {
+            continue;
+        }
+
         // Insert absolute path using git_root_path.join(parent).
         let abs_path = git_root_path.join(path);
 

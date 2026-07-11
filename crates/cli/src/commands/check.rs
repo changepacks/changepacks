@@ -3,7 +3,7 @@ use changepacks_core::{ChangePackResultLog, Project, UpdateType};
 use anyhow::Result;
 use changepacks_utils::{
     apply_reverse_dependencies, display_update, gen_changepack_result_map, gen_update_map,
-    get_relative_path,
+    get_relative_path_ref,
 };
 use clap::Args;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
@@ -431,8 +431,8 @@ fn version_display_with_update(
     repo_root_path: &Path,
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
 ) -> Result<String> {
-    let key = get_relative_path(repo_root_path, project.path())?;
-    Ok(match update_map.get(&key) {
+    let key = get_relative_path_ref(repo_root_path, project.path())?;
+    Ok(match update_map.get(key) {
         Some(update_entry) => display_update(project.version(), update_entry.0)?,
         None => project.version_display(),
     })

@@ -16,22 +16,30 @@ static KTS_FALLBACK_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
         .expect("hardcoded regex must compile")
 });
 
+/// Try to replace content using a sequence of regex patterns.
+/// Returns the first successful replacement (as `Cow::Owned`), or `Cow::Borrowed(content)` if none match.
+fn replace_first_match<'a>(
+    content: &'a str,
+    patterns: &[&Regex],
+    replacement: &str,
+) -> Cow<'a, str> {
+    for pattern in patterns {
+        if let Cow::Owned(updated) = pattern.replace(content, replacement) {
+            return Cow::Owned(updated);
+        }
+    }
+    Cow::Borrowed(content)
+}
+
 /// Update version in build.gradle.kts content
 #[must_use]
 pub fn update_version_in_kts<'a>(content: &'a str, new_version: &str) -> Cow<'a, str> {
     let replacement = format!(r#"${{1}}"{new_version}""#);
-
-    // Pattern 1: version = "1.0.0"
-    if let Cow::Owned(updated) = KTS_SIMPLE_PATTERN.replace(content, replacement.as_str()) {
-        return Cow::Owned(updated);
-    }
-
-    // Pattern 2: version = project.findProperty("...") ?: "1.0.0"
-    if let Cow::Owned(updated) = KTS_FALLBACK_PATTERN.replace(content, replacement.as_str()) {
-        return Cow::Owned(updated);
-    }
-
-    Cow::Borrowed(content)
+    replace_first_match(
+        content,
+        &[&KTS_SIMPLE_PATTERN, &KTS_FALLBACK_PATTERN],
+        &replacement,
+    )
 }
 
 static GROOVY_ASSIGN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
@@ -46,18 +54,11 @@ static GROOVY_SPACE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 #[must_use]
 pub fn update_version_in_groovy<'a>(content: &'a str, new_version: &str) -> Cow<'a, str> {
     let replacement = format!(r"${{1}}${{2}}{new_version}${{2}}");
-
-    // Pattern 1: version = '1.0.0' or version = "1.0.0"
-    if let Cow::Owned(updated) = GROOVY_ASSIGN_PATTERN.replace(content, replacement.as_str()) {
-        return Cow::Owned(updated);
-    }
-
-    // Pattern 2: version '1.0.0' or version "1.0.0"
-    if let Cow::Owned(updated) = GROOVY_SPACE_PATTERN.replace(content, replacement.as_str()) {
-        return Cow::Owned(updated);
-    }
-
-    Cow::Borrowed(content)
+    replace_first_match(
+        content,
+        &[&GROOVY_ASSIGN_PATTERN, &GROOVY_SPACE_PATTERN],
+        &replacement,
+    )
 }
 
 /// Read a Gradle build file, compute its next version, apply the right

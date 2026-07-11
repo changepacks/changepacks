@@ -142,10 +142,15 @@ mod tests {
     // Build metadata is a dot-separated identifier list (semver spec): a
     // dotted `+build` suffix must be accepted and round-tripped verbatim,
     // not rejected by the numeric-patch `.`-guard. Regression anchor for
-    // the batch-plan item that moved the `+` split ahead of that guard.
+    // performing the `+` split ahead of that guard.
     #[case("1.2.3+4.5", UpdateType::Patch, "1.2.4+4.5")]
     #[case("1.2.3+4.5", UpdateType::Major, "2.0.0+4.5")]
     #[case("1.2.3+build.7", UpdateType::Minor, "1.3.0+build.7")]
+    // Multi-`+` inputs: the FIRST `+` is the metadata marker, so any later
+    // `+` characters belong to the extension and round-trip verbatim —
+    // locks the documented `split_once('+')` placement.
+    #[case("1.0.0++", UpdateType::Patch, "1.0.1++")]
+    #[case("1.2.3+a+b", UpdateType::Minor, "1.3.0+a+b")]
     fn test_next_version(
         #[case] version: &str,
         #[case] update_type: UpdateType,

@@ -137,27 +137,36 @@ impl CSharpProjectFinder {
         Ok((version, projects))
     }
 
-    /// Check if this project is part of a solution (workspace)
-    /// A project is considered a workspace if it has a `.sln` file in its
-    /// directory or any ancestor directory.
+    /// Check if this project is part of a solution (workspace).
     ///
-    /// Flattened from the previous three-level `if let Some(parent) → if
-    /// let Ok(entries) → while let Ok(Some(entry))` pyramid to two
-    /// `let ... else { return false; }` bindings + the `while let`
-    /// loop. Same predicate, same fallthrough on any error, same
-    /// short-circuit on the first `.sln` hit — byte-identical behavior,
-    /// one indentation level. Idiomatic modern Rust (edition 2024) and
-    /// matches the same let-else style already used in this crate.
+    /// A project is considered a workspace if a `.sln` file lives in its
+    /// own directory or in one of its IN-REPO ancestor directories.
     ///
-    /// Memoized by scanned directory (not the `.csproj` path itself):
-    /// the predicate answers whether that directory holds a `.sln` marker.
-    /// A child project checks its own directory first, then walks upward until
-    /// a solution root is found or all ancestors have been scanned.
-    async fn is_workspace(&mut self, path: &Path) -> bool {
+    /// The ancestor walk is BOUNDED to the repository root by `max_depth`.
+    /// The caller passes `relative_path.components().count()` — the number
+    /// of path components between the repo root and the manifest, which is
+    /// exactly how many ancestors of the manifest's parent lie inside the
+    /// repo (for `A/B.csproj`, count 2 → scan `<root>/A` then `<root>`; for
+    /// a root-level `B.csproj`, count 1 → scan `<root>` only). So
+    /// `parent.ancestors().take(max_depth)` stops at the repository root and
+    /// never touches the drive root, the user's home dir, or a sibling
+    /// checkout. `.sln` files OUTSIDE the repository intentionally NO LONGER
+    /// influence classification: project discovery is git-scoped, so a stray
+    /// `Solution.sln` above the repo root must not silently reclassify every
+    /// repo `.csproj` as a workspace (which would change publish-command
+    /// selection), and the bound also avoids `read_dir` syscalls on
+    /// out-of-repo directories.
+    ///
+    /// Memoized by scanned directory (not the `.csproj` path itself): the
+    /// predicate answers whether that directory holds a `.sln` marker. A
+    /// child project checks its own directory first, then walks upward
+    /// through its in-repo ancestors until a solution root is found or the
+    /// repository root has been scanned.
+    async fn is_workspace(&mut self, path: &Path, max_depth: usize) -> bool {
         let Some(parent) = path.parent() else {
             return false;
         };
-        for dir in parent.ancestors() {
+        for dir in parent.ancestors().take(max_depth) {
             if let Some(&cached) = self.is_workspace_cache.get(dir) {
                 if cached {
                     return true;
@@ -337,7 +346,13 @@ impl ProjectFinder for CSharpProjectFinder {
         // `.csproj` (meaningful on Unity/dotnet monorepos).
         let (version, project_refs) = Self::parse_csproj_metadata(&csproj_content)
             .with_context(|| format!("Failed to parse C# project XML: {}", path.display()))?;
-        let is_workspace = self.is_workspace(path).await;
+        // Bound the ancestor walk to the repository root: `relative_path`
+        // is repo-root-relative, so its component count is exactly how many
+        // ancestors of the manifest's parent lie inside the repo. A `.sln`
+        // above the repo root therefore cannot influence classification.
+        let is_workspace = self
+            .is_workspace(path, relative_path.components().count())
+            .await;
 
         // Hoist the map key allocation out of both arms: the old shape
         // built a `(PathBuf, Project)` tuple, which forced each branch
@@ -685,8 +700,8 @@ mod tests {
     ///
     /// Complements `test_visit_workspace_with_sln`: that test asserts the
     /// classification is correct; this test asserts the SYSCALL SAVINGS
-    /// is real. Together they pin both halves of the retry-now#0029
-    /// improvement (correct classification AND deduplicated read_dir).
+    /// is real. Together they pin both halves of the ancestor-scan cache
+    /// (correct classification AND deduplicated read_dir).
     #[tokio::test]
     async fn test_is_workspace_cache_reuses_result_for_siblings() {
         let temp_dir = TempDir::new().unwrap();
@@ -784,6 +799,69 @@ mod tests {
         );
         assert_eq!(finder.is_workspace_cache.get(&project_dir), Some(&false));
         assert_eq!(finder.is_workspace_cache.get(temp_dir.path()), Some(&true));
+
+        temp_dir.close().unwrap();
+    }
+
+    /// Regression: a decoy `.sln` ABOVE the repository root must NOT
+    /// classify an in-repo `.csproj` as `Project::Workspace`. The ancestor
+    /// walk is bounded by `relative_path.components().count()`, so it scans
+    /// only the manifest's in-repo ancestors (down to the repo root) and
+    /// never reaches the out-of-repo directory holding the stray solution
+    /// file. Project discovery is git-scoped; a `Solution.sln` in the user's
+    /// home dir, the drive root, or a sibling checkout must not silently flip
+    /// publish-command selection for every repo project. Complements
+    /// `test_visit_workspace_with_ancestor_sln`, which pins that an IN-repo
+    /// ancestor `.sln` still classifies as Workspace.
+    #[tokio::test]
+    async fn test_visit_package_ignores_sln_above_repo_root() {
+        let temp_dir = TempDir::new().unwrap();
+        // The simulated repo root is a nested subdir; the decoy solution
+        // file lives one level ABOVE it (outside the repo).
+        let repo_root = temp_dir.path().join("repo");
+        let project_dir = repo_root.join("src");
+        let csproj_path = project_dir.join("MyProject.csproj");
+        fs::create_dir_all(&project_dir).unwrap();
+        // Decoy `.sln` ABOVE the repo root — must be ignored.
+        fs::write(
+            temp_dir.path().join("Solution.sln"),
+            "Microsoft Visual Studio Solution File",
+        )
+        .unwrap();
+        fs::write(
+            &csproj_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        // `relative_path` is repo-root-relative with 2 components, so the
+        // walk scans `<repo_root>/src` and `<repo_root>` — never `temp_dir`,
+        // where the decoy `.sln` lives.
+        finder
+            .visit(&csproj_path, &PathBuf::from("src/MyProject.csproj"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(
+            matches!(projects[0], Project::Package(_)),
+            "expected a decoy .sln above the repo root to be ignored (Package), got {:?}",
+            projects[0]
+        );
+        // The out-of-repo directory holding the decoy `.sln` was never
+        // scanned, so it must not appear in the memoization cache.
+        assert!(
+            !finder.is_workspace_cache.contains_key(temp_dir.path()),
+            "out-of-repo ancestor must not be scanned/cached, cache: {:?}",
+            finder.is_workspace_cache
+        );
 
         temp_dir.close().unwrap();
     }
@@ -1034,7 +1112,7 @@ mod tests {
     // `PackageReference` decoy that must be ignored) so any future refactor
     // that reintroduces a second XML walk — or accidentally drops one of
     // the outputs — trips a failing test immediately. Serves as the
-    // regression anchor called out in the batch plan for iteration 0027.
+    // regression anchor for the single-pass metadata-parse consolidation.
     #[test]
     fn test_parse_csproj_metadata_returns_version_and_refs_in_one_pass() {
         let content = r#"<Project Sdk="Microsoft.NET.Sdk">
@@ -1068,8 +1146,8 @@ mod tests {
     #[case("MyProject.txt", None)]
     // Case-insensitive `.csproj` — mixed-case suffixes (common in Windows
     // shell / hand-written project files) resolve the same as lowercase.
-    // Regression anchor for the batch-plan item that flipped
-    // `strip_suffix(".csproj")` to `eq_ignore_ascii_case`.
+    // Regression anchor for the switch from `strip_suffix(".csproj")`
+    // to `eq_ignore_ascii_case`.
     #[case("MyProject.CSPROJ", Some("MyProject"))]
     #[case("MyProject.CsProj", Some("MyProject"))]
     #[case(r"..\CoreLib\CoreLib.CSPROJ", Some("CoreLib"))]

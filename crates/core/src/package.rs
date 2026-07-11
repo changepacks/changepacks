@@ -375,7 +375,8 @@ pub(crate) mod tests {
 
     #[test]
     fn test_set_name_updates_via_impl_basic_accessors_macro() {
-        // Regression guard for item 10: MockPackage's `Package` impl uses
+        // Regression guard for the shared-macro accessor contract:
+        // MockPackage's `Package` impl uses
         // the shared `crate::impl_basic_accessors!()` macro, so `set_name`
         // MUST update the underlying `name` field (not fall through to the
         // trait's default no-op). If the macro's field-name contract

@@ -94,8 +94,8 @@ impl ProjectFinder for PythonProjectFinder {
         // Rename `relative_path_buf` → `relative_path_key` to match the
         // Dart, Java, and CSharp finders' local naming convention
         // (matches the docstring at `crates/dart/src/finder.rs`
-        // claiming "Node, Python, CSharp, Java, and post-item-2 Rust"
-        // all use this name). Pure rename — behavior unchanged.
+        // claiming "Node, Python, CSharp, Java, and Rust" all use
+        // this name). Pure rename — behavior unchanged.
         let relative_path_key = relative_path.to_path_buf();
 
         // Hoist the `[tool.uv]` lookup ONCE: both the workspace guard
