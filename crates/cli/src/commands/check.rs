@@ -80,24 +80,10 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     } else {
         match args.format {
             FormatOptions::Stdout => {
-                // Fast-path: when `update_map` is empty (the dominant case for a
-                // repo with no pending changepack logs), skip the per-project
-                // `get_relative_path` allocation entirely — the lookup can never
-                // succeed against an empty map, so its `PathBuf` would only be
-                // allocated and immediately dropped. Byte-identical output.
-                let update_map_empty = update_map.is_empty();
                 for project in projects {
                     let changed_marker = changed_marker(project);
-                    // Fast-path preserved: when `update_map` is empty, skip the
-                    // shared resolver entirely (its `get_relative_path` key can
-                    // never hit an empty map — the dominant case). Otherwise
-                    // delegate to `version_display_with_update`, the one resolver
-                    // shared with `format_project_line`'s tree / orphan path.
-                    let version_str = if update_map_empty {
-                        project.version_display()
-                    } else {
-                        version_display_with_update(project, &ctx.repo_root_path, &update_map)?
-                    };
+                    let version_str =
+                        version_display_with_update(project, &ctx.repo_root_path, &update_map)?;
                     println!(
                         "{}{}",
                         project.format_line(Some(&version_str)),
@@ -431,6 +417,9 @@ fn version_display_with_update(
     repo_root_path: &Path,
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
 ) -> Result<String> {
+    if update_map.is_empty() {
+        return Ok(project.version_display());
+    }
     let key = get_relative_path_ref(repo_root_path, project.path())?;
     Ok(match update_map.get(key) {
         Some(update_entry) => display_update(project.version(), update_entry.0)?,

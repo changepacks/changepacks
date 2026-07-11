@@ -60,27 +60,36 @@ pub async fn handle_changepack_with_prompter(
 
     let mut update_map = HashMap::<PathBuf, UpdateType>::with_capacity(projects.len());
 
+    // Compute each project's relative path exactly ONCE per invocation. A
+    // project's relative path never changes across update-type turns, so
+    // pairing every `&Project` with its `PathBuf` up front — instead of
+    // rebuilding `rel_paths` inside the loop (once per surviving project per
+    // turn, up to three Major/Minor/Patch turns) — allocates each `PathBuf`
+    // a single time. `projects` is already sorted (workspace first) and
+    // `into_iter` preserves that order, so `entries` inherits the same
+    // display order. Error propagation is unchanged: the first turn
+    // previously walked every project in this same sorted order, so any
+    // `get_relative_path` failure still surfaces at the same point with the
+    // same message.
+    let mut entries: Vec<(&Project, PathBuf)> = projects
+        .into_iter()
+        .map(|p| Ok((p, get_relative_path(&ctx.repo_root_path, p.path())?)))
+        .collect::<Result<_>>()?;
+
     let update_types: &[UpdateType] = if let Some(update_type) = args.update_type.as_ref() {
         std::slice::from_ref(update_type)
     } else {
         &[UpdateType::Major, UpdateType::Minor, UpdateType::Patch]
     };
     for &update_type in update_types {
-        if projects.is_empty() {
+        if entries.is_empty() {
             break;
         }
 
-        // Compute relative paths ONCE per update-type turn — up to three
-        // turns (Major / Minor / Patch) — so both the "insert into
-        // update_map" pass and the "keep_projects" filter reuse them
-        // instead of re-allocating a `PathBuf` per (project × pass) pair.
-        // The vector is then CONSUMED by the single combined pass below
-        // so each entry either moves into `update_map` (selected) or is
-        // dropped with the project (not selected) — no clone.
-        let rel_paths: Vec<PathBuf> = projects
-            .iter()
-            .map(|p| get_relative_path(&ctx.repo_root_path, p.path()))
-            .collect::<Result<_>>()?;
+        // Cheap per-turn view of the surviving projects for the prompter /
+        // `--yes` / single-patch branches — a pointer collect over `entries`,
+        // no path recomputation (each path was allocated once, up front).
+        let projects: Vec<&Project> = entries.iter().map(|(p, _)| *p).collect();
 
         let selected_projects = if args.yes {
             projects.clone()
@@ -109,34 +118,35 @@ pub async fn handle_changepack_with_prompter(
 
         // Identify selected projects by pointer equality — every entry
         // in `selected_projects` is a copy of the `&Project` reference
-        // that already lives in `projects`, so their addresses match and
-        // an O(1) HashSet lookup replaces the previous per-project
-        // `get_relative_path` recomputation. Then a single combined pass
-        // fuses "insert if selected" and "keep if not" so `projects` is
-        // walked ONCE per update-type turn instead of twice — and the
-        // sort order is preserved because `keep_projects` accumulates in
-        // input order, matching the previous filter behaviour byte-for-byte.
+        // that already lives in `entries`, so their addresses match and
+        // an O(1) HashSet lookup drives the combined pass below. That pass
+        // fuses "insert if selected" and "keep if not" so `entries` is
+        // walked ONCE per update-type turn: selected entries MOVE their
+        // `PathBuf` into `update_map` (no clone), unselected entries are
+        // kept for the next turn. The sort order is preserved because
+        // `keep_entries` accumulates in input order, matching the previous
+        // filter behaviour byte-for-byte.
         //
         // Preallocate: `HashSet::from_iter` (via `.collect()`) does NOT reserve
         // from `Iterator::size_hint`, so the fill rehashes as it grows — and it
         // runs inside the per-update-type loop (≤3 turns). `selected_projects.len()`
         // is the exact upper bound, so seeding + `.extend(...)` skips those
         // rehashes. Matches the preallocation policy already applied throughout
-        // this file (`defaults`, `keep_projects`) and the workspace. Byte-identical
+        // this file (`defaults`, `keep_entries`) and the workspace. Byte-identical
         // pointer-set membership.
         let mut selected_ptrs: std::collections::HashSet<*const Project> =
             std::collections::HashSet::with_capacity(selected_projects.len());
         selected_ptrs.extend(selected_projects.iter().map(|&p| std::ptr::from_ref(p)));
 
-        let mut keep_projects: Vec<_> = Vec::with_capacity(projects.len());
-        for (project, rel_path) in projects.iter().copied().zip(rel_paths) {
+        let mut keep_entries: Vec<(&Project, PathBuf)> = Vec::with_capacity(entries.len());
+        for (project, rel_path) in entries {
             if selected_ptrs.contains(&std::ptr::from_ref(project)) {
                 update_map.insert(rel_path, update_type);
             } else {
-                keep_projects.push(project);
+                keep_entries.push((project, rel_path));
             }
         }
-        projects = keep_projects;
+        entries = keep_entries;
     }
 
     if update_map.is_empty() {

@@ -113,33 +113,29 @@ pub async fn find_project_dirs(
         // file passes through here but only a handful survive the filter.
         // Joining after the guard skips one `PathBuf::join` allocation per
         // ignored file — byte-identical semantics because `abs_path` is only
-        // used inside the `try_join_all` visit call below.
+        // computed (lazily) for the finder `visit` calls below.
         if let Some(ref gitignore) = gitignore
             && gitignore.matched(path, false).is_ignore()
         {
             continue;
         }
 
-        // Skip if no finder can visit this path — avoids allocating abs_path
-        // when it would be immediately dropped. The filtered try_join_all below
-        // will re-check the same predicate for matching files (intended).
-        if !project_finders
-            .iter()
-            .any(|finder| finder_can_visit_path(finder.as_ref(), path))
-        {
-            continue;
+        // Dispatch to every finder that can visit this path in ONE sequential
+        // pass. `abs_path` is computed lazily via `get_or_insert_with`, so the
+        // `git_root_path.join(path)` allocation happens only once a finder
+        // actually matches — never for files no finder claims. Each finder's
+        // `project_files()` list is pairwise disjoint (at most one finder
+        // matches a path), so a sequential `.await` per finder — rather than
+        // `try_join_all` over a filtered set — preserves visit order with no
+        // concurrency to gain, and the first `Err` still aborts the walk.
+        let mut abs_path: Option<PathBuf> = None;
+        for finder in project_finders.iter_mut() {
+            if !finder_can_visit_path(finder.as_ref(), path) {
+                continue;
+            }
+            let abs = abs_path.get_or_insert_with(|| git_root_path.join(path));
+            finder.visit(abs, path).await?;
         }
-
-        // Insert absolute path using git_root_path.join(parent).
-        let abs_path = git_root_path.join(path);
-
-        futures::future::try_join_all(
-            project_finders
-                .iter_mut()
-                .filter(|finder| finder_can_visit_path(finder.as_ref(), path))
-                .map(async |finder| finder.visit(&abs_path, path).await),
-        )
-        .await?;
     }
 
     // Post-visit finalization (resolves deferred state like workspace-inherited versions)
@@ -279,11 +275,21 @@ pub async fn find_project_dirs(
             }),
     );
     unique_files.extend(diff);
-    for file in &unique_files {
-        let abs_path = git_root_path.join(file);
-        for finder in project_finders.iter_mut() {
-            finder.check_changed(&abs_path)?;
-        }
+
+    // Resolve every unique changed file to an absolute path ONCE, then dispatch
+    // the whole batch to each finder. The previous file-major nested loop
+    // rebuilt a fresh `Vec<&mut Project>` (via `projects_mut()`) for every
+    // (file, finder) pair — `F` files × `M` finders allocations. `check_changed_many`
+    // takes one `projects_mut()` snapshot per finder, dropping that to `M`
+    // Vec allocations total. Order-flip safety (project-major vs file-major) is
+    // guaranteed by `Project::check_changed` monotonicity — see its doc comment
+    // on `ProjectFinder::check_changed_many`.
+    let abs_paths: Vec<PathBuf> = unique_files
+        .iter()
+        .map(|file| git_root_path.join(file))
+        .collect();
+    for finder in project_finders.iter_mut() {
+        finder.check_changed_many(&abs_paths)?;
     }
 
     Ok(())

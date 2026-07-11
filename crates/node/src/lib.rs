@@ -340,16 +340,14 @@ pub(crate) async fn dry_run_publish_command_for_path(
     path: &Path,
     relative_path: &Path,
     config: &Config,
-) -> Option<String> {
+) -> String {
     if let Some(command) = config_command(&config.publish_dry_run, relative_path) {
-        return Some(command);
+        return command;
     }
-    Some(
-        detect_package_manager_recursive_async(path)
-            .await
-            .dry_run_publish_command()
-            .to_string(),
-    )
+    detect_package_manager_recursive_async(path)
+        .await
+        .dry_run_publish_command()
+        .to_string()
 }
 
 async fn publish_path_dirs_for_path(path: &Path) -> Vec<PathBuf> {
@@ -380,7 +378,7 @@ pub(crate) async fn run_dry_run_publish_for_path(
     let command = dry_run_publish_command_for_path(path, relative_path, config).await;
     let path_dirs = publish_path_dirs_for_path(path).await;
     changepacks_core::publish::run_dry_run_publish_flow(
-        command.as_deref(),
+        Some(&command),
         path,
         &path_dirs,
         missing_dir_message,

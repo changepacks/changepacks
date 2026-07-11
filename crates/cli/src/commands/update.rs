@@ -22,6 +22,7 @@ use crate::{
 };
 
 type UpdateProjectMut<'a> = (&'a mut Project, UpdateType);
+type UpdateProjectRef<'a> = (&'a Project, UpdateType);
 type WorkspaceRef<'a> = &'a dyn Workspace;
 
 #[derive(Args, Debug)]
@@ -73,27 +74,41 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         return Ok(());
     }
 
+    let ignore_is_empty = ctx.config.ignore.is_empty();
     let mut project_finders = ctx.project_finders;
-    let mut all_finders = get_finders();
+    let all_finders = if ignore_is_empty {
+        None
+    } else {
+        let mut all_finders = get_finders();
 
-    // Reuse the ThreadSafeRepository already discovered by CommandContext::new
-    // instead of re-running `gix::discover` per invocation. `all_config` clears
-    // only the `ignore` filter (so nothing is filtered out here) while
-    // preserving the rest of the user's config — critically `base_branch`, so a
-    // repo with a custom `baseBranch` and no `main` is still walked correctly.
-    // `ctx.config` is not read after this point, so move it instead of cloning.
-    let all_config = changepacks_core::Config {
-        ignore: Vec::new(),
-        ..ctx.config
+        // Reuse the ThreadSafeRepository already discovered by CommandContext::new
+        // instead of re-running `gix::discover` per invocation. `all_config` clears
+        // only the `ignore` filter (so nothing is filtered out here) while
+        // preserving the rest of the user's config — critically `base_branch`, so a
+        // repo with a custom `baseBranch` and no `main` is still walked correctly.
+        // `ctx.config` is not read after this point, so move it instead of cloning.
+        let all_config = changepacks_core::Config {
+            ignore: Vec::new(),
+            ..ctx.config
+        };
+        find_project_dirs(&ctx.repo, &mut all_finders, &all_config, args.remote).await?;
+        Some(all_finders)
     };
-    find_project_dirs(&ctx.repo, &mut all_finders, &all_config, args.remote).await?;
 
     // Apply reverse dependency updates across all discovered projects.
-    let all_projects = collect_projects(&all_finders);
-    apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
+    if let Some(all_finders) = all_finders.as_ref() {
+        let all_projects = collect_projects(all_finders);
+        apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
 
-    // Merge workspace-inherited package updates into workspace entries
-    merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
+        // Merge workspace-inherited package updates into workspace entries
+        merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
+    } else {
+        let all_projects = collect_projects(&project_finders);
+        apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
+
+        // Merge workspace-inherited package updates into workspace entries
+        merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
+    }
 
     if let FormatOptions::Stdout = args.format {
         println!("Updates found:");
@@ -135,42 +150,78 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         });
     }
 
-    let (mut update_projects, workspace_projects) = collect_update_projects(
-        &mut project_finders,
-        &all_finders,
-        &update_map,
-        &ctx.repo_root_path,
-    )?;
+    if let Some(all_finders) = all_finders.as_ref() {
+        let (mut update_projects, workspace_projects) = collect_update_projects(
+            &mut project_finders,
+            all_finders,
+            &update_map,
+            &ctx.repo_root_path,
+        )?;
 
-    if let FormatOptions::Stdout = args.format {
-        for (project, update_type) in &update_projects {
-            println!(
-                "{} {}",
-                project,
-                display_update(project.version(), *update_type)?
-            );
+        if let FormatOptions::Stdout = args.format {
+            for (project, update_type) in &update_projects {
+                println!(
+                    "{} {}",
+                    project,
+                    display_update(project.version(), *update_type)?
+                );
+            }
         }
-    }
 
-    if args.dry_run {
-        args.format.print("Dry run, no updates will be made");
-        return Ok(());
-    }
+        if args.dry_run {
+            args.format.print("Dry run, no updates will be made");
+            return Ok(());
+        }
 
-    // confirm
-    let confirm = if args.yes {
-        true
+        // confirm
+        let confirm = if args.yes {
+            true
+        } else {
+            prompter.confirm("Are you sure you want to update the projects?")?
+        };
+
+        if !confirm {
+            args.format.print("Update cancelled");
+            return Ok(());
+        }
+
+        apply_updates(&mut update_projects, &workspace_projects).await?;
+        drop(update_projects);
     } else {
-        prompter.confirm("Are you sure you want to update the projects?")?
-    };
+        let update_projects =
+            collect_update_project_refs(&project_finders, &update_map, &ctx.repo_root_path)?;
 
-    if !confirm {
-        args.format.print("Update cancelled");
-        return Ok(());
+        if let FormatOptions::Stdout = args.format {
+            for (project, update_type) in &update_projects {
+                println!(
+                    "{} {}",
+                    project,
+                    display_update(project.version(), *update_type)?
+                );
+            }
+        }
+
+        if args.dry_run {
+            args.format.print("Dry run, no updates will be made");
+            return Ok(());
+        }
+
+        // confirm
+        let confirm = if args.yes {
+            true
+        } else {
+            prompter.confirm("Are you sure you want to update the projects?")?
+        };
+
+        if !confirm {
+            args.format.print("Update cancelled");
+            return Ok(());
+        }
+
+        drop(update_projects);
+        apply_updates_from_project_finders(&mut project_finders, &update_map, &ctx.repo_root_path)
+            .await?;
     }
-
-    apply_updates(&mut update_projects, &workspace_projects).await?;
-    drop(update_projects);
 
     // Snapshot applied paths before gen_changepack_result_map drains update_map
     let applied_paths = language_filter_active.then(|| {
@@ -216,8 +267,18 @@ fn collect_update_projects<'a>(
     // and `apply_reverse_dependencies`. `workspace_projects` is left as
     // `Vec::new()` because its true upper bound requires a walk of every
     // finder's projects — a modest default doesn't beat lazy allocation.
+    let update_projects = collect_update_project_muts(project_finders, update_map, repo_root_path)?;
+    let workspace_projects = collect_workspace_projects(all_finders);
+    Ok((update_projects, workspace_projects))
+}
+
+#[cfg(not(tarpaulin_include))]
+fn collect_update_project_muts<'a>(
+    project_finders: &'a mut [Box<dyn ProjectFinder>],
+    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    repo_root_path: &Path,
+) -> Result<Vec<UpdateProjectMut<'a>>> {
     let mut update_projects = Vec::with_capacity(update_map.len());
-    let mut workspace_projects = Vec::new();
 
     for finder in project_finders {
         for project in finder.projects_mut() {
@@ -229,7 +290,37 @@ fn collect_update_projects<'a>(
         }
     }
 
-    for finder in all_finders {
+    update_projects.sort();
+    Ok(update_projects)
+}
+
+#[cfg(not(tarpaulin_include))]
+fn collect_update_project_refs<'a>(
+    project_finders: &'a [Box<dyn ProjectFinder>],
+    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    repo_root_path: &Path,
+) -> Result<Vec<UpdateProjectRef<'a>>> {
+    let mut update_projects = Vec::with_capacity(update_map.len());
+
+    for finder in project_finders {
+        for project in finder.projects() {
+            if let Some((update_type, _)) =
+                update_map.get(get_relative_path_ref(repo_root_path, project.path())?)
+            {
+                update_projects.push((project, *update_type));
+            }
+        }
+    }
+
+    update_projects.sort();
+    Ok(update_projects)
+}
+
+#[cfg(not(tarpaulin_include))]
+fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<WorkspaceRef<'a>> {
+    let mut workspace_projects = Vec::new();
+
+    for finder in finders {
         for project in finder.projects() {
             if let Project::Workspace(workspace) = project {
                 workspace_projects.push(workspace.as_ref());
@@ -237,22 +328,41 @@ fn collect_update_projects<'a>(
         }
     }
 
-    update_projects.sort();
-    Ok((update_projects, workspace_projects))
+    workspace_projects
+}
+
+#[cfg(not(tarpaulin_include))]
+async fn apply_updates_from_project_finders(
+    project_finders: &mut [Box<dyn ProjectFinder>],
+    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    repo_root_path: &Path,
+) -> Result<()> {
+    let mut update_projects =
+        collect_update_project_muts(project_finders, update_map, repo_root_path)?;
+    apply_project_version_updates(&mut update_projects).await?;
+    drop(update_projects);
+
+    let workspace_projects = collect_workspace_projects(project_finders);
+    if workspace_projects.is_empty() {
+        return Ok(());
+    }
+
+    let update_projects = collect_update_project_refs(project_finders, update_map, repo_root_path)?;
+    let mut projects: Vec<&dyn Package> = Vec::with_capacity(update_projects.len());
+    for (project, _) in update_projects {
+        if let Project::Package(package) = project {
+            projects.push(package.as_ref());
+        }
+    }
+
+    apply_workspace_dependency_updates(&workspace_projects, &projects).await
 }
 
 async fn apply_updates(
     update_projects: &mut [UpdateProjectMut<'_>],
     workspace_projects: &[WorkspaceRef<'_>],
 ) -> Result<()> {
-    futures::future::join_all(
-        update_projects
-            .iter_mut()
-            .map(|(project, update_type)| project.update_version(*update_type)),
-    )
-    .await
-    .into_iter()
-    .collect::<Result<()>>()?;
+    apply_project_version_updates(update_projects).await?;
 
     // Fast-path the dominant no-op case: a package-only repo has zero
     // workspaces, so the `Vec<&dyn Package>` build + walk below and the
@@ -283,16 +393,34 @@ async fn apply_updates(
         }
     }
 
+    apply_workspace_dependency_updates(workspace_projects, &projects).await?;
+
+    Ok(())
+}
+
+async fn apply_project_version_updates(update_projects: &mut [UpdateProjectMut<'_>]) -> Result<()> {
     futures::future::join_all(
-        workspace_projects
-            .iter()
-            .map(|workspace| workspace.update_workspace_dependencies(&projects)),
+        update_projects
+            .iter_mut()
+            .map(|(project, update_type)| project.update_version(*update_type)),
     )
     .await
     .into_iter()
-    .collect::<Result<()>>()?;
+    .collect::<Result<()>>()
+}
 
-    Ok(())
+async fn apply_workspace_dependency_updates(
+    workspace_projects: &[WorkspaceRef<'_>],
+    projects: &[&dyn Package],
+) -> Result<()> {
+    futures::future::join_all(
+        workspace_projects
+            .iter()
+            .map(|workspace| workspace.update_workspace_dependencies(projects)),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<()>>()
 }
 
 /// Merge workspace-inherited package updates into workspace entries.

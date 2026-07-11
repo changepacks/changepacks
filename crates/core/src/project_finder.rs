@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::project::Project;
 use anyhow::Result;
@@ -206,6 +206,34 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
         }
         Ok(())
     }
+    /// Batch variant of [`check_changed`](Self::check_changed): mark every
+    /// project against every path in `paths` from ONE `projects_mut()` call.
+    ///
+    /// The driver dispatches every changed file to every finder. The per-file
+    /// [`check_changed`](Self::check_changed) rebuilds the `Vec<&mut Project>`
+    /// via `projects_mut()` once per file, so `F` changed files × `M` finders
+    /// cost `F × M` fresh Vec allocations. Collecting the paths once and
+    /// looping project-major here collapses that to one Vec per finder (`M`
+    /// total).
+    ///
+    /// The project-major / path-major order flip is behavior-preserving:
+    /// [`Project::check_changed`] is monotonic — it early-returns once the
+    /// project is already changed and only ever sets `changed = true` via the
+    /// pure, stateless `should_mark_changed`. A project ends up changed iff
+    /// *any* path matches, an order-independent logical OR, so visiting all
+    /// paths for one project before moving to the next yields an identical
+    /// result to the previous file-major traversal.
+    ///
+    /// # Errors
+    /// Returns error if checking changed status fails for any project.
+    fn check_changed_many(&mut self, paths: &[PathBuf]) -> Result<()> {
+        for project in self.projects_mut() {
+            for path in paths {
+                project.check_changed(path)?;
+            }
+        }
+        Ok(())
+    }
     /// Post-visit processing hook for resolving deferred state (e.g., workspace-inherited versions).
     /// Called once after all `visit()` calls complete.
     /// # Errors
@@ -398,6 +426,67 @@ mod tests {
         // Only project1 should be changed
         assert!(finder.projects()[0].is_changed());
         assert!(!finder.projects()[1].is_changed());
+    }
+
+    #[test]
+    fn test_project_finder_check_changed_many() {
+        let package1 = MockPackage::new("pkg1", "/project1/package.json");
+        let package2 = MockPackage::new("pkg2", "/project2/package.json");
+        let workspace = MockWorkspace::new("root", "/project3/package.json");
+        let mut finder = MockProjectFinder::new()
+            .with_package(package1)
+            .with_package(package2)
+            .with_workspace(workspace);
+
+        // One batch: a file under project1 and a file under project3 (the
+        // workspace); nothing under project2. `check_changed_many` must mark
+        // exactly project1 and project3 — identical to the result the per-file
+        // `check_changed` would produce, proving the project-major loop order
+        // is behavior-preserving across both Package and Workspace variants.
+        let paths = [
+            PathBuf::from("/project1/src/index.js"),
+            PathBuf::from("/project3/lib/mod.rs"),
+        ];
+        finder.check_changed_many(&paths).unwrap();
+
+        assert!(finder.projects()[0].is_changed());
+        assert!(!finder.projects()[1].is_changed());
+        assert!(finder.projects()[2].is_changed());
+    }
+
+    #[test]
+    fn test_project_finder_check_changed_many_matches_per_file_traversal() {
+        // Same inputs fed to the per-file `check_changed` (file-major) and the
+        // batched `check_changed_many` (project-major) must land the two
+        // finders in an identical changed-state, locking the equivalence the
+        // driver relies on.
+        let paths = [
+            PathBuf::from("/project1/src/index.js"),
+            PathBuf::from("/project2/README.md"),
+        ];
+
+        let mut file_major = MockProjectFinder::new()
+            .with_package(MockPackage::new("pkg1", "/project1/package.json"))
+            .with_package(MockPackage::new("pkg2", "/project2/package.json"));
+        for path in &paths {
+            file_major.check_changed(path).unwrap();
+        }
+
+        let mut project_major = MockProjectFinder::new()
+            .with_package(MockPackage::new("pkg1", "/project1/package.json"))
+            .with_package(MockPackage::new("pkg2", "/project2/package.json"));
+        project_major.check_changed_many(&paths).unwrap();
+
+        assert_eq!(
+            file_major.projects()[0].is_changed(),
+            project_major.projects()[0].is_changed()
+        );
+        assert_eq!(
+            file_major.projects()[1].is_changed(),
+            project_major.projects()[1].is_changed()
+        );
+        assert!(project_major.projects()[0].is_changed());
+        assert!(project_major.projects()[1].is_changed());
     }
 
     #[test]
