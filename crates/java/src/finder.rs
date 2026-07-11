@@ -20,7 +20,7 @@ use crate::{package::GradlePackage, workspace::GradleWorkspace};
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["build.gradle.kts", "build.gradle"];
 
-/// OS-specific Java executable filename, used by `which_java` and
+/// OS-specific Java executable filename, used by `which_java_in` and
 /// `java_home_has_java` to avoid repeating the `cfg!(windows)` branch.
 #[cfg(windows)]
 const JAVA_EXECUTABLE: &str = "java.exe";
@@ -84,23 +84,13 @@ fn which_java_in(path_var: Option<&OsStr>) -> Option<PathBuf> {
     }
     for dir in std::env::split_paths(path_var) {
         let candidate = dir.join(JAVA_EXECUTABLE);
-        // Use blocking I/O here since this is a sync function.
-        // Callers (which_java) wrap this in async context.
+        // Use blocking I/O here since this is a sync function; the async
+        // caller (`java_is_available`) invokes it inline.
         if candidate.is_file() {
             return Some(candidate);
         }
     }
     None
-}
-
-/// Check if `java` is available on PATH.
-///
-/// Excluded from coverage: depends on the host's PATH and a real `java`
-/// binary; meaningful coverage requires a Java install which CI cannot
-/// guarantee on every matrix runner.
-#[cfg(not(tarpaulin_include))]
-async fn which_java() -> Option<PathBuf> {
-    which_java_in(std::env::var_os("PATH").as_deref())
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -142,7 +132,7 @@ async fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
         let gradlew = current.join(gradlew_name);
         // Probe with the shared `changepacks_core::is_regular_file` (a
         // `tokio::fs::metadata().is_file()` check) so this file-vs-dir question
-        // matches the sibling `which_java` probe above. Its internal
+        // matches the sibling `java_home_has_java` probe above. Its internal
         // `unwrap_or(false)` preserves the previous "stat error (permission
         // denied, broken symlink) → treat as not found, keep walking up"
         // semantics, and it additionally rejects a *directory* named
@@ -207,7 +197,8 @@ fn extract_gradle_project_dependencies(content: &str) -> Vec<String> {
 #[cfg(not(tarpaulin_include))]
 async fn java_is_available() -> bool {
     let java_home = std::env::var_os("JAVA_HOME");
-    java_home_has_java(java_home.as_deref()).await || which_java().await.is_some()
+    java_home_has_java(java_home.as_deref()).await
+        || which_java_in(std::env::var_os("PATH").as_deref()).is_some()
 }
 
 /// Get project properties using gradlew command.
@@ -233,8 +224,9 @@ async fn get_gradle_properties(
 
     // Gradle requires Java. Error early with a clear message rather than
     // letting gradlew produce a confusing "JAVA_HOME is not set" wall of text.
-    // `which_java` is now async (it awaits `is_regular_file`), so hoist the
-    // short-circuiting OR into a local before feeding `anyhow::ensure!`.
+    // The availability probe (`java_is_available`) is async (it awaits
+    // `is_regular_file`), so its result arrives here as the pre-computed
+    // `java_available` local fed to `anyhow::ensure!`.
     anyhow::ensure!(
         java_available,
         "Java is required for Gradle projects but JAVA_HOME is not set and 'java' was not found on PATH.\n\

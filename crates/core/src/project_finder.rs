@@ -404,4 +404,33 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(finder.projects().len(), 1);
     }
+
+    #[tokio::test]
+    async fn test_is_regular_file_with_existing_file() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "test content").unwrap();
+
+        let result = is_regular_file(&file_path).await;
+        assert!(result);
+    }
+
+    #[tokio::test]
+    async fn test_is_regular_file_with_directory() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let dir_path = temp_dir.path().join("subdir");
+        std::fs::create_dir(&dir_path).unwrap();
+
+        let result = is_regular_file(&dir_path).await;
+        assert!(!result);
+    }
+
+    #[tokio::test]
+    async fn test_is_regular_file_with_missing_path() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let missing_path = temp_dir.path().join("nonexistent.txt");
+
+        let result = is_regular_file(&missing_path).await;
+        assert!(!result);
+    }
 }

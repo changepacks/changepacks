@@ -165,7 +165,7 @@ pub async fn handle_changepack_with_prompter(
         return Ok(());
     }
     let changepack_log = ChangePackLog::new(update_map, notes);
-    // random uuid
+    // random nanoid (21-char URL-safe id) for a unique log filename
     let changepack_log_id = nanoid::nanoid!();
     let changepack_log_file = ctx
         .changepacks_dir

@@ -215,10 +215,10 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // waste (N `PathBuf` + N `String` allocs per project). Common on
     // single-package repos and workspaces that don't use `workspace:*`
     // / `workspace = true` / `[tool.uv.sources]` / `<ProjectReference/>`.
-    // `.any(...)` short-circuits on the first dep-carrying project, so
+    // `.all(...)` short-circuits on the first dep-carrying project, so
     // it's O(1) amortized when the rest of the function would have
     // fired anyway.
-    if !projects.iter().any(|p| !p.dependencies().is_empty()) {
+    if projects.iter().all(|p| p.dependencies().is_empty()) {
         return;
     }
 

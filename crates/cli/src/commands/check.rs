@@ -25,6 +25,11 @@ fn changed_marker(project: &Project) -> colored::ColoredString {
     }
 }
 
+/// Select the box-drawing tree connector for a node based on whether it is the last sibling.
+const fn tree_connector(is_last: bool) -> &'static str {
+    if is_last { "└── " } else { "├── " }
+}
+
 #[derive(Args, Debug)]
 #[command(about = "Check project status")]
 pub struct CheckArgs {
@@ -348,7 +353,7 @@ fn display_tree_node<'a>(
 
     // Only print the project line if this is the first time visiting it
     if is_first_visit {
-        let connector = if is_last { "└── " } else { "├── " };
+        let connector = tree_connector(is_last);
         println!(
             "{}{}{}",
             prefix,
@@ -380,11 +385,7 @@ fn display_tree_node<'a>(
                 // but still show all dependencies
                 if visited.contains(*dep_name) {
                     // If already visited, just print it without recursion to avoid loops
-                    let dep_connector = if is_last_dep {
-                        "└── "
-                    } else {
-                        "├── "
-                    };
+                    let dep_connector = tree_connector(is_last_dep);
                     println!(
                         "{}{}{}",
                         new_prefix,

@@ -124,10 +124,15 @@ impl Workspace for RustWorkspace {
                 // both match arms returned `Ok`), so the destructure moves
                 // out of the `&&`-let-chain into a plain irrefutable `let`
                 // followed by a `ver == old_version` guard. The refutable
-                // gates that still filter the branch (`as_inline_table_mut`,
+                // gates that still filter the branch (`as_table_like_mut`,
                 // `dep.get("path").is_some()`, `dep.get("version").as_str()`)
-                // stay in the `&&`-chain unchanged.
-                if let Some(dep) = value.as_inline_table_mut()
+                // stay in the `&&`-chain unchanged. `as_table_like_mut` accepts
+                // BOTH inline-table deps (`foo = { path = "...", version = "..."
+                // }`) AND sub-table deps (`[workspace.dependencies.foo]` with
+                // `path`/`version` keys), bringing the writer into parity with
+                // the reader's `as_table_like()` in `finder.rs`. String deps
+                // (`foo = "1.0"`) still yield `None`, so they remain skipped.
+                if let Some(dep) = value.as_table_like_mut()
                     && dep.get("path").is_some()
                     && let Some(ver_str) = dep.get("version").and_then(|v| v.as_str())
                 {
@@ -137,10 +142,16 @@ impl Workspace for RustWorkspace {
                     // swap version" policy lives next to `split_version`.
                     if split_version(ver_str).1 == old_version {
                         // `ver_str` borrows `dep`; build the owned bumped string
-                        // BEFORE the `dep["version"] = ...` mutable index
-                        // assignment so no shared borrow of `dep` outlives it.
+                        // BEFORE taking the `get_mut("version")` mutable borrow
+                        // so no shared borrow of `dep` outlives it. `TableLike`
+                        // exposes no `Index`/`[]` operator, so rewrite the value
+                        // in place via `get_mut` — never insert a `version` key
+                        // where none exists (the guard above already proved it
+                        // does).
                         let bumped = replace_version_keep_prefix(ver_str, &new_version);
-                        dep["version"] = bumped.into();
+                        if let Some(v) = dep.get_mut("version") {
+                            *v = toml_edit::value(bumped);
+                        }
                     }
                 }
             }
@@ -229,14 +240,17 @@ impl Workspace for RustWorkspace {
             let Some(package_name) = package.name() else {
                 continue;
             };
-            // Single lookup + type check via `get_mut(..).and_then(as_inline_table_mut)`:
+            // Single lookup + type check via `get_mut(..).and_then(as_table_like_mut)`:
             // the previous `.get(k).is_none()` guard + `dependencies[k]` index
             // did the same work in two steps and carried a panic surface on
             // `[]` indexing. `let-else` continues on either a missing key or
-            // a non-inline-table value — byte-identical semantics.
+            // a non-table-like value. `as_table_like_mut` matches BOTH inline-
+            // table deps (`foo = { version = "..." }`) AND sub-table deps
+            // (`[workspace.dependencies.foo]`), while string deps still yield
+            // `None` and are skipped.
             let Some(dep) = dependencies
                 .get_mut(package_name)
-                .and_then(toml_edit::Item::as_inline_table_mut)
+                .and_then(toml_edit::Item::as_table_like_mut)
             else {
                 continue;
             };
@@ -245,11 +259,15 @@ impl Workspace for RustWorkspace {
             {
                 // `current_version` borrows `dep`; delegate the prefix-
                 // preserving rebuild to the shared `replace_version_keep_prefix`
-                // and build the owned bumped string BEFORE the `dep["version"] =
-                // ...` mutable index assignment so no shared borrow of `dep`
-                // outlives it.
+                // and build the owned bumped string BEFORE taking the
+                // `get_mut("version")` mutable borrow so no shared borrow of
+                // `dep` outlives it. `TableLike` exposes no `Index`/`[]`
+                // operator, so rewrite the value in place via `get_mut` — never
+                // insert a `version` key where none exists.
                 let bumped = replace_version_keep_prefix(current_version, next_version);
-                dep["version"] = bumped.into();
+                if let Some(v) = dep.get_mut("version") {
+                    *v = toml_edit::value(bumped);
+                }
                 any_updated = true;
             }
         }
@@ -822,6 +840,305 @@ other_local = { path = "crates/other", version = "0.5.0" }
 
         // No [package] section created
         assert!(doc.get("package").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_syncs_subtable_dependencies() {
+        // Same sync as above, but the [workspace.dependencies] entries use the
+        // sub-table shape (`[workspace.dependencies.foo]`) instead of inline
+        // tables. Path deps sharing the workspace version should be bumped,
+        // with sibling keys (`path`, `features`) and the sub-table formatting
+        // preserved.
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.33"
+edition = "2024"
+
+[workspace.dependencies.vespera_core]
+path = "crates/vespera_core"
+version = "0.1.33"
+
+[workspace.dependencies.vespera_macro]
+version = "0.1.33"
+path = "crates/vespera_macro"
+features = ["derive"]
+
+[workspace.dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[workspace.dependencies.other_local]
+path = "crates/other"
+version = "0.5.0"
+"#,
+        )
+        .unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            None,
+            Some("0.1.33".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+
+        // [workspace.package].version bumped
+        assert_eq!(
+            doc["workspace"]["package"]["version"].as_str(),
+            Some("0.1.34")
+        );
+
+        let ws_deps = doc["workspace"]["dependencies"].as_table().unwrap();
+
+        // Sub-table path deps matching the old version are bumped
+        assert_eq!(
+            ws_deps["vespera_core"]["version"].as_str(),
+            Some("0.1.34"),
+            "sub-table path dep with matching version should be bumped"
+        );
+        assert_eq!(
+            ws_deps["vespera_macro"]["version"].as_str(),
+            Some("0.1.34"),
+            "sub-table path dep with matching version should be bumped"
+        );
+
+        // Sibling keys preserved on the bumped sub-table deps
+        assert_eq!(
+            ws_deps["vespera_core"]["path"].as_str(),
+            Some("crates/vespera_core")
+        );
+        assert_eq!(
+            ws_deps["vespera_macro"]["path"].as_str(),
+            Some("crates/vespera_macro")
+        );
+        assert_eq!(
+            ws_deps["vespera_macro"]["features"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "sibling features array should be preserved"
+        );
+
+        // Non-path (registry) sub-table dep is untouched even though its
+        // version equals the old workspace version.
+        assert_eq!(
+            ws_deps["serde"]["version"].as_str(),
+            Some("1.0"),
+            "non-path sub-table dep should remain unchanged"
+        );
+
+        // Path dep with a different version is untouched
+        assert_eq!(
+            ws_deps["other_local"]["version"].as_str(),
+            Some("0.5.0"),
+            "sub-table path dep with different version should remain unchanged"
+        );
+
+        // Sub-table shape + formatting preserved (not rewritten to inline)
+        assert!(content.contains("[workspace.dependencies.vespera_core]"));
+        assert!(content.contains(r#"path = "crates/vespera_core""#));
+
+        // No [package] section created for a virtual workspace
+        assert!(doc.get("package").is_none());
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_subtable_non_matching_untouched() {
+        // Sub-table deps that update_version must NOT sync:
+        //  - a registry dep (version present but NO `path`)
+        //  - a path dep whose version does not match the workspace version
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.33"
+edition = "2024"
+
+[workspace.dependencies.registry_only]
+version = "0.1.33"
+features = ["derive"]
+
+[workspace.dependencies.mismatched_local]
+path = "crates/mismatched"
+version = "0.5.0"
+"#,
+        )
+        .unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            None,
+            Some("0.1.33".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+
+        assert_eq!(
+            doc["workspace"]["package"]["version"].as_str(),
+            Some("0.1.34")
+        );
+
+        let ws_deps = doc["workspace"]["dependencies"].as_table().unwrap();
+
+        // No `path` → not a workspace member → left at its old version even
+        // though it happens to equal the workspace version.
+        assert_eq!(
+            ws_deps["registry_only"]["version"].as_str(),
+            Some("0.1.33"),
+            "registry sub-table dep without path should remain unchanged"
+        );
+
+        // Has `path` but a different version → not synced.
+        assert_eq!(
+            ws_deps["mismatched_local"]["version"].as_str(),
+            Some("0.5.0"),
+            "sub-table path dep with different version should remain unchanged"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_workspace_dependencies_subtable() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies.core]
+version = "1.0.0"
+path = "crates/core"
+
+[workspace.dependencies.utils]
+version = "2.0.0"
+path = "crates/utils"
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let mut core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            Some("1.1.0".to_string()),
+            PathBuf::from("/test/crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+        core_pkg.set_changed(true);
+
+        let packages: Vec<&dyn Package> = vec![&core_pkg];
+
+        workspace
+            .update_workspace_dependencies(&packages)
+            .await
+            .unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        let ws_deps = doc["workspace"]["dependencies"].as_table().unwrap();
+
+        // core sub-table dep bumped to the package version
+        assert_eq!(ws_deps["core"]["version"].as_str(), Some("1.1.0"));
+        // sibling path preserved
+        assert_eq!(ws_deps["core"]["path"].as_str(), Some("crates/core"));
+        // utils (not in the package set) untouched
+        assert_eq!(ws_deps["utils"]["version"].as_str(), Some("2.0.0"));
+
+        // Sub-table shape + formatting preserved
+        assert!(content.contains("[workspace.dependencies.core]"));
+        assert!(content.contains(r#"path = "crates/core""#));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_workspace_dependencies_subtable_without_version() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies.core]
+path = "crates/core"
+
+[workspace.dependencies.utils]
+version = "2.0.0"
+path = "crates/utils"
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            Some("1.1.0".to_string()),
+            PathBuf::from("/test/crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+
+        let packages: Vec<&dyn Package> = vec![&core_pkg];
+
+        workspace
+            .update_workspace_dependencies(&packages)
+            .await
+            .unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        let ws_deps = doc["workspace"]["dependencies"].as_table().unwrap();
+
+        // core has no version key: none should be inserted
+        assert!(
+            ws_deps["core"].get("version").is_none(),
+            "no version key should be inserted into a sub-table dep that lacks one"
+        );
+        assert_eq!(ws_deps["core"]["path"].as_str(), Some("crates/core"));
+        // utils untouched
+        assert_eq!(ws_deps["utils"]["version"].as_str(), Some("2.0.0"));
+
+        temp_dir.close().unwrap();
     }
 
     #[test]
