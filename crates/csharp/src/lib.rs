@@ -56,7 +56,8 @@ pub(crate) async fn update_version_from_fields(
     // into `changepacks_utils::next_version_or_default` so the fallback
     // policy lives in ONE place across every language crate. See that
     // helper's doc for the Java/Rust carve-outs.
-    let new_version = next_version_or_default(version.as_deref(), update_type)?;
+    let new_version = next_version_or_default(version.as_deref(), update_type)
+        .with_context(|| format!("Failed to compute next version for {}", path.display()))?;
     write_csproj_version(path, &new_version, version.is_some()).await?;
     *version = Some(new_version);
     Ok(())
@@ -120,5 +121,24 @@ mod tests {
             content
         );
         temp_dir.close().unwrap();
+    }
+
+    /// A malformed `<Version>` must fail the bump with the manifest path named
+    /// in the error chain — matching the Node/Python/Dart/Rust siblings whose
+    /// version-bump already carries `.with_context(... path ...)`. The bump
+    /// errors BEFORE any file I/O, so no on-disk fixture is needed and the
+    /// dummy path is never touched.
+    #[tokio::test]
+    async fn test_update_version_from_fields_bump_error_includes_path() {
+        let manifest = Path::new("/nonexistent/csharp-bump/Example.csproj");
+        let mut version = Some("abc".to_string());
+        let err = update_version_from_fields(&mut version, manifest, UpdateType::Patch)
+            .await
+            .expect_err("a malformed version must fail the bump");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&manifest.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
     }
 }

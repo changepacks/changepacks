@@ -75,7 +75,8 @@ pub async fn update_gradle_version_at(
     current_version: &str,
     update_type: UpdateType,
 ) -> Result<String> {
-    let new_version = next_version(current_version, update_type)?;
+    let new_version = next_version(current_version, update_type)
+        .with_context(|| format!("Failed to compute next version for {}", path.display()))?;
 
     let content = read_to_string(path)
         .await
@@ -259,5 +260,23 @@ group = "com.example"
         // File bytes are byte-identical: no rewrite happened.
         let bytes_after = tokio::fs::read(&path).await.unwrap();
         assert_eq!(bytes_after, bytes_before);
+    }
+
+    /// A malformed `version = "..."` must fail the bump with the build-file
+    /// path named in the error chain — matching the sibling `read_to_string`
+    /// in this same function and every other language crate's version-bump
+    /// context. The bump errors BEFORE the file read, so no on-disk fixture is
+    /// needed and the dummy path is never touched.
+    #[tokio::test]
+    async fn test_update_gradle_version_at_bump_error_includes_path() {
+        let path = Path::new("/nonexistent/java-bump/build.gradle");
+        let err = update_gradle_version_at(path, "abc", UpdateType::Patch)
+            .await
+            .expect_err("a malformed version must fail the bump");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&path.display().to_string()),
+            "error chain should name the build file path, got: {chain}"
+        );
     }
 }
