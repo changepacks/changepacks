@@ -30,6 +30,7 @@
 
 use std::{
     ffi::OsStr,
+    fmt::Write as _,
     path::{Path, PathBuf},
 };
 
@@ -231,9 +232,13 @@ fn prefix_stream(stream: &mut String, label: &str, kind: &str) {
 /// of drifting between two call sites.
 fn note_tempdir_close_error(dir: TempDir, label: &str, stderr: &mut String) {
     if let Err(e) = dir.close() {
-        stderr.push_str(&format!(
+        // Writing into a `String` via `fmt::Write` never returns `Err`, so
+        // the discarded `Result` is `Ok(())` in practice — mirrors
+        // `prompter.rs::format_selected_projects`.
+        let _ = write!(
+            stderr,
             "\n[changepacks dry-run] {label} tempdir cleanup error: {e}\n"
-        ));
+        );
     }
 }
 
