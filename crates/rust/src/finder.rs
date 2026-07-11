@@ -155,6 +155,27 @@ impl RustProjectFinder {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Resolve all pending workspace packages by creating `RustPackage` instances
+    /// with the workspace version and inserting them into `self.projects`.
+    /// Drains `self.pending_workspace_packages` in the process.
+    fn resolve_pending_workspace_packages(&mut self) {
+        let pending = std::mem::take(&mut self.pending_workspace_packages);
+        for p in pending {
+            let mut pkg = RustPackage::new_with_workspace_version(
+                p.name,
+                self.workspace_package_version.clone(),
+                p.abs_path.clone(),
+                p.relative_path,
+                self.workspace_root_path.clone(),
+            );
+            for dep in &p.dependencies {
+                pkg.add_dependency(dep);
+            }
+            self.projects
+                .insert(p.abs_path, Project::Package(Box::new(pkg)));
+        }
+    }
 }
 
 #[async_trait]
@@ -214,21 +235,7 @@ impl ProjectFinder for RustProjectFinder {
             self.projects.insert(path_key, project);
 
             // Resolve any pending packages that were visited before this workspace
-            let pending = std::mem::take(&mut self.pending_workspace_packages);
-            for p in pending {
-                let mut pkg = RustPackage::new_with_workspace_version(
-                    p.name,
-                    self.workspace_package_version.clone(),
-                    p.abs_path.clone(),
-                    p.relative_path,
-                    self.workspace_root_path.clone(),
-                );
-                for dep in &p.dependencies {
-                    pkg.add_dependency(dep);
-                }
-                self.projects
-                    .insert(p.abs_path, Project::Package(Box::new(pkg)));
-            }
+            self.resolve_pending_workspace_packages();
         } else {
             // Check if version.workspace = true — same table-like +
             // `workspace = true` shape as `workspace_dep_names`
@@ -389,20 +396,7 @@ impl ProjectFinder for RustProjectFinder {
             }
         }
 
-        for pending in self.pending_workspace_packages.drain(..) {
-            let mut pkg = RustPackage::new_with_workspace_version(
-                pending.name,
-                self.workspace_package_version.clone(),
-                pending.abs_path.clone(),
-                pending.relative_path,
-                self.workspace_root_path.clone(),
-            );
-            for dep in &pending.dependencies {
-                pkg.add_dependency(dep);
-            }
-            self.projects
-                .insert(pending.abs_path, Project::Package(Box::new(pkg)));
-        }
+        self.resolve_pending_workspace_packages();
         Ok(())
     }
 }

@@ -315,13 +315,6 @@ pub async fn detect_package_manager_recursive_async(path: &Path) -> PackageManag
     PackageManager::Npm
 }
 
-fn config_command(
-    map: &std::collections::HashMap<String, String>,
-    relative_path: &Path,
-) -> Option<String> {
-    changepacks_core::publish::lookup_by_path_or_language(map, relative_path, Language::Node)
-}
-
 /// Shared helper for resolving publish commands by config or detected package manager.
 ///
 /// Checks the provided config map first; if no match, detects the package manager
@@ -332,7 +325,9 @@ async fn command_for_path(
     map: &std::collections::HashMap<String, String>,
     default_fn: fn(PackageManager) -> &'static str,
 ) -> String {
-    if let Some(command) = config_command(map, relative_path) {
+    if let Some(command) =
+        changepacks_core::publish::lookup_by_path_or_language(map, relative_path, Language::Node)
+    {
         return command;
     }
     default_fn(detect_package_manager_recursive_async(path).await).to_string()

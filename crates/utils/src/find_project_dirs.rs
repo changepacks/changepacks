@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use changepacks_core::{Config, Project, ProjectFinder};
+use changepacks_core::{Config, Project, ProjectFinder, contains_changepacks_component};
 use gix::{ThreadSafeRepository, bstr::ByteSlice, features::progress};
 use ignore::gitignore::GitignoreBuilder;
 use std::{
@@ -271,10 +271,14 @@ pub async fn find_project_dirs(
                         .to_path()
                         .ok()
                         .map(std::path::Path::to_path_buf)
+                        .filter(|path| !contains_changepacks_component(path))
                 })
             }),
     );
-    unique_files.extend(diff);
+    unique_files.extend(
+        diff.into_iter()
+            .filter(|path| !contains_changepacks_component(path)),
+    );
 
     // Resolve every unique changed file to an absolute path ONCE, then dispatch
     // the whole batch to each finder. The previous file-major nested loop

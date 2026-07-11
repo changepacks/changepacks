@@ -3,6 +3,17 @@ use std::path::{Component, Path};
 
 use anyhow::{Context, Result};
 
+/// Check if a path contains `.changepacks` as a full path component.
+///
+/// Returns `true` if the path traverses a `.changepacks` directory component.
+/// The check matches on a full path component so sibling names like
+/// `.changepacks-backup/` or `notes-about-.changepacks.md` are NOT matched.
+/// This is used to filter out changepack logs which are not user changes.
+pub fn contains_changepacks_component(path: &Path) -> bool {
+    path.components()
+        .any(|c| matches!(c, Component::Normal(name) if name == OsStr::new(".changepacks")))
+}
+
 /// Whether a filesystem event on `candidate` should mark the project rooted at
 /// `project_manifest` (its `package.json` / `Cargo.toml` / etc.) as changed.
 ///
@@ -18,10 +29,7 @@ use anyhow::{Context, Result};
 /// # Errors
 /// Returns error if `project_manifest` has no parent directory.
 pub(crate) fn should_mark_changed(candidate: &Path, project_manifest: &Path) -> Result<bool> {
-    if candidate
-        .components()
-        .any(|c| matches!(c, Component::Normal(name) if name == OsStr::new(".changepacks")))
-    {
+    if contains_changepacks_component(candidate) {
         return Ok(false);
     }
     let project_dir = project_manifest.parent().context("Parent not found")?;
@@ -32,6 +40,21 @@ pub(crate) fn should_mark_changed(candidate: &Path, project_manifest: &Path) -> 
 mod tests {
     use super::*;
     use rstest::rstest;
+
+    #[rstest]
+    // Path with `.changepacks` as a full component returns true
+    #[case(".changepacks/changepack_log_x.json", true)]
+    #[case("a/.changepacks/b", true)]
+    #[case("/project/.changepacks/change.json", true)]
+    // Path with similar name but different component returns false
+    #[case(".changepacks-backup/file.json", false)]
+    #[case("notes-about-.changepacks.md", false)]
+    // Regular paths return false
+    #[case("src/index.js", false)]
+    #[case("packages/core/package.json", false)]
+    fn test_contains_changepacks_component(#[case] path: &str, #[case] expected: bool) {
+        assert_eq!(contains_changepacks_component(Path::new(path)), expected);
+    }
 
     #[rstest]
     // A source file inside the project directory marks it changed.

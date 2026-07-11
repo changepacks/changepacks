@@ -91,30 +91,29 @@ pub async fn handle_changepack_with_prompter(
         // no path recomputation (each path was allocated once, up front).
         let projects: Vec<&Project> = entries.iter().map(|(p, _)| *p).collect();
 
-        let selected_projects = if args.yes {
-            projects
-        } else if update_type == UpdateType::Patch && projects.len() == 1 {
-            vec![projects[0]]
-        } else {
-            let message = format!("Select projects to update for {update_type}");
-            // Preallocate: `FilterMap`'s `size_hint` reports
-            // `(0, Some(projects.len()))` and `Vec::from_iter` reserves
-            // against the LOWER bound (0), so a plain `.collect()` here
-            // hits geometric-doubling reallocations whenever many projects
-            // are marked changed. `projects.len()` is a tight upper bound
-            // (each iteration pushes AT MOST one index). Matches the
-            // preallocation policy already applied across `sort_by_dep.rs`,
-            // `gen_update_map.rs`, `find_project_dirs.rs`,
-            // `apply_reverse_dependencies`, and `check.rs`. Byte-identical
-            // output (same indices, same order).
-            let mut defaults = Vec::with_capacity(projects.len());
-            for (index, project) in projects.iter().enumerate() {
-                if project.is_changed() {
-                    defaults.push(index);
+        let selected_projects =
+            if args.yes || (update_type == UpdateType::Patch && projects.len() == 1) {
+                projects
+            } else {
+                let message = format!("Select projects to update for {update_type}");
+                // Preallocate: `FilterMap`'s `size_hint` reports
+                // `(0, Some(projects.len()))` and `Vec::from_iter` reserves
+                // against the LOWER bound (0), so a plain `.collect()` here
+                // hits geometric-doubling reallocations whenever many projects
+                // are marked changed. `projects.len()` is a tight upper bound
+                // (each iteration pushes AT MOST one index). Matches the
+                // preallocation policy already applied across `sort_by_dep.rs`,
+                // `gen_update_map.rs`, `find_project_dirs.rs`,
+                // `apply_reverse_dependencies`, and `check.rs`. Byte-identical
+                // output (same indices, same order).
+                let mut defaults = Vec::with_capacity(projects.len());
+                for (index, project) in projects.iter().enumerate() {
+                    if project.is_changed() {
+                        defaults.push(index);
+                    }
                 }
-            }
-            prompter.multi_select(&message, projects, defaults)?
-        };
+                prompter.multi_select(&message, projects, defaults)?
+            };
 
         // Identify selected projects by pointer equality — every entry
         // in `selected_projects` is a copy of the `&Project` reference

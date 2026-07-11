@@ -159,7 +159,6 @@ fn display_tree(
     // `name_to_project` keys on `&str` too, so these names look up
     // directly. Avoids N per-invocation `String::clone`s of names we
     // already own further up the stack.
-    let mut roots: HashSet<&str> = HashSet::with_capacity(projects.len());
 
     for project in projects {
         let deps = project.dependencies();
@@ -230,35 +229,40 @@ fn display_tree(
     let mut has_dependencies: HashSet<&str> = HashSet::with_capacity(has_dependencies_cap);
     has_dependencies.extend(graph.values().flatten().copied());
 
-    // Root nodes are projects that are not dependencies of any other project
-    for project in projects {
-        let name = project.name_or_noname();
-        if !has_dependencies.contains(name) {
-            roots.insert(name);
-        }
-    }
-
+    // Root nodes are projects that are not dependencies of any other project.
+    // Build sorted_roots directly by filtering projects and sorting, which
+    // achieves the same deduplication as the previous HashSet approach.
+    // `sort_unstable()` + `dedup()` collapses duplicates identically to what
+    // the HashSet collapsed, and since roots are project names (unique by
+    // construction from the projects slice), dedup is a no-op but kept for
+    // semantic clarity.
+    //
     // Sort roots for consistent output. `Vec<&str>` sorts identically to
     // `Vec<String>` for the same name strings (byte-identical order), and
     // `name_to_project.get(root)` still resolves because the map keys on
     // `&str` (the loop below derefs `&&str` → `&str` to match).
     //
-    // `sort_unstable`: `roots` originates from a `HashSet<&str>` so its
-    // elements are distinct by construction, and `str::cmp` is a total
-    // order — stability is not observable in the printed tree. Skips the
-    // stability bookkeeping the stable sort pays for.
+    // `sort_unstable`: roots are project names (distinct by construction
+    // from the projects slice), and `str::cmp` is a total order — stability
+    // is not observable in the printed tree. Skips the stability bookkeeping
+    // the stable sort pays for.
     //
-    // Preallocate: `HashSet::into_iter` reports `size_hint = (len,
-    // Some(len))` (ExactSize), so `.collect::<Vec<_>>()` DOES reserve
-    // capacity here — but making the reservation explicit matches the
-    // visually-uniform preallocation policy already applied throughout
-    // this same function (`name_to_project`, `graph`, `roots`,
-    // `has_dependencies`, `visited`, `monorepo_deps`). Byte-identical
+    // Preallocate: `projects.len()` is the tight upper bound for roots
+    // (at most all projects are roots if none have dependencies). Making
+    // the reservation explicit matches the visually-uniform preallocation
+    // policy already applied throughout this same function (`name_to_project`,
+    // `graph`, `has_dependencies`, `visited`, `monorepo_deps`). Byte-identical
     // output; the goal is a uniform preallocation idiom so a future
     // maintainer can trust every `Vec::from_iter` was deliberate.
-    let mut sorted_roots: Vec<&str> = Vec::with_capacity(roots.len());
-    sorted_roots.extend(roots);
+    let mut sorted_roots: Vec<&str> = Vec::with_capacity(projects.len());
+    for project in projects {
+        let name = project.name_or_noname();
+        if !has_dependencies.contains(name) {
+            sorted_roots.push(name);
+        }
+    }
     sorted_roots.sort_unstable();
+    sorted_roots.dedup();
 
     // Display tree starting from roots.
     // Preallocate: `visited.insert(project_name)` fires at most once per

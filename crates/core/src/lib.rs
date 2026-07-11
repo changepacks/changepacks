@@ -23,6 +23,7 @@ mod workspace;
 pub(crate) mod test_support;
 
 // Re-export traits for convenience
+pub use change_detection::contains_changepacks_component;
 pub use changepack_result::{ChangePackResult, ChangePackResultLog};
 pub use config::Config;
 pub use language::Language;

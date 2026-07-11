@@ -234,7 +234,7 @@ async fn get_gradle_properties(
     );
 
     let args = gradle_properties_args(project_dir, &gradlew_dir)?;
-    let command_spec = GradleCommandSpec::new(&gradlew, &gradlew_dir, &args);
+    let command_spec = GradleCommandSpec::new(&gradlew, &gradlew_dir, args);
     let output = command_spec
         .command()
         .stdout(Stdio::piped())
@@ -281,16 +281,19 @@ async fn get_gradle_properties(
     Ok(props)
 }
 
-fn gradle_properties_args(project_dir: &Path, gradlew_dir: &Path) -> Result<Vec<String>> {
+fn gradle_properties_args(project_dir: &Path, gradlew_dir: &Path) -> Result<Vec<OsString>> {
     if gradlew_dir == project_dir {
-        return Ok(vec!["properties".to_string(), "-q".to_string()]);
+        return Ok(vec![OsString::from("properties"), OsString::from("-q")]);
     }
 
     let relative = project_dir
         .strip_prefix(gradlew_dir)
         .context("Failed to compute subproject path")?;
     let gradle_path = gradle_subproject_path(relative)?;
-    Ok(vec![format!(":{gradle_path}:properties"), "-q".to_string()])
+    Ok(vec![
+        OsString::from(format!(":{gradle_path}:properties")),
+        OsString::from("-q"),
+    ])
 }
 
 #[derive(Debug)]
@@ -301,7 +304,7 @@ struct GradleCommandSpec {
 }
 
 impl GradleCommandSpec {
-    fn new(gradlew: &Path, gradlew_dir: &Path, gradle_args: &[String]) -> Self {
+    fn new(gradlew: &Path, gradlew_dir: &Path, gradle_args: Vec<OsString>) -> Self {
         let mut args = Vec::with_capacity(gradle_args.len() + usize::from(!cfg!(windows)));
         let program = if cfg!(windows) {
             gradlew.as_os_str().to_owned()
@@ -309,7 +312,7 @@ impl GradleCommandSpec {
             args.push(gradlew.as_os_str().to_owned());
             OsString::from("sh")
         };
-        args.extend(gradle_args.iter().map(OsString::from));
+        args.extend(gradle_args);
 
         Self {
             program,
@@ -549,7 +552,10 @@ mod tests {
 
         let args = gradle_properties_args(root, root).unwrap();
 
-        assert_eq!(args, vec!["properties", "-q"]);
+        assert_eq!(
+            args,
+            vec![OsString::from("properties"), OsString::from("-q")]
+        );
     }
 
     #[test]
@@ -559,7 +565,13 @@ mod tests {
 
         let args = gradle_properties_args(&subproject, root).unwrap();
 
-        assert_eq!(args, vec![":libs:core:properties", "-q"]);
+        assert_eq!(
+            args,
+            vec![
+                OsString::from(":libs:core:properties"),
+                OsString::from("-q")
+            ]
+        );
     }
 
     #[test]
@@ -569,9 +581,9 @@ mod tests {
         } else {
             "gradlew"
         });
-        let args = vec!["properties".to_string(), "-q".to_string()];
+        let args = vec![OsString::from("properties"), OsString::from("-q")];
 
-        let spec = GradleCommandSpec::new(&gradlew, Path::new("repo"), &args);
+        let spec = GradleCommandSpec::new(&gradlew, Path::new("repo"), args);
 
         if cfg!(windows) {
             assert_eq!(spec.program, gradlew.as_os_str());
