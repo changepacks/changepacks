@@ -77,16 +77,17 @@ struct GradleProperties {
 /// Returns `None` if `path_var` is `None` or empty.
 ///
 /// This function is testable without mutating process env.
-fn which_java_in(path_var: Option<&OsStr>) -> Option<PathBuf> {
+async fn which_java_in(path_var: Option<&OsStr>) -> Option<PathBuf> {
     let path_var = path_var?;
     if path_var.is_empty() {
         return None;
     }
     for dir in std::env::split_paths(path_var) {
         let candidate = dir.join(JAVA_EXECUTABLE);
-        // Use blocking I/O here since this is a sync function; the async
-        // caller (`java_is_available`) invokes it inline.
-        if candidate.is_file() {
+        // Async probe via the shared `changepacks_core::is_regular_file`
+        // (a `tokio::fs::metadata().is_file()` check), matching the sibling
+        // `java_home_has_java` and honoring the crate's no-blocking-I/O rule.
+        if changepacks_core::is_regular_file(&candidate).await {
             return Some(candidate);
         }
     }
@@ -197,8 +198,11 @@ fn extract_gradle_project_dependencies(content: &str) -> Vec<String> {
 #[cfg(not(tarpaulin_include))]
 async fn java_is_available() -> bool {
     let java_home = std::env::var_os("JAVA_HOME");
-    java_home_has_java(java_home.as_deref()).await
-        || which_java_in(std::env::var_os("PATH").as_deref()).is_some()
+    if java_home_has_java(java_home.as_deref()).await {
+        return true;
+    }
+    let path = std::env::var_os("PATH");
+    which_java_in(path.as_deref()).await.is_some()
 }
 
 /// Get project properties using gradlew command.
@@ -1092,21 +1096,21 @@ dependencies {
         temp_dir.close().unwrap();
     }
 
-    #[test]
-    fn test_which_java_in_none() {
-        let result = which_java_in(None);
+    #[tokio::test]
+    async fn test_which_java_in_none() {
+        let result = which_java_in(None).await;
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_which_java_in_empty() {
+    #[tokio::test]
+    async fn test_which_java_in_empty() {
         let empty = std::ffi::OsStr::new("");
-        let result = which_java_in(Some(empty));
+        let result = which_java_in(Some(empty)).await;
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_which_java_in_with_java_executable() {
+    #[tokio::test]
+    async fn test_which_java_in_with_java_executable() {
         let temp_dir = TempDir::new().unwrap();
         let java_name = if cfg!(windows) { "java.exe" } else { "java" };
         let java_path = temp_dir.path().join(java_name);
@@ -1119,21 +1123,21 @@ dependencies {
         }
 
         let path_var = temp_dir.path().as_os_str();
-        let result = which_java_in(Some(path_var));
+        let result = which_java_in(Some(path_var)).await;
         assert!(result.is_some());
         assert_eq!(result.unwrap().file_name().unwrap(), java_name);
 
         temp_dir.close().unwrap();
     }
 
-    #[test]
-    fn test_which_java_in_without_java() {
+    #[tokio::test]
+    async fn test_which_java_in_without_java() {
         let temp_dir = TempDir::new().unwrap();
         // Create a directory but no java executable
         fs::create_dir_all(temp_dir.path().join("subdir")).unwrap();
 
         let path_var = temp_dir.path().as_os_str();
-        let result = which_java_in(Some(path_var));
+        let result = which_java_in(Some(path_var)).await;
         assert!(result.is_none());
 
         temp_dir.close().unwrap();

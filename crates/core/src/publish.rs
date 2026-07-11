@@ -84,24 +84,31 @@ pub fn resolve_dry_run_publish_command<F: FnOnce() -> Option<String>>(
         .or_else(default_dry_run_command_fn)
 }
 
+/// Decode process-output bytes as UTF-8, reusing the buffer on the valid-UTF-8
+/// happy path (zero-copy) and falling back to lossy replacement on invalid
+/// UTF-8.
+///
+/// On the common valid-UTF-8 case we consume `bytes` directly via
+/// `String::from_utf8`, which reuses the child's `Vec<u8>` buffer as the
+/// `String` payload — zero copy of the stdout/stderr bytes. On invalid UTF-8
+/// we fall back to `String::from_utf8_lossy` for byte-identical
+/// replacement-character semantics with the previous code.
+fn utf8_or_lossy(bytes: Vec<u8>) -> String {
+    String::from_utf8(bytes)
+        .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned())
+}
+
 /// Convert a completed child-process `Output` into a `PublishOutput`.
 ///
 /// Shared by both `run_publish_command_with_path_dirs` and
 /// `run_publish_command_os_args` so a future change to output handling (e.g.
-/// lossy → strict UTF-8, extra logging) touches ONE place.
-///
-/// On the common valid-UTF-8 case we consume `output.stdout` / `output.stderr`
-/// directly via `String::from_utf8`, which reuses the child's `Vec<u8>`
-/// buffer as the `String` payload — zero copy of the stdout/stderr bytes.
-/// On invalid UTF-8 we fall back to `String::from_utf8_lossy` for
-/// byte-identical replacement-character semantics with the previous code.
+/// lossy → strict UTF-8, extra logging) touches ONE place. The UTF-8 decode
+/// policy lives in [`utf8_or_lossy`].
 fn build_publish_output(output: std::process::Output) -> PublishOutput {
     PublishOutput {
         success: output.status.success(),
-        stdout: String::from_utf8(output.stdout)
-            .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned()),
-        stderr: String::from_utf8(output.stderr)
-            .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned()),
+        stdout: utf8_or_lossy(output.stdout),
+        stderr: utf8_or_lossy(output.stderr),
     }
 }
 
