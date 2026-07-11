@@ -37,7 +37,7 @@ impl Package for NodePackage {
     // Fixed language accessor.
     changepacks_core::impl_language!(Language::Node);
 
-    // Node publish defaults and PATH wiring.
+    // Node publish command defaults (runtime-detected package manager).
     crate::impl_node_publish_wiring!();
 
     // Dependency set accessors.
@@ -226,19 +226,17 @@ mod tests {
         assert_eq!(package.name(), Some("my-project"));
     }
 
-    #[test]
-    fn test_publish_path_dirs_includes_node_modules_bin() {
+    #[tokio::test]
+    async fn test_node_modules_bin_dirs_async_includes_node_modules_bin() {
         let temp_dir = TempDir::new().unwrap();
         let bin = temp_dir.path().join("node_modules").join(".bin");
         fs::create_dir_all(&bin).unwrap();
-        let package = NodePackage::new(
-            Some("test-package".to_string()),
-            Some("1.0.0".to_string()),
-            temp_dir.path().join("package.json"),
-            PathBuf::from("package.json"),
-        );
-        // Wiring check: the Node override surfaces the local node_modules/.bin
-        // so lifecycle hooks (husky) resolve during publish / dry-run.
-        assert!(package.publish_path_dirs().contains(&bin));
+        // Behavior lock: the async publish path (`run_publish_for_path` ->
+        // `node_modules_bin_dirs_async`) surfaces the package's local
+        // node_modules/.bin so lifecycle hooks (husky) resolve during publish /
+        // dry-run. NodePackage / NodeWorkspace route PATH wiring through this
+        // async collector, not the core trait-default `publish_path_dirs`.
+        let dirs = crate::node_modules_bin_dirs_async(temp_dir.path()).await;
+        assert!(dirs.contains(&bin));
     }
 }

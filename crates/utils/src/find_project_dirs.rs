@@ -282,42 +282,10 @@ pub async fn find_project_dirs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{git_add_and_commit, init_git_repo};
     use changepacks_node::finder::NodeProjectFinder;
     use tempfile::TempDir;
     use tokio::fs;
-
-    fn run_git(path: &Path, args: &[&str]) {
-        // Prepend hermetic config so these fixtures never depend on the developer's
-        // global git config. In particular `commit.gpgsign=true` would make `git
-        // commit` block on a GPG passphrase (hanging the test) or fail; disabling it
-        // keeps commits non-interactive. Asserting `status.success()` also turns a
-        // silent git failure (which would otherwise leave the repo with no `main`
-        // branch and break downstream ref lookups) into a loud, actionable panic.
-        let output = std::process::Command::new("git")
-            .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
-            .args(args)
-            .current_dir(path)
-            .output()
-            .unwrap_or_else(|err| panic!("failed to spawn `git {}`: {err}", args.join(" ")));
-        assert!(
-            output.status.success(),
-            "`git {}` failed ({}):\n{}",
-            args.join(" "),
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    fn init_git_repo(path: &Path) {
-        run_git(path, &["init", "-b", "main"]);
-        run_git(path, &["config", "user.email", "test@test.com"]);
-        run_git(path, &["config", "user.name", "Test"]);
-    }
-
-    fn git_add_and_commit(path: &Path, message: &str) {
-        run_git(path, &["add", "."]);
-        run_git(path, &["commit", "-m", message]);
-    }
 
     #[test]
     fn test_finder_can_visit_path_matches_manifest_name() {

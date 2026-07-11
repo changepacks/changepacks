@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
 use changepacks_utils::{
@@ -150,7 +150,8 @@ impl Workspace for RustWorkspace {
             &self.path,
             finalize_content(&cargo_toml.to_string(), &cargo_toml_raw),
         )
-        .await?;
+        .await
+        .with_context(|| format!("Failed to write Cargo.toml {}", self.path.display()))?;
         self.version = Some(new_version);
         Ok(())
     }
@@ -261,7 +262,8 @@ impl Workspace for RustWorkspace {
             &self.path,
             finalize_content(&cargo_toml.to_string(), &cargo_toml_raw),
         )
-        .await?;
+        .await
+        .with_context(|| format!("Failed to write Cargo.toml {}", self.path.display()))?;
 
         Ok(())
     }

@@ -91,6 +91,7 @@ pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) 
         path,
         finalize_content(&cargo_toml.to_string(), &cargo_toml_raw),
     )
-    .await?;
+    .await
+    .with_context(|| format!("Failed to write Cargo.toml {}", path.display()))?;
     Ok(())
 }

@@ -293,7 +293,7 @@ fn gradle_properties_args(project_dir: &Path, gradlew_dir: &Path) -> Result<Vec<
     Ok(vec![format!(":{gradle_path}:properties"), "-q".to_string()])
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct GradleCommandSpec {
     program: OsString,
     args: Vec<OsString>,

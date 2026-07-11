@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tokio::fs::read_dir;
 
 /// Returns `true` iff `file_name` names a changepack log JSON file — i.e. it
@@ -36,10 +36,23 @@ fn is_changepack_log_json_name(file_name: &str) -> bool {
 /// to ensure all three sites use the same predicate.
 ///
 /// # Errors
-/// Returns error if the directory cannot be read.
+/// Returns an error if the directory exists but cannot be read. A missing
+/// directory is not an error — `read_dir` reports `NotFound`, which is mapped
+/// to an empty list so callers need not pre-check the directory's existence.
 pub(crate) async fn collect_changepack_log_paths(changepacks_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut entries = match read_dir(changepacks_dir).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(err).with_context(|| {
+                format!(
+                    "Failed to read changepacks directory {}",
+                    changepacks_dir.display()
+                )
+            });
+        }
+    };
     let mut paths: Vec<PathBuf> = Vec::new();
-    let mut entries = read_dir(changepacks_dir).await?;
     while let Some(file) = entries.next_entry().await? {
         let file_name = file.file_name();
         if is_changepack_log_json_name(file_name.to_string_lossy().as_ref()) {

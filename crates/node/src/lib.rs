@@ -95,21 +95,28 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
         path,
         finalize_content(&String::from_utf8(ser.into_inner())?, &package_json_raw),
     )
-    .await?;
+    .await
+    .with_context(|| format!("Failed to write package.json {}", path.display()))?;
     Ok(())
 }
 
 /// Expand to the identical `default_publish_command` /
-/// `default_dry_run_publish_command` / `publish_path_dirs` triple used by
-/// both `NodePackage` and `NodeWorkspace`.
+/// `default_dry_run_publish_command` pair used by both `NodePackage` and
+/// `NodeWorkspace`.
 ///
 /// Node cannot use `changepacks_core::impl_const_publish_commands!()`
 /// because its publish command is determined at runtime by walking the
 /// ancestor chain via `detect_package_manager_recursive`, not from a
-/// compile-time const. It also needs the `publish_path_dirs` override so
-/// `node_modules/.bin` gets prepended to `PATH` (workaround for
-/// oven-sh/bun#16071, #18055, #23594 — bun does not add
-/// `node_modules/.bin` to `PATH` during `bun publish` / `bun pm pack`).
+/// compile-time const.
+///
+/// PATH wiring for lifecycle hooks — prepending `node_modules/.bin` so
+/// `husky` and friends resolve during `bun publish` / `bun pm pack`
+/// (working around oven-sh/bun#16071, #18055, #23594) — is deliberately
+/// NOT part of this macro. `NodePackage` / `NodeWorkspace` override
+/// `publish` / `dry_run_publish` wholesale and inject those dirs through
+/// the async `run_publish_for_path` / `run_dry_run_publish_for_path` path
+/// (`node_modules_bin_dirs_async`), so the `core` trait-default
+/// `publish_path_dirs` (empty) is never reached for Node.
 ///
 /// Invoked from inside an `impl Package for NodePackage` or `impl
 /// Workspace for NodeWorkspace` block. Byte-identical expansion — the
@@ -122,15 +129,11 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
 /// fn default_dry_run_publish_command(&self) -> Option<String> {
 ///     Some(detect_package_manager_recursive(&self.path).dry_run_publish_command().to_string())
 /// }
-/// fn publish_path_dirs(&self) -> Vec<PathBuf> {
-///     self.path.parent().map(node_modules_bin_dirs).unwrap_or_default()
-/// }
 /// ```
 ///
 /// are replaced 1:1 by a single `crate::impl_node_publish_wiring!();`
-/// invocation. Fully-qualified `::std::string::String`,
-/// `::std::option::Option`, `::std::vec::Vec`, and
-/// `::std::path::PathBuf` make the macro hygienic — callers do not need
+/// invocation. Fully-qualified `::std::string::String` and
+/// `::std::option::Option` make the macro hygienic — callers do not need
 /// those types in scope at the invocation site.
 ///
 /// Consumer requirement: the struct must have a `path: PathBuf` field
@@ -149,12 +152,6 @@ macro_rules! impl_node_publish_wiring {
                     .dry_run_publish_command()
                     .to_string(),
             )
-        }
-        fn publish_path_dirs(&self) -> ::std::vec::Vec<::std::path::PathBuf> {
-            self.path
-                .parent()
-                .map($crate::node_modules_bin_dirs)
-                .unwrap_or_default()
         }
     };
 }
@@ -242,16 +239,14 @@ fn node_modules_bin_candidates(start_dir: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-#[must_use]
-pub fn node_modules_bin_dirs(start_dir: &Path) -> Vec<PathBuf> {
-    node_modules_bin_candidates(start_dir)
-        .into_iter()
-        .filter(|bin| bin.is_dir())
-        .collect()
-}
-
-/// Async equivalent of [`node_modules_bin_dirs`] for publish flows that are
-/// already running inside Tokio.
+/// Collect the existing `node_modules/.bin` directories from `start_dir` up
+/// to the filesystem root, nearest first — the ancestor candidates produced
+/// by `node_modules_bin_candidates`, filtered to those that exist on disk.
+///
+/// Used by the publish / dry-run flow (`run_publish_for_path` /
+/// `run_dry_run_publish_for_path`) to prepend `node_modules/.bin` to `PATH`
+/// so lifecycle hooks such as `husky` resolve during `bun publish` / `bun pm
+/// pack` (oven-sh/bun#16071, #18055, #23594).
 pub async fn node_modules_bin_dirs_async(start_dir: &Path) -> Vec<PathBuf> {
     let candidates = node_modules_bin_candidates(start_dir);
     let mut dirs = Vec::with_capacity(candidates.len());
@@ -504,8 +499,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_node_modules_bin_dirs_collects_ancestors_nearest_first() {
+    #[tokio::test]
+    async fn test_node_modules_bin_dirs_collects_ancestors_nearest_first() {
         let temp_dir = TempDir::new().unwrap();
         let root = temp_dir.path();
         let root_bin = root.join("node_modules").join(".bin");
@@ -514,16 +509,20 @@ mod tests {
         let pkg_bin = pkg_dir.join("node_modules").join(".bin");
         fs::create_dir_all(&pkg_bin).unwrap();
 
-        let dirs = node_modules_bin_dirs(&pkg_dir);
+        let dirs = node_modules_bin_dirs_async(&pkg_dir).await;
         // Nearest (package-level) bin dir comes first, ancestor (root) after.
         assert_eq!(dirs.first(), Some(&pkg_bin));
         assert!(dirs.contains(&root_bin));
     }
 
-    #[test]
-    fn test_node_modules_bin_dirs_empty_when_absent() {
+    #[tokio::test]
+    async fn test_node_modules_bin_dirs_empty_when_absent() {
         let temp_dir = TempDir::new().unwrap();
-        assert!(node_modules_bin_dirs(temp_dir.path()).is_empty());
+        assert!(
+            node_modules_bin_dirs_async(temp_dir.path())
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -552,7 +551,7 @@ mod tests {
             }
         }
 
-        let dirs = node_modules_bin_dirs(temp_dir.path());
+        let dirs = node_modules_bin_dirs_async(temp_dir.path()).await;
         assert!(dirs.contains(&bin));
 
         // Bare command name; resolvable only via the injected PATH entry.
@@ -565,5 +564,42 @@ mod tests {
         .unwrap();
         assert!(output.success, "stderr: {}", output.stderr);
         assert!(output.stdout.contains("hook-ran"));
+    }
+
+    /// Regression: a failed `package.json` WRITE must name the manifest path
+    /// in the error chain — locking the `.with_context(...)` added to
+    /// `write_package_json_version` so a write failure reads as clearly as the
+    /// read/parse contexts already in this file. Marks the file readonly (the
+    /// cross-platform lever that also denies the write-open on Windows, where
+    /// this suite runs) so the write is REJECTED, then asserts the formatted
+    /// error chain contains the manifest path.
+    #[tokio::test]
+    async fn test_write_package_json_version_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(&package_json, "{\n  \"version\": \"1.0.0\"\n}\n").unwrap();
+
+        // The read succeeds (readonly still permits reads); it is the
+        // write-back that must fail, so flip the readonly bit after seeding.
+        let mut permissions = fs::metadata(&package_json).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&package_json, permissions).unwrap();
+
+        // A NEW version guarantees the write is actually attempted against the
+        // readonly file rather than being short-circuited as an unchanged no-op.
+        let result = write_package_json_version(&package_json, "2.0.0").await;
+
+        // Restore write permission BEFORE asserting so `TempDir` cleanup
+        // succeeds even if an assertion panics.
+        let mut permissions = fs::metadata(&package_json).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&package_json, permissions).unwrap();
+
+        let err = result.expect_err("write to a readonly package.json must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&package_json.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
     }
 }

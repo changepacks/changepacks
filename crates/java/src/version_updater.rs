@@ -105,7 +105,9 @@ pub async fn update_gradle_version_at(
     // caller's version state is preserved regardless of whether the file was
     // actually touched.
     if updated_content.as_ref() != content {
-        write(path, updated_content.as_ref()).await?;
+        write(path, updated_content.as_ref())
+            .await
+            .with_context(|| format!("Failed to write Gradle build file {}", path.display()))?;
     }
     Ok(new_version)
 }

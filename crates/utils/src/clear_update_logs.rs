@@ -8,21 +8,6 @@ use tokio::fs::{read_to_string, remove_file, write};
 
 use crate::collect_changepack_log_paths;
 
-/// Check if the changepacks directory exists.
-///
-/// Returns `Ok(true)` if the directory exists, `Ok(false)` if it does not,
-/// or an error with context if the check fails.
-async fn changepacks_dir_exists(changepacks_dir: &Path) -> Result<bool> {
-    tokio::fs::try_exists(changepacks_dir)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to check changepacks directory {}",
-                changepacks_dir.display()
-            )
-        })
-}
-
 /// Remove all update logs without confirmation
 ///
 /// Uses [`collect_changepack_log_paths`] — which applies the same predicate
@@ -34,9 +19,6 @@ async fn changepacks_dir_exists(changepacks_dir: &Path) -> Result<bool> {
 /// # Errors
 /// Returns error if any update log file fails to be removed.
 pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
-    if !changepacks_dir_exists(changepacks_dir).await? {
-        return Ok(());
-    }
     // Two-phase collect+delete, mirroring `gen_update_map`:
     //   Phase 1: single directory walk to collect the paths of every matching
     //            `changepack_log_*.json` entry — pure name filtering, no IO body.
@@ -75,10 +57,6 @@ pub async fn clear_applied_update_logs(
     changepacks_dir: &Path,
     applied_paths: &HashSet<PathBuf>,
 ) -> Result<()> {
-    if !changepacks_dir_exists(changepacks_dir).await? {
-        return Ok(());
-    }
-
     // Two-phase read, mirroring `gen_update_map`:
     //   Phase 1: single directory walk to collect the paths of every matching
     //            `changepack_log_*.json` entry — pure name filtering, no IO body.

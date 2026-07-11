@@ -37,7 +37,7 @@ impl Workspace for NodeWorkspace {
     // Fixed language accessor.
     changepacks_core::impl_language!(Language::Node);
 
-    // Node publish defaults and PATH wiring.
+    // Node publish command defaults (runtime-detected package manager).
     crate::impl_node_publish_wiring!();
 
     // Dependency set accessors.

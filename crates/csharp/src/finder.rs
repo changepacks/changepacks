@@ -178,6 +178,14 @@ impl CSharpProjectFinder {
     }
 }
 
+/// Check if a directory contains a `.sln` (Solution) file.
+///
+/// Returns `Some(true)` if a readable `.sln` file is found, `Some(false)` if no
+/// `.sln` file exists, and `None` if the directory cannot be read at all
+/// (e.g. permission denied on `read_dir`). Per-entry `file_type()` errors are
+/// skipped rather than aborting the scan, allowing transient stat failures
+/// (broken symlinks, permission races) on individual entries to not poison
+/// detection when a readable `.sln` file appears later in iteration order.
 async fn dir_has_solution_file(dir: &Path) -> Option<bool> {
     let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
         // Do NOT cache read_dir failures: a later visit may succeed
@@ -197,7 +205,7 @@ async fn dir_has_solution_file(dir: &Path) -> Option<bool> {
                     .is_some_and(|ext| ext.eq_ignore_ascii_case("sln"));
                 if has_sln_extension {
                     let Ok(file_type) = entry.file_type().await else {
-                        return None;
+                        continue;
                     };
                     if !file_type.is_file() {
                         continue;

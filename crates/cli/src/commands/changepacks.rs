@@ -4,7 +4,7 @@ use tokio::fs::write;
 
 use changepacks_utils::get_relative_path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::{
     CommandContext,
@@ -160,7 +160,17 @@ pub async fn handle_changepack_with_prompter(
     let changepack_log_file = ctx
         .changepacks_dir
         .join(format!("changepack_log_{changepack_log_id}.json"));
-    write(changepack_log_file, serde_json::to_string(&changepack_log)?).await?;
+    write(
+        &changepack_log_file,
+        serde_json::to_string(&changepack_log)?,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "Failed to write changepack log {}",
+            changepack_log_file.display()
+        )
+    })?;
 
     Ok(())
 }

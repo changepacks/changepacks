@@ -110,6 +110,7 @@ pub(crate) async fn write_pyproject_version(
         path,
         finalize_content(&pyproject_toml.to_string(), &pyproject_toml_raw),
     )
-    .await?;
+    .await
+    .with_context(|| format!("Failed to write pyproject.toml {}", path.display()))?;
     Ok(())
 }

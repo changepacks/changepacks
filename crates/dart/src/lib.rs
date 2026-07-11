@@ -108,7 +108,10 @@ pub(crate) async fn write_pubspec_version(
         &yamlpath::Document::new(&pubspec_yaml_raw)
             .with_context(|| format!("Failed to parse pubspec.yaml {}", path.display()))?,
         &[patch],
-    )?;
-    write(path, finalize_content(patched.source(), &pubspec_yaml_raw)).await?;
+    )
+    .with_context(|| format!("Failed to update pubspec.yaml {}", path.display()))?;
+    write(path, finalize_content(patched.source(), &pubspec_yaml_raw))
+        .await
+        .with_context(|| format!("Failed to write pubspec.yaml {}", path.display()))?;
     Ok(())
 }

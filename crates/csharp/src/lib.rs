@@ -85,7 +85,9 @@ pub(crate) async fn write_csproj_version(
         .with_context(|| format!("Failed to read C# project {}", path.display()))?;
     let updated = xml_utils::update_version_in_xml(&csproj_raw, new_version, has_version)?;
     if updated != csproj_raw {
-        write(path, updated).await?;
+        write(path, updated)
+            .await
+            .with_context(|| format!("Failed to write C# project {}", path.display()))?;
     }
     Ok(())
 }

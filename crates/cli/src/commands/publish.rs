@@ -767,20 +767,143 @@ mod tests {
         print_publish_output(&output);
     }
 
-    /// A mock package whose `publish` always returns `Err`.
+    /// One configurable mock `Package` for the publish-loop tests. Replaces the
+    /// five near-identical hand-written mocks (`FailSpawnPackage`,
+    /// `DryRunFailurePackage`, `DryRunUnsupportedPackage`, `RustMockPackage`,
+    /// `PublishCascadePackage`): every field value and the `publish` /
+    /// `dry_run_publish` outcome is picked per constructor to reproduce each
+    /// original mock's exact behavior.
     #[derive(Debug)]
-    struct FailSpawnPackage {
+    struct TestPackage {
+        name: String,
+        version: &'static str,
         path: PathBuf,
         relative_path: PathBuf,
+        language: Language,
+        deps: HashSet<String>,
+        default_publish_command: &'static str,
+        default_dry_run_publish_command: Option<&'static str>,
+        publish_behavior: PublishBehavior,
+        dry_run_behavior: DryRunBehavior,
+    }
+
+    /// Outcome produced by [`TestPackage::publish`].
+    #[derive(Debug)]
+    enum PublishBehavior {
+        /// Bail as if the publish process failed to spawn.
+        SpawnError,
+        /// `Ok(PublishOutput { success, stdout: "publish {name}", stderr: "" })`.
+        Succeeds(bool),
+        /// The owning mock never has `publish` called; panics if it ever is.
+        Unused,
+    }
+
+    /// Outcome produced by [`TestPackage::dry_run_publish`].
+    #[derive(Debug)]
+    enum DryRunBehavior {
+        /// Bail as if the dry-run process failed to spawn.
+        SpawnError,
+        /// `Ok(Some(..))` with `success = false` and captured stdout/stderr.
+        NonZeroExit,
+        /// `Ok(None)` — the ecosystem does not support a dry-run.
+        Unsupported,
+        /// `Ok(Some(..))` with `success = true` and stdout `"dry-run ok for {name}"`.
+        OkForName,
+        /// `Ok(Some(..))` with `success` and stdout `"dry-run {name}"`.
+        Succeeds(bool),
+    }
+
+    impl TestPackage {
+        /// `publish` and `dry_run_publish` both fail to spawn (was `FailSpawnPackage`).
+        fn fail_spawn() -> Self {
+            Self {
+                name: "fail-spawn".to_string(),
+                version: "1.0.0",
+                path: PathBuf::from("/nonexistent/package.json"),
+                relative_path: PathBuf::from("package.json"),
+                language: Language::Node,
+                deps: HashSet::new(),
+                default_publish_command: "echo publish",
+                default_dry_run_publish_command: Some("echo publish --dry-run"),
+                publish_behavior: PublishBehavior::SpawnError,
+                dry_run_behavior: DryRunBehavior::SpawnError,
+            }
+        }
+
+        /// `dry_run_publish` returns a non-zero-exit output (was `DryRunFailurePackage`).
+        fn dry_run_failure() -> Self {
+            Self {
+                name: "dry-run-failure".to_string(),
+                version: "1.0.0",
+                path: PathBuf::from("/nonexistent/package.json"),
+                relative_path: PathBuf::from("package.json"),
+                language: Language::Node,
+                deps: HashSet::new(),
+                default_publish_command: "echo publish",
+                default_dry_run_publish_command: Some("echo publish --dry-run"),
+                publish_behavior: PublishBehavior::Unused,
+                dry_run_behavior: DryRunBehavior::NonZeroExit,
+            }
+        }
+
+        /// `dry_run_publish` returns `Ok(None)` (was `DryRunUnsupportedPackage`).
+        fn dry_run_unsupported(path: &str) -> Self {
+            Self {
+                name: "dry-run-unsupported".to_string(),
+                version: "1.0.0",
+                path: PathBuf::from(path),
+                relative_path: PathBuf::from("project.csproj"),
+                language: Language::CSharp,
+                deps: HashSet::new(),
+                default_publish_command: "dotnet nuget push",
+                default_dry_run_publish_command: None,
+                publish_behavior: PublishBehavior::Unused,
+                dry_run_behavior: DryRunBehavior::Unsupported,
+            }
+        }
+
+        /// Rust leaf whose dry-run succeeds with `"dry-run ok for {name}"`
+        /// (was `RustMockPackage`).
+        fn rust_mock(name: &str, relative_path: &str, deps: &[&str]) -> Self {
+            Self {
+                name: name.to_string(),
+                version: "0.0.1",
+                path: PathBuf::from("Cargo.toml"),
+                relative_path: PathBuf::from(relative_path),
+                language: Language::Rust,
+                deps: deps.iter().map(|d| (*d).to_string()).collect(),
+                default_publish_command: "cargo publish",
+                default_dry_run_publish_command: Some("cargo publish --dry-run"),
+                publish_behavior: PublishBehavior::Unused,
+                dry_run_behavior: DryRunBehavior::OkForName,
+            }
+        }
+
+        /// Node package whose publish / dry-run outcome follows `succeeds`
+        /// (was `PublishCascadePackage`).
+        fn publish_cascade(name: &str, relative_path: &str, deps: &[&str], succeeds: bool) -> Self {
+            Self {
+                name: name.to_string(),
+                version: "1.0.0",
+                path: PathBuf::from(relative_path),
+                relative_path: PathBuf::from(relative_path),
+                language: Language::Node,
+                deps: deps.iter().map(|d| (*d).to_string()).collect(),
+                default_publish_command: "npm publish",
+                default_dry_run_publish_command: Some("npm publish --dry-run"),
+                publish_behavior: PublishBehavior::Succeeds(succeeds),
+                dry_run_behavior: DryRunBehavior::Succeeds(succeeds),
+            }
+        }
     }
 
     #[async_trait::async_trait]
-    impl Package for FailSpawnPackage {
+    impl Package for TestPackage {
         fn name(&self) -> Option<&str> {
-            Some("fail-spawn")
+            Some(&self.name)
         }
         fn version(&self) -> Option<&str> {
-            Some("1.0.0")
+            Some(self.version)
         }
         fn path(&self) -> &std::path::Path {
             &self.path
@@ -795,29 +918,60 @@ mod tests {
             false
         }
         fn language(&self) -> Language {
-            Language::Node
+            self.language
         }
         fn dependencies(&self) -> &HashSet<String> {
-            &EMPTY_DEPS
+            &self.deps
         }
-        fn add_dependency(&mut self, _dependency: &str) {}
+        fn add_dependency(&mut self, dep: &str) {
+            self.deps.insert(dep.to_string());
+        }
         fn set_changed(&mut self, _changed: bool) {}
         fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
+            self.default_publish_command.to_string()
         }
         fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
+            self.default_dry_run_publish_command.map(str::to_string)
         }
         async fn publish(&self, _config: &Config) -> anyhow::Result<PublishOutput> {
-            anyhow::bail!("spawn failed: No such file or directory")
+            match self.publish_behavior {
+                PublishBehavior::SpawnError => {
+                    anyhow::bail!("spawn failed: No such file or directory")
+                }
+                PublishBehavior::Succeeds(succeeds) => Ok(PublishOutput {
+                    success: succeeds,
+                    stdout: format!("publish {}", self.name),
+                    stderr: String::new(),
+                }),
+                PublishBehavior::Unused => {
+                    unreachable!("publish is never called for this mock")
+                }
+            }
         }
         async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
-            anyhow::bail!("spawn failed: No such file or directory")
+            match self.dry_run_behavior {
+                DryRunBehavior::SpawnError => {
+                    anyhow::bail!("spawn failed: No such file or directory")
+                }
+                DryRunBehavior::NonZeroExit => Ok(Some(PublishOutput {
+                    success: false,
+                    stdout: "dry-run stdout".to_string(),
+                    stderr: "dry-run stderr: conflict".to_string(),
+                })),
+                DryRunBehavior::Unsupported => Ok(None),
+                DryRunBehavior::OkForName => Ok(Some(PublishOutput {
+                    success: true,
+                    stdout: format!("dry-run ok for {}", self.name),
+                    stderr: String::new(),
+                })),
+                DryRunBehavior::Succeeds(succeeds) => Ok(Some(PublishOutput {
+                    success: succeeds,
+                    stdout: format!("dry-run {}", self.name),
+                    stderr: String::new(),
+                })),
+            }
         }
     }
-
-    static EMPTY_DEPS: std::sync::LazyLock<HashSet<String>> =
-        std::sync::LazyLock::new(HashSet::new);
 
     // Stdout mode never populates `result_map`; JSON mode records exactly
     // one entry per project. Both modes must count the spawn error as a
@@ -830,10 +984,7 @@ mod tests {
         #[case] format: FormatOptions,
         #[case] expected_result_map_len: usize,
     ) {
-        let pkg = FailSpawnPackage {
-            path: PathBuf::from("/nonexistent/package.json"),
-            relative_path: PathBuf::from("package.json"),
-        };
+        let pkg = TestPackage::fail_spawn();
         let project = Project::Package(Box::new(pkg));
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
@@ -855,10 +1006,7 @@ mod tests {
         #[case] format: FormatOptions,
         #[case] expected_result_map_len: usize,
     ) {
-        let pkg = FailSpawnPackage {
-            path: PathBuf::from("/nonexistent/package.json"),
-            relative_path: PathBuf::from("package.json"),
-        };
+        let pkg = TestPackage::fail_spawn();
         let project = Project::Package(Box::new(pkg));
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
@@ -867,58 +1015,6 @@ mod tests {
 
         assert_eq!(result_map.len(), expected_result_map_len);
         assert_eq!(failed.len(), 1);
-    }
-
-    /// A mock package whose `dry_run_publish` returns `Ok(Some(output))` with
-    /// `output.success == false`, exercising the non-zero-exit branch of the
-    /// dry-run loop.
-    #[derive(Debug)]
-    struct DryRunFailurePackage {
-        path: PathBuf,
-        relative_path: PathBuf,
-    }
-
-    #[async_trait::async_trait]
-    impl Package for DryRunFailurePackage {
-        fn name(&self) -> Option<&str> {
-            Some("dry-run-failure")
-        }
-        fn version(&self) -> Option<&str> {
-            Some("1.0.0")
-        }
-        fn path(&self) -> &std::path::Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &std::path::Path {
-            &self.relative_path
-        }
-        async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            false
-        }
-        fn language(&self) -> Language {
-            Language::Node
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &EMPTY_DEPS
-        }
-        fn add_dependency(&mut self, _dependency: &str) {}
-        fn set_changed(&mut self, _changed: bool) {}
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
-        }
-        async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
-            Ok(Some(PublishOutput {
-                success: false,
-                stdout: "dry-run stdout".to_string(),
-                stderr: "dry-run stderr: conflict".to_string(),
-            }))
-        }
     }
 
     // Non-zero-exit dry-run:
@@ -933,10 +1029,7 @@ mod tests {
         #[case] format: FormatOptions,
         #[case] expected_result_map_len: usize,
     ) {
-        let pkg = DryRunFailurePackage {
-            path: PathBuf::from("/nonexistent/package.json"),
-            relative_path: PathBuf::from("package.json"),
-        };
+        let pkg = TestPackage::dry_run_failure();
         let project = Project::Package(Box::new(pkg));
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
@@ -945,53 +1038,6 @@ mod tests {
 
         assert_eq!(result_map.len(), expected_result_map_len);
         assert_eq!(failed.len(), 1);
-    }
-
-    /// A mock package whose `dry_run_publish` returns `Ok(None)`, exercising
-    /// the "dry-run not supported; skipped" branch.
-    #[derive(Debug)]
-    struct DryRunUnsupportedPackage {
-        path: PathBuf,
-        relative_path: PathBuf,
-    }
-
-    #[async_trait::async_trait]
-    impl Package for DryRunUnsupportedPackage {
-        fn name(&self) -> Option<&str> {
-            Some("dry-run-unsupported")
-        }
-        fn version(&self) -> Option<&str> {
-            Some("1.0.0")
-        }
-        fn path(&self) -> &std::path::Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &std::path::Path {
-            &self.relative_path
-        }
-        async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            false
-        }
-        fn language(&self) -> Language {
-            Language::CSharp
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &EMPTY_DEPS
-        }
-        fn add_dependency(&mut self, _dependency: &str) {}
-        fn set_changed(&mut self, _changed: bool) {}
-        fn default_publish_command(&self) -> String {
-            "dotnet nuget push".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            None
-        }
-        async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
-            Ok(None)
-        }
     }
 
     // Unsupported dry-run is a warning, not a failure — `failed` must stay
@@ -1006,10 +1052,7 @@ mod tests {
         #[case] format: FormatOptions,
         #[case] expected_result_map_len: usize,
     ) {
-        let pkg = DryRunUnsupportedPackage {
-            path: PathBuf::from("/nonexistent/project.csproj"),
-            relative_path: PathBuf::from("project.csproj"),
-        };
+        let pkg = TestPackage::dry_run_unsupported("/nonexistent/project.csproj");
         let project = Project::Package(Box::new(pkg));
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
@@ -1039,132 +1082,12 @@ mod tests {
         assert!(msg.contains("pkg-b"));
     }
 
-    /// Mock Rust package used to exercise the workspace-internal-dep skip
-    /// path. Its `dry_run_publish` would panic if ever called, so the test
-    /// would fail loudly if the skip helper let it through.
-    #[derive(Debug)]
-    struct RustMockPackage {
-        name: String,
-        relative_path: PathBuf,
-        deps: HashSet<String>,
-    }
-
-    #[async_trait::async_trait]
-    impl Package for RustMockPackage {
-        fn name(&self) -> Option<&str> {
-            Some(&self.name)
-        }
-        fn version(&self) -> Option<&str> {
-            Some("0.0.1")
-        }
-        fn path(&self) -> &std::path::Path {
-            std::path::Path::new("Cargo.toml")
-        }
-        fn relative_path(&self) -> &std::path::Path {
-            &self.relative_path
-        }
-        async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            false
-        }
-        fn language(&self) -> Language {
-            Language::Rust
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.deps
-        }
-        fn add_dependency(&mut self, dep: &str) {
-            self.deps.insert(dep.to_string());
-        }
-        fn set_changed(&mut self, _changed: bool) {}
-        fn default_publish_command(&self) -> String {
-            "cargo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("cargo publish --dry-run".to_string())
-        }
-        async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
-            // Used by leaf packages in the workspace-internal-dep integration
-            // tests below. Returning a clean success keeps the test focused
-            // on whether the SKIP path is correctly recorded for the parent
-            // (the actual cargo invocation we want to avoid).
-            Ok(Some(PublishOutput {
-                success: true,
-                stdout: format!("dry-run ok for {}", self.name),
-                stderr: String::new(),
-            }))
-        }
-    }
-
+    // Used by leaf packages in the workspace-internal-dep integration tests
+    // below. `TestPackage::rust_mock`'s dry-run returns a clean success so the
+    // test stays focused on whether the SKIP path is correctly recorded for the
+    // parent (the actual cargo invocation we want to avoid).
     fn make_rust_mock(name: &str, relative_path: &str, deps: &[&str]) -> Project {
-        let pkg = RustMockPackage {
-            name: name.to_string(),
-            relative_path: PathBuf::from(relative_path),
-            deps: deps.iter().map(|d| (*d).to_string()).collect(),
-        };
-        Project::Package(Box::new(pkg))
-    }
-
-    #[derive(Debug)]
-    struct PublishCascadePackage {
-        name: String,
-        relative_path: PathBuf,
-        deps: HashSet<String>,
-        succeeds: bool,
-    }
-
-    #[async_trait::async_trait]
-    impl Package for PublishCascadePackage {
-        fn name(&self) -> Option<&str> {
-            Some(&self.name)
-        }
-        fn version(&self) -> Option<&str> {
-            Some("1.0.0")
-        }
-        fn path(&self) -> &std::path::Path {
-            &self.relative_path
-        }
-        fn relative_path(&self) -> &std::path::Path {
-            &self.relative_path
-        }
-        async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            false
-        }
-        fn language(&self) -> Language {
-            Language::Node
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.deps
-        }
-        fn add_dependency(&mut self, dep: &str) {
-            self.deps.insert(dep.to_string());
-        }
-        fn set_changed(&mut self, _changed: bool) {}
-        fn default_publish_command(&self) -> String {
-            "npm publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("npm publish --dry-run".to_string())
-        }
-        async fn publish(&self, _config: &Config) -> anyhow::Result<PublishOutput> {
-            Ok(PublishOutput {
-                success: self.succeeds,
-                stdout: format!("publish {}", self.name),
-                stderr: String::new(),
-            })
-        }
-        async fn dry_run_publish(&self, _config: &Config) -> anyhow::Result<Option<PublishOutput>> {
-            Ok(Some(PublishOutput {
-                success: self.succeeds,
-                stdout: format!("dry-run {}", self.name),
-                stderr: String::new(),
-            }))
-        }
+        Project::Package(Box::new(TestPackage::rust_mock(name, relative_path, deps)))
     }
 
     fn make_publish_cascade_mock(
@@ -1173,13 +1096,12 @@ mod tests {
         deps: &[&str],
         succeeds: bool,
     ) -> Project {
-        let pkg = PublishCascadePackage {
-            name: name.to_string(),
-            relative_path: PathBuf::from(relative_path),
-            deps: deps.iter().map(|d| (*d).to_string()).collect(),
+        Project::Package(Box::new(TestPackage::publish_cascade(
+            name,
+            relative_path,
+            deps,
             succeeds,
-        };
-        Project::Package(Box::new(pkg))
+        )))
     }
 
     #[tokio::test]
@@ -1235,10 +1157,7 @@ mod tests {
         // CSharp project that happens to declare a dep matching a bumped
         // package: skip must NOT fire because the chicken-and-egg issue is
         // specific to `cargo publish --dry-run`.
-        let pkg = DryRunUnsupportedPackage {
-            path: PathBuf::from("/x/project.csproj"),
-            relative_path: PathBuf::from("project.csproj"),
-        };
+        let pkg = TestPackage::dry_run_unsupported("/x/project.csproj");
         let project = Project::Package(Box::new(pkg));
         let bumped: HashSet<&str> = ["dry-run-unsupported"].into_iter().collect();
         assert!(!skip_dry_run_due_to_workspace_internal_dep(
