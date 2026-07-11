@@ -58,7 +58,7 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     //   - `"1.2.3.4"` → both splits succeed but `patch = "3.4"` still
     //     carries a `'.'`, caught by `patch.contains('.')` → error.
     //   - `"1.2.wrong"` → both splits succeed, `patch = "wrong"`, no `.`,
-    //     `parse::<usize>()` fails downstream.
+    //     `parse::<u64>()` fails downstream.
     let (major, rest) = version
         .split_once('.')
         .ok_or_else(|| invalid_version(version))?;

@@ -24,7 +24,7 @@ pub fn update_version_in_xml(
     // geometric-doubling reallocations on the every-`changepacks update`
     // hot path for C# projects. Mirrors the `Vec::with_capacity(...)`
     // preallocation policy already applied across `sort_by_dep.rs`,
-    // `gen_update_map.rs`, `filter_project_dirs.rs`, and the sibling
+    // `gen_update_map.rs`, `find_project_dirs.rs`, and the sibling
     // `parse_csproj_metadata` in `crates/csharp/src/finder.rs`.
     // `read_event_into` calls `buf.clear()` between events so capacity
     // persists; 256 bytes comfortably covers the largest single event

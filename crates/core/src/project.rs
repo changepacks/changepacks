@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::HashSet,
     fmt::{Debug, Display},
@@ -198,7 +199,9 @@ impl Project {
         // Route the None-override branch through `self.version_display()` so
         // the "unknown"/"v{v}" formatting policy lives in exactly one place —
         // shared with `check.rs::format_project_line`'s CLI display path.
-        let version = version_override.map_or_else(|| self.version_display(), ToString::to_string);
+        // Borrowed via Cow to skip a per-line String copy when an override is supplied.
+        let version: Cow<'_, str> =
+            version_override.map_or_else(|| Cow::Owned(self.version_display()), Cow::Borrowed);
         format!(
             "{} {} {} {} {}",
             format!("[{label_prefix}{lang}]").bright_blue().bold(),

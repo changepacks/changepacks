@@ -167,6 +167,28 @@ dependencies:
         temp_dir.close().unwrap();
     }
 
+    #[tokio::test]
+    async fn test_dart_package_update_version_preserves_newline() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(&pubspec_path, "name: test_package\nversion: 1.0.0\n").unwrap();
+
+        let mut package = DartPackage::new(
+            Some("test_package".to_string()),
+            Some("1.0.0".to_string()),
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = fs::read_to_string(&pubspec_path).unwrap();
+        assert!(content.ends_with('\n'));
+        assert!(content.contains("version: 1.0.1"));
+
+        temp_dir.close().unwrap();
+    }
+
     #[test]
     fn test_dependencies() {
         let mut package = DartPackage::new(

@@ -24,7 +24,7 @@ type UpdateProjectMut<'a> = (&'a mut Project, UpdateType);
 type WorkspaceRef<'a> = &'a dyn Workspace;
 
 #[derive(Args, Debug)]
-#[command(about = "Check project status")]
+#[command(about = "Update project versions from changepack logs")]
 pub struct UpdateArgs {
     #[arg(short, long)]
     pub dry_run: bool,
@@ -108,7 +108,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         // `finder.projects().len()` yields a tight upper bound (the
         // `filter_map` below can only shrink it when a project path lies
         // outside the repo root). Matches the preallocation policy already
-        // applied in `sort_by_dep.rs` and `filter_project_dirs.rs`.
+        // applied in `sort_by_dep.rs` and `find_project_dirs.rs`.
         let cap: usize = total_project_count(&project_finders);
         let mut path_to_language: HashMap<PathBuf, Language> = HashMap::with_capacity(cap);
         for project in project_finders.iter().flat_map(|finder| finder.projects()) {
@@ -304,7 +304,7 @@ fn merge_workspace_inherited_updates(
     // avoids `Vec`'s geometric-doubling reallocations on vespera-shaped
     // monorepos with many workspace-inheriting members. Matches the
     // preallocation policy already applied throughout `sort_by_dep.rs`,
-    // `filter_project_dirs`, and the sibling `apply_reverse_dependencies`.
+    // `find_project_dirs`, and the sibling `apply_reverse_dependencies`.
     let mut merge_targets: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(projects.len());
 
     for &project in projects {

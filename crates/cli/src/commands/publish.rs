@@ -458,7 +458,7 @@ async fn execute_dry_run_publish_loop(
     // capacity (the `filter_map` only drops nameless projects), and
     // `HashSet::extend(iter)` reuses the reserved allocation, matching the
     // idiom already used across the utils crate (e.g. `unique_files.extend(diff)`
-    // in `filter_project_dirs.rs`) — collapses the 4-line loop + `Option::Some`
+    // in `find_project_dirs.rs`) — collapses the 4-line loop + `Option::Some`
     // guard to a single call while preserving the same borrow-the-name-out-of-the-project
     // semantics.
     let mut bumped_package_names: std::collections::HashSet<&str> =

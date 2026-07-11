@@ -14,6 +14,18 @@ use crate::{package::NodePackage, read_and_parse_package_json, workspace::NodeWo
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["package.json"];
 
+/// Look up a field in the `package.json` manifest as an owned string, mirroring the
+/// `doc.get(field).and_then(|v| v.as_str()).map(ToString::to_string)` chain that
+/// used to be open-coded twice inside `visit` (once for `version`, once for `name`).
+/// Extracted so a future manifest shape change only needs to be adapted in one place —
+/// matches the `project_str` idiom in [`crate::finder`]'s sibling Python finder
+/// ([`crates/python/src/finder.rs`](../../../python/src/finder.rs)).
+fn package_json_str(doc: &serde_json::Value, field: &str) -> Option<String> {
+    doc.get(field)
+        .and_then(|v| v.as_str())
+        .map(std::string::ToString::to_string)
+}
+
 #[derive(Debug, Default)]
 pub struct NodeProjectFinder {
     projects: HashMap<PathBuf, Project>,
@@ -72,12 +84,8 @@ impl ProjectFinder for NodeProjectFinder {
         let (_package_json_raw, package_json) = read_and_parse_package_json(path).await?;
         // Both branches use the same name/version and the same path;
         // hoist so each branch collapses to a single constructor call.
-        let version = package_json["version"]
-            .as_str()
-            .map(std::string::ToString::to_string);
-        let name = package_json["name"]
-            .as_str()
-            .map(std::string::ToString::to_string);
+        let version = package_json_str(&package_json, "version");
+        let name = package_json_str(&package_json, "name");
         // Rename `path_buf` → `path_key` to align with the Java, CSharp,
         // and (post-#4) Python finders' local naming convention: the
         // value is used once as the `HashMap` insert key (the "key"

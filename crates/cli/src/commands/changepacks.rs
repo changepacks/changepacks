@@ -95,7 +95,7 @@ pub async fn handle_changepack_with_prompter(
             // are marked changed. `projects.len()` is a tight upper bound
             // (each iteration pushes AT MOST one index). Matches the
             // preallocation policy already applied across `sort_by_dep.rs`,
-            // `gen_update_map.rs`, `filter_project_dirs.rs`,
+            // `gen_update_map.rs`, `find_project_dirs.rs`,
             // `apply_reverse_dependencies`, and `check.rs`. Byte-identical
             // output (same indices, same order).
             let mut defaults = Vec::with_capacity(projects.len());

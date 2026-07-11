@@ -174,6 +174,32 @@ requests = "2.31.0"
         temp_dir.close().unwrap();
     }
 
+    #[tokio::test]
+    async fn test_python_package_update_version_preserves_newline() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            "[project]\nname = \"test-package\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let mut package = PythonPackage::new(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&pyproject_toml).await.unwrap();
+        assert!(content.ends_with('\n'));
+        assert!(content.contains(r#"version = "1.0.1""#));
+
+        temp_dir.close().unwrap();
+    }
+
     #[test]
     fn test_python_package_dependencies() {
         let mut package = PythonPackage::new(

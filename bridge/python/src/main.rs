@@ -9,9 +9,7 @@
 #[tokio::main]
 #[cfg(not(tarpaulin_include))]
 async fn main() -> anyhow::Result<()> {
-    if let Err(e) = changepacks_cli::main_from_env(false).await {
-        changepacks_cli::exit_if_user_cancelled(&e);
-        return Err(e);
-    }
-    Ok(())
+    changepacks_cli::main_from_env(false)
+        .await
+        .inspect_err(changepacks_cli::exit_if_user_cancelled)
 }

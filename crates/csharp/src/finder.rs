@@ -59,7 +59,7 @@ impl CSharpProjectFinder {
         // geometric-doubling reallocations. Mirrors the
         // `Vec::with_capacity(paths.len())` preallocation policy already
         // applied across `sort_by_dep.rs`, `gen_update_map.rs`, and
-        // `filter_project_dirs.rs`. `read_event_into` calls `buf.clear()`
+        // `find_project_dirs.rs`. `read_event_into` calls `buf.clear()`
         // between events so the capacity persists; 256 bytes comfortably
         // covers the largest single event (attribute-laden `<Project Sdk=
         // "Microsoft.NET.Sdk"...>`, ~1-2 dozen bytes for the common
@@ -80,7 +80,7 @@ impl CSharpProjectFinder {
         // preallocation gap in this function and matches the
         // `Vec::with_capacity(256)` policy applied to `buf` right above —
         // the sibling preallocation policy shared with `sort_by_dep.rs`,
-        // `gen_update_map.rs`, and `filter_project_dirs.rs`.
+        // `gen_update_map.rs`, and `find_project_dirs.rs`.
         let mut projects: Vec<String> = Vec::with_capacity(4);
 
         loop {

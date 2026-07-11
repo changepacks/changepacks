@@ -36,7 +36,7 @@ pub async fn gen_update_map(
     // Preallocate against `paths.len()` — a tight lower bound because each
     // changepack log's `changes` map usually names one or more distinct
     // project paths. Matches the preallocation policy already applied in
-    // `sort_by_dep.rs`, `filter_project_dirs.rs`, and
+    // `sort_by_dep.rs`, `find_project_dirs.rs`, and
     // `apply_reverse_dependencies`. Eliminates the first geometric-doubling
     // reallocation on any repo with more than one changepack log; byte-
     // identical map contents.
@@ -52,7 +52,7 @@ pub async fn gen_update_map(
     // surfaces WHICH file failed rather than a bare `serde_json` error.
     // Users then jump straight to the offender instead of grepping every
     // changepack log. Matches the `with_context` pattern already applied
-    // in `get_changepacks_config.rs` and `filter_project_dirs.rs`, and
+    // in `get_changepacks_config.rs` and `find_project_dirs.rs`, and
     // costs zero on the happy path (the closure is only invoked on the
     // error path). `try_join_all` above already guarantees `bodies.len()
     // == paths.len()` so the zip is in-lockstep.
@@ -168,16 +168,20 @@ fn apply_update_on_rules(
     for (trigger_pattern, dependents) in trigger_matches {
         // Add dependent packages as PATCH updates if not already in update_map
         for dependent in dependents {
-            let dependent_path = PathBuf::from(dependent);
-            update_map.entry(dependent_path).or_insert_with(|| {
-                (
-                    UpdateType::Patch,
-                    vec![ChangePackResultLog::new(
+            // Guard with a borrowed `Path` lookup so the `PathBuf` key is only
+            // allocated on the insert (cache-miss) path.
+            if !update_map.contains_key(Path::new(dependent)) {
+                update_map.insert(
+                    PathBuf::from(dependent),
+                    (
                         UpdateType::Patch,
-                        format!("Auto-update triggered by updateOn rule: {trigger_pattern}"),
-                    )],
-                )
-            });
+                        vec![ChangePackResultLog::new(
+                            UpdateType::Patch,
+                            format!("Auto-update triggered by updateOn rule: {trigger_pattern}"),
+                        )],
+                    ),
+                );
+            }
         }
     }
 }
