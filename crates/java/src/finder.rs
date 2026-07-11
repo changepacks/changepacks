@@ -168,6 +168,12 @@ fn gradle_subproject_path(relative: &Path) -> Result<String> {
     Ok(path)
 }
 
+fn gradle_property_value(caps: &regex::Captures) -> Option<String> {
+    caps.get(1)
+        .map(|m| m.as_str().trim().to_string())
+        .filter(|v| v != "unspecified")
+}
+
 fn gradle_dependency_name(project_path: &str) -> Option<String> {
     project_path
         .trim_matches(':')
@@ -259,17 +265,11 @@ async fn get_gradle_properties(
     // no longer re-compiles the three patterns on every visit.
     // Format: "propertyName: value"
     if let Some(caps) = NAME_PATTERN.captures(&stdout) {
-        let name = caps.get(1).map(|m| m.as_str().trim().to_string());
-        if name.as_deref() != Some("unspecified") {
-            props.name = name;
-        }
+        props.name = gradle_property_value(&caps);
     }
 
     if let Some(caps) = VERSION_PATTERN.captures(&stdout) {
-        let version = caps.get(1).map(|m| m.as_str().trim().to_string());
-        if version.as_deref() != Some("unspecified") {
-            props.version = version;
-        }
+        props.version = gradle_property_value(&caps);
     }
 
     // Detect workspace: subprojects is non-empty (e.g. "[project ':sub1', project ':sub2']")

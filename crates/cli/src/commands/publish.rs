@@ -261,7 +261,7 @@ fn record_publish_success(
 ///     (with the `: {e}` suffix).
 ///
 /// Byte-identical to the pre-refactor arms — including the trailing
-/// `failed_projects.push(format!("{project}"))` shared by both. Ok(None)
+/// `failed_projects.push(project.to_string())` shared by both. Ok(None)
 /// (dry-run unsupported) stays inline in the dry-run loop because it is
 /// a warning, not a failure, and does not fit this helper's contract.
 fn record_publish_failure(
