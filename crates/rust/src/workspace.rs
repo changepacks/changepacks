@@ -53,7 +53,26 @@ impl Workspace for RustWorkspace {
         let has_package = cargo_toml.get("package").is_some();
 
         if has_package {
-            cargo_toml["package"]["version"] = new_version.as_str().into();
+            // A hybrid workspace root can inherit its OWN version via
+            // `[package] version.workspace = true` (which toml_edit parses as a
+            // `{ workspace = true }` table) alongside `[workspace.package].version`.
+            // Rewriting `[package].version` with a plain string here would clobber
+            // that inheritance marker — the same file-format break already guarded
+            // against for member crates in `RustPackage::update_version`. Detect the
+            // marker with the same `as_table_like → get("workspace") → as_bool`
+            // decode as `finder.rs::is_workspace_marker`; when present, skip the
+            // `[package].version` write (the `[workspace.package].version` sync
+            // below drives the inherited bump).
+            let inherits_workspace_version =
+                cargo_toml["package"].get("version").is_some_and(|v| {
+                    v.as_table_like()
+                        .and_then(|t| t.get("workspace"))
+                        .and_then(|w| w.as_bool())
+                        .unwrap_or(false)
+                });
+            if !inherits_workspace_version {
+                cargo_toml["package"]["version"] = new_version.as_str().into();
+            }
             if cargo_toml["package"].get("name").is_none() {
                 let fallback_name = self.name.as_deref().unwrap_or("_");
                 cargo_toml["package"]["name"] = fallback_name.into();
@@ -719,6 +738,73 @@ version = "1.0.0"
             doc["workspace"]["package"]["version"].as_str(),
             Some("1.1.0")
         );
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_preserves_hybrid_root_inheritance_marker() {
+        // Regression: a hybrid workspace root that is BOTH the workspace and a
+        // publishable crate inheriting its own version
+        // (`[package] version.workspace = true` alongside
+        // `[workspace.package].version`). `update_version` used to
+        // unconditionally rewrite `[package].version` with a plain string,
+        // clobbering the dotted-key inheritance marker and permanently
+        // detaching the root crate from the workspace-wide bump. The correct
+        // behavior leaves the marker intact and drives the bump through
+        // `[workspace.package].version` only — the same guarantee already held
+        // for member crates in `RustPackage::update_version`.
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+
+[package]
+name = "root"
+version.workspace = true
+"#,
+        )
+        .unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            Some("root".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Minor).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        // The dotted-key inheritance marker survives verbatim — not rewritten
+        // to a hardcoded `version = "..."`.
+        assert!(
+            content.contains("version.workspace = true"),
+            "inheritance marker was clobbered: {content}"
+        );
+
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        // [package].version is still the marker table, NOT a string literal.
+        assert!(
+            doc["package"]["version"].as_str().is_none(),
+            "[package].version was rewritten to a string literal: {content}"
+        );
+        assert_eq!(
+            doc["package"]["version"]["workspace"].as_bool(),
+            Some(true),
+            "[package].version should remain `workspace = true`"
+        );
+        // The inherited bump is driven through [workspace.package].version.
+        assert_eq!(
+            doc["workspace"]["package"]["version"].as_str(),
+            Some("1.1.0")
+        );
+
+        temp_dir.close().unwrap();
     }
 
     #[tokio::test]

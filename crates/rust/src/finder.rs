@@ -210,7 +210,16 @@ impl ProjectFinder for RustProjectFinder {
                 self.workspace_root_path = Some(path.to_path_buf());
             }
 
-            let version = package_str(&cargo_toml, "version");
+            // A visited workspace root's own version: prefer its `[package].version`
+            // string, but fall back to `[workspace.package].version` for a virtual
+            // workspace (no `[package]`) or a hybrid root whose `[package]` inherits
+            // via `version.workspace = true` (a table, so `package_str` → `None`).
+            // Without this fallback the constructed `RustWorkspace` reports
+            // `version = None`, and a later inherited bump promoted onto the root
+            // path would rewrite from `0.0.0`, downgrading the real version. This
+            // aligns `visit` with the same fallback `finalize` already applies.
+            let version = package_str(&cargo_toml, "version")
+                .or_else(|| workspace_package_str(&cargo_toml, "version"));
             let name = package_str(&cargo_toml, "name");
             // Hoist the shared `PathBuf` into one binding: `path_key` seeds
             // both the `RustWorkspace::new(...)` constructor slot and the
@@ -510,6 +519,49 @@ members = ["crates/*"]
             Project::Workspace(ws) => {
                 assert_eq!(ws.name(), None);
                 assert_eq!(ws.version(), None);
+            }
+            _ => panic!("Expected Workspace"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_workspace_uses_workspace_package_version() {
+        // A virtual workspace root (no [package]) that declares its version only
+        // via [workspace.package].version. When VISITED directly, the finder must
+        // report that version on the Workspace project — mirroring the fallback
+        // finalize() already applies — so a later inherited bump promoted onto the
+        // root path never rewrites from a phantom 0.0.0 and downgrades it.
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.33"
+edition = "2024"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Workspace(ws) => {
+                // No [package] name, but the version is inherited from
+                // [workspace.package].version via the new fallback.
+                assert_eq!(ws.name(), None);
+                assert_eq!(ws.version(), Some("0.1.33"));
             }
             _ => panic!("Expected Workspace"),
         }
