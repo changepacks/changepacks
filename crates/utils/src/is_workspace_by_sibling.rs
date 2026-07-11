@@ -10,10 +10,12 @@ use anyhow::{Context, Result};
 /// workspace declaration (`package.json`'s `workspaces`, `pubspec.yaml`'s
 /// `workspace`). When it is `true` the manifest is a workspace outright and no
 /// filesystem stat is issued. Otherwise the fixed `sibling_file`
-/// (`pnpm-workspace.yaml`, `melos.yaml`) is stat'd next to the manifest; a stat
-/// error (broken symlink, permission denied) is treated as "not a workspace",
-/// matching the finders' previous `try_exists(...).unwrap_or(false)`
-/// fallthrough-on-error behavior.
+/// (`pnpm-workspace.yaml`, `melos.yaml`) is checked next to the manifest via the
+/// shared `changepacks_core::is_regular_file` marker-file discipline: only a
+/// *regular file* counts, so a directory bearing that name is rejected (not a
+/// workspace), and a stat error (broken symlink, permission denied) is likewise
+/// treated as "not a workspace" — the same fallthrough-on-error behavior as the
+/// finders' previous `try_exists(...).unwrap_or(false)`.
 ///
 /// AGENTS.md rule: all file ops go through `tokio::fs`.
 ///
@@ -33,7 +35,7 @@ pub async fn is_workspace_by_sibling(
         .parent()
         .with_context(|| format!("Parent not found - {}", manifest_path.display()))?
         .join(sibling_file);
-    Ok(tokio::fs::try_exists(&sibling).await.unwrap_or(false))
+    Ok(changepacks_core::is_regular_file(&sibling).await)
 }
 
 #[cfg(test)]
@@ -74,7 +76,7 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
-    // Sibling file absent → not a workspace (`try_exists` reports false).
+    // Sibling file absent → not a workspace (`is_regular_file` reports false).
     #[tokio::test]
     async fn test_sibling_absent() {
         let temp_dir = TempDir::new().unwrap();
@@ -82,6 +84,26 @@ mod tests {
         tokio::fs::write(&manifest, "{}").await.unwrap();
 
         let result = is_workspace_by_sibling(false, &manifest, "pnpm-workspace.yaml")
+            .await
+            .unwrap();
+        assert!(!result);
+
+        temp_dir.close().unwrap();
+    }
+
+    // A *directory* named like the sibling marker must NOT be treated as a
+    // workspace: `is_regular_file` rejects directories, unlike the bare
+    // `try_exists` this function used before.
+    #[tokio::test]
+    async fn test_sibling_directory_is_not_workspace() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("pubspec.yaml");
+        tokio::fs::write(&manifest, "name: x").await.unwrap();
+        tokio::fs::create_dir(temp_dir.path().join("melos.yaml"))
+            .await
+            .unwrap();
+
+        let result = is_workspace_by_sibling(false, &manifest, "melos.yaml")
             .await
             .unwrap();
         assert!(!result);
