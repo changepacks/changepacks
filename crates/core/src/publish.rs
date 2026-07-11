@@ -550,4 +550,34 @@ mod tests {
         #[cfg(not(target_os = "windows"))]
         assert_eq!(program, "sh");
     }
+
+    #[tokio::test]
+    async fn test_run_publish_command_os_args_success() {
+        let temp_dir = std::env::temp_dir();
+        let output = run_publish_command_os_args("git", ["--version"], &temp_dir, false)
+            .await
+            .unwrap();
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(
+            output.stdout.contains("git version"),
+            "unexpected stdout: {}",
+            output.stdout
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_publish_command_os_args_spawn_error() {
+        let temp_dir = std::env::temp_dir();
+        let result = run_publish_command_os_args(
+            "changepacks-no-such-binary-xyz",
+            [] as [&str; 0],
+            &temp_dir,
+            false,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "expected spawn error for nonexistent binary"
+        );
+    }
 }

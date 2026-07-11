@@ -63,19 +63,28 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     let ctx = CommandContext::new(args.remote).await?;
     let mut update_map = gen_update_map(&ctx.changepacks_dir, &ctx.config).await?;
 
+    // Early return if no updates: `apply_update_on_rules` already ran inside
+    // `gen_update_map`; `apply_reverse_dependencies` has an `is_empty()` fast-path;
+    // `merge_workspace_inherited_updates` only mutates on `contains_key` hits —
+    // an empty map cannot become non-empty downstream. Skip the second git walk.
+    if update_map.is_empty() {
+        args.format.print("No updates found");
+        return Ok(());
+    }
+
     let mut project_finders = ctx.project_finders;
     let mut all_finders = get_finders();
 
     // Reuse the ThreadSafeRepository already discovered by CommandContext::new
-    // instead of re-running `gix::discover` per invocation. `all_finders` uses
-    // an empty config so nothing is filtered out here.
-    find_project_dirs(
-        &ctx.repo,
-        &mut all_finders,
-        &changepacks_core::Config::default(),
-        args.remote,
-    )
-    .await?;
+    // instead of re-running `gix::discover` per invocation. `all_config` clears
+    // only the `ignore` filter (so nothing is filtered out here) while
+    // preserving the rest of the user's config — critically `base_branch`, so a
+    // repo with a custom `baseBranch` and no `main` is still walked correctly.
+    let all_config = changepacks_core::Config {
+        ignore: Vec::new(),
+        ..ctx.config.clone()
+    };
+    find_project_dirs(&ctx.repo, &mut all_finders, &all_config, args.remote).await?;
 
     // Apply reverse dependency updates across all discovered projects.
     let all_projects = collect_projects(&all_finders);
@@ -83,11 +92,6 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
 
     // Merge workspace-inherited package updates into workspace entries
     merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
-
-    if update_map.is_empty() {
-        args.format.print("No updates found");
-        return Ok(());
-    }
 
     if let FormatOptions::Stdout = args.format {
         println!("Updates found:");

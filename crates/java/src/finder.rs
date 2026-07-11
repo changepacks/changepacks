@@ -404,19 +404,20 @@ impl ProjectFinder for GradleProjectFinder {
         // once again for `*::new`). One shared `path_key` + one
         // `.clone()` into the constructor cuts 4 `PathBuf` allocs to 2.
         let path_key = path.to_path_buf();
+        let relative_path_key = relative_path.to_path_buf();
         let mut project = if is_workspace {
             Project::Workspace(Box::new(GradleWorkspace::new(
                 name,
                 version,
                 path_key.clone(),
-                relative_path.to_path_buf(),
+                relative_path_key,
             )))
         } else {
             Project::Package(Box::new(GradlePackage::new(
                 name,
                 version,
                 path_key.clone(),
-                relative_path.to_path_buf(),
+                relative_path_key,
             )))
         };
 

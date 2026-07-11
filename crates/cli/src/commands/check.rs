@@ -15,6 +15,16 @@ use crate::{
     options::{CliLanguage, FilterOptions, FormatOptions, retain_by_language},
 };
 
+/// Format the "(changed)" marker for a project, colored bright yellow if changed.
+fn changed_marker(project: &Project) -> colored::ColoredString {
+    use colored::Colorize;
+    if project.is_changed() {
+        " (changed)".bright_yellow()
+    } else {
+        "".normal()
+    }
+}
+
 #[derive(Args, Debug)]
 #[command(about = "Check project status")]
 pub struct CheckArgs {
@@ -70,7 +80,6 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     } else {
         match args.format {
             FormatOptions::Stdout => {
-                use colored::Colorize;
                 // Fast-path: when `update_map` is empty (the dominant case for a
                 // repo with no pending changepack logs), skip the per-project
                 // `get_relative_path` allocation entirely — the lookup can never
@@ -78,11 +87,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                 // allocated and immediately dropped. Byte-identical output.
                 let update_map_empty = update_map.is_empty();
                 for project in projects {
-                    let changed_marker = if project.is_changed() {
-                        " (changed)".bright_yellow()
-                    } else {
-                        "".normal()
-                    };
+                    let changed_marker = changed_marker(project);
                     // Fast-path preserved: when `update_map` is empty, skip the
                     // shared resolver entirely (its `get_relative_path` key can
                     // never hit an empty map — the dominant case). Otherwise
@@ -451,11 +456,7 @@ fn format_project_line(
 
     let version = version_display_with_update(project, repo_root_path, update_map)?;
 
-    let changed_marker = if project.is_changed() {
-        " (changed)".bright_yellow()
-    } else {
-        "".normal()
-    };
+    let changed_marker = changed_marker(project);
 
     // Fuse the filter + join into a single `String::push_str` loop, matching
     // the `format_selected_projects` pattern in `prompter.rs`. Drops the

@@ -107,21 +107,13 @@ pub async fn handle_publish_with_prompter(
         let (result_map, failed_projects) =
             execute_dry_run_publish_loop(&projects, &ctx.config, &args.format).await;
 
-        print_publish_failure_summary(&failed_projects, projects.len(), &args.format);
-
-        if let FormatOptions::Json = args.format {
-            println!("{}", serde_json::to_string_pretty(&result_map)?);
-        }
-
-        if !failed_projects.is_empty() {
-            anyhow::bail!(
-                "Dry-run failed for {} project(s): {}",
-                failed_projects.len(),
-                failed_projects.join(", ")
-            );
-        }
-
-        return Ok(());
+        return finish_publish_run(
+            &result_map,
+            &failed_projects,
+            projects.len(),
+            &args.format,
+            "Dry-run failed for",
+        );
     }
 
     // confirm
@@ -138,21 +130,13 @@ pub async fn handle_publish_with_prompter(
     let (result_map, failed_projects) =
         execute_publish_loop(&projects, &ctx.config, &args.format).await;
 
-    print_publish_failure_summary(&failed_projects, projects.len(), &args.format);
-
-    if let FormatOptions::Json = args.format {
-        println!("{}", serde_json::to_string_pretty(&result_map)?);
-    }
-
-    if !failed_projects.is_empty() {
-        anyhow::bail!(
-            "Failed to publish {} project(s): {}",
-            failed_projects.len(),
-            failed_projects.join(", ")
-        );
-    }
-
-    Ok(())
+    finish_publish_run(
+        &result_map,
+        &failed_projects,
+        projects.len(),
+        &args.format,
+        "Failed to publish",
+    )
 }
 
 fn print_projects_to_publish(projects: &[&Project], format: &FormatOptions) {
@@ -175,6 +159,38 @@ fn print_publish_failure_summary(failed_projects: &[String], total: usize, forma
             failed_projects.join(", ")
         );
     }
+}
+
+/// Performs the shared finish tail for both the dry-run and real-publish branches:
+/// prints the failure summary, emits the JSON result map when the format is JSON,
+/// and bails with `"{bail_prefix} N project(s): list"` when there are failures.
+///
+/// `bail_prefix` must be `"Dry-run failed for"` (dry-run branch) or
+/// `"Failed to publish"` (real-publish branch) — the exact strings pinned by
+/// integration tests.
+fn finish_publish_run(
+    result_map: &BTreeMap<PathBuf, PublishResult>,
+    failed_projects: &[String],
+    total: usize,
+    format: &FormatOptions,
+    bail_prefix: &str,
+) -> Result<()> {
+    print_publish_failure_summary(failed_projects, total, format);
+
+    if let FormatOptions::Json = format {
+        println!("{}", serde_json::to_string_pretty(result_map)?);
+    }
+
+    if !failed_projects.is_empty() {
+        anyhow::bail!(
+            "{} {} project(s): {}",
+            bail_prefix,
+            failed_projects.len(),
+            failed_projects.join(", ")
+        );
+    }
+
+    Ok(())
 }
 
 fn print_publish_output(output: &PublishOutput) {

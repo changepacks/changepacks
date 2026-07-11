@@ -79,11 +79,23 @@ pub async fn clear_applied_update_logs(
         return Ok(());
     }
 
+    // Two-phase read, mirroring `gen_update_map`:
+    //   Phase 1: single directory walk to collect the paths of every matching
+    //            `changepack_log_*.json` entry — pure name filtering, no IO body.
+    //   Phase 2: `futures::future::try_join_all` reads every body concurrently,
+    //            collapsing N sequential `read_to_string` round-trips into one
+    //            parallel batch on IO-bound systems.
+    //   Phase 3: the existing sequential parse+retain+remove-or-rewrite loop is
+    //            unchanged — it must remain sequential because each file may be
+    //            removed or rewritten depending on the `applied_paths` set.
     let paths = collect_changepack_log_paths(changepacks_dir).await?;
-    for path in paths {
-        let content = read_to_string(&path)
+    let bodies: Vec<String> = futures::future::try_join_all(paths.iter().map(|path| async move {
+        read_to_string(path)
             .await
-            .with_context(|| format!("Failed to read update log {}", path.display()))?;
+            .with_context(|| format!("Failed to read update log {}", path.display()))
+    }))
+    .await?;
+    for (path, content) in paths.iter().zip(bodies) {
         let mut value: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse update log {}", path.display()))?;
 
@@ -96,13 +108,13 @@ pub async fn clear_applied_update_logs(
 
         changes.retain(|change_path, _| !applied_paths.contains(std::path::Path::new(change_path)));
         if changes.is_empty() {
-            remove_file(&path)
+            remove_file(path)
                 .await
                 .with_context(|| format!("Failed to remove update log {}", path.display()))?;
         } else {
             let next_content = serde_json::to_string(&value)
                 .with_context(|| format!("Failed to serialize update log {}", path.display()))?;
-            write(&path, next_content)
+            write(path, next_content)
                 .await
                 .with_context(|| format!("Failed to rewrite update log {}", path.display()))?;
         }

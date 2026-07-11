@@ -1377,6 +1377,74 @@ async fn test_cli_update_actual_execution() {
     assert!(!log_exists, "Changepack log should be cleared after update");
 }
 
+// Regression: `changepacks update` must honor the configured `baseBranch`
+// during its auxiliary (unfiltered) project walk. That second walk previously
+// used `Config::default()` (baseBranch = "main"), so a repo whose configured
+// baseBranch is `trunk` with NO `main` branch failed with
+// `base branch 'main' not found in local refs`. Inline the git setup here
+// (instead of `init_git_repo`, which hardcodes `-b main`) so the repo has only
+// a `trunk` branch.
+#[tokio::test]
+#[serial]
+async fn test_cli_update_respects_custom_base_branch() {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    run_git(&temp_path, &["init", "-b", "trunk"]);
+    run_git(&temp_path, &["config", "user.email", "test@test.com"]);
+    run_git(&temp_path, &["config", "user.name", "Test"]);
+
+    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
+        .await
+        .unwrap();
+    tokio::fs::write(
+        temp_path.join(".changepacks/config.json"),
+        r#"{"baseBranch": "trunk"}"#,
+    )
+    .await
+    .unwrap();
+    tokio::fs::write(
+        temp_path.join(".changepacks/changepack_log_test.json"),
+        r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+    )
+    .await
+    .unwrap();
+
+    tokio::fs::write(
+        temp_path.join("package.json"),
+        r#"{"name": "test", "version": "1.0.0"}"#,
+    )
+    .await
+    .unwrap();
+
+    git_add_and_commit(&temp_path, "Initial commit");
+
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    let args = vec![
+        "changepacks".to_string(),
+        "update".to_string(),
+        "--yes".to_string(),
+    ];
+    let result = changepacks_cli::main(&args).await;
+
+    assert!(
+        result.is_ok(),
+        "update should honor custom baseBranch: {:?}",
+        result.err()
+    );
+
+    // Version bumped 1.0.0 -> 1.0.1 proves the auxiliary walk completed instead
+    // of erroring on a missing `main` ref.
+    let content = tokio::fs::read_to_string(temp_path.join("package.json"))
+        .await
+        .unwrap();
+    assert!(
+        content.contains("1.0.1"),
+        "Version should be updated to 1.0.1, got: {content}"
+    );
+}
+
 // Test update with workspace dependencies
 #[tokio::test]
 #[serial]
