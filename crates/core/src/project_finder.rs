@@ -198,23 +198,14 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
         }
         is_regular_file(path).await
     }
-    /// # Errors
-    /// Returns error if checking changed status fails for any project.
-    fn check_changed(&mut self, path: &Path) -> Result<()> {
-        for project in self.projects_mut() {
-            project.check_changed(path)?;
-        }
-        Ok(())
-    }
-    /// Batch variant of [`check_changed`](Self::check_changed): mark every
-    /// project against every path in `paths` from ONE `projects_mut()` call.
+    /// Mark every project against every path in `paths` from ONE
+    /// `projects_mut()` call.
     ///
-    /// The driver dispatches every changed file to every finder. The per-file
-    /// [`check_changed`](Self::check_changed) rebuilds the `Vec<&mut Project>`
-    /// via `projects_mut()` once per file, so `F` changed files × `M` finders
-    /// cost `F × M` fresh Vec allocations. Collecting the paths once and
-    /// looping project-major here collapses that to one Vec per finder (`M`
-    /// total).
+    /// The driver dispatches every changed file to every finder. Rebuilding
+    /// the `Vec<&mut Project>` via `projects_mut()` once per file would cost
+    /// `F` changed files × `M` finders fresh Vec allocations. Collecting the
+    /// paths once and looping project-major here collapses that to one Vec per
+    /// finder (`M` total).
     ///
     /// The project-major / path-major order flip is behavior-preserving:
     /// [`Project::check_changed`] is monotonic — it early-returns once the
@@ -222,7 +213,7 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// pure, stateless `should_mark_changed`. A project ends up changed iff
     /// *any* path matches, an order-independent logical OR, so visiting all
     /// paths for one project before moving to the next yields an identical
-    /// result to the previous file-major traversal.
+    /// result to a path-major traversal.
     ///
     /// # Errors
     /// Returns error if checking changed status fails for any project.
@@ -247,114 +238,9 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Language, Package, UpdateType, Workspace};
+    use crate::test_support::{MockPackage, MockWorkspace};
     use async_trait::async_trait;
-    use std::collections::HashSet;
     use std::path::PathBuf;
-
-    #[derive(Debug)]
-    struct MockPackage {
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        is_changed: bool,
-        dependencies: HashSet<String>,
-    }
-
-    impl MockPackage {
-        fn new(name: &str, path: &str) -> Self {
-            Self {
-                name: Some(name.to_string()),
-                version: Some("1.0.0".to_string()),
-                path: PathBuf::from(path),
-                relative_path: PathBuf::from(path),
-                is_changed: false,
-                dependencies: HashSet::new(),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Package for MockPackage {
-        // Locks the `impl_basic_accessors!()` field-name contract at the
-        // test surface — see the sibling mock in `package.rs::tests`.
-        crate::impl_basic_accessors!();
-
-        async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
-            Ok(())
-        }
-        fn language(&self) -> Language {
-            Language::Node
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-        fn add_dependency(&mut self, dep: &str) {
-            self.dependencies.insert(dep.to_string());
-        }
-        fn default_publish_command(&self) -> String {
-            "echo test".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo test --dry-run".to_string())
-        }
-        fn inherits_workspace_version(&self) -> bool {
-            false
-        }
-        fn workspace_root_path(&self) -> Option<&Path> {
-            None
-        }
-    }
-
-    #[derive(Debug)]
-    struct MockWorkspace {
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        is_changed: bool,
-        dependencies: HashSet<String>,
-    }
-
-    impl MockWorkspace {
-        fn new(name: &str, path: &str) -> Self {
-            Self {
-                name: Some(name.to_string()),
-                version: Some("1.0.0".to_string()),
-                path: PathBuf::from(path),
-                relative_path: PathBuf::from(path),
-                is_changed: false,
-                dependencies: HashSet::new(),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Workspace for MockWorkspace {
-        // Locks the `impl_basic_accessors!()` field-name contract at the
-        // test surface — see the sibling mock in `package.rs::tests`.
-        crate::impl_basic_accessors!();
-
-        async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
-            Ok(())
-        }
-        fn language(&self) -> Language {
-            Language::Node
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-        fn add_dependency(&mut self, dep: &str) {
-            self.dependencies.insert(dep.to_string());
-        }
-        fn default_publish_command(&self) -> String {
-            "echo test".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo test --dry-run".to_string())
-        }
-    }
 
     #[derive(Debug)]
     struct MockProjectFinder {
@@ -398,12 +284,12 @@ mod tests {
 
     #[test]
     fn test_project_finder_check_changed() {
-        let package = MockPackage::new("test", "/project/package.json");
+        let package = MockPackage::same_path("test", "/project/package.json");
         let mut finder = MockProjectFinder::new().with_package(package);
 
         // Check a file that's in the project directory
         finder
-            .check_changed(Path::new("/project/src/index.js"))
+            .check_changed_many(&[PathBuf::from("/project/src/index.js")])
             .unwrap();
 
         // The project should be marked as changed
@@ -412,15 +298,15 @@ mod tests {
 
     #[test]
     fn test_project_finder_check_changed_multiple_projects() {
-        let package1 = MockPackage::new("pkg1", "/project1/package.json");
-        let package2 = MockPackage::new("pkg2", "/project2/package.json");
+        let package1 = MockPackage::same_path("pkg1", "/project1/package.json");
+        let package2 = MockPackage::same_path("pkg2", "/project2/package.json");
         let mut finder = MockProjectFinder::new()
             .with_package(package1)
             .with_package(package2);
 
         // Check a file in project1 only
         finder
-            .check_changed(Path::new("/project1/src/index.js"))
+            .check_changed_many(&[PathBuf::from("/project1/src/index.js")])
             .unwrap();
 
         // Only project1 should be changed
@@ -430,9 +316,9 @@ mod tests {
 
     #[test]
     fn test_project_finder_check_changed_many() {
-        let package1 = MockPackage::new("pkg1", "/project1/package.json");
-        let package2 = MockPackage::new("pkg2", "/project2/package.json");
-        let workspace = MockWorkspace::new("root", "/project3/package.json");
+        let package1 = MockPackage::same_path("pkg1", "/project1/package.json");
+        let package2 = MockPackage::same_path("pkg2", "/project2/package.json");
+        let workspace = MockWorkspace::same_path("root", "/project3/package.json");
         let mut finder = MockProjectFinder::new()
             .with_package(package1)
             .with_package(package2)
@@ -440,9 +326,9 @@ mod tests {
 
         // One batch: a file under project1 and a file under project3 (the
         // workspace); nothing under project2. `check_changed_many` must mark
-        // exactly project1 and project3 — identical to the result the per-file
-        // `check_changed` would produce, proving the project-major loop order
-        // is behavior-preserving across both Package and Workspace variants.
+        // exactly project1 and project3 — a project is marked changed iff any
+        // path matches it, proving the project-major loop order is
+        // behavior-preserving across both Package and Workspace variants.
         let paths = [
             PathBuf::from("/project1/src/index.js"),
             PathBuf::from("/project3/lib/mod.rs"),
@@ -456,46 +342,48 @@ mod tests {
 
     #[test]
     fn test_project_finder_check_changed_many_matches_per_file_traversal() {
-        // Same inputs fed to the per-file `check_changed` (file-major) and the
-        // batched `check_changed_many` (project-major) must land the two
-        // finders in an identical changed-state, locking the equivalence the
-        // driver relies on.
+        // The same inputs fed one-at-a-time (each path its own single-element
+        // batch, mirroring a per-file traversal) and fed together in ONE batch
+        // must land the two finders in an identical changed-state, locking the
+        // order/batch equivalence the driver relies on.
         let paths = [
             PathBuf::from("/project1/src/index.js"),
             PathBuf::from("/project2/README.md"),
         ];
 
-        let mut file_major = MockProjectFinder::new()
-            .with_package(MockPackage::new("pkg1", "/project1/package.json"))
-            .with_package(MockPackage::new("pkg2", "/project2/package.json"));
+        let mut per_path = MockProjectFinder::new()
+            .with_package(MockPackage::same_path("pkg1", "/project1/package.json"))
+            .with_package(MockPackage::same_path("pkg2", "/project2/package.json"));
         for path in &paths {
-            file_major.check_changed(path).unwrap();
+            per_path
+                .check_changed_many(std::slice::from_ref(path))
+                .unwrap();
         }
 
-        let mut project_major = MockProjectFinder::new()
-            .with_package(MockPackage::new("pkg1", "/project1/package.json"))
-            .with_package(MockPackage::new("pkg2", "/project2/package.json"));
-        project_major.check_changed_many(&paths).unwrap();
+        let mut batched = MockProjectFinder::new()
+            .with_package(MockPackage::same_path("pkg1", "/project1/package.json"))
+            .with_package(MockPackage::same_path("pkg2", "/project2/package.json"));
+        batched.check_changed_many(&paths).unwrap();
 
         assert_eq!(
-            file_major.projects()[0].is_changed(),
-            project_major.projects()[0].is_changed()
+            per_path.projects()[0].is_changed(),
+            batched.projects()[0].is_changed()
         );
         assert_eq!(
-            file_major.projects()[1].is_changed(),
-            project_major.projects()[1].is_changed()
+            per_path.projects()[1].is_changed(),
+            batched.projects()[1].is_changed()
         );
-        assert!(project_major.projects()[0].is_changed());
-        assert!(project_major.projects()[1].is_changed());
+        assert!(batched.projects()[0].is_changed());
+        assert!(batched.projects()[1].is_changed());
     }
 
     #[test]
     fn test_project_finder_with_workspace() {
-        let workspace = MockWorkspace::new("root", "/project/package.json");
+        let workspace = MockWorkspace::same_path("root", "/project/package.json");
         let mut finder = MockProjectFinder::new().with_workspace(workspace);
 
         finder
-            .check_changed(Path::new("/project/src/index.js"))
+            .check_changed_many(&[PathBuf::from("/project/src/index.js")])
             .unwrap();
 
         assert!(finder.projects()[0].is_changed());
@@ -510,7 +398,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_project_finder_finalize_with_projects() {
-        let package = MockPackage::new("pkg1", "/project/package.json");
+        let package = MockPackage::same_path("pkg1", "/project/package.json");
         let mut finder = MockProjectFinder::new().with_package(package);
         let result = finder.finalize().await;
         assert!(result.is_ok());

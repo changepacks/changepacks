@@ -9,7 +9,7 @@ use clap::Args;
 #[command(about = "Initialize a new changepacks project")]
 pub struct InitArgs {
     /// If true, do not make any filesystem changes.
-    #[arg(short, long, default_value = "false")]
+    #[arg(short, long)]
     dry_run: bool,
 }
 

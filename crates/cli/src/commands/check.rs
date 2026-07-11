@@ -34,7 +34,7 @@ pub struct CheckArgs {
     #[arg(long, default_value = "stdout")]
     format: FormatOptions,
 
-    #[arg(short, long, default_value = "false")]
+    #[arg(short, long)]
     remote: bool,
 
     #[arg(long)]

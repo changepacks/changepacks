@@ -322,18 +322,34 @@ fn config_command(
     changepacks_core::publish::lookup_by_path_or_language(map, relative_path, Language::Node)
 }
 
+/// Shared helper for resolving publish commands by config or detected package manager.
+///
+/// Checks the provided config map first; if no match, detects the package manager
+/// recursively and calls the provided accessor function to get the default command.
+async fn command_for_path(
+    path: &Path,
+    relative_path: &Path,
+    map: &std::collections::HashMap<String, String>,
+    default_fn: fn(PackageManager) -> &'static str,
+) -> String {
+    if let Some(command) = config_command(map, relative_path) {
+        return command;
+    }
+    default_fn(detect_package_manager_recursive_async(path).await).to_string()
+}
+
 pub(crate) async fn publish_command_for_path(
     path: &Path,
     relative_path: &Path,
     config: &Config,
 ) -> String {
-    if let Some(command) = config_command(&config.publish, relative_path) {
-        return command;
-    }
-    detect_package_manager_recursive_async(path)
-        .await
-        .publish_command()
-        .to_string()
+    command_for_path(
+        path,
+        relative_path,
+        &config.publish,
+        PackageManager::publish_command,
+    )
+    .await
 }
 
 pub(crate) async fn dry_run_publish_command_for_path(
@@ -341,13 +357,13 @@ pub(crate) async fn dry_run_publish_command_for_path(
     relative_path: &Path,
     config: &Config,
 ) -> String {
-    if let Some(command) = config_command(&config.publish_dry_run, relative_path) {
-        return command;
-    }
-    detect_package_manager_recursive_async(path)
-        .await
-        .dry_run_publish_command()
-        .to_string()
+    command_for_path(
+        path,
+        relative_path,
+        &config.publish_dry_run,
+        PackageManager::dry_run_publish_command,
+    )
+    .await
 }
 
 async fn publish_path_dirs_for_path(path: &Path) -> Vec<PathBuf> {

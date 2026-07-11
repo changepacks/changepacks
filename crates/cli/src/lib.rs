@@ -79,10 +79,10 @@ struct Cli {
     #[arg(short, long)]
     filter: Option<FilterOptions>,
 
-    #[arg(short, long, default_value = "false")]
+    #[arg(short, long)]
     remote: bool,
 
-    #[arg(short, long, default_value = "false")]
+    #[arg(short, long)]
     yes: bool,
 
     #[arg(short, long)]

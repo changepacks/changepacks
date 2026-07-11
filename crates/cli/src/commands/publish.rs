@@ -27,7 +27,7 @@ pub struct PublishArgs {
     #[arg(long, default_value = "stdout")]
     pub format: FormatOptions,
 
-    #[arg(short, long, default_value = "false")]
+    #[arg(short, long)]
     pub remote: bool,
 
     /// Filter projects by language. Can be specified multiple times to include multiple languages.
@@ -370,6 +370,16 @@ enum ProjectPublishOutcome {
     Error(anyhow::Error),
 }
 
+impl ProjectPublishOutcome {
+    fn from_output(output: PublishOutput) -> Self {
+        if output.success {
+            Self::Success(output)
+        } else {
+            Self::Failure(output)
+        }
+    }
+}
+
 /// Represents the failure cause for a publish operation.
 /// Either a non-zero exit with captured output, or a spawn/execution error.
 enum PublishFailureCause<'a> {
@@ -522,11 +532,7 @@ async fn execute_dry_run_publish_loop(
         }
         match project.dry_run_publish(config).await {
             Ok(Some(output)) => {
-                let outcome = if output.success {
-                    ProjectPublishOutcome::Success(output)
-                } else {
-                    ProjectPublishOutcome::Failure(output)
-                };
+                let outcome = ProjectPublishOutcome::from_output(output);
                 record_outcome_track_failure(
                     &mut result_map,
                     &mut failed_projects,
@@ -607,11 +613,7 @@ async fn execute_publish_loop(
         }
         match project.publish(config).await {
             Ok(output) => {
-                let outcome = if output.success {
-                    ProjectPublishOutcome::Success(output)
-                } else {
-                    ProjectPublishOutcome::Failure(output)
-                };
+                let outcome = ProjectPublishOutcome::from_output(output);
                 record_outcome_track_failure(
                     &mut result_map,
                     &mut failed_projects,

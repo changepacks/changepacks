@@ -92,7 +92,7 @@ pub async fn handle_changepack_with_prompter(
         let projects: Vec<&Project> = entries.iter().map(|(p, _)| *p).collect();
 
         let selected_projects = if args.yes {
-            projects.clone()
+            projects
         } else if update_type == UpdateType::Patch && projects.len() == 1 {
             vec![projects[0]]
         } else {
@@ -113,7 +113,7 @@ pub async fn handle_changepack_with_prompter(
                     defaults.push(index);
                 }
             }
-            prompter.multi_select(&message, projects.clone(), defaults)?
+            prompter.multi_select(&message, projects, defaults)?
         };
 
         // Identify selected projects by pointer equality — every entry

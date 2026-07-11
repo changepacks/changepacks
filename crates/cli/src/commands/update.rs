@@ -37,7 +37,7 @@ pub struct UpdateArgs {
     #[arg(long, default_value = "stdout")]
     pub format: FormatOptions,
 
-    #[arg(short, long, default_value = "false")]
+    #[arg(short, long)]
     pub remote: bool,
 
     /// Filter projects by language. Can be specified multiple times to include multiple languages.
@@ -95,20 +95,16 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         Some(all_finders)
     };
 
-    // Apply reverse dependency updates across all discovered projects.
-    if let Some(all_finders) = all_finders.as_ref() {
-        let all_projects = collect_projects(all_finders);
-        apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
+    // Apply reverse dependency updates across all discovered projects. When
+    // `ignore` is non-empty, `all_finders` holds the full unfiltered tree;
+    // otherwise the already-unfiltered `project_finders` IS that full set. Both
+    // former branches ran the identical apply + merge over the same project
+    // slice — only the finder source differed — so select the source once.
+    let all_projects = collect_projects(all_finders.as_deref().unwrap_or(&project_finders));
+    apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
 
-        // Merge workspace-inherited package updates into workspace entries
-        merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
-    } else {
-        let all_projects = collect_projects(&project_finders);
-        apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
-
-        // Merge workspace-inherited package updates into workspace entries
-        merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
-    }
+    // Merge workspace-inherited package updates into workspace entries
+    merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
 
     if let FormatOptions::Stdout = args.format {
         println!("Updates found:");
@@ -158,32 +154,15 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
             &ctx.repo_root_path,
         )?;
 
-        if let FormatOptions::Stdout = args.format {
-            for (project, update_type) in &update_projects {
-                println!(
-                    "{} {}",
-                    project,
-                    display_update(project.version(), *update_type)?
-                );
-            }
-        }
-
-        if args.dry_run {
-            args.format.print("Dry run, no updates will be made");
+        // Reborrow the `&mut Project` pairs as shared `&Project` pairs so the
+        // preview/confirm gate sees the same slice shape as the ref branch. The
+        // reborrow is dropped before `apply_updates` reclaims the `&mut`.
+        let preview: Vec<UpdateProjectRef<'_>> =
+            update_projects.iter().map(|(p, t)| (&**p, *t)).collect();
+        if !preview_and_confirm(args, prompter, &preview)? {
             return Ok(());
         }
-
-        // confirm
-        let confirm = if args.yes {
-            true
-        } else {
-            prompter.confirm("Are you sure you want to update the projects?")?
-        };
-
-        if !confirm {
-            args.format.print("Update cancelled");
-            return Ok(());
-        }
+        drop(preview);
 
         apply_updates(&mut update_projects, &workspace_projects).await?;
         drop(update_projects);
@@ -191,30 +170,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         let update_projects =
             collect_update_project_refs(&project_finders, &update_map, &ctx.repo_root_path)?;
 
-        if let FormatOptions::Stdout = args.format {
-            for (project, update_type) in &update_projects {
-                println!(
-                    "{} {}",
-                    project,
-                    display_update(project.version(), *update_type)?
-                );
-            }
-        }
-
-        if args.dry_run {
-            args.format.print("Dry run, no updates will be made");
-            return Ok(());
-        }
-
-        // confirm
-        let confirm = if args.yes {
-            true
-        } else {
-            prompter.confirm("Are you sure you want to update the projects?")?
-        };
-
-        if !confirm {
-            args.format.print("Update cancelled");
+        if !preview_and_confirm(args, prompter, &update_projects)? {
             return Ok(());
         }
 
@@ -248,6 +204,56 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
 
     Ok(())
+}
+
+/// Display the pending updates, then apply the dry-run / confirmation gate.
+///
+/// Returns `Ok(false)` when the caller must stop without applying anything —
+/// either `--dry-run` was set or the user declined the confirmation. In both
+/// cases the user-facing message is already printed here, so the caller simply
+/// returns `Ok(())` and prints nothing more. Returns `Ok(true)` to proceed.
+///
+/// Extracted to share the identical preview/dry-run/confirm sequence between the
+/// two `handle_update_with_prompter` branches, which differ only in whether the
+/// project collection is held by mutable or shared reference.
+///
+/// Excluded from coverage: shares the interactive `prompter.confirm(...)` and
+/// stdout display loop of its sole caller `handle_update_with_prompter`, itself
+/// coverage-excluded for the same reason.
+#[cfg(not(tarpaulin_include))]
+fn preview_and_confirm(
+    args: &UpdateArgs,
+    prompter: &dyn Prompter,
+    projects: &[UpdateProjectRef<'_>],
+) -> Result<bool> {
+    if let FormatOptions::Stdout = args.format {
+        for (project, update_type) in projects {
+            println!(
+                "{} {}",
+                project,
+                display_update(project.version(), *update_type)?
+            );
+        }
+    }
+
+    if args.dry_run {
+        args.format.print("Dry run, no updates will be made");
+        return Ok(false);
+    }
+
+    // confirm
+    let confirm = if args.yes {
+        true
+    } else {
+        prompter.confirm("Are you sure you want to update the projects?")?
+    };
+
+    if !confirm {
+        args.format.print("Update cancelled");
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
 /// Excluded from coverage: private helper invoked solely by

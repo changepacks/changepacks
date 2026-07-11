@@ -225,53 +225,44 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // Single pass over projects to build:
     //   - path_to_name:   relative file path -> package name (for O(1) reverse lookup)
     //   - reverse_deps:   dependency name -> [packages that depend on it]
-    let mut path_to_name: HashMap<PathBuf, String> = HashMap::with_capacity(projects.len());
-    let mut reverse_deps: HashMap<String, Vec<(PathBuf, String)>> =
+    let mut path_to_name: HashMap<PathBuf, &str> = HashMap::with_capacity(projects.len());
+    let mut reverse_deps: HashMap<&str, Vec<(PathBuf, &str)>> =
         HashMap::with_capacity(projects.len());
     for project in projects {
         let Ok(rel_path_buf) = get_relative_path(repo_root_path, project.path()) else {
             continue;
         };
 
-        // Hoist the name lookup ONCE per project. Previously this loop
-        // called `project.name()` twice (once via `if let Some(name)` for
-        // the `path_to_name` insert, again via `.unwrap_or("unknown").
-        // to_string()` inside the has-deps block) and paid two independent
-        // `String` allocations on the has-name has-deps path. Reuse a
-        // single owned `project_name` in both spots via `.clone()`
-        // (memcpy on already-owned UTF-8 bytes) instead of re-hitting the
-        // trait method + `.to_string()` chain. Semantics stay byte-
-        // identical: the `name_opt.is_some()` gate preserves the
-        // "`path_to_name` only carries real names" invariant, and the
-        // "unknown" fallback still only surfaces in the reverse-dep log
-        // message text (never in `path_to_name`) — matching the pre-change
-        // behaviour.
+        // Hoist the name lookup ONCE per project and BORROW it: every name
+        // lives in `projects: &[&Project]`, which outlives both local maps,
+        // so `&str` values retire one `String` allocation per project (plus
+        // one per dependency edge below). Semantics stay byte-identical:
+        // the `name_opt.is_some()` gate preserves the "`path_to_name` only
+        // carries real names" invariant, and the "unknown" fallback still
+        // only surfaces in the reverse-dep log message text (never in
+        // `path_to_name`) — matching the pre-change behaviour.
         let name_opt = project.name();
-        let project_name: String = name_opt.map_or_else(|| "unknown".to_string(), str::to_string);
+        let project_name: &str = name_opt.unwrap_or("unknown");
 
         if name_opt.is_some() {
-            path_to_name.insert(rel_path_buf.clone(), project_name.clone());
+            path_to_name.insert(rel_path_buf.clone(), project_name);
         }
 
         let dependencies = project.dependencies();
         if !dependencies.is_empty() {
             for dep_name in dependencies {
-                // Fast-path: `HashMap::get_mut` on an existing key is zero-alloc,
-                // whereas `entry(dep_name.clone()).or_default()` unconditionally
-                // clones the `String` even when the entry already exists — common
-                // when multiple monorepo packages depend on the same core crate
-                // (e.g. `bridge/node` + `bridge/python` both depend on
-                // `changepacks`). Cloning is deferred to the cache-miss path
-                // only. Mirrors the sibling `gen_update_map`'s
-                // `HashMap::get_mut`-first idiom for its `PathBuf::clone`
-                // avoidance. `HashMap<String, _>::get_mut::<str>` works because
-                // `String: Borrow<str>`.
+                // Fast-path: `HashMap::get_mut` on an existing key skips the
+                // `entry` API's key move on hits — common when multiple
+                // monorepo packages depend on the same core crate (e.g.
+                // `bridge/node` + `bridge/python` both depend on
+                // `changepacks`). Keys and values are `&str` borrowed from
+                // `projects`, so both paths are zero-alloc.
                 let entry = if let Some(existing) = reverse_deps.get_mut(dep_name.as_str()) {
                     existing
                 } else {
-                    reverse_deps.entry(dep_name.clone()).or_default()
+                    reverse_deps.entry(dep_name.as_str()).or_default()
                 };
-                entry.push((rel_path_buf.clone(), project_name.clone()));
+                entry.push((rel_path_buf.clone(), project_name));
             }
         }
     }
@@ -294,7 +285,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     to_process.extend(
         update_map
             .keys()
-            .filter_map(|path| path_to_name.get(path).map(String::as_str)),
+            .filter_map(|path| path_to_name.get(path).copied()),
     );
     while let Some(trigger_name) = to_process.pop() {
         if let Some(dependents) = reverse_deps.get(trigger_name) {
@@ -303,7 +294,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
                     && !packages_to_add.contains_key(dependent_path)
                 {
                     packages_to_add.insert(dependent_path.clone(), trigger_name.to_string());
-                    to_process.push(dependent_name.as_str());
+                    to_process.push(*dependent_name);
                 }
             }
         }

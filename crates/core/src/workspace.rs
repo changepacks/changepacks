@@ -162,73 +162,14 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::MockWorkspace;
     use rstest::rstest;
     use std::collections::HashMap;
-    use std::path::PathBuf;
-
-    #[derive(Debug)]
-    struct MockWorkspace {
-        name: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        version: Option<String>,
-        language: Language,
-        dependencies: HashSet<String>,
-        is_changed: bool,
-    }
-
-    impl MockWorkspace {
-        fn new(name: Option<&str>, path: &str, relative_path: &str) -> Self {
-            Self {
-                name: name.map(String::from),
-                path: PathBuf::from(path),
-                relative_path: PathBuf::from(relative_path),
-                version: Some("1.0.0".to_string()),
-                language: Language::Node,
-                dependencies: HashSet::new(),
-                is_changed: false,
-            }
-        }
-
-        fn with_language(mut self, language: Language) -> Self {
-            self.language = language;
-            self
-        }
-    }
-
-    #[async_trait]
-    impl Workspace for MockWorkspace {
-        // Consumes the same `impl_basic_accessors!()` macro used by every
-        // real-world `Workspace` impl. Locks the macro's field-name
-        // contract via the type system: rename a struct field and this
-        // mock fails to compile immediately, catching the regression
-        // before it ships downstream to language crates.
-        crate::impl_basic_accessors!();
-
-        async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
-            Ok(())
-        }
-        fn language(&self) -> Language {
-            self.language
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
-        }
-    }
 
     #[test]
     fn test_check_changed_already_changed() {
         let mut workspace =
-            MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
+            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
         workspace.is_changed = true;
 
         // Should return early if already changed
@@ -246,14 +187,14 @@ mod tests {
     #[case("/other-project/src/index.js", false)]
     fn test_check_changed(#[case] changed_path: &str, #[case] expected: bool) {
         let mut workspace =
-            MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
+            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
         workspace.check_changed(Path::new(changed_path)).unwrap();
         assert_eq!(workspace.is_changed(), expected);
     }
 
     #[test]
     fn test_get_publish_command_by_path() {
-        let workspace = MockWorkspace::new(
+        let workspace = MockWorkspace::with_paths(
             Some("test"),
             "/project/package.json",
             "packages/core/package.json",
@@ -281,7 +222,7 @@ mod tests {
         #[case] key: &str,
         #[case] command: &str,
     ) {
-        let workspace = MockWorkspace::new(Some("test"), "/project/manifest", "manifest")
+        let workspace = MockWorkspace::with_paths(Some("test"), "/project/manifest", "manifest")
             .with_language(language);
         let mut publish = HashMap::new();
         publish.insert(key.to_string(), command.to_string());
@@ -295,7 +236,8 @@ mod tests {
 
     #[test]
     fn test_get_publish_command_default() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
         let config = Config::default();
 
         assert_eq!(workspace.get_publish_command(&config), "echo publish");
@@ -303,8 +245,9 @@ mod tests {
 
     #[test]
     fn test_get_dry_run_publish_command_falls_back_to_workspace_default() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json")
-            .with_language(Language::Node);
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json")
+                .with_language(Language::Node);
         let config = Config::default();
 
         // With no override, the trait method returns the workspace's own
@@ -317,7 +260,7 @@ mod tests {
 
     #[test]
     fn test_get_dry_run_publish_command_override_by_path() {
-        let workspace = MockWorkspace::new(
+        let workspace = MockWorkspace::with_paths(
             Some("test"),
             "/project/package.json",
             "packages/core/package.json",
@@ -341,8 +284,9 @@ mod tests {
 
     #[test]
     fn test_get_dry_run_publish_command_override_by_language() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json")
-            .with_language(Language::Node);
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json")
+                .with_language(Language::Node);
         let mut publish_dry_run = HashMap::new();
         publish_dry_run.insert(
             "node".to_string(),
@@ -364,7 +308,8 @@ mod tests {
     async fn test_publish_success() {
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("package.json");
-        let workspace = MockWorkspace::new(Some("test"), path.to_str().unwrap(), "package.json");
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
         let config = Config::default();
 
         // This will run "echo publish" which should succeed
@@ -376,7 +321,8 @@ mod tests {
     async fn test_publish_failure() {
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("package.json");
-        let workspace = MockWorkspace::new(Some("test"), path.to_str().unwrap(), "package.json");
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
         let mut publish = HashMap::new();
         let fail_cmd = if cfg!(target_os = "windows") {
             "cmd /c exit 1"
@@ -395,7 +341,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_update_workspace_dependencies_default() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
         let packages: Vec<&dyn Package> = vec![];
 
         let result = workspace.update_workspace_dependencies(&packages).await;
@@ -404,15 +351,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_publish_no_parent_directory() {
-        let workspace = MockWorkspace {
-            name: Some("test".to_string()),
-            path: PathBuf::from(""),
-            relative_path: PathBuf::from(""),
-            version: Some("1.0.0".to_string()),
-            language: Language::Node,
-            dependencies: HashSet::new(),
-            is_changed: false,
-        };
+        let workspace = MockWorkspace::with_paths(Some("test"), "", "");
         let config = Config::default();
         let result = workspace.publish(&config).await;
         assert!(result.is_err());
@@ -433,7 +372,7 @@ mod tests {
         // `crate::impl_basic_accessors!()`, so `set_name` MUST update the
         // underlying `name` field.
         let mut workspace =
-            MockWorkspace::new(Some("original"), "/project/package.json", "package.json");
+            MockWorkspace::with_paths(Some("original"), "/project/package.json", "package.json");
         workspace.set_name("new-name".to_string());
         assert_eq!(workspace.name(), Some("new-name"));
     }

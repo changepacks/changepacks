@@ -19,6 +19,9 @@ mod update_log;
 mod update_type;
 mod workspace;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 // Re-export traits for convenience
 pub use changepack_result::{ChangePackResult, ChangePackResultLog};
 pub use config::Config;

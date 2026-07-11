@@ -156,87 +156,16 @@ pub trait Package: std::fmt::Debug + Send + Sync {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
+    use crate::test_support::MockPackage;
     use rstest::rstest;
     use std::collections::HashMap;
-    use std::path::PathBuf;
-
-    macro_rules! impl_test_publish_commands {
-        () => {
-            fn default_publish_command(&self) -> String {
-                "echo publish".to_string()
-            }
-
-            fn default_dry_run_publish_command(&self) -> Option<String> {
-                Some("echo publish --dry-run".to_string())
-            }
-        };
-    }
-
-    pub(crate) use impl_test_publish_commands;
-
-    #[derive(Debug)]
-    struct MockPackage {
-        name: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        version: Option<String>,
-        language: Language,
-        dependencies: HashSet<String>,
-        is_changed: bool,
-    }
-
-    impl MockPackage {
-        fn new(name: Option<&str>, path: &str, relative_path: &str) -> Self {
-            Self {
-                name: name.map(String::from),
-                path: PathBuf::from(path),
-                relative_path: PathBuf::from(relative_path),
-                version: Some("1.0.0".to_string()),
-                language: Language::Node,
-                dependencies: HashSet::new(),
-                is_changed: false,
-            }
-        }
-
-        fn with_language(mut self, language: Language) -> Self {
-            self.language = language;
-            self
-        }
-    }
-
-    #[async_trait]
-    impl Package for MockPackage {
-        // Consumes the same `impl_basic_accessors!()` macro that every
-        // real-world `Package` impl uses (Node, Python, Rust, Dart,
-        // CSharp, Java — 12 impls). This mock exists to prove the
-        // macro's field-name contract survives future edits: if
-        // someone renames a struct field (e.g. `is_changed` →
-        // `changed`), these tests fail to compile immediately. The
-        // struct fields above are pinned to the macro's expected
-        // spellings (`name: Option<String>`, `version: Option<String>`,
-        // `path: PathBuf`, `relative_path: PathBuf`, `is_changed: bool`).
-        crate::impl_basic_accessors!();
-
-        async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
-            Ok(())
-        }
-        fn language(&self) -> Language {
-            self.language
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-        impl_test_publish_commands!();
-    }
 
     #[test]
     fn test_check_changed_already_changed() {
-        let mut package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
+        let mut package =
+            MockPackage::with_paths(Some("test"), "/project/package.json", "package.json");
         package.is_changed = true;
 
         package
@@ -252,26 +181,29 @@ pub(crate) mod tests {
     #[case("/project/.changepacks/change.json", false)]
     #[case("/other-project/src/index.js", false)]
     fn test_check_changed(#[case] changed_path: &str, #[case] expected: bool) {
-        let mut package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
+        let mut package =
+            MockPackage::with_paths(Some("test"), "/project/package.json", "package.json");
         package.check_changed(Path::new(changed_path)).unwrap();
         assert_eq!(package.is_changed(), expected);
     }
 
     #[test]
     fn test_inherits_workspace_version_default() {
-        let package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
+        let package =
+            MockPackage::with_paths(Some("test"), "/project/package.json", "package.json");
         assert!(!package.inherits_workspace_version());
     }
 
     #[test]
     fn test_workspace_root_path_default() {
-        let package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
+        let package =
+            MockPackage::with_paths(Some("test"), "/project/package.json", "package.json");
         assert!(package.workspace_root_path().is_none());
     }
 
     #[test]
     fn test_get_publish_command_by_path() {
-        let package = MockPackage::new(
+        let package = MockPackage::with_paths(
             Some("test"),
             "/project/package.json",
             "packages/core/package.json",
@@ -299,8 +231,8 @@ pub(crate) mod tests {
         #[case] key: &str,
         #[case] command: &str,
     ) {
-        let package =
-            MockPackage::new(Some("test"), "/project/manifest", "manifest").with_language(language);
+        let package = MockPackage::with_paths(Some("test"), "/project/manifest", "manifest")
+            .with_language(language);
         let mut publish = HashMap::new();
         publish.insert(key.to_string(), command.to_string());
         let config = Config {
@@ -313,7 +245,8 @@ pub(crate) mod tests {
 
     #[test]
     fn test_get_publish_command_default() {
-        let package = MockPackage::new(Some("test"), "/project/package.json", "package.json");
+        let package =
+            MockPackage::with_paths(Some("test"), "/project/package.json", "package.json");
         let config = Config::default();
 
         assert_eq!(package.get_publish_command(&config), "echo publish");
@@ -323,7 +256,7 @@ pub(crate) mod tests {
     async fn test_publish_success() {
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("package.json");
-        let package = MockPackage::new(Some("test"), path.to_str().unwrap(), "package.json");
+        let package = MockPackage::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
         let config = Config::default();
 
         let output = package.publish(&config).await.unwrap();
@@ -334,7 +267,7 @@ pub(crate) mod tests {
     async fn test_publish_failure() {
         let temp_dir = std::env::temp_dir();
         let path = temp_dir.join("package.json");
-        let package = MockPackage::new(Some("test"), path.to_str().unwrap(), "package.json");
+        let package = MockPackage::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
         let mut publish = HashMap::new();
         let fail_cmd = if cfg!(target_os = "windows") {
             "cmd /c exit 1"
@@ -353,15 +286,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_publish_no_parent_directory() {
-        let package = MockPackage {
-            name: Some("test".to_string()),
-            path: PathBuf::from(""),
-            relative_path: PathBuf::from(""),
-            version: Some("1.0.0".to_string()),
-            language: Language::Node,
-            dependencies: HashSet::new(),
-            is_changed: false,
-        };
+        let package = MockPackage::with_paths(Some("test"), "", "");
         let config = Config::default();
         let result = package.publish(&config).await;
         assert!(result.is_err());
@@ -384,7 +309,7 @@ pub(crate) mod tests {
         // the macro loses sight of it), the mock will fail to compile;
         // this test then locks the runtime behavior after compilation.
         let mut package =
-            MockPackage::new(Some("original"), "/project/package.json", "package.json");
+            MockPackage::with_paths(Some("original"), "/project/package.json", "package.json");
         package.set_name("new-name".to_string());
         assert_eq!(package.name(), Some("new-name"));
     }
