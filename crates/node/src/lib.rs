@@ -115,8 +115,8 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
 /// NOT part of this macro. `NodePackage` / `NodeWorkspace` override
 /// `publish` / `dry_run_publish` wholesale and inject those dirs through
 /// the async `run_publish_for_path` / `run_dry_run_publish_for_path` path
-/// (`node_modules_bin_dirs_async`), so the `core` trait-default
-/// `publish_path_dirs` (empty) is never reached for Node.
+/// (`node_modules_bin_dirs_async`), so the `core` trait-default publish
+/// flow (which passes no extra PATH dirs) is never reached for Node.
 ///
 /// Invoked from inside an `impl Package for NodePackage` or `impl
 /// Workspace for NodeWorkspace` block. Byte-identical expansion — the
@@ -600,6 +600,57 @@ mod tests {
         assert!(
             chain.contains(&package_json.display().to_string()),
             "error chain should name the manifest path, got: {chain}"
+        );
+    }
+
+    // Async parity tests: mirror the sync `test_detect_package_manager` rstest
+    // table to ensure async and sync detection remain in sync. A drift between
+    // them would ship unnoticed without these tests.
+    #[rstest]
+    #[case(&["bun.lockb"], PackageManager::Bun)]
+    #[case(&["bun.lock"], PackageManager::Bun)]
+    #[case(&["pnpm-lock.yaml"], PackageManager::Pnpm)]
+    #[case(&["yarn.lock"], PackageManager::Yarn)]
+    #[case(&["package-lock.json"], PackageManager::Npm)]
+    #[case(&[], PackageManager::Npm)]
+    #[case(&["bun.lockb", "pnpm-lock.yaml", "yarn.lock"], PackageManager::Bun)]
+    #[case(&["pnpm-lock.yaml", "yarn.lock"], PackageManager::Pnpm)]
+    #[tokio::test]
+    async fn test_detect_package_manager_async(
+        #[case] lock_files: &[&str],
+        #[case] expected: PackageManager,
+    ) {
+        let temp_dir = TempDir::new().unwrap();
+        for f in lock_files {
+            fs::write(temp_dir.path().join(f), "").unwrap();
+        }
+        assert_eq!(
+            detect_package_manager_async(temp_dir.path()).await,
+            expected
+        );
+    }
+
+    /// Async parity test: mirrors `test_detect_recursive_nearer_lockfile_wins_over_ancestor`
+    /// to ensure async and sync recursive detection remain in sync. Regression lock:
+    /// the "walk upward, stop at the FIRST non-npm hit" contract must hold for async.
+    #[tokio::test]
+    async fn test_detect_package_manager_recursive_async_nearer_lockfile_wins_over_ancestor() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let pkg_dir = root.join("pkg");
+        let sub_dir = pkg_dir.join("sub");
+        fs::create_dir_all(&sub_dir).unwrap();
+
+        // Ancestor lockfile (further from the manifest).
+        fs::write(root.join("bun.lock"), "").unwrap();
+        // Nearer lockfile (should win).
+        fs::write(pkg_dir.join("pnpm-lock.yaml"), "").unwrap();
+        fs::write(sub_dir.join("package.json"), "{}").unwrap();
+
+        assert_eq!(
+            detect_package_manager_recursive_async(&sub_dir.join("package.json")).await,
+            PackageManager::Pnpm,
+            "expected the nearer pnpm-lock.yaml to beat the ancestor bun.lock"
         );
     }
 }

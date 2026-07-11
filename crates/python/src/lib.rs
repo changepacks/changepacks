@@ -50,14 +50,10 @@ pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String
 ///
 /// Consolidates the "read current version, compute next, write pyproject,
 /// stash new version on `self`" 5-line sequence — previously duplicated
-/// between `PythonPackage` and `PythonWorkspace` differing ONLY in the
-/// `ensure_project_table` bool passed to `write_pyproject_version` — into
+/// between `PythonPackage` and `PythonWorkspace` — into
 /// ONE source of truth. Both trait impls now delegate here so a future
 /// rewording of the "reserve `0.0.0` when unversioned" fallback lands in
-/// exactly one place. The `ensure_project_table` parameter keeps the
-/// workspace vs. package behaviour distinct at the call site
-/// (`false` for `PythonPackage`, `true` for `PythonWorkspace` — matching
-/// the pre-consolidation bodies exactly).
+/// exactly one place.
 ///
 /// A shared helper (rather than a parameterized `macro_rules!` producing
 /// `async fn`) is required because `#[async_trait]` runs BEFORE
@@ -70,7 +66,6 @@ pub(crate) async fn update_version_from_fields(
     version: &mut Option<String>,
     path: &Path,
     update_type: UpdateType,
-    ensure_project_table: bool,
 ) -> Result<()> {
     // Two-line "reserve `0.0.0` when unversioned" prelude consolidated
     // into `changepacks_utils::next_version_or_default` so the fallback
@@ -78,7 +73,7 @@ pub(crate) async fn update_version_from_fields(
     // helper's doc for the Java/Rust carve-outs.
     let new_version = next_version_or_default(version.as_deref(), update_type)?;
 
-    write_pyproject_version(path, &new_version, ensure_project_table).await?;
+    write_pyproject_version(path, &new_version).await?;
     *version = Some(new_version);
     Ok(())
 }
@@ -89,20 +84,19 @@ pub(crate) async fn update_version_from_fields(
 ///
 /// Shared by `PythonPackage::update_version` and
 /// `PythonWorkspace::update_version` so both paths emit byte-identical output.
-/// When `ensure_project_table` is `true`, an empty `[project]` table is
-/// created if missing (needed for workspace roots that only declare
-/// `[tool.uv.workspace]`).
+/// An empty `[project]` table is created if missing — needed for workspace
+/// roots that only declare `[tool.uv.workspace]` and for `[build-system]`-only
+/// package manifests (a valid PEP 517 shape). The explicit `Table::new()`
+/// matters: plain `doc["project"]["version"] = ...` auto-creates an INLINE
+/// table (`project = { version = ... }`) at the top of the document instead
+/// of a proper `[project]` header.
 ///
 /// # Errors
 /// Returns error if the file cannot be read, is not valid TOML, or the write
 /// fails.
-pub(crate) async fn write_pyproject_version(
-    path: &Path,
-    new_version: &str,
-    ensure_project_table: bool,
-) -> Result<()> {
+pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> Result<()> {
     let (pyproject_toml_raw, mut pyproject_toml) = read_and_parse_pyproject_toml(path).await?;
-    if ensure_project_table && pyproject_toml.get("project").is_none() {
+    if pyproject_toml.get("project").is_none() {
         pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
     pyproject_toml["project"]["version"] = new_version.into();

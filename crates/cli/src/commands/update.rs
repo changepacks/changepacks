@@ -147,12 +147,9 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
 
     if let Some(all_finders) = all_finders.as_ref() {
-        let (mut update_projects, workspace_projects) = collect_update_projects(
-            &mut project_finders,
-            all_finders,
-            &update_map,
-            &ctx.repo_root_path,
-        )?;
+        let mut update_projects =
+            collect_update_project_muts(&mut project_finders, &update_map, &ctx.repo_root_path)?;
+        let workspace_projects = collect_workspace_projects(all_finders);
 
         // Reborrow the `&mut Project` pairs as shared `&Project` pairs so the
         // preview/confirm gate sees the same slice shape as the ref branch. The
@@ -206,6 +203,25 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     Ok(())
 }
 
+/// Extract packages from projects, filtering to `Project::Package` variants.
+///
+/// Preallocates to `len` (the filter only drops `Project::Workspace`
+/// variants — typically 0-1 entries in a package-heavy update). Matches the
+/// preallocation policy applied throughout `sort_by_dep.rs`, `gen_update_map.rs`,
+/// and `apply_reverse_dependencies`.
+fn packages_of<'a>(
+    len: usize,
+    projects: impl IntoIterator<Item = &'a Project>,
+) -> Vec<&'a dyn Package> {
+    let mut packages: Vec<&'a dyn Package> = Vec::with_capacity(len);
+    for project in projects {
+        if let Project::Package(package) = project {
+            packages.push(package.as_ref());
+        }
+    }
+    packages
+}
+
 /// Display the pending updates, then apply the dry-run / confirmation gate.
 ///
 /// Returns `Ok(false)` when the caller must stop without applying anything —
@@ -254,28 +270,6 @@ fn preview_and_confirm(
     }
 
     Ok(true)
-}
-
-/// Excluded from coverage: private helper invoked solely by
-/// `handle_update_with_prompter`; exercised end-to-end via the cli
-/// integration tests but its internal `if let Some(...) / for project in finder.projects_mut()`
-/// loops require a real multi-language project tree to hit every branch.
-#[cfg(not(tarpaulin_include))]
-fn collect_update_projects<'a>(
-    project_finders: &'a mut [Box<dyn ProjectFinder>],
-    all_finders: &'a [Box<dyn ProjectFinder>],
-    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-    repo_root_path: &Path,
-) -> Result<(Vec<UpdateProjectMut<'a>>, Vec<WorkspaceRef<'a>>)> {
-    // Preallocate: `update_map.len()` is a tight upper bound for
-    // `update_projects` (only projects matching the update_map are pushed).
-    // Matches the preallocation policy applied throughout `sort_by_dep.rs`
-    // and `apply_reverse_dependencies`. `workspace_projects` is left as
-    // `Vec::new()` because its true upper bound requires a walk of every
-    // finder's projects — a modest default doesn't beat lazy allocation.
-    let update_projects = collect_update_project_muts(project_finders, update_map, repo_root_path)?;
-    let workspace_projects = collect_workspace_projects(all_finders);
-    Ok((update_projects, workspace_projects))
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -354,12 +348,10 @@ async fn apply_updates_from_project_finders(
     }
 
     let update_projects = collect_update_project_refs(project_finders, update_map, repo_root_path)?;
-    let mut projects: Vec<&dyn Package> = Vec::with_capacity(update_projects.len());
-    for (project, _) in update_projects {
-        if let Project::Package(package) = project {
-            projects.push(package.as_ref());
-        }
-    }
+    let projects = packages_of(
+        update_projects.len(),
+        update_projects.iter().map(|(p, _)| *p),
+    );
 
     apply_workspace_dependency_updates(&workspace_projects, &projects).await
 }
@@ -382,22 +374,10 @@ async fn apply_updates(
         return Ok(());
     }
 
-    // Preallocate: `FilterMap`'s `size_hint` reports
-    // `(0, Some(update_projects.len()))` and `Vec::from_iter` reserves
-    // against the LOWER bound (0), so a plain `.collect()` here hits
-    // geometric-doubling reallocations. `update_projects.len()` is a tight
-    // upper bound (the filter only drops `Project::Workspace` variants —
-    // typically 0-1 entries in a package-heavy update). Matches the
-    // preallocation policy already applied a few lines above at
-    // `let mut update_projects = Vec::with_capacity(update_map.len());`
-    // and across `sort_by_dep.rs`, `gen_update_map.rs`, and
-    // `apply_reverse_dependencies`. Byte-identical output.
-    let mut projects: Vec<&dyn Package> = Vec::with_capacity(update_projects.len());
-    for (project, _) in update_projects.iter() {
-        if let Project::Package(package) = project {
-            projects.push(package.as_ref());
-        }
-    }
+    let projects = packages_of(
+        update_projects.len(),
+        update_projects.iter().map(|(p, _)| &**p),
+    );
 
     apply_workspace_dependency_updates(workspace_projects, &projects).await?;
 

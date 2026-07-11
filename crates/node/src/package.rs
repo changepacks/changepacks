@@ -235,7 +235,7 @@ mod tests {
         // `node_modules_bin_dirs_async`) surfaces the package's local
         // node_modules/.bin so lifecycle hooks (husky) resolve during publish /
         // dry-run. NodePackage / NodeWorkspace route PATH wiring through this
-        // async collector, not the core trait-default `publish_path_dirs`.
+        // async collector; the core trait defaults pass no extra PATH dirs.
         let dirs = crate::node_modules_bin_dirs_async(temp_dir.path()).await;
         assert!(dirs.contains(&bin));
     }

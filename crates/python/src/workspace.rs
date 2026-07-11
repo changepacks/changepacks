@@ -24,16 +24,14 @@ impl Workspace for PythonWorkspace {
     // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
 
-    // `update_version` shares its body with `PythonPackage` — only the
-    // `ensure_project_table` bool passed to `write_pyproject_version`
-    // differs (`true` here to create `[project]` if missing, `false` in
-    // `PythonPackage`). Consolidated via the shared
-    // `update_version_from_fields` helper in `crates/python/src/lib.rs`.
-    // See the helper's doc comment for why a `macro_rules!` producing
-    // `async fn` is incompatible with `#[async_trait]` (E0195 lifetime
-    // mismatch).
+    // `update_version` shares its body with `PythonPackage` — consolidated
+    // via the shared `update_version_from_fields` helper in
+    // `crates/python/src/lib.rs`, which creates `[project]` if missing
+    // (needed for roots that only declare `[tool.uv.workspace]`). See the
+    // helper's doc comment for why a `macro_rules!` producing `async fn`
+    // is incompatible with `#[async_trait]` (E0195 lifetime mismatch).
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        crate::update_version_from_fields(&mut self.version, &self.path, update_type, true).await
+        crate::update_version_from_fields(&mut self.version, &self.path, update_type).await
     }
 
     // Fixed language accessor.

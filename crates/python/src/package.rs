@@ -24,16 +24,16 @@ impl Package for PythonPackage {
     // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
 
-    // `update_version` shares its body with `PythonWorkspace` — only the
-    // `ensure_project_table` bool passed to `write_pyproject_version`
-    // differs (`false` here, `true` in `PythonWorkspace`). Consolidated
-    // via the shared `update_version_from_fields` helper in
-    // `crates/python/src/lib.rs` so the "reserve `0.0.0`" fallback and
-    // `next_version` computation live in ONE place. See the helper's
-    // doc comment for why a `macro_rules!` producing `async fn` is
-    // incompatible with `#[async_trait]` (E0195 lifetime mismatch).
+    // `update_version` shares its body with `PythonWorkspace` via the
+    // shared `update_version_from_fields` helper in `crates/python/src/lib.rs`
+    // so the "reserve `0.0.0`" fallback and `next_version` computation live
+    // in ONE place. A pyproject.toml with only `[build-system]` (no
+    // `[project]`) is a valid PEP 517 shape, so the helper creates the
+    // `[project]` table if missing. See the helper's doc comment for why a
+    // `macro_rules!` producing `async fn` is incompatible with `#[async_trait]`
+    // (E0195 lifetime mismatch).
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        crate::update_version_from_fields(&mut self.version, &self.path, update_type, false).await
+        crate::update_version_from_fields(&mut self.version, &self.path, update_type).await
     }
 
     // Fixed language accessor.
@@ -224,6 +224,39 @@ requests = "2.31.0"
         // Adding duplicate should not increase count
         package.add_dependency("requests");
         assert_eq!(package.dependencies().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_python_package_update_version_without_project_section() {
+        // Regression: a pyproject.toml with only `[build-system]` (no `[project]`)
+        // is a legitimate PEP 517 shape. PythonPackage::update_version must create
+        // the `[project]` table and set the version, preserving `[build-system]`.
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[build-system]
+requires = ["setuptools"]
+"#,
+        )
+        .unwrap();
+
+        let mut package = PythonPackage::new(
+            None,
+            None,
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&pyproject_toml).await.unwrap();
+        assert!(content.contains("[project]"));
+        assert!(content.contains("version = \"0.0.1\""));
+        assert!(content.contains("[build-system]"));
+        assert!(content.contains("requires = [\"setuptools\"]"));
+
+        temp_dir.close().unwrap();
     }
 
     #[test]

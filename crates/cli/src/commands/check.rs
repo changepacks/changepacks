@@ -150,9 +150,9 @@ fn display_tree(
     // AND the per-edge `dep.clone()` value allocation, closing the last
     // "owned string" gap in this function.
     let mut graph: HashMap<&str, Vec<&str>> = HashMap::with_capacity(projects.len());
-    // Borrow the `&str` name that already lives inside each `Project`; the
-    // owned `String` keys in `name_to_project` accept `&str` lookups via
-    // `Borrow<str>`. Avoids N per-invocation `String::clone`s of names we
+    // Borrow the `&str` name that already lives inside each `Project`;
+    // `name_to_project` keys on `&str` too, so these names look up
+    // directly. Avoids N per-invocation `String::clone`s of names we
     // already own further up the stack.
     let mut roots: HashSet<&str> = HashSet::with_capacity(projects.len());
 
@@ -235,8 +235,8 @@ fn display_tree(
 
     // Sort roots for consistent output. `Vec<&str>` sorts identically to
     // `Vec<String>` for the same name strings (byte-identical order), and
-    // `name_to_project.get(root)` still resolves because
-    // `HashMap<String, _>::get` accepts anything `Borrow<str>`.
+    // `name_to_project.get(root)` still resolves because the map keys on
+    // `&str` (the loop below derefs `&&str` → `&str` to match).
     //
     // `sort_unstable`: `roots` originates from a `HashSet<&str>` so its
     // elements are distinct by construction, and `str::cmp` is a total
@@ -277,8 +277,8 @@ fn display_tree(
         line_cache: HashMap::with_capacity(projects.len()),
     };
     for (idx, root) in sorted_roots.iter().enumerate() {
-        // Deref `&&str` → `&str` so `HashMap<String, _>::get` picks up
-        // `Borrow<str>` (there is no `Borrow<&str>` impl for `String`).
+        // Deref `&&str` → `&str` to match `name_to_project`'s `&str` key
+        // type (`HashMap<&str, _>::get` resolves via `&str: Borrow<str>`).
         if let Some(project) = name_to_project.get(*root) {
             let is_last = idx == sorted_roots.len() - 1;
             display_tree_node(project, &mut ctx, "", is_last, &mut visited)?;

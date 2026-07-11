@@ -68,7 +68,7 @@ impl ProjectFinder for PythonProjectFinder {
         // canonical example) declare just `[tool.uv.workspace]` at the
         // repo root and no `[project]` table. Match the tolerant
         // extraction that `PythonWorkspace::update_version` already
-        // uses (see `ensure_project_table` in `crates/python/src/lib.rs`).
+        // uses (see `write_pyproject_version` in `crates/python/src/lib.rs`).
         // Both name and version fall through to `None` when the table
         // is missing, exactly like the constructor arguments accept.
         // Renamed from `project` to `project_table` to match the field
@@ -424,9 +424,9 @@ version = "1.0.0"
         // `[project]`, no `[tool.uv.workspace]`) is a legitimate PEP 517
         // shape used e.g. by build-only backend configs. The finder must
         // register it as a Package with `None` name/version rather than
-        // failing hard — `PythonWorkspace::update_version` and
-        // `ensure_project_table` already handle the missing-section case
-        // downstream, so the extraction here must be lenient too.
+        // failing hard — `write_pyproject_version` already handles the
+        // missing-section case downstream (it creates `[project]` on
+        // demand), so the extraction here must be lenient too.
         let temp_dir = TempDir::new().unwrap();
         let pyproject_toml = temp_dir.path().join("pyproject.toml");
         fs::write(

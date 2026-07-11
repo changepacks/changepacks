@@ -57,17 +57,6 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     /// via `config.publish_dry_run`.
     fn default_dry_run_publish_command(&self) -> Option<String>;
 
-    /// Directories to prepend to `PATH` when running the publish / dry-run
-    /// command for this workspace.
-    ///
-    /// Defaults to empty. The Node implementation returns the ancestor
-    /// `node_modules/.bin` directories so lifecycle scripts (e.g. `husky` in a
-    /// `prepare` hook) resolve during `bun publish` / `npm publish`, working
-    /// around bun not adding them itself (oven-sh/bun#16071, #18055, #23594).
-    fn publish_path_dirs(&self) -> Vec<std::path::PathBuf> {
-        Vec::new()
-    }
-
     /// Publish the workspace using the configured command or default
     ///
     /// # Errors
@@ -79,7 +68,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
         crate::publish::run_publish_flow(
             &command,
             self.path(),
-            &self.publish_path_dirs(),
+            &[],
             crate::publish::WORKSPACE_DIR_NOT_FOUND,
         )
         .await
@@ -105,7 +94,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
         crate::publish::run_dry_run_publish_flow(
             command.as_deref(),
             self.path(),
-            &self.publish_path_dirs(),
+            &[],
             crate::publish::WORKSPACE_DIR_NOT_FOUND,
         )
         .await
