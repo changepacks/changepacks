@@ -53,6 +53,47 @@ impl Drop for DirGuard {
     }
 }
 
+/// Build a git-repo fixture in a fresh `TempDir` and return that `TempDir`.
+///
+/// Inits the repo on branch `main`, creates a `.changepacks/` directory, writes
+/// each `(relative_path, content)` fixture (creating parent directories as
+/// needed), then commits everything as "Initial commit". The caller keeps the
+/// returned `TempDir` alive and re-derives `temp_path` via `temp_dir.path()`,
+/// and installs its own `DirGuard` so the guard lives in the test's scope.
+async fn setup_repo(files: &[(&str, &str)]) -> TempDir {
+    let temp_dir = TempDir::new().unwrap();
+    write_repo_fixture(temp_dir.path(), files).await;
+    temp_dir
+}
+
+/// Like [`setup_repo`], but builds the fixture on the canonicalized temp path
+/// (avoids Windows path mismatches for git-based change detection). The caller
+/// re-derives `temp_path` via `temp_dir.path().canonicalize().unwrap()`.
+async fn setup_repo_canonical(files: &[(&str, &str)]) -> TempDir {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    write_repo_fixture(&temp_path, files).await;
+    temp_dir
+}
+
+async fn write_repo_fixture(temp_path: &Path, files: &[(&str, &str)]) {
+    init_git_repo(temp_path);
+
+    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
+        .await
+        .unwrap();
+
+    for &(relative_path, content) in files {
+        let full_path = temp_path.join(relative_path);
+        if let Some(parent) = full_path.parent() {
+            tokio::fs::create_dir_all(parent).await.unwrap();
+        }
+        tokio::fs::write(full_path, content).await.unwrap();
+    }
+
+    git_add_and_commit(temp_path, "Initial commit");
+}
+
 #[tokio::test]
 #[serial]
 async fn test_cli_init_dry_run() {
@@ -110,31 +151,17 @@ async fn test_cli_config() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_dry_run() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path();
-
-    init_git_repo(temp_path);
-
     // Override dry-run with `echo` so the test does not depend on a working
     // npm/registry environment.
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join(".changepacks/config.json"),
-        r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(temp_path, "Initial commit");
+    let temp_dir = setup_repo(&[
+        (
+            ".changepacks/config.json",
+            r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path();
 
     let _dir_guard = DirGuard::change_to(temp_path);
 
@@ -155,14 +182,6 @@ async fn test_cli_publish_dry_run() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_dry_run_bails_on_failure() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path();
-
-    init_git_repo(temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
     // Force the dry-run command to exit non-zero so the loop records a failed
     // project and the handler hits the `Dry-run failed for ...` bail!().
     let fail_cmd = if cfg!(target_os = "windows") {
@@ -170,21 +189,13 @@ async fn test_cli_publish_dry_run_bails_on_failure() {
     } else {
         "exit 1"
     };
-    tokio::fs::write(
-        temp_path.join(".changepacks/config.json"),
-        format!(r#"{{"publishDryRun": {{"node": "{fail_cmd}"}}}}"#),
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(temp_path, "Initial commit");
+    let config = format!(r#"{{"publishDryRun": {{"node": "{fail_cmd}"}}}}"#);
+    let temp_dir = setup_repo(&[
+        (".changepacks/config.json", config.as_str()),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path();
 
     let _dir_guard = DirGuard::change_to(temp_path);
 
@@ -210,30 +221,16 @@ async fn test_cli_publish_dry_run_bails_on_failure() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_with_echo() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path();
-
-    init_git_repo(temp_path);
-
     // Create config with echo publish command
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join(".changepacks/config.json"),
-        r#"{"publish": {"node": "echo test"}}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(temp_path, "Initial commit");
+    let temp_dir = setup_repo(&[
+        (
+            ".changepacks/config.json",
+            r#"{"publish": {"node": "echo test"}}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path();
 
     let _dir_guard = DirGuard::change_to(temp_path);
 
@@ -250,16 +247,8 @@ async fn test_cli_publish_with_echo() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_no_projects() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo(&[("README.md", "# Test")]).await;
     let temp_path = temp_dir.path();
-
-    init_git_repo(temp_path);
-
-    tokio::fs::write(temp_path.join("README.md"), "# Test")
-        .await
-        .unwrap();
-
-    git_add_and_commit(temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(temp_path);
 
@@ -276,31 +265,17 @@ async fn test_cli_publish_no_projects() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_json_format() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path();
-
-    init_git_repo(temp_path);
-
     // Override dry-run with `echo` so the test does not depend on a working
     // npm/registry environment.
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join(".changepacks/config.json"),
-        r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(temp_path, "Initial commit");
+    let temp_dir = setup_repo(&[
+        (
+            ".changepacks/config.json",
+            r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path();
 
     let _dir_guard = DirGuard::change_to(temp_path);
 
@@ -319,30 +294,16 @@ async fn test_cli_publish_json_format() {
 #[tokio::test]
 #[serial]
 async fn test_cli_update_with_changepack() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path();
-
-    init_git_repo(temp_path);
-
     // Create changepacks directory and update log
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join(".changepacks/changepack_log_test.json"),
-        r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(temp_path, "Initial commit");
+    let temp_dir = setup_repo(&[
+        (
+            ".changepacks/changepack_log_test.json",
+            r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path();
 
     let _dir_guard = DirGuard::change_to(temp_path);
 
@@ -365,25 +326,13 @@ async fn test_cli_update_with_changepack() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_basic() {
-    let temp_dir = TempDir::new().unwrap();
     // Canonicalize the path to avoid Windows path issues
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    // Create .changepacks directory (required by gen_update_map)
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
+    let temp_dir = setup_repo_canonical(&[(
+        "package.json",
         r#"{"name": "test-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    )])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -396,23 +345,12 @@ async fn test_cli_check_basic() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_json_format() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
+    let temp_dir = setup_repo_canonical(&[(
+        "package.json",
         r#"{"name": "test-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    )])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -434,40 +372,20 @@ async fn test_cli_check_json_format() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_tree() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Create multiple packages with workspace:* dependencies
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root-pkg", "version": "1.0.0", "dependencies": {"child-pkg": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::create_dir_all(temp_path.join("packages/child"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join("packages/child/package.json"),
-        r#"{"name": "child-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "package.json",
+            r#"{"name": "root-pkg", "version": "1.0.0", "dependencies": {"child-pkg": "workspace:*"}}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+        (
+            "packages/child/package.json",
+            r#"{"name": "child-pkg", "version": "1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -484,23 +402,12 @@ async fn test_cli_check_tree() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_filter_package() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
+    let temp_dir = setup_repo_canonical(&[(
+        "package.json",
         r#"{"name": "test-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    )])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -522,30 +429,16 @@ async fn test_cli_check_filter_package() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_filter_workspace() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Create a pnpm workspace
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test-workspace", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "package.json",
+            r#"{"name": "test-workspace", "version": "1.0.0"}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -567,25 +460,19 @@ async fn test_cli_check_filter_workspace() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_with_changepack_updates() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
     // Create changepacks directory and update log
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-    tokio::fs::write(temp_path.join(".changepacks/changepack_log_test.json"), r#"{"changes": {"package.json": "Minor"}, "note": "test feature", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_test.json",
+            r#"{"changes": {"package.json": "Minor"}, "note": "test feature", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+        (
+            "package.json",
+            r#"{"name": "test-pkg", "version": "1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -602,20 +489,8 @@ async fn test_cli_check_with_changepack_updates() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_no_projects() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[("README.md", "# Test")]).await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(temp_path.join("README.md"), "# Test")
-        .await
-        .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -632,23 +507,12 @@ async fn test_cli_check_no_projects() {
 #[tokio::test]
 #[serial]
 async fn test_cli_changepacks_with_yes_and_message() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
+    let temp_dir = setup_repo_canonical(&[(
+        "package.json",
         r#"{"name": "test-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    )])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -686,20 +550,8 @@ async fn test_cli_changepacks_with_yes_and_message() {
 #[tokio::test]
 #[serial]
 async fn test_cli_changepacks_no_projects() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[("README.md", "# Test")]).await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(temp_path.join("README.md"), "# Test")
-        .await
-        .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -725,23 +577,12 @@ async fn test_cli_changepacks_no_projects() {
 #[tokio::test]
 #[serial]
 async fn test_cli_changepacks_empty_notes() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
+    let temp_dir = setup_repo_canonical(&[(
+        "package.json",
         r#"{"name": "test-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    )])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -766,30 +607,16 @@ async fn test_cli_changepacks_empty_notes() {
 #[tokio::test]
 #[serial]
 async fn test_cli_changepacks_with_filter() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Create a pnpm workspace
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test-workspace", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "package.json",
+            r#"{"name": "test-workspace", "version": "1.0.0"}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -845,46 +672,29 @@ async fn test_cli_init_already_initialized() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_with_language_filter() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Override dry-run with `echo` so the test does not depend on a working
     // npm/registry environment (the real `npm publish --dry-run` fails under
     // tarpaulin / sandboxed CI because the package name conflicts with the
     // public registry).
-    tokio::fs::write(
-        temp_path.join(".changepacks/config.json"),
-        r#"{"publishDryRun": {"node": "echo dry-run", "rust": "echo dry-run"}}"#,
-    )
-    .await
-    .unwrap();
-
-    // Create Node.js package
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    // Create Rust package (should be filtered out)
-    tokio::fs::write(
-        temp_path.join("Cargo.toml"),
-        r#"[package]
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"publishDryRun": {"node": "echo dry-run", "rust": "echo dry-run"}}"#,
+        ),
+        (
+            "package.json",
+            r#"{"name": "test-pkg", "version": "1.0.0"}"#,
+        ),
+        (
+            "Cargo.toml",
+            r#"[package]
 name = "test-rust"
 version = "1.0.0"
 "#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -909,42 +719,24 @@ version = "1.0.0"
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_with_project_filter() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Override dry-run with `echo` so the test does not depend on a working
     // npm/registry environment.
-    tokio::fs::write(
-        temp_path.join(".changepacks/config.json"),
-        r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::create_dir_all(temp_path.join("packages/core"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join("packages/core/package.json"),
-        r#"{"name": "core-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
+        ),
+        (
+            "package.json",
+            r#"{"name": "root-pkg", "version": "1.0.0"}"#,
+        ),
+        (
+            "packages/core/package.json",
+            r#"{"name": "core-pkg", "version": "1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -969,29 +761,15 @@ async fn test_cli_publish_with_project_filter() {
 #[tokio::test]
 #[serial]
 async fn test_cli_update_json_format() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_test.json",
+            r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join(".changepacks/changepack_log_test.json"),
-        r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1016,32 +794,18 @@ async fn test_cli_update_json_format() {
 #[serial]
 async fn test_cli_update_language_filter_json_clears_logs() {
     // Given: a temp directory with a Rust package and a changepack log targeting it
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"rust-pkg\"\nversion = \"1.0.0\"\n",
+        ),
+        (
+            ".changepacks/changepack_log_test.json",
+            r#"{"changes": {"Cargo.toml": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    // Create Rust package with version 1.0.0
-    tokio::fs::write(
-        temp_path.join("Cargo.toml"),
-        "[package]\nname = \"rust-pkg\"\nversion = \"1.0.0\"\n",
-    )
-    .await
-    .unwrap();
-
-    // Create changepack log targeting the Rust package
-    tokio::fs::write(
-        temp_path.join(".changepacks/changepack_log_test.json"),
-        r#"{"changes": {"Cargo.toml": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1084,27 +848,167 @@ async fn test_cli_update_language_filter_json_clears_logs() {
     );
 }
 
+// Regression: `update --language <lang>` folds a workspace-inherited member
+// (`version.workspace = true`) into its workspace-root entry, so the member's
+// own path is no longer a key in `update_map`. The language-filtered
+// `applied_paths` snapshot must still clear the member's changepack log (its
+// bump is satisfied by the surviving workspace-root bump); otherwise the log is
+// retained and re-applied — a double-bump — on the next `update`.
+#[tokio::test]
+#[serial]
+async fn test_cli_update_language_filter_clears_workspace_inherited_member_log() {
+    let temp_dir = setup_repo_canonical(&[
+        // Cargo workspace root owns the version via [workspace.package] and its own
+        // [package]; a Patch bump promoted here must reach the member's log.
+        (
+            "Cargo.toml",
+            r#"[workspace]
+members = ["crates/foo"]
+
+[workspace.package]
+version = "2.5.0"
+
+[package]
+name = "root-pkg"
+version = "2.5.0"
+"#,
+        ),
+        // Member inherits its version from the workspace root.
+        (
+            "crates/foo/Cargo.toml",
+            r#"[package]
+name = "foo"
+version.workspace = true
+"#,
+        ),
+        // Changepack log targets the MEMBER path (folded into the root at update).
+        (
+            ".changepacks/changepack_log_test.json",
+            r#"{"changes": {"crates/foo/Cargo.toml": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: running update with the rust language filter (matches the workspace).
+    let args = vec![
+        "changepacks".to_string(),
+        "update".to_string(),
+        "--yes".to_string(),
+        "--language".to_string(),
+        "rust".to_string(),
+    ];
+    let result = changepacks_cli::main(&args).await;
+
+    assert!(
+        result.is_ok(),
+        "update --language rust failed: {:?}",
+        result.err()
+    );
+
+    // Then: the member's log is cleared (its bump was satisfied by the
+    // workspace-root bump that survived the rust filter).
+    let log_exists = tokio::fs::try_exists(temp_path.join(".changepacks/changepack_log_test.json"))
+        .await
+        .unwrap();
+    assert!(
+        !log_exists,
+        "workspace-inherited member's changepack log should be cleared after `update --language rust`"
+    );
+
+    // And: the workspace root version is bumped (2.5.0 -> 2.5.1).
+    let cargo_content = tokio::fs::read_to_string(temp_path.join("Cargo.toml"))
+        .await
+        .unwrap();
+    assert!(
+        cargo_content.contains("version = \"2.5.1\""),
+        "workspace root version should be bumped to 2.5.1, got: {}",
+        cargo_content
+    );
+}
+
+// Companion to the test above: when the language filter does NOT match the
+// workspace root's language, the root is filtered out and never bumped, so the
+// folded member's log MUST be retained (nothing satisfied its bump).
+#[tokio::test]
+#[serial]
+async fn test_cli_update_language_filter_retains_non_matching_member_log() {
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "Cargo.toml",
+            r#"[workspace]
+members = ["crates/foo"]
+
+[workspace.package]
+version = "2.5.0"
+
+[package]
+name = "root-pkg"
+version = "2.5.0"
+"#,
+        ),
+        (
+            "crates/foo/Cargo.toml",
+            r#"[package]
+name = "foo"
+version.workspace = true
+"#,
+        ),
+        (
+            ".changepacks/changepack_log_test.json",
+            r#"{"changes": {"crates/foo/Cargo.toml": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: the language filter (node) matches nothing in this all-rust workspace.
+    let args = vec![
+        "changepacks".to_string(),
+        "update".to_string(),
+        "--yes".to_string(),
+        "--language".to_string(),
+        "node".to_string(),
+    ];
+    let result = changepacks_cli::main(&args).await;
+
+    assert!(
+        result.is_ok(),
+        "update --language node failed: {:?}",
+        result.err()
+    );
+
+    // Then: the rust member's log survives — no rust project was applied.
+    let log_exists = tokio::fs::try_exists(temp_path.join(".changepacks/changepack_log_test.json"))
+        .await
+        .unwrap();
+    assert!(
+        log_exists,
+        "rust member's changepack log must be retained when the language filter excludes rust"
+    );
+
+    // And: the workspace root is NOT bumped.
+    let cargo_content = tokio::fs::read_to_string(temp_path.join("Cargo.toml"))
+        .await
+        .unwrap();
+    assert!(
+        cargo_content.contains("version = \"2.5.0\""),
+        "workspace root version must stay 2.5.0 when node filter excludes it, got: {}",
+        cargo_content
+    );
+}
+
 // Test update with no updates found
 #[tokio::test]
 #[serial]
 async fn test_cli_update_no_updates() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir =
+        setup_repo_canonical(&[("package.json", r#"{"name": "test", "version": "1.0.0"}"#)]).await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1126,23 +1030,9 @@ async fn test_cli_update_no_updates() {
 #[tokio::test]
 #[serial]
 async fn test_cli_update_json_no_updates() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir =
+        setup_repo_canonical(&[("package.json", r#"{"name": "test", "version": "1.0.0"}"#)]).await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1166,26 +1056,15 @@ async fn test_cli_update_json_no_updates() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_with_changed_files() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "package.json",
+            r#"{"name": "test-pkg", "version": "1.0.0"}"#,
+        ),
+        ("index.js", "console.log('hello');"),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-    tokio::fs::write(temp_path.join("index.js"), "console.log('hello');")
-        .await
-        .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     // Modify the file to make the project "changed"
     tokio::fs::write(temp_path.join("index.js"), "console.log('modified');")
@@ -1208,55 +1087,31 @@ async fn test_cli_check_with_changed_files() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_tree_complex_deps() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Create a complex dependency structure with workspace:* dependencies
     // root -> pkg-a, pkg-b
     // pkg-a -> pkg-c
     // pkg-b -> pkg-c (diamond pattern)
-    tokio::fs::write(temp_path.join("package.json"), r#"{"name": "root", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*", "pkg-b": "workspace:*"}}"#).await.unwrap();
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-
-    for pkg in &["pkg-a", "pkg-b", "pkg-c"] {
-        tokio::fs::create_dir_all(temp_path.join(format!("packages/{}", pkg)))
-            .await
-            .unwrap();
-    }
-
-    tokio::fs::write(
-        temp_path.join("packages/pkg-a/package.json"),
-        r#"{"name": "pkg-a", "version": "1.0.0", "dependencies": {"pkg-c": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("packages/pkg-b/package.json"),
-        r#"{"name": "pkg-b", "version": "1.0.0", "dependencies": {"pkg-c": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("packages/pkg-c/package.json"),
-        r#"{"name": "pkg-c", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "package.json",
+            r#"{"name": "root", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*", "pkg-b": "workspace:*"}}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+        (
+            "packages/pkg-a/package.json",
+            r#"{"name": "pkg-a", "version": "1.0.0", "dependencies": {"pkg-c": "workspace:*"}}"#,
+        ),
+        (
+            "packages/pkg-b/package.json",
+            r#"{"name": "pkg-b", "version": "1.0.0", "dependencies": {"pkg-c": "workspace:*"}}"#,
+        ),
+        (
+            "packages/pkg-c/package.json",
+            r#"{"name": "pkg-c", "version": "1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1278,30 +1133,16 @@ async fn test_cli_check_tree_complex_deps() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_actual_execution() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
     // Create config with echo publish command
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join(".changepacks/config.json"),
-        r#"{"publish": {"node": "echo publishing"}}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"publish": {"node": "echo publishing"}}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1325,24 +1166,15 @@ async fn test_cli_publish_actual_execution() {
 #[tokio::test]
 #[serial]
 async fn test_cli_update_actual_execution() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_test.json",
+            r#"{"changes": {"package.json": "Patch"}, "note": "test update", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-    tokio::fs::write(temp_path.join(".changepacks/changepack_log_test.json"), r#"{"changes": {"package.json": "Patch"}, "note": "test update", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1449,56 +1281,26 @@ async fn test_cli_update_respects_custom_base_branch() {
 #[tokio::test]
 #[serial]
 async fn test_cli_update_with_workspace_deps() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+        ("package.json", r#"{"name": "root", "version": "1.0.0"}"#),
+        (
+            "packages/core/package.json",
+            r#"{"name": "core", "version": "1.0.0"}"#,
+        ),
+        // cli package depends on core via workspace:*
+        (
+            "packages/cli/package.json",
+            r#"{"name": "cli", "version": "1.0.0", "dependencies": {"core": "workspace:*"}}"#,
+        ),
+        // changepack log for core only
+        (
+            ".changepacks/changepack_log_core.json",
+            r#"{"changes": {"packages/core/package.json": "Minor"}, "note": "update core", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    // Create pnpm workspace
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    // Create core package
-    tokio::fs::create_dir_all(temp_path.join("packages/core"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join("packages/core/package.json"),
-        r#"{"name": "core", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    // Create cli package that depends on core via workspace:*
-    tokio::fs::create_dir_all(temp_path.join("packages/cli"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join("packages/cli/package.json"),
-        r#"{"name": "cli", "version": "1.0.0", "dependencies": {"core": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
-
-    // Create changepack log for core only
-    tokio::fs::write(temp_path.join(".changepacks/changepack_log_core.json"), r#"{"changes": {"packages/core/package.json": "Minor"}, "note": "update core", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1520,61 +1322,37 @@ async fn test_cli_update_with_workspace_deps() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_tree_with_updates_and_changes() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    // Create changepack log for one package
-    tokio::fs::write(temp_path.join(".changepacks/changepack_log_update.json"), r#"{"changes": {"packages/pkg-a/package.json": "Minor"}, "note": "update pkg-a", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
-
     // Create packages with workspace:* dependencies
     // root -> pkg-a, pkg-b
     // pkg-a -> pkg-c
     // pkg-b -> pkg-c (diamond pattern)
-    tokio::fs::write(temp_path.join("package.json"), r#"{"name": "root", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*", "pkg-b": "workspace:*"}}"#).await.unwrap();
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-
-    for pkg in &["pkg-a", "pkg-b", "pkg-c"] {
-        tokio::fs::create_dir_all(temp_path.join(format!("packages/{}", pkg)))
-            .await
-            .unwrap();
-    }
-
-    tokio::fs::write(
-        temp_path.join("packages/pkg-a/package.json"),
-        r#"{"name": "pkg-a", "version": "1.0.0", "dependencies": {"pkg-c": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
-    tokio::fs::write(temp_path.join("packages/pkg-a/index.js"), "// initial")
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("packages/pkg-b/package.json"),
-        r#"{"name": "pkg-b", "version": "1.0.0", "dependencies": {"pkg-c": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("packages/pkg-c/package.json"),
-        r#"{"name": "pkg-c", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        // changepack log for one package
+        (
+            ".changepacks/changepack_log_update.json",
+            r#"{"changes": {"packages/pkg-a/package.json": "Minor"}, "note": "update pkg-a", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+        (
+            "package.json",
+            r#"{"name": "root", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*", "pkg-b": "workspace:*"}}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+        (
+            "packages/pkg-a/package.json",
+            r#"{"name": "pkg-a", "version": "1.0.0", "dependencies": {"pkg-c": "workspace:*"}}"#,
+        ),
+        ("packages/pkg-a/index.js", "// initial"),
+        (
+            "packages/pkg-b/package.json",
+            r#"{"name": "pkg-b", "version": "1.0.0", "dependencies": {"pkg-c": "workspace:*"}}"#,
+        ),
+        (
+            "packages/pkg-c/package.json",
+            r#"{"name": "pkg-c", "version": "1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     // Modify pkg-a to make it "changed"
     tokio::fs::write(temp_path.join("packages/pkg-a/index.js"), "// modified")
@@ -1601,51 +1379,25 @@ async fn test_cli_check_tree_with_updates_and_changes() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_tree_with_orphan() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        // one package with workspace:* deps, one orphaned
+        (
+            "package.json",
+            r#"{"name": "root", "version": "1.0.0", "dependencies": {"child": "workspace:*"}}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+        (
+            "packages/child/package.json",
+            r#"{"name": "child", "version": "1.0.0"}"#,
+        ),
+        // an orphaned package (not in any dependency chain)
+        (
+            "packages/orphan/package.json",
+            r#"{"name": "orphan", "version": "1.0.0"}"#,
+        ),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    // Create packages - one with workspace:* deps, one orphaned
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root", "version": "1.0.0", "dependencies": {"child": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::create_dir_all(temp_path.join("packages/child"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join("packages/child/package.json"),
-        r#"{"name": "child", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    // Create an orphaned package (not in any dependency chain)
-    tokio::fs::create_dir_all(temp_path.join("packages/orphan"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join("packages/orphan/package.json"),
-        r#"{"name": "orphan", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1667,32 +1419,18 @@ async fn test_cli_check_tree_with_orphan() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_with_failing_command() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
     // Create config with failing publish command
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
     let fail_cmd = if cfg!(target_os = "windows") {
         r#"{"publish": {"node": "cmd /c exit 1"}}"#
     } else {
         r#"{"publish": {"node": "exit 1"}}"#
     };
-    tokio::fs::write(temp_path.join(".changepacks/config.json"), fail_cmd)
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (".changepacks/config.json", fail_cmd),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1717,51 +1455,22 @@ async fn test_cli_publish_with_failing_command() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_tree_circular_deps() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Create circular dependency: pkg-a -> pkg-b, pkg-b -> pkg-a
     // Neither is a root (both are in has_dependencies), so both become orphans
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::create_dir_all(temp_path.join("packages/pkg-a"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join("packages/pkg-a/package.json"),
-        r#"{"name": "pkg-a", "version": "1.0.0", "dependencies": {"pkg-b": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::create_dir_all(temp_path.join("packages/pkg-b"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join("packages/pkg-b/package.json"),
-        r#"{"name": "pkg-b", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+        ("package.json", r#"{"name": "root", "version": "1.0.0"}"#),
+        (
+            "packages/pkg-a/package.json",
+            r#"{"name": "pkg-a", "version": "1.0.0", "dependencies": {"pkg-b": "workspace:*"}}"#,
+        ),
+        (
+            "packages/pkg-b/package.json",
+            r#"{"name": "pkg-b", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*"}}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1783,20 +1492,8 @@ async fn test_cli_check_tree_circular_deps() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_json_no_projects() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[("README.md", "# Test")]).await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(temp_path.join("README.md"), "# Test")
-        .await
-        .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1819,35 +1516,20 @@ async fn test_cli_publish_json_no_projects() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_tree_with_workspace() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Create a pnpm workspace with workspace:* dependencies
-    tokio::fs::write(temp_path.join("package.json"), r#"{"name": "root-workspace", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*"}}"#).await.unwrap();
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::create_dir_all(temp_path.join("packages/pkg-a"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join("packages/pkg-a/package.json"),
-        r#"{"name": "pkg-a", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "package.json",
+            r#"{"name": "root-workspace", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*"}}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+        (
+            "packages/pkg-a/package.json",
+            r#"{"name": "pkg-a", "version": "1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1869,56 +1551,32 @@ async fn test_cli_check_tree_with_workspace() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_tree_deeply_nested() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Create a deep dependency chain with workspace:* deps: root -> a -> b -> c -> d
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-
-    for (pkg, deps) in &[
+    let temp_dir = setup_repo_canonical(&[
         (
-            "pkg-a",
+            "package.json",
+            r#"{"name": "root", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*"}}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+        (
+            "packages/pkg-a/package.json",
             r#"{"name": "pkg-a", "version": "1.0.0", "dependencies": {"pkg-b": "workspace:*"}}"#,
         ),
         (
-            "pkg-b",
+            "packages/pkg-b/package.json",
             r#"{"name": "pkg-b", "version": "1.0.0", "dependencies": {"pkg-c": "workspace:*"}}"#,
         ),
         (
-            "pkg-c",
+            "packages/pkg-c/package.json",
             r#"{"name": "pkg-c", "version": "1.0.0", "dependencies": {"pkg-d": "workspace:*"}}"#,
         ),
-        ("pkg-d", r#"{"name": "pkg-d", "version": "1.0.0"}"#),
-    ] {
-        tokio::fs::create_dir_all(temp_path.join(format!("packages/{}", pkg)))
-            .await
-            .unwrap();
-        tokio::fs::write(
-            temp_path.join(format!("packages/{}/package.json", pkg)),
-            deps,
-        )
-        .await
-        .unwrap();
-    }
-
-    git_add_and_commit(&temp_path, "Initial commit");
+        (
+            "packages/pkg-d/package.json",
+            r#"{"name": "pkg-d", "version": "1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -1941,57 +1599,33 @@ async fn test_cli_check_tree_deeply_nested() {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_tree_shared_dep_visited_twice() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Create packages where shared-dep is depended on by multiple packages
     // root1 -> shared-dep (visits shared-dep first)
     // root2 -> [shared-dep, z-pkg] (shared-dep is NOT last after sorting, hits line 240)
     // Both root1 and root2 are root nodes
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root1", "version": "1.0.0", "dependencies": {"shared-dep": "workspace:*"}}"#,
-    )
-    .await
-    .unwrap();
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-
-    for (pkg, deps) in &[
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "package.json",
+            r#"{"name": "root1", "version": "1.0.0", "dependencies": {"shared-dep": "workspace:*"}}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
         // root2 depends on both shared-dep and z-pkg. After sorting: [shared-dep, z-pkg]
         // shared-dep is idx=0 (not last), so when already visited, hits line 240 (├──)
         (
-            "root2",
+            "packages/root2/package.json",
             r#"{"name": "root2", "version": "1.0.0", "dependencies": {"shared-dep": "workspace:*", "z-pkg": "workspace:*"}}"#,
         ),
         (
-            "shared-dep",
+            "packages/shared-dep/package.json",
             r#"{"name": "shared-dep", "version": "1.0.0"}"#,
         ),
-        ("z-pkg", r#"{"name": "z-pkg", "version": "1.0.0"}"#),
-    ] {
-        tokio::fs::create_dir_all(temp_path.join(format!("packages/{}", pkg)))
-            .await
-            .unwrap();
-        tokio::fs::write(
-            temp_path.join(format!("packages/{}/package.json", pkg)),
-            deps,
-        )
-        .await
-        .unwrap();
-    }
-
-    git_add_and_commit(&temp_path, "Initial commit");
+        (
+            "packages/z-pkg/package.json",
+            r#"{"name": "z-pkg", "version": "1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2013,40 +1647,20 @@ async fn test_cli_check_tree_shared_dep_visited_twice() {
 #[tokio::test]
 #[serial]
 async fn test_cli_changepacks_with_package_filter() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Create a workspace and a package
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root-workspace", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::create_dir_all(temp_path.join("packages/pkg"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join("packages/pkg/package.json"),
-        r#"{"name": "pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "package.json",
+            r#"{"name": "root-workspace", "version": "1.0.0"}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+        (
+            "packages/pkg/package.json",
+            r#"{"name": "pkg", "version": "1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2074,32 +1688,17 @@ async fn test_cli_changepacks_with_package_filter() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_dry_run_json() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
     // Override dry-run with `echo` so the test does not depend on a working
     // npm/registry environment.
-    tokio::fs::write(
-        temp_path.join(".changepacks/config.json"),
-        r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2123,29 +1722,15 @@ async fn test_cli_publish_dry_run_json() {
 #[tokio::test]
 #[serial]
 async fn test_cli_update_dry_run_json() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_test.json",
+            r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join(".changepacks/changepack_log_test.json"),
-        r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2169,30 +1754,16 @@ async fn test_cli_update_dry_run_json() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_stdout_execution() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
     // Create config with echo publish command
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join(".changepacks/config.json"),
-        r#"{"publish": {"node": "echo publishing stdout"}}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"publish": {"node": "echo publishing stdout"}}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2214,29 +1785,15 @@ async fn test_cli_publish_stdout_execution() {
 #[tokio::test]
 #[serial]
 async fn test_cli_update_dry_run_stdout() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_test.json",
+            r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-    tokio::fs::write(
-        temp_path.join(".changepacks/changepack_log_test.json"),
-        r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
-    )
-    .await
-    .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2259,33 +1816,20 @@ async fn test_cli_update_dry_run_stdout() {
 #[tokio::test]
 #[serial]
 async fn test_cli_update_with_workspace_only() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+        (
+            "package.json",
+            r#"{"name": "root-workspace", "version": "1.0.0"}"#,
+        ),
+        // changepack log for the workspace
+        (
+            ".changepacks/changepack_log_ws.json",
+            r#"{"changes": {"package.json": "Minor"}, "note": "update workspace", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    // Create a pnpm workspace
-    tokio::fs::write(
-        temp_path.join("pnpm-workspace.yaml"),
-        "packages:\n  - packages/*",
-    )
-    .await
-    .unwrap();
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "root-workspace", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    // Create changepack log for the workspace
-    tokio::fs::write(temp_path.join(".changepacks/changepack_log_ws.json"), r#"{"changes": {"package.json": "Minor"}, "note": "update workspace", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2307,23 +1851,12 @@ async fn test_cli_update_with_workspace_only() {
 #[tokio::test]
 #[serial]
 async fn test_cli_changepacks_without_update_type() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
+    let temp_dir = setup_repo_canonical(&[(
+        "package.json",
         r#"{"name": "test-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    )])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2347,32 +1880,18 @@ async fn test_cli_changepacks_without_update_type() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_stdout_failing() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
     // Create config with failing publish command
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
     let fail_cmd = if cfg!(target_os = "windows") {
         r#"{"publish": {"node": "cmd /c exit 1"}}"#
     } else {
         r#"{"publish": {"node": "exit 1"}}"#
     };
-    tokio::fs::write(temp_path.join(".changepacks/config.json"), fail_cmd)
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (".changepacks/config.json", fail_cmd),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2405,23 +1924,10 @@ mod interactive_tests {
     #[tokio::test]
     #[serial]
     async fn test_publish_cancelled_stdout() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir =
+            setup_repo_canonical(&[("package.json", r#"{"name": "test", "version": "1.0.0"}"#)])
+                .await;
         let temp_path = temp_dir.path().canonicalize().unwrap();
-
-        init_git_repo(&temp_path);
-
-        tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-            .await
-            .unwrap();
-
-        tokio::fs::write(
-            temp_path.join("package.json"),
-            r#"{"name": "test", "version": "1.0.0"}"#,
-        )
-        .await
-        .unwrap();
-
-        git_add_and_commit(&temp_path, "Initial commit");
 
         let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2448,23 +1954,10 @@ mod interactive_tests {
     #[tokio::test]
     #[serial]
     async fn test_publish_cancelled_json() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir =
+            setup_repo_canonical(&[("package.json", r#"{"name": "test", "version": "1.0.0"}"#)])
+                .await;
         let temp_path = temp_dir.path().canonicalize().unwrap();
-
-        init_git_repo(&temp_path);
-
-        tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-            .await
-            .unwrap();
-
-        tokio::fs::write(
-            temp_path.join("package.json"),
-            r#"{"name": "test", "version": "1.0.0"}"#,
-        )
-        .await
-        .unwrap();
-
-        git_add_and_commit(&temp_path, "Initial commit");
 
         let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2490,25 +1983,15 @@ mod interactive_tests {
     #[tokio::test]
     #[serial]
     async fn test_update_cancelled_stdout() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = setup_repo_canonical(&[
+            (
+                ".changepacks/changepack_log_test.json",
+                r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+            ),
+            ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+        ])
+        .await;
         let temp_path = temp_dir.path().canonicalize().unwrap();
-
-        init_git_repo(&temp_path);
-
-        tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-            .await
-            .unwrap();
-
-        tokio::fs::write(temp_path.join(".changepacks/changepack_log_test.json"), r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
-
-        tokio::fs::write(
-            temp_path.join("package.json"),
-            r#"{"name": "test", "version": "1.0.0"}"#,
-        )
-        .await
-        .unwrap();
-
-        git_add_and_commit(&temp_path, "Initial commit");
 
         let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2533,25 +2016,15 @@ mod interactive_tests {
     #[tokio::test]
     #[serial]
     async fn test_update_cancelled_json() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = setup_repo_canonical(&[
+            (
+                ".changepacks/changepack_log_test.json",
+                r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+            ),
+            ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+        ])
+        .await;
         let temp_path = temp_dir.path().canonicalize().unwrap();
-
-        init_git_repo(&temp_path);
-
-        tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-            .await
-            .unwrap();
-
-        tokio::fs::write(temp_path.join(".changepacks/changepack_log_test.json"), r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#).await.unwrap();
-
-        tokio::fs::write(
-            temp_path.join("package.json"),
-            r#"{"name": "test", "version": "1.0.0"}"#,
-        )
-        .await
-        .unwrap();
-
-        git_add_and_commit(&temp_path, "Initial commit");
 
         let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2576,23 +2049,10 @@ mod interactive_tests {
     #[tokio::test]
     #[serial]
     async fn test_changepacks_interactive_select() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir =
+            setup_repo_canonical(&[("package.json", r#"{"name": "test", "version": "1.0.0"}"#)])
+                .await;
         let temp_path = temp_dir.path().canonicalize().unwrap();
-
-        init_git_repo(&temp_path);
-
-        tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-            .await
-            .unwrap();
-
-        tokio::fs::write(
-            temp_path.join("package.json"),
-            r#"{"name": "test", "version": "1.0.0"}"#,
-        )
-        .await
-        .unwrap();
-
-        git_add_and_commit(&temp_path, "Initial commit");
 
         let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2619,23 +2079,10 @@ mod interactive_tests {
     #[tokio::test]
     #[serial]
     async fn test_changepacks_no_selection() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir =
+            setup_repo_canonical(&[("package.json", r#"{"name": "test", "version": "1.0.0"}"#)])
+                .await;
         let temp_path = temp_dir.path().canonicalize().unwrap();
-
-        init_git_repo(&temp_path);
-
-        tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-            .await
-            .unwrap();
-
-        tokio::fs::write(
-            temp_path.join("package.json"),
-            r#"{"name": "test", "version": "1.0.0"}"#,
-        )
-        .await
-        .unwrap();
-
-        git_add_and_commit(&temp_path, "Initial commit");
 
         let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2662,23 +2109,10 @@ mod interactive_tests {
     #[tokio::test]
     #[serial]
     async fn test_changepacks_text_prompt() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir =
+            setup_repo_canonical(&[("package.json", r#"{"name": "test", "version": "1.0.0"}"#)])
+                .await;
         let temp_path = temp_dir.path().canonicalize().unwrap();
-
-        init_git_repo(&temp_path);
-
-        tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-            .await
-            .unwrap();
-
-        tokio::fs::write(
-            temp_path.join("package.json"),
-            r#"{"name": "test", "version": "1.0.0"}"#,
-        )
-        .await
-        .unwrap();
-
-        git_add_and_commit(&temp_path, "Initial commit");
 
         let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2706,26 +2140,12 @@ mod interactive_tests {
     #[tokio::test]
     #[serial]
     async fn test_changepacks_interactive_with_changed_project() {
-        let temp_dir = TempDir::new().unwrap();
+        let temp_dir = setup_repo_canonical(&[
+            ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+            ("index.js", "// initial"),
+        ])
+        .await;
         let temp_path = temp_dir.path().canonicalize().unwrap();
-
-        init_git_repo(&temp_path);
-
-        tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-            .await
-            .unwrap();
-
-        tokio::fs::write(
-            temp_path.join("package.json"),
-            r#"{"name": "test", "version": "1.0.0"}"#,
-        )
-        .await
-        .unwrap();
-        tokio::fs::write(temp_path.join("index.js"), "// initial")
-            .await
-            .unwrap();
-
-        git_add_and_commit(&temp_path, "Initial commit");
 
         // Modify a file to make the project "changed"
         tokio::fs::write(temp_path.join("index.js"), "// modified")
@@ -2764,31 +2184,18 @@ mod interactive_tests {
 #[tokio::test]
 #[serial]
 async fn test_cli_check_with_language_filter() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "package.json",
+            r#"{"name": "node-pkg", "version": "1.0.0"}"#,
+        ),
+        (
+            "Cargo.toml",
+            "[package]\nname = \"rust-pkg\"\nversion = \"1.0.0\"\n",
+        ),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    // Create Node.js package
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "node-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    // Create Rust package
-    tokio::fs::write(
-        temp_path.join("Cargo.toml"),
-        "[package]\nname = \"rust-pkg\"\nversion = \"1.0.0\"\n",
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2811,31 +2218,15 @@ async fn test_cli_check_with_language_filter() {
 #[tokio::test]
 #[serial]
 async fn test_cli_update_with_language_filter() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_lang.json",
+            r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+        ("package.json", r#"{"name": "node-pkg", "version": "1.0.0"}"#),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    // Create changepack log targeting the Node package
-    tokio::fs::write(
-        temp_path.join(".changepacks/changepack_log_lang.json"),
-        r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
-    )
-    .await
-    .unwrap();
-
-    // Create Node.js package
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "node-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2868,31 +2259,18 @@ async fn test_cli_update_with_language_filter() {
 #[tokio::test]
 #[serial]
 async fn test_cli_changepacks_with_language_filter() {
-    let temp_dir = TempDir::new().unwrap();
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "package.json",
+            r#"{"name": "node-pkg", "version": "1.0.0"}"#,
+        ),
+        (
+            "Cargo.toml",
+            "[package]\nname = \"rust-pkg\"\nversion = \"1.0.0\"\n",
+        ),
+    ])
+    .await;
     let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
-
-    // Create Node.js package
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "node-pkg", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    // Create Rust package
-    tokio::fs::write(
-        temp_path.join("Cargo.toml"),
-        "[package]\nname = \"rust-pkg\"\nversion = \"1.0.0\"\n",
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 
@@ -2920,31 +2298,17 @@ async fn test_cli_changepacks_with_language_filter() {
 #[tokio::test]
 #[serial]
 async fn test_cli_publish_stdout_failing_with_stderr() {
-    let temp_dir = TempDir::new().unwrap();
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    init_git_repo(&temp_path);
-
-    tokio::fs::create_dir_all(temp_path.join(".changepacks"))
-        .await
-        .unwrap();
     let fail_cmd = if cfg!(target_os = "windows") {
         r#"{"publish": {"node": "echo error_output 1>&2 & exit 1"}}"#
     } else {
         r#"{"publish": {"node": "echo error_output >&2; exit 1"}}"#
     };
-    tokio::fs::write(temp_path.join(".changepacks/config.json"), fail_cmd)
-        .await
-        .unwrap();
-
-    tokio::fs::write(
-        temp_path.join("package.json"),
-        r#"{"name": "test", "version": "1.0.0"}"#,
-    )
-    .await
-    .unwrap();
-
-    git_add_and_commit(&temp_path, "Initial commit");
+    let temp_dir = setup_repo_canonical(&[
+        (".changepacks/config.json", fail_cmd),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
 
     let _dir_guard = DirGuard::change_to(&temp_path);
 

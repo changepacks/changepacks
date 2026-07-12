@@ -24,10 +24,6 @@ fn peel_to_tree(reference: gix::Reference<'_>) -> Result<gix::Tree<'_>> {
         .try_into_tree()?)
 }
 
-fn finder_can_visit_path(finder: &dyn ProjectFinder, path: &Path, file_name: &str) -> bool {
-    project_files_can_visit_path(finder.project_files(), path, file_name)
-}
-
 fn project_files_can_visit_path(project_files: &[&str], path: &Path, file_name: &str) -> bool {
     project_files.iter().any(|project_file| {
         if *project_file == file_name {
@@ -148,7 +144,7 @@ pub async fn discover_project_dirs(
 
         let mut abs_path: Option<PathBuf> = None;
         for finder in project_finders.iter_mut() {
-            if !finder_can_visit_path(finder.as_ref(), path, file_name) {
+            if !project_files_can_visit_path(finder.project_files(), path, file_name) {
                 continue;
             }
             let abs = abs_path.get_or_insert_with(|| git_root_path.join(path));
@@ -347,7 +343,7 @@ pub async fn find_project_dirs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{git_add_and_commit, init_git_repo};
+    use crate::test_support::{git_add_and_commit, init_git_repo, run_git};
     use changepacks_node::finder::NodeProjectFinder;
     use tempfile::TempDir;
     use tokio::fs;
@@ -356,13 +352,13 @@ mod tests {
     fn test_finder_can_visit_path_matches_manifest_name() {
         let finder = NodeProjectFinder::new();
 
-        assert!(finder_can_visit_path(
-            &finder,
+        assert!(project_files_can_visit_path(
+            finder.project_files(),
             Path::new("apps/a/package.json"),
             "package.json"
         ));
-        assert!(!finder_can_visit_path(
-            &finder,
+        assert!(!project_files_can_visit_path(
+            finder.project_files(),
             Path::new("apps/a/index.ts"),
             "index.ts"
         ));
@@ -621,11 +617,7 @@ mod tests {
         git_add_and_commit(temp_path, "Initial commit");
 
         // Create a feature branch and make changes
-        std::process::Command::new("git")
-            .args(["checkout", "-b", "feature"])
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        run_git(temp_path, &["checkout", "-b", "feature"]);
 
         fs::write(
             temp_path.join("packages/core/index.js"),
@@ -682,30 +674,14 @@ mod tests {
         let local_dir = TempDir::new().unwrap();
         let local_path = local_dir.path();
 
-        std::process::Command::new("git")
-            .args(["clone", remote_path.to_str().unwrap(), "."])
-            .current_dir(local_path)
-            .output()
-            .unwrap();
+        run_git(local_path, &["clone", remote_path.to_str().unwrap(), "."]);
 
         // Configure git user for the local clone
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@test.com"])
-            .current_dir(local_path)
-            .output()
-            .unwrap();
-        std::process::Command::new("git")
-            .args(["config", "user.name", "Test"])
-            .current_dir(local_path)
-            .output()
-            .unwrap();
+        run_git(local_path, &["config", "user.email", "test@test.com"]);
+        run_git(local_path, &["config", "user.name", "Test"]);
 
         // Create a feature branch with changes
-        std::process::Command::new("git")
-            .args(["checkout", "-b", "feature"])
-            .current_dir(local_path)
-            .output()
-            .unwrap();
+        run_git(local_path, &["checkout", "-b", "feature"]);
 
         fs::write(
             local_path.join("packages/core/index.js"),
@@ -752,16 +728,15 @@ mod tests {
 
         // Add an origin remote URL but never fetch — so refs/remotes/origin/main
         // stays absent and the `find_reference` call is the failure surface.
-        std::process::Command::new("git")
-            .args([
+        run_git(
+            temp_path,
+            &[
                 "remote",
                 "add",
                 "origin",
                 "https://example.invalid/no-such-repo.git",
-            ])
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+            ],
+        );
 
         fs::write(
             temp_path.join("package.json"),
@@ -800,16 +775,15 @@ mod tests {
         init_git_repo(temp_path);
 
         // Add origin remote with a URL containing the repo name
-        std::process::Command::new("git")
-            .args([
+        run_git(
+            temp_path,
+            &[
                 "remote",
                 "add",
                 "origin",
                 "https://github.com/testuser/my-cool-repo.git",
-            ])
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+            ],
+        );
 
         // Create a package.json WITHOUT a name field
         fs::write(temp_path.join("package.json"), r#"{"version": "1.0.0"}"#)
@@ -840,16 +814,15 @@ mod tests {
         init_git_repo(temp_path);
 
         // Add origin remote with SSH URL
-        std::process::Command::new("git")
-            .args([
+        run_git(
+            temp_path,
+            &[
                 "remote",
                 "add",
                 "origin",
                 "git@github.com:testuser/ssh-repo.git",
-            ])
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+            ],
+        );
 
         // Create a package.json WITHOUT a name field
         fs::write(temp_path.join("package.json"), r#"{"version": "1.0.0"}"#)
@@ -880,16 +853,15 @@ mod tests {
         init_git_repo(temp_path);
 
         // Add origin remote
-        std::process::Command::new("git")
-            .args([
+        run_git(
+            temp_path,
+            &[
                 "remote",
                 "add",
                 "origin",
                 "https://github.com/testuser/remote-name.git",
-            ])
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+            ],
+        );
 
         // Create a package.json WITH a name field
         fs::write(

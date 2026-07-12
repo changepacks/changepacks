@@ -14,7 +14,7 @@ pub enum FilterOptions {
 
 impl FilterOptions {
     #[must_use]
-    pub fn matches(&self, project: &Project) -> bool {
+    pub fn matches(self, project: &Project) -> bool {
         match self {
             Self::Workspace => matches!(project, Project::Workspace(_)),
             Self::Package => matches!(project, Project::Package(_)),

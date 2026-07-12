@@ -1,5 +1,6 @@
 use changepacks_core::Project;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::hash_map::Entry;
+use std::collections::{HashMap, VecDeque};
 
 /// Sort projects by their dependencies using topological sort.
 /// Projects with no dependencies or whose dependencies are already published will come first.
@@ -16,24 +17,25 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     }
 
     // Dependencies are stored as package names, so name lookup is the ordering key.
-    let mut name_to_index: HashMap<&str, usize> = HashMap::with_capacity(projects.len());
-    let mut duplicate_names: HashSet<&str> = HashSet::new();
+    // name_to_index maps each name to Some(idx) if unique, or None if duplicate/ambiguous.
+    // Duplicate names cannot bind as dependency targets (the edge build below skips them).
+    let mut name_to_index: HashMap<&str, Option<usize>> = HashMap::with_capacity(projects.len());
     for (idx, project) in projects.iter().enumerate() {
         if let Some(name) = project.name() {
-            if duplicate_names.contains(name) {
-                continue;
-            }
-            if name_to_index.insert(name, idx).is_some() {
-                name_to_index.remove(name);
-                duplicate_names.insert(name);
+            match name_to_index.entry(name) {
+                Entry::Occupied(e) => {
+                    *e.into_mut() = None;
+                }
+                Entry::Vacant(v) => {
+                    v.insert(Some(idx));
+                }
             }
         }
     }
 
-    // Build dependency graph: for each project, find which projects depend on it
-    // Duplicate names are ambiguous across polyglot publish sets. Store only
-    // unique names so an ambiguous dependency cannot silently bind to whichever
-    // duplicate happened to appear last in discovery order.
+    // Build dependency graph: for each project, find which projects depend on it.
+    // Duplicate names are ambiguous across polyglot publish sets and are marked None
+    // in name_to_index, so an ambiguous dependency cannot silently bind to any duplicate.
     // in_degree[i] = number of dependencies that project i has
     let mut in_degree: Vec<usize> = vec![0; projects.len()];
     // graph[i] = list of projects that depend on project i
@@ -42,7 +44,7 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     for (idx, project) in projects.iter().enumerate() {
         let deps = project.dependencies();
         for dep in deps {
-            if let Some(&dep_idx) = name_to_index.get(dep.as_str()) {
+            if let Some(&Some(dep_idx)) = name_to_index.get(dep.as_str()) {
                 // Project at idx depends on project at dep_idx
                 // So dep_idx should come before idx
                 graph[dep_idx].push(idx);

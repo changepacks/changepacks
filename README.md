@@ -15,7 +15,7 @@
 [![GitHub issues](https://img.shields.io/github/issues/changepacks/changepacks)](https://github.com/changepacks/changepacks/issues)
 [![GitHub pull requests](https://img.shields.io/github/issues-pr/changepacks/changepacks)](https://github.com/changepacks/changepacks/pulls)
 [![GitHub last commit](https://img.shields.io/github/last-commit/changepacks/changepacks)](https://github.com/changepacks/changepacks/commits/main)
-[![Rust](https://img.shields.io/badge/Rust-1.72%2B-orange.svg)](https://rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.91%2B-orange.svg)](https://rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org/)
 [![Bun](https://img.shields.io/badge/Bun-latest-000000.svg)](https://bun.sh)
@@ -372,7 +372,7 @@ The project follows a trait-based, modular architecture:
 
 - **Async-First**: All I/O operations use tokio for parallel execution
 - **Format Preservation**: Language-specific parsers (toml_edit, yamlpatch, serde_json) maintain file formatting
-- **Git-Native**: Uses git2 library for change detection and repository operations
+- **Git-Native**: Uses gix library for change detection and repository operations
 - **Topological Sorting**: Kahn's algorithm ensures correct publish order based on dependencies
 
 ## Contributing
