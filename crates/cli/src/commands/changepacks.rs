@@ -179,7 +179,7 @@ pub async fn handle_changepack_with_prompter(
         })?;
     write(
         &changepack_log_file,
-        serde_json::to_string(&changepack_log)?,
+        serde_json::to_string_pretty(&changepack_log)?,
     )
     .await
     .with_context(|| {

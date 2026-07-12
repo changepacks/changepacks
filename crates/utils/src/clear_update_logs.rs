@@ -87,7 +87,7 @@ pub async fn clear_applied_update_logs(
                 .await
                 .with_context(|| format!("Failed to remove update log {}", path.display()))?;
         } else {
-            let next_content = serde_json::to_string(&value)
+            let next_content = serde_json::to_string_pretty(&value)
                 .with_context(|| format!("Failed to serialize update log {}", path.display()))?;
             write(path, next_content)
                 .await

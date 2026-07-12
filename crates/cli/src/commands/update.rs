@@ -116,10 +116,6 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     let merged_pairs =
         merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
 
-    if let FormatOptions::Stdout = args.format {
-        println!("Updates found:");
-    }
-
     // Filter update_map by language if specified.
     //
     // Prebuild `path_to_language` once so `retain` does O(1) lookups instead
@@ -154,6 +150,18 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
                 .get(path.as_path())
                 .is_some_and(|lang| language_slice_contains(&args.language, *lang))
         });
+    }
+
+    // The --language filter can empty the map (e.g. `update -l dart` with only
+    // Rust logs pending); mirror the unfiltered empty case above instead of
+    // printing an "Updates found:" banner over nothing and prompting.
+    if update_map.is_empty() {
+        args.format.print("No updates found");
+        return Ok(());
+    }
+
+    if let FormatOptions::Stdout = args.format {
+        println!("Updates found:");
     }
 
     if let Some(all_finders) = all_finders.as_ref() {

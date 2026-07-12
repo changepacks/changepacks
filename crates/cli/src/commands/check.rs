@@ -455,11 +455,10 @@ fn format_project_line(
     let changed_marker = changed_marker(project);
 
     // Fuse the filter + join into a single `String::push_str` loop, matching
-    // the `format_selected_projects` pattern in `prompter.rs`. Drops the
-    // intermediate `Vec<&String>` (monorepo_deps) and the intermediate
-    // `Vec<&str>` from `.iter().map().collect::<Vec<_>>()` — both allocated
-    // per project displayed and multiplied through `display_tree_node` on
-    // wide/deep trees. Empty-guard shape preserved: `deps_info` still degrades
+    // the `format_selected_projects` pattern in `prompter.rs`. Collects
+    // monorepo-local dependencies into a `Vec<&str>`, sorts them for
+    // deterministic output, then builds `deps_str` by iterating the sorted
+    // vec. Empty-guard shape preserved: `deps_info` still degrades
     // to `"".normal()` when no monorepo-local dep survives the filter.
     //
     // `name_to_project` now keys on `&str` (see `display_tree`); the lookup
@@ -476,11 +475,15 @@ fn format_project_line(
     // separator (the first dep skips the leading separator). Matches the
     // preallocation policy already applied throughout the workspace.
     let deps = project.dependencies();
-    let mut deps_str = String::with_capacity(deps.iter().map(|d| d.len() + 9).sum());
+    let mut filtered_deps: Vec<&str> = Vec::with_capacity(deps.len());
     for dep in deps {
-        if !name_to_project.contains_key(dep.as_str()) {
-            continue;
+        if name_to_project.contains_key(dep.as_str()) {
+            filtered_deps.push(dep.as_str());
         }
+    }
+    filtered_deps.sort_unstable();
+    let mut deps_str = String::with_capacity(filtered_deps.iter().map(|d| d.len() + 9).sum());
+    for dep in filtered_deps {
         if !deps_str.is_empty() {
             deps_str.push_str("\n        ");
         }
@@ -716,5 +719,62 @@ mod tests {
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("standalone"));
         assert!(!line.contains("deps:"));
+    }
+
+    #[test]
+    fn test_format_project_line_deps_sorted_deterministically() {
+        let mut pkg = MockPackage::new(
+            Some("app"),
+            Some("1.0.0"),
+            "/repo/app/package.json",
+            "app/package.json",
+            Language::Node,
+        );
+        // Add dependencies in non-alphabetical order to verify sorting
+        pkg.dependencies.insert("zebra".to_string());
+        pkg.dependencies.insert("apple".to_string());
+        pkg.dependencies.insert("mango".to_string());
+        let project = Project::Package(Box::new(pkg));
+
+        let apple_pkg = MockPackage::new(
+            Some("apple"),
+            Some("1.0.0"),
+            "/repo/apple/package.json",
+            "apple/package.json",
+            Language::Node,
+        );
+        let apple_project = Project::Package(Box::new(apple_pkg));
+
+        let zebra_pkg = MockPackage::new(
+            Some("zebra"),
+            Some("1.0.0"),
+            "/repo/zebra/package.json",
+            "zebra/package.json",
+            Language::Node,
+        );
+        let zebra_project = Project::Package(Box::new(zebra_pkg));
+
+        let mango_pkg = MockPackage::new(
+            Some("mango"),
+            Some("1.0.0"),
+            "/repo/mango/package.json",
+            "mango/package.json",
+            Language::Node,
+        );
+        let mango_project = Project::Package(Box::new(mango_pkg));
+
+        let repo_root = Path::new("/repo");
+        let update_map = HashMap::new();
+        let mut name_to_project: HashMap<&str, &Project> = HashMap::new();
+        name_to_project.insert("app", &project);
+        name_to_project.insert("apple", &apple_project);
+        name_to_project.insert("zebra", &zebra_project);
+        name_to_project.insert("mango", &mango_project);
+
+        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
+        assert!(line.contains("app"));
+        assert!(line.contains("deps:"));
+        // Verify sorted order: apple, mango, zebra
+        assert!(line.contains("deps:\n        apple\n        mango\n        zebra"));
     }
 }
