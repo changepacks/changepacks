@@ -7,7 +7,7 @@ use crate::update_type::UpdateType;
 /// Single changepack log entry for aggregated results.
 ///
 /// Contains the update type and note from a changepack log file.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangePackResultLog {
     /// Type of version update (Major, Minor, or Patch)
     r#type: UpdateType,

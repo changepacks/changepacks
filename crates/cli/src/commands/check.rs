@@ -100,7 +100,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                 let json = serde_json::to_string_pretty(&gen_changepack_result_map(
                     projects.as_slice(),
                     &ctx.repo_root_path,
-                    &mut update_map,
+                    &update_map,
                 )?)?;
                 println!("{json}");
             }

@@ -126,7 +126,7 @@ fn apply_update_on_rules(
     // matched trigger references outright and can safely mutate
     // `update_map`. `trigger_matches` borrows from `config`, not from
     // `update_map`, so there is no borrow conflict here.
-    let trigger_matches: Vec<(&String, &Vec<String>)> = {
+    let trigger_matches: Vec<(&str, &[String])> = {
         // Preallocate: `HashMap::keys()` yields an `ExactSizeIterator`
         // whose `size_hint = (len, Some(len))`, and `Vec::from_iter` DOES
         // reserve against the exact upper bound in that case — so the
@@ -147,7 +147,7 @@ fn apply_update_on_rules(
             match Pattern::new(trigger_pattern) {
                 Ok(pattern) => {
                     if updated_paths.iter().any(|s| pattern.matches(s.as_ref())) {
-                        out.push((trigger_pattern, dependents));
+                        out.push((trigger_pattern.as_str(), dependents.as_slice()));
                     }
                 }
                 Err(_) => {

@@ -186,20 +186,11 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     });
 
     let json_output = if let FormatOptions::Json = args.format {
-        let update_types: Vec<_> = update_map
-            .iter()
-            .map(|(path, (update_type, _))| (path.clone(), *update_type))
-            .collect();
         let output = serde_json::to_string_pretty(&gen_changepack_result_map(
             collect_projects(&project_finders).as_slice(),
             &ctx.repo_root_path,
-            &mut update_map,
+            &update_map,
         )?)?;
-        update_map.extend(
-            update_types
-                .into_iter()
-                .map(|(path, update_type)| (path, (update_type, Vec::new()))),
-        );
         Some(output)
     } else {
         None

@@ -10,7 +10,9 @@ use changepacks_core::UpdateType;
 /// code-quality gain — error path only, so `bench_next_version` (which feeds
 /// `"10.20.30"` / `"10.20.30+42"`, the happy path) cannot be affected.
 fn invalid_version(v: &str) -> anyhow::Error {
-    anyhow::anyhow!("Invalid version format: {v}")
+    anyhow::anyhow!(
+        "Invalid version format: {v} (expected MAJOR.MINOR.PATCH, optionally with +build metadata)"
+    )
 }
 
 /// Compute the next version with the shared "reserve `0.0.0` when
@@ -181,6 +183,9 @@ mod tests {
     #[case("1.y.3", UpdateType::Minor)]
     #[case("1.2.wrong", UpdateType::Major)]
     #[case("1.2.wrong", UpdateType::Minor)]
+    // Empty input has no `.` to split on, so it errors at the first
+    // `split_once('.')` miss — pin that boundary against future parser rewrites.
+    #[case("", UpdateType::Patch)]
     fn test_next_version_invalid_input(#[case] version: &str, #[case] update_type: UpdateType) {
         let result = next_version(version, update_type);
         assert!(result.is_err());
@@ -203,5 +208,18 @@ mod tests {
         #[case] update_type: UpdateType,
     ) {
         assert!(next_version(version, update_type).is_err());
+    }
+
+    // A rejected version (here a pre-release, which `next_version`
+    // deliberately does not bump) must explain the ACCEPTED shape, not just
+    // report the input as "invalid" — otherwise `1.0.0-alpha.1` reads as a
+    // valid semver being wrongly refused. Locks the accepted-format hint.
+    #[test]
+    fn test_next_version_invalid_message_has_format_hint() {
+        let err = next_version("1.0.0-alpha.1", UpdateType::Patch).unwrap_err();
+        assert!(
+            err.to_string().contains("expected MAJOR.MINOR.PATCH"),
+            "error should hint the accepted format, got: {err}"
+        );
     }
 }

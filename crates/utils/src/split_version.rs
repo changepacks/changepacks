@@ -52,6 +52,9 @@ mod tests {
     #[case("λ-1.0.0", (Some("λ-"), "1.0.0"))]
     #[case("latest", (None, "latest"))]
     #[case("*", (None, "*"))]
+    // Empty input contains no ASCII digit, so `position(...)` yields `None` and
+    // the whole (empty) string is returned as the version with no prefix.
+    #[case("", (None, ""))]
     fn test_split_version(#[case] input: &str, #[case] expected: (Option<&str>, &str)) {
         let (prefix, version) = split_version(input);
         assert_eq!(prefix, expected.0);

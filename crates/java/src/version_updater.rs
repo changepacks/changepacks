@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
-use changepacks_core::{UpdateType, has_extension_ignore_ascii_case};
-use changepacks_utils::next_version;
+use changepacks_core::has_extension_ignore_ascii_case;
 use regex::Regex;
 use std::borrow::Cow;
 use std::path::Path;
@@ -61,26 +60,17 @@ pub fn update_version_in_groovy<'a>(content: &'a str, new_version: &str) -> Cow<
     )
 }
 
-/// Read a Gradle build file, compute its next version, apply the right
-/// (`.kts` vs Groovy) rewrite in memory, write it back, and return the new
-/// version string. Shared by both `GradlePackage::update_version` and
-/// `GradleWorkspace::update_version` so a future change (extra file layouts,
-/// error handling for malformed inputs) lives in exactly one place.
+/// Write `new_version` into a Gradle build file (`.kts` or Groovy),
+/// preserving formatting and skipping the write when no `version = ...`
+/// line matched (byte-identical no-op for version-less build files).
 ///
 /// # Errors
-/// Returns an error if the file cannot be read, the version cannot be
-/// incremented, or the file cannot be written back.
-pub async fn update_gradle_version_at(
-    path: &Path,
-    current_version: &str,
-    update_type: UpdateType,
-) -> Result<String> {
-    let new_version = next_version(current_version, update_type)
-        .with_context(|| format!("Failed to compute next version for {}", path.display()))?;
-
+/// Returns an error if the file cannot be read or written back.
+pub async fn write_gradle_version(path: &Path, new_version: &str) -> Result<()> {
     let content = read_to_string(path)
         .await
         .with_context(|| format!("Failed to read Gradle build file {}", path.display()))?;
+
     // `Path::extension()` already returns the trailing extension component,
     // so the previous `file_name().and_then(to_str) → Path::new(...).extension()`
     // trip through a fresh `Path` was redundant. Behaviour is preserved on
@@ -90,25 +80,23 @@ pub async fn update_gradle_version_at(
     let is_kts = has_extension_ignore_ascii_case(path, "kts");
 
     let updated_content = if is_kts {
-        update_version_in_kts(&content, &new_version)
+        update_version_in_kts(&content, new_version)
     } else {
-        update_version_in_groovy(&content, &new_version)
+        update_version_in_groovy(&content, new_version)
     };
 
-    // Both `update_version_in_kts` and `update_version_in_groovy` return
-    // `Cow::Borrowed(content)` unchanged when neither of their regexes match
-    // (legitimate for build files with no `version = ...` line — e.g. a root
+    // Skip the write when neither regex matched: both `update_version_in_kts`
+    // and `update_version_in_groovy` return `Cow::Borrowed(content)` unchanged
+    // for build files with no `version = ...` line (e.g. a root
     // `settings.gradle.kts` that defers versioning to sub-projects). Guarding
-    // the write avoids a mtime bump + a syscall pair on those byte-identical
-    // no-ops. The returned `new_version` reflects the computed bump so the
-    // caller's version state is preserved regardless of whether the file was
-    // actually touched.
+    // the write keeps those files byte-identical on disk and avoids a mtime
+    // bump plus a syscall pair on no-ops.
     if updated_content.as_ref() != content {
         write(path, updated_content.as_ref())
             .await
             .with_context(|| format!("Failed to write Gradle build file {}", path.display()))?;
     }
-    Ok(new_version)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -218,14 +206,13 @@ group = 'com.example'
         assert_eq!(result, content);
     }
 
-    // Locks in the "skip write on unchanged content" fast-path added to
-    // `update_gradle_version_at`: a build file with no `version = ...` line
-    // MUST be left byte-identical on disk (no mtime bump, no rewrite),
-    // while the returned `new_version` still reflects the caller's requested
-    // bump so `Package::update_version` / `Workspace::update_version` can
-    // record the intended version regardless of on-disk state.
+    // Locks in the "skip write on unchanged content" fast-path: a build file
+    // with no `version = ...` line MUST be left byte-identical on disk (no
+    // mtime bump, no rewrite). The version bump arithmetic lives in
+    // `changepacks_utils::bump_version_with`; this writer only applies the
+    // already-computed version string when a Gradle version line exists.
     #[tokio::test]
-    async fn test_update_gradle_version_at_no_match_leaves_file_unchanged() {
+    async fn test_write_gradle_version_no_match_leaves_file_unchanged() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let path = temp_dir.path().join("build.gradle.kts");
         // A build file with NO `version = ...` line — this is the shape a
@@ -245,35 +232,10 @@ group = "com.example"
         // avoids blocking the runtime.
         let bytes_before = tokio::fs::read(&path).await.unwrap();
 
-        let new_version =
-            update_gradle_version_at(&path, "1.0.0", changepacks_core::UpdateType::Patch)
-                .await
-                .unwrap();
-
-        // Returned version reflects the caller's requested bump — the
-        // fast-path skips the write, NOT the version arithmetic.
-        assert_eq!(new_version, "1.0.1");
+        write_gradle_version(&path, "1.0.1").await.unwrap();
 
         // File bytes are byte-identical: no rewrite happened.
         let bytes_after = tokio::fs::read(&path).await.unwrap();
         assert_eq!(bytes_after, bytes_before);
-    }
-
-    /// A malformed `version = "..."` must fail the bump with the build-file
-    /// path named in the error chain — matching the sibling `read_to_string`
-    /// in this same function and every other language crate's version-bump
-    /// context. The bump errors BEFORE the file read, so no on-disk fixture is
-    /// needed and the dummy path is never touched.
-    #[tokio::test]
-    async fn test_update_gradle_version_at_bump_error_includes_path() {
-        let path = Path::new("/nonexistent/java-bump/build.gradle");
-        let err = update_gradle_version_at(path, "abc", UpdateType::Patch)
-            .await
-            .expect_err("a malformed version must fail the bump");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains(&path.display().to_string()),
-            "error chain should name the build file path, got: {chain}"
-        );
     }
 }

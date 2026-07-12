@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use changepacks_core::{ChangePackResult, ChangePackResultLog, Project, UpdateType};
 
 use crate::{get_relative_path, next_version_or_default};
@@ -23,7 +23,7 @@ use crate::{get_relative_path, next_version_or_default};
 pub fn gen_changepack_result_map<S: BuildHasher>(
     projects: &[&Project],
     repo_root_path: &Path,
-    update_result: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
+    update_result: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
 ) -> Result<BTreeMap<PathBuf, ChangePackResult>> {
     let mut map = BTreeMap::<PathBuf, ChangePackResult>::new();
     for project in projects {
@@ -37,15 +37,24 @@ pub fn gen_changepack_result_map<S: BuildHasher>(
         // was ever kept. Now we clone once here and move the copy into
         // whichever arm executes; `key` itself still moves into `map.insert`.
         let key_for_result = key.clone();
-        let result = match update_result.remove(&key) {
+        let result = match update_result.get(&key) {
             Some((update_type, notes)) => {
                 // Reuse the already-materialized `version` string above instead
                 // of re-dispatching `project.version()` through the `Project`
                 // enum. Semantically identical (both fall back to `"0.0.0"`
                 // when the project has no version) but avoids the second
                 // trait-object hop per project on every `update`/`check`.
-                let next = next_version_or_default(version.as_deref(), update_type)?;
-                ChangePackResult::new(notes, version, Some(next), name, changed, key_for_result)
+                let next = next_version_or_default(version.as_deref(), *update_type).with_context(
+                    || format!("Failed to compute next version for {}", key.display()),
+                )?;
+                ChangePackResult::new(
+                    notes.clone(),
+                    version,
+                    Some(next),
+                    name,
+                    changed,
+                    key_for_result,
+                )
             }
             None => ChangePackResult::new(vec![], version, None, name, changed, key_for_result),
         };
@@ -126,7 +135,7 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         assert_eq!(result.len(), 1);
         let change_result = result.get(&PathBuf::from("project1/package.json")).unwrap();
@@ -184,9 +193,9 @@ mod tests {
             false,
         );
 
-        let mut update_result = HashMap::new();
+        let update_result = HashMap::new();
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         assert_eq!(result.len(), 1);
         let change_result = result.get(&PathBuf::from("project2/package.json")).unwrap();
@@ -277,7 +286,7 @@ mod tests {
         // project2 has no update result
 
         let projects = vec![&project1, &project2];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         assert_eq!(result.len(), 2);
 
@@ -356,7 +365,7 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         let change_result = result.get(&PathBuf::from("project3/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
@@ -409,7 +418,7 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         let change_result = result.get(&PathBuf::from("project4/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
@@ -465,7 +474,7 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         let change_result = result.get(&PathBuf::from("project5/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
@@ -486,9 +495,9 @@ mod tests {
 
         crate::test_support::init_git_repo(repo_root);
 
-        let mut update_result = HashMap::new();
+        let update_result = HashMap::new();
         let projects: Vec<&Project> = vec![];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         assert!(result.is_empty());
 
@@ -529,7 +538,7 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         assert_eq!(result.len(), 1);
         let change_result = result.get(&PathBuf::from("projectA/package.json")).unwrap();
@@ -539,7 +548,7 @@ mod tests {
             get_json_field(&json, "nextVersion").is_none()
                 || get_json_field(&json, "nextVersion").unwrap().is_null()
         );
-        // The unmatched update_result entry should remain unconsumed
+        // gen_changepack_result_map no longer drains its input, so every entry remains
         assert_eq!(update_result.len(), 1);
 
         temp_dir.close().unwrap();
@@ -580,8 +589,16 @@ mod tests {
 
         let projects = vec![&project];
         // Empty version "" with an update triggers next_version("", Patch) which should fail
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result);
-        assert!(result.is_err());
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result);
+        let err = result.expect_err("empty version must fail the bump");
+        // The bump failure must name the offending project (the repo-relative
+        // key) so `check`/`update --format json` point at WHICH manifest broke,
+        // matching the path-in-context pattern every read/write here already uses.
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("project_empty_ver"),
+            "error chain should name the failing project, got: {chain}"
+        );
 
         temp_dir.close().unwrap();
     }

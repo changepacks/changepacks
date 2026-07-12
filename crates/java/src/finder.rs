@@ -162,7 +162,13 @@ async fn find_gradlew(start_dir: &Path, max_depth: usize) -> Option<(PathBuf, Pa
 
 #[cfg(not(tarpaulin_include))]
 fn gradle_subproject_path(relative: &Path) -> Result<String> {
-    let mut path = String::new();
+    // Preallocate against the source path's byte length: each `:` separator we
+    // push is 1 byte and maps 1:1 to a path-separator byte already counted in
+    // `as_os_str().len()`, so that length is a safe upper bound for the joined
+    // `:`-separated output — removing the geometric-doubling reallocations for
+    // deep subprojects. Matches the preallocation policy used elsewhere in the
+    // finders.
+    let mut path = String::with_capacity(relative.as_os_str().len());
     for component in relative.components() {
         let value = component.as_os_str().to_str().with_context(|| {
             format!(
@@ -185,16 +191,15 @@ fn gradle_property_value(caps: &regex::Captures) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-fn gradle_dependency_name(project_path: &str) -> Option<String> {
+fn gradle_dependency_name(project_path: &str) -> Option<&str> {
     project_path
         .trim_matches(':')
         .rsplit(':')
         .next()
         .filter(|name| !name.is_empty())
-        .map(str::to_string)
 }
 
-fn extract_gradle_project_dependencies(content: &str) -> Vec<String> {
+fn extract_gradle_project_dependencies(content: &str) -> Vec<&str> {
     PROJECT_DEPENDENCY_PATTERN
         .captures_iter(content)
         .filter_map(|caps| {
@@ -397,10 +402,10 @@ impl ProjectFinder for GradleProjectFinder {
         };
 
         // Read Gradle build file first (fail fast if unreadable)
-        let dependencies = read_to_string(path)
+        let content = read_to_string(path)
             .await
-            .map(|content| extract_gradle_project_dependencies(&content))
             .with_context(|| format!("Failed to read Gradle build file {}", path.display()))?;
+        let dependencies = extract_gradle_project_dependencies(&content);
 
         // Bound the gradlew search to the repository root: `relative_path` is
         // the build file's path relative to the git repo root, so its component
@@ -453,7 +458,7 @@ impl ProjectFinder for GradleProjectFinder {
         };
 
         for dependency in dependencies {
-            project.add_dependency(&dependency);
+            project.add_dependency(dependency);
         }
 
         self.projects.insert(path_key, project);
@@ -1309,6 +1314,6 @@ dependencies {
     #[case(":a:b:c:d", Some("d"))]
     fn test_gradle_dependency_name(#[case] input: &str, #[case] expected: Option<&str>) {
         let result = gradle_dependency_name(input);
-        assert_eq!(result, expected.map(|s| s.to_string()));
+        assert_eq!(result, expected);
     }
 }

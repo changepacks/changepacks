@@ -73,7 +73,7 @@ pub async fn handle_publish_with_prompter(
         // reallocations. `args.project.len()` is the exact upper bound
         // (each `--project` flag produces exactly one entry).
         // Matches the preallocation policy already applied to
-        // `bumped_package_names` a few lines below and to every other
+        // `rust_batch_names` a few lines below and to every other
         // `HashSet` preallocation site in the workspace.
         let mut normalized_args: HashSet<String> = HashSet::with_capacity(args.project.len());
         normalized_args.extend(args.project.iter().map(|p| p.replace('\\', "/")));
@@ -220,7 +220,7 @@ fn print_publish_output(output: &PublishOutput) {
 /// registry during dry-run, so they are unaffected.
 fn skip_dry_run_due_to_workspace_internal_dep(
     project: &Project,
-    bumped_package_names: &HashSet<&str>,
+    rust_batch_names: &HashSet<&str>,
 ) -> bool {
     if project.language() != changepacks_core::Language::Rust {
         return false;
@@ -228,7 +228,7 @@ fn skip_dry_run_due_to_workspace_internal_dep(
     project
         .dependencies()
         .iter()
-        .any(|dep| bumped_package_names.contains(dep.as_str()))
+        .any(|dep| rust_batch_names.contains(dep.as_str()))
 }
 
 /// Shared per-project success recorder for both `execute_publish_loop` and
@@ -453,21 +453,22 @@ async fn execute_dry_run_publish_loop(
         failure: "Dry-run failed for",
     };
 
-    // Rust package names being bumped in this run, consulted solely by
-    // `skip_dry_run_due_to_workspace_internal_dep` (which returns `false` for
-    // all non-Rust projects): the skip only guards against
+    // Names of ALL Rust projects in the current publish batch (not just
+    // version-bumped ones — no bump information is consulted here), consulted
+    // solely by `skip_dry_run_due_to_workspace_internal_dep` (which returns
+    // `false` for all non-Rust projects): the skip only guards against
     // `cargo publish --dry-run` failing to resolve a not-yet-published *Rust*
     // workspace crate, so a non-Rust project that merely shares a name with a
     // Rust crate's dependency must not land in this set. Names are borrowed
     // from the projects, which outlive the loop.
-    let bumped_package_names: HashSet<&str> = projects
+    let rust_batch_names: HashSet<&str> = projects
         .iter()
         .filter(|p| p.language() == changepacks_core::Language::Rust)
         .filter_map(|p| p.name())
         .collect();
 
     for project in projects {
-        if skip_dry_run_due_to_workspace_internal_dep(project, &bumped_package_names) {
+        if skip_dry_run_due_to_workspace_internal_dep(project, &rust_batch_names) {
             if let FormatOptions::Stdout = format {
                 eprintln!(
                     "Dry-run skipped for {project}: depends on workspace member also being \
@@ -1244,8 +1245,8 @@ mod tests {
     /// A Rust crate whose dependency name coincides with a *non-Rust* project's
     /// name (both in the same publish batch) must NOT be dry-run-skipped: the
     /// `cargo publish --dry-run` workspace-internal workaround only applies when
-    /// the dependency is another *Rust* crate being bumped in the same run, so
-    /// `bumped_package_names` holds only Rust names. The Node package literally
+    /// the dependency is another *Rust* crate in the same run, so
+    /// `rust_batch_names` holds only Rust names. The Node package literally
     /// named `shared` must therefore not shadow the Rust crate's real (external)
     /// `shared` dependency and trigger a spurious skip.
     #[tokio::test]
