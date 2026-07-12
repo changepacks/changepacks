@@ -62,6 +62,7 @@ pub(crate) async fn write_csproj_version(
 mod tests {
     use super::*;
     use changepacks_core::UpdateType;
+    use changepacks_utils::test_support;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -71,15 +72,11 @@ mod tests {
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n";
         tokio::fs::write(&csproj_path, content).await.unwrap();
 
-        let mut permissions = std::fs::metadata(&csproj_path).unwrap().permissions();
-        permissions.set_readonly(true);
-        std::fs::set_permissions(&csproj_path, permissions).unwrap();
+        test_support::set_readonly(&csproj_path, true);
 
         let result = write_csproj_version(&csproj_path, "1.2.3", false).await;
 
-        let mut permissions = std::fs::metadata(&csproj_path).unwrap().permissions();
-        permissions.set_readonly(false);
-        std::fs::set_permissions(&csproj_path, permissions).unwrap();
+        test_support::set_readonly(&csproj_path, false);
 
         result.unwrap();
         assert_eq!(

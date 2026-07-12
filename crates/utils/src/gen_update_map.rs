@@ -311,7 +311,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
 
     use changepacks_core::Config;
     use tempfile::TempDir;
@@ -367,7 +367,7 @@ mod tests {
             );
         }
         {
-            let mut map = HashMap::new();
+            let mut map = BTreeMap::new();
             map.insert(temp_path.join("package"), UpdateType::Patch);
             let changepack_log = ChangePackLog::new(map, "".to_string());
 
@@ -387,7 +387,7 @@ mod tests {
             let update_map = gen_update_map(&changepacks_dir, &config).await.unwrap();
             assert!(update_map.len() == 1);
 
-            let mut map = HashMap::new();
+            let mut map = BTreeMap::new();
             map.insert(temp_path.join("package"), UpdateType::Minor);
             let changepack_log = ChangePackLog::new(map, "".to_string());
 
@@ -404,7 +404,7 @@ mod tests {
             assert!(update_map[&temp_path.join("package")].0 == UpdateType::Minor);
         }
         {
-            let mut map = HashMap::new();
+            let mut map = BTreeMap::new();
             map.insert(temp_path.join("package2"), UpdateType::Major);
             let changepack_log = ChangePackLog::new(map, "".to_string());
 
@@ -420,7 +420,7 @@ mod tests {
             assert!(update_map[&temp_path.join("package2")].0 == UpdateType::Major);
         }
         {
-            let mut map = HashMap::new();
+            let mut map = BTreeMap::new();
             map.insert(temp_path.join("package2"), UpdateType::Patch);
             let changepack_log = ChangePackLog::new(map, "".to_string());
 
@@ -523,7 +523,7 @@ mod tests {
         fs::create_dir_all(&changepacks_dir).await.unwrap();
 
         // Create config with updateOn rule
-        let mut update_on = HashMap::new();
+        let mut update_on = BTreeMap::new();
         update_on.insert(
             "crates/*".to_string(),
             vec!["bridge/node".to_string(), "bridge/python".to_string()],
@@ -534,7 +534,7 @@ mod tests {
         };
 
         // Create a changepack log for crates/core
-        let mut map = HashMap::new();
+        let mut map = BTreeMap::new();
         map.insert(PathBuf::from("crates/core"), UpdateType::Minor);
         let changepack_log = ChangePackLog::new(map, "Update core".to_string());
 
@@ -788,7 +788,7 @@ mod tests {
     // "invalid pattern" cases below.
     #[test]
     fn test_apply_update_on_rules_empty_update_map_is_noop() {
-        let mut update_on = HashMap::new();
+        let mut update_on = BTreeMap::new();
         update_on.insert("crates/*".to_string(), vec!["bridge/node".to_string()]);
         let config = Config {
             update_on,
@@ -809,7 +809,7 @@ mod tests {
     #[test]
     fn test_apply_update_on_rules_invalid_pattern() {
         // Test with invalid glob pattern
-        let mut update_on = HashMap::new();
+        let mut update_on = BTreeMap::new();
         update_on.insert(
             "[invalid".to_string(), // Invalid glob pattern
             vec!["bridge/node".to_string()],
@@ -840,7 +840,7 @@ mod tests {
     #[test]
     fn test_apply_update_on_rules_no_match() {
         // Test when no package matches the trigger pattern
-        let mut update_on = HashMap::new();
+        let mut update_on = BTreeMap::new();
         update_on.insert("other/*".to_string(), vec!["bridge/node".to_string()]);
         let config = Config {
             update_on,
@@ -868,7 +868,7 @@ mod tests {
     #[test]
     fn test_apply_update_on_rules_dependent_already_exists() {
         // Test when dependent package is already in update_map
-        let mut update_on = HashMap::new();
+        let mut update_on = BTreeMap::new();
         update_on.insert("crates/*".to_string(), vec!["bridge/node".to_string()]);
         let config = Config {
             update_on,
@@ -904,6 +904,57 @@ mod tests {
         assert_eq!(
             update_map[&PathBuf::from("bridge/node")].0,
             UpdateType::Major
+        );
+    }
+
+    // Two updateOn triggers whose globs BOTH match the same updated package
+    // ("crates/core") and BOTH list the same dependent ("bridge/node"). With a
+    // BTreeMap-backed `update_on`, `apply_update_on_rules` iterates triggers in
+    // sorted key order and inserts the dependent exactly once — on the FIRST
+    // matching trigger — so the auto-update note deterministically names the
+    // lexicographically-smallest trigger key. Under the previous HashMap the
+    // winning trigger (and thus the note text) was nondeterministic per run.
+    #[test]
+    fn test_apply_update_on_rules_names_lexicographically_first_trigger() {
+        // Both "crates/*" and "crates/core" match "crates/core"; byte-wise
+        // '*' (0x2A) < 'c' (0x63), so "crates/*" is the smaller key and must
+        // be the one named in the note.
+        let mut update_on = BTreeMap::new();
+        update_on.insert("crates/core".to_string(), vec!["bridge/node".to_string()]);
+        update_on.insert("crates/*".to_string(), vec!["bridge/node".to_string()]);
+        let config = Config {
+            update_on,
+            ..Default::default()
+        };
+
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("crates/core"),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "Update core".to_string(),
+                )],
+            ),
+        );
+
+        apply_update_on_rules(&mut update_map, &config);
+
+        // The dependent is added exactly once despite two matching triggers.
+        assert_eq!(update_map.len(), 2);
+        let dependent = &update_map[&PathBuf::from("bridge/node")];
+        assert_eq!(dependent.0, UpdateType::Patch);
+        assert_eq!(dependent.1.len(), 1);
+
+        // The note names the lexicographically-first trigger key, which is
+        // exactly `update_on`'s first key under BTreeMap ordering.
+        let first_trigger = config.update_on.keys().next().unwrap();
+        assert_eq!(first_trigger, "crates/*");
+        let note_json = serde_json::to_value(&dependent.1[0]).unwrap();
+        assert_eq!(
+            note_json["note"],
+            format!("Auto-update triggered by updateOn rule: {first_trigger}")
         );
     }
 }

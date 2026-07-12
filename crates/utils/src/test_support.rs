@@ -111,3 +111,21 @@ pub fn git_add_and_commit(path: &Path, message: &str) {
 pub fn discover_repo(path: &Path) -> gix::ThreadSafeRepository {
     gix::discover(path).expect("discover test repo").into_sync()
 }
+
+/// Set the readonly permission on a file for testing permission-denied scenarios.
+///
+/// Reads the file's metadata, sets the readonly bit to the specified value, and
+/// applies the updated permissions. This is a shared fixture for tests that verify
+/// error handling when writes fail due to permission restrictions.
+///
+/// # Panics
+///
+/// Panics if metadata cannot be read or permissions cannot be set.
+pub fn set_readonly(path: &Path, readonly: bool) {
+    let mut permissions = std::fs::metadata(path)
+        .unwrap_or_else(|err| panic!("failed to read metadata for {}: {err}", path.display()))
+        .permissions();
+    permissions.set_readonly(readonly);
+    std::fs::set_permissions(path, permissions)
+        .unwrap_or_else(|err| panic!("failed to set permissions for {}: {err}", path.display()));
+}

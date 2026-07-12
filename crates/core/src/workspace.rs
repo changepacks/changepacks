@@ -154,7 +154,7 @@ mod tests {
     use super::*;
     use crate::test_support::MockWorkspace;
     use rstest::rstest;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     #[test]
     fn test_check_changed_already_changed() {
@@ -189,7 +189,7 @@ mod tests {
             "/project/package.json",
             "packages/core/package.json",
         );
-        let mut publish = HashMap::new();
+        let mut publish = BTreeMap::new();
         publish.insert(
             "packages/core/package.json".to_string(),
             "custom publish".to_string(),
@@ -214,7 +214,7 @@ mod tests {
     ) {
         let workspace = MockWorkspace::with_paths(Some("test"), "/project/manifest", "manifest")
             .with_language(language);
-        let mut publish = HashMap::new();
+        let mut publish = BTreeMap::new();
         publish.insert(key.to_string(), command.to_string());
         let config = Config {
             publish,
@@ -255,7 +255,7 @@ mod tests {
             "/project/package.json",
             "packages/core/package.json",
         );
-        let mut publish_dry_run = HashMap::new();
+        let mut publish_dry_run = BTreeMap::new();
         publish_dry_run.insert(
             "packages/core/package.json".to_string(),
             "custom dry".to_string(),
@@ -277,7 +277,7 @@ mod tests {
         let workspace =
             MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json")
                 .with_language(Language::Node);
-        let mut publish_dry_run = HashMap::new();
+        let mut publish_dry_run = BTreeMap::new();
         publish_dry_run.insert(
             "node".to_string(),
             "npm publish --dry-run --tag next".to_string(),
@@ -313,7 +313,7 @@ mod tests {
         let path = temp_dir.join("package.json");
         let workspace =
             MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
-        let mut publish = HashMap::new();
+        let mut publish = BTreeMap::new();
         let fail_cmd = if cfg!(target_os = "windows") {
             "cmd /c exit 1"
         } else {

@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -12,7 +12,7 @@ use crate::update_type::UpdateType;
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChangePackLog {
     /// Map of package file paths to their update types
-    changes: HashMap<PathBuf, UpdateType>,
+    changes: BTreeMap<PathBuf, UpdateType>,
     /// User-provided changelog note for this changepack
     note: String,
     /// UTC timestamp when this changepack was created
@@ -21,7 +21,7 @@ pub struct ChangePackLog {
 
 impl ChangePackLog {
     #[must_use]
-    pub fn new(changes: HashMap<PathBuf, UpdateType>, note: String) -> Self {
+    pub fn new(changes: BTreeMap<PathBuf, UpdateType>, note: String) -> Self {
         Self {
             changes,
             note,
@@ -30,7 +30,7 @@ impl ChangePackLog {
     }
 
     #[must_use]
-    pub fn changes(&self) -> &HashMap<PathBuf, UpdateType> {
+    pub fn changes(&self) -> &BTreeMap<PathBuf, UpdateType> {
         &self.changes
     }
 
@@ -42,7 +42,7 @@ impl ChangePackLog {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, path::PathBuf};
+    use std::{collections::BTreeMap, path::PathBuf};
 
     use chrono::{DateTime, Utc};
 
@@ -50,7 +50,7 @@ mod tests {
 
     #[test]
     fn test_changepack_log_new() {
-        let mut changes = HashMap::new();
+        let mut changes = BTreeMap::new();
         changes.insert(
             PathBuf::from("packages/foo/package.json"),
             UpdateType::Minor,
@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn test_changepack_log_changes_accessor() {
-        let mut changes = HashMap::new();
+        let mut changes = BTreeMap::new();
         changes.insert(
             PathBuf::from("packages/foo/package.json"),
             UpdateType::Major,
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn test_changepack_log_note_accessor() {
-        let mut changes = HashMap::new();
+        let mut changes = BTreeMap::new();
         changes.insert(
             PathBuf::from("packages/foo/package.json"),
             UpdateType::Minor,
@@ -101,7 +101,7 @@ mod tests {
 
     #[test]
     fn test_changepack_log_empty_changes() {
-        let log = ChangePackLog::new(HashMap::new(), "No package updates".to_string());
+        let log = ChangePackLog::new(BTreeMap::new(), "No package updates".to_string());
 
         assert!(log.changes().is_empty());
         assert_eq!(log.note(), "No package updates");
@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn test_changepack_log_serialize_deserialize_roundtrip() {
-        let mut changes = HashMap::new();
+        let mut changes = BTreeMap::new();
         changes.insert(
             PathBuf::from("packages/foo/package.json"),
             UpdateType::Minor,
@@ -153,5 +153,35 @@ mod tests {
         );
         assert_eq!(log.note(), "Ship feature and fix");
         assert_eq!(log.date, expected_date);
+    }
+
+    #[test]
+    fn test_changepack_log_deterministic_serialization() {
+        // Build a log with entries in reverse alphabetical order
+        let mut changes = BTreeMap::new();
+        changes.insert(PathBuf::from("z/package.json"), UpdateType::Major);
+        changes.insert(PathBuf::from("m/package.json"), UpdateType::Minor);
+        changes.insert(PathBuf::from("a/package.json"), UpdateType::Patch);
+
+        let log = ChangePackLog::new(changes, "Test determinism".to_string());
+
+        // Serialize twice and verify byte-identical output
+        let json1 = serde_json::to_string(&log).unwrap();
+        let json2 = serde_json::to_string(&log).unwrap();
+
+        assert_eq!(json1, json2, "Serialization should be deterministic");
+
+        // Verify keys appear in sorted order in the JSON
+        let deserialized: ChangePackLog = serde_json::from_str(&json1).unwrap();
+        let keys: Vec<_> = deserialized.changes().keys().collect();
+        assert_eq!(
+            keys,
+            vec![
+                &PathBuf::from("a/package.json"),
+                &PathBuf::from("m/package.json"),
+                &PathBuf::from("z/package.json")
+            ],
+            "Keys should be in sorted order"
+        );
     }
 }

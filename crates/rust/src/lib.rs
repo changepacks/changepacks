@@ -133,6 +133,7 @@ pub(crate) fn is_workspace_marker(item: &toml_edit::Item) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use changepacks_utils::test_support;
     use std::fs;
     use tempfile::TempDir;
 
@@ -144,9 +145,7 @@ mod tests {
 
         // The read succeeds (readonly still permits reads); it is the
         // write-back that must fail, so flip the readonly bit after seeding.
-        let mut permissions = fs::metadata(&cargo_toml).unwrap().permissions();
-        permissions.set_readonly(true);
-        fs::set_permissions(&cargo_toml, permissions).unwrap();
+        test_support::set_readonly(&cargo_toml, true);
 
         // A NEW version guarantees the write is actually attempted against the
         // readonly file rather than being short-circuited as an unchanged no-op.
@@ -154,9 +153,7 @@ mod tests {
 
         // Restore write permission BEFORE asserting so `TempDir` cleanup
         // succeeds even if an assertion panics.
-        let mut permissions = fs::metadata(&cargo_toml).unwrap().permissions();
-        permissions.set_readonly(false);
-        fs::set_permissions(&cargo_toml, permissions).unwrap();
+        test_support::set_readonly(&cargo_toml, false);
 
         let err = result.expect_err("write to a readonly Cargo.toml must fail");
         let chain = format!("{err:#}");

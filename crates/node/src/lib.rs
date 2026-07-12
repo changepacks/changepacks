@@ -345,7 +345,7 @@ pub async fn detect_package_manager_recursive_async(
 async fn command_for_path(
     path: &Path,
     relative_path: &Path,
-    map: &std::collections::HashMap<String, String>,
+    map: &std::collections::BTreeMap<String, String>,
     default_fn: fn(PackageManager) -> &'static str,
 ) -> String {
     if let Some(command) =
@@ -396,6 +396,21 @@ async fn publish_path_dirs_for_path(path: &Path, relative_path: &Path) -> Vec<Pa
     }
 }
 
+/// Shared tail for publish and dry-run publish flows.
+///
+/// Collects `node_modules/.bin` PATH dirs via `publish_path_dirs_for_path`,
+/// then calls `run_publish_flow` with the resolved command.
+async fn run_flow_with_path_dirs(
+    command: &str,
+    path: &Path,
+    relative_path: &Path,
+    missing_dir_message: &'static str,
+) -> Result<changepacks_core::publish::PublishOutput> {
+    let path_dirs = publish_path_dirs_for_path(path, relative_path).await;
+    changepacks_core::publish::run_publish_flow(command, path, &path_dirs, missing_dir_message)
+        .await
+}
+
 pub(crate) async fn run_publish_for_path(
     path: &Path,
     relative_path: &Path,
@@ -403,9 +418,7 @@ pub(crate) async fn run_publish_for_path(
     missing_dir_message: &'static str,
 ) -> Result<changepacks_core::publish::PublishOutput> {
     let command = publish_command_for_path(path, relative_path, config).await;
-    let path_dirs = publish_path_dirs_for_path(path, relative_path).await;
-    changepacks_core::publish::run_publish_flow(&command, path, &path_dirs, missing_dir_message)
-        .await
+    run_flow_with_path_dirs(&command, path, relative_path, missing_dir_message).await
 }
 
 /// Run the dry-run publish command for a Node package.
@@ -419,8 +432,7 @@ pub(crate) async fn run_dry_run_publish_for_path(
     missing_dir_message: &'static str,
 ) -> Result<Option<changepacks_core::publish::PublishOutput>> {
     let command = dry_run_publish_command_for_path(path, relative_path, config).await;
-    let path_dirs = publish_path_dirs_for_path(path, relative_path).await;
-    changepacks_core::publish::run_publish_flow(&command, path, &path_dirs, missing_dir_message)
+    run_flow_with_path_dirs(&command, path, relative_path, missing_dir_message)
         .await
         .map(Some)
 }
@@ -429,6 +441,7 @@ pub(crate) async fn run_dry_run_publish_for_path(
 mod tests {
     use super::*;
     use changepacks_core::UpdateType;
+    use changepacks_utils::test_support;
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
@@ -684,9 +697,7 @@ mod tests {
 
         // The read succeeds (readonly still permits reads); it is the
         // write-back that must fail, so flip the readonly bit after seeding.
-        let mut permissions = fs::metadata(&package_json).unwrap().permissions();
-        permissions.set_readonly(true);
-        fs::set_permissions(&package_json, permissions).unwrap();
+        test_support::set_readonly(&package_json, true);
 
         // A NEW version guarantees the write is actually attempted against the
         // readonly file rather than being short-circuited as an unchanged no-op.
@@ -694,9 +705,7 @@ mod tests {
 
         // Restore write permission BEFORE asserting so `TempDir` cleanup
         // succeeds even if an assertion panics.
-        let mut permissions = fs::metadata(&package_json).unwrap().permissions();
-        permissions.set_readonly(false);
-        fs::set_permissions(&package_json, permissions).unwrap();
+        test_support::set_readonly(&package_json, false);
 
         let err = result.expect_err("write to a readonly package.json must fail");
         let chain = format!("{err:#}");

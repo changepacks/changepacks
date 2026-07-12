@@ -500,7 +500,7 @@ mod tests {
         let mut package = MockPackage::new(Some("test"), Some("1.0.0"), Language::CSharp);
         package.path = temp_dir.join("Sample.csproj");
         let project = Project::Package(Box::new(package));
-        let mut publish_dry_run = std::collections::HashMap::new();
+        let mut publish_dry_run = std::collections::BTreeMap::new();
         publish_dry_run.insert("csharp".to_string(), "echo dry-csharp".to_string());
         let config = Config {
             publish_dry_run,

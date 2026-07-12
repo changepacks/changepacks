@@ -87,6 +87,7 @@ pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use changepacks_utils::test_support;
     use std::fs;
     use tempfile::TempDir;
 
@@ -98,9 +99,7 @@ mod tests {
 
         // The read succeeds (readonly still permits reads); it is the
         // write-back that must fail, so flip the readonly bit after seeding.
-        let mut permissions = fs::metadata(&pyproject_toml).unwrap().permissions();
-        permissions.set_readonly(true);
-        fs::set_permissions(&pyproject_toml, permissions).unwrap();
+        test_support::set_readonly(&pyproject_toml, true);
 
         // A NEW version guarantees the write is actually attempted against the
         // readonly file rather than being short-circuited as an unchanged no-op.
@@ -108,9 +107,7 @@ mod tests {
 
         // Restore write permission BEFORE asserting so `TempDir` cleanup
         // succeeds even if an assertion panics.
-        let mut permissions = fs::metadata(&pyproject_toml).unwrap().permissions();
-        permissions.set_readonly(false);
-        fs::set_permissions(&pyproject_toml, permissions).unwrap();
+        test_support::set_readonly(&pyproject_toml, false);
 
         let err = result.expect_err("write to a readonly pyproject.toml must fail");
         let chain = format!("{err:#}");

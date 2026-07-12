@@ -1,5 +1,5 @@
 use changepacks_core::{ChangePackLog, Project, UpdateType};
-use std::{collections::HashMap, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf};
 use tokio::fs::{create_dir_all, write};
 
 use changepacks_utils::get_relative_path;
@@ -58,7 +58,7 @@ pub async fn handle_changepack_with_prompter(
     // workspace first
     projects.sort();
 
-    let mut update_map = HashMap::<PathBuf, UpdateType>::with_capacity(projects.len());
+    let mut update_map = BTreeMap::<PathBuf, UpdateType>::new();
 
     // Compute each project's relative path exactly ONCE per invocation. A
     // project's relative path never changes across update-type turns, so

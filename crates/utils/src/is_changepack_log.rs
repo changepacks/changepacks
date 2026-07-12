@@ -63,6 +63,9 @@ pub(crate) async fn collect_changepack_log_paths(changepacks_dir: &Path) -> Resu
             paths.push(file.path());
         }
     }
+    // Sort paths to ensure deterministic order: `read_dir` order is filesystem-dependent,
+    // so sorting makes downstream `logs` output order stable across runs and platforms.
+    paths.sort_unstable();
     Ok(paths)
 }
 
@@ -92,6 +95,8 @@ pub(crate) async fn read_log_bodies(paths: &[PathBuf], label: &str) -> Result<Ve
 mod tests {
     use super::*;
     use rstest::rstest;
+    use tempfile::TempDir;
+    use tokio::fs;
 
     // Every `.changepacks/` filename shape the cleaner + reader must agree on.
     #[rstest]
@@ -125,5 +130,44 @@ mod tests {
     #[case("update.Json", true)]
     fn test_is_changepack_log_json_name(#[case] file_name: &str, #[case] expected: bool) {
         assert_eq!(is_changepack_log_json_name(file_name), expected);
+    }
+
+    // Regression: `collect_changepack_log_paths` must return paths in lexicographic
+    // order regardless of filesystem read_dir order. This test writes files in
+    // reverse lexicographic order (b before a) to verify sorting is applied.
+    #[tokio::test]
+    async fn test_collect_changepack_log_paths_deterministic_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path();
+
+        // Write changepack_log_b.json FIRST, then changepack_log_a.json
+        // (creation order differs from lexicographic order).
+        fs::write(
+            changepacks_dir.join("changepack_log_b.json"),
+            r#"{"changes": {}, "note": "note_b"}"#,
+        )
+        .await
+        .unwrap();
+        fs::write(
+            changepacks_dir.join("changepack_log_a.json"),
+            r#"{"changes": {}, "note": "note_a"}"#,
+        )
+        .await
+        .unwrap();
+
+        let paths = collect_changepack_log_paths(changepacks_dir).await.unwrap();
+
+        // Paths must be sorted lexicographically (a before b), not in creation order.
+        assert_eq!(paths.len(), 2);
+        assert!(
+            paths[0].ends_with("changepack_log_a.json"),
+            "expected first path to be changepack_log_a.json, got {:?}",
+            paths[0]
+        );
+        assert!(
+            paths[1].ends_with("changepack_log_b.json"),
+            "expected second path to be changepack_log_b.json, got {:?}",
+            paths[1]
+        );
     }
 }

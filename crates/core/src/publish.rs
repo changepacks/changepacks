@@ -1,6 +1,6 @@
 use crate::{Config, Language};
 use anyhow::{Context, Result};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
@@ -33,7 +33,7 @@ pub struct PublishOutput {
 /// duplicating the path-first, language-fallback logic.
 #[must_use]
 pub fn lookup_by_path_or_language(
-    map: &HashMap<String, String>,
+    map: &BTreeMap<String, String>,
     relative_path: &Path,
     language: Language,
 ) -> Option<String> {
@@ -281,11 +281,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
     #[test]
     fn test_resolve_publish_command_by_path() {
-        let mut publish = HashMap::new();
+        let mut publish = BTreeMap::new();
         publish.insert(
             "packages/core/package.json".to_string(),
             "custom publish".to_string(),
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn test_resolve_publish_command_by_language() {
-        let mut publish = HashMap::new();
+        let mut publish = BTreeMap::new();
         publish.insert(
             "node".to_string(),
             "npm publish --access public".to_string(),
@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn test_resolve_dry_run_publish_command_by_path() {
         // Per-project override wins even when a default is provided.
-        let mut publish_dry_run = HashMap::new();
+        let mut publish_dry_run = BTreeMap::new();
         publish_dry_run.insert(
             "packages/core/package.json".to_string(),
             "custom dry".to_string(),
@@ -363,7 +363,7 @@ mod tests {
     #[test]
     fn test_resolve_dry_run_publish_command_by_language() {
         // Per-language override wins over the language crate's default.
-        let mut publish_dry_run = HashMap::new();
+        let mut publish_dry_run = BTreeMap::new();
         publish_dry_run.insert("node".to_string(), "npm publish --dry-run -tag".to_string());
         let config = Config {
             publish_dry_run,
@@ -412,7 +412,7 @@ mod tests {
     #[test]
     fn test_resolve_dry_run_publish_command_unsupported_with_path_override() {
         // Per-project override still wins for unsupported languages.
-        let mut publish_dry_run = HashMap::new();
+        let mut publish_dry_run = BTreeMap::new();
         publish_dry_run.insert(
             "project.csproj".to_string(),
             "dotnet pack -c Release".to_string(),
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn test_resolve_dry_run_publish_command_unsupported_with_language_override() {
         // Per-language override resolves for unsupported languages too.
-        let mut publish_dry_run = HashMap::new();
+        let mut publish_dry_run = BTreeMap::new();
         publish_dry_run.insert("csharp".to_string(), "dotnet pack -c Release".to_string());
         let config = Config {
             publish_dry_run,
