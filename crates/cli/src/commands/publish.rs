@@ -453,20 +453,22 @@ async fn execute_dry_run_publish_loop(
         failure: "Dry-run failed for",
     };
 
-    // Pre-compute the set of package names being bumped in this run so that
-    // each iteration can cheaply check whether its dependencies overlap.
-    // Only populated when a Rust project exists in the batch, since the set
-    // is consulted solely by `skip_dry_run_due_to_workspace_internal_dep`,
-    // which returns `false` for all non-Rust projects. Borrow the names
-    // directly from the projects (which outlive the loop) to skip the
-    // per-name `String` allocation the old `HashSet<String>` version paid.
-    // When populated: `projects.len()` is a tight upper bound for the
-    // capacity (the `filter_map` only drops nameless projects), and
-    // `HashSet::extend(iter)` reuses the reserved allocation, matching the
-    // idiom already used across the utils crate (e.g. `unique_files.extend(diff)`
-    // in `find_project_dirs.rs`) — collapses the 4-line loop + `Option::Some`
-    // guard to a single call while preserving the same borrow-the-name-out-of-the-project
-    // semantics.
+    // Pre-compute the set of Rust package names being bumped in this run so
+    // that each iteration can cheaply check whether its dependencies overlap.
+    // Only populated when a Rust project exists in the batch, and restricted
+    // to Rust names, because the set is consulted solely by
+    // `skip_dry_run_due_to_workspace_internal_dep`, which returns `false` for
+    // all non-Rust projects: the skip only guards against
+    // `cargo publish --dry-run` failing to resolve a not-yet-published *Rust*
+    // workspace crate, so a non-Rust project that merely shares a name with a
+    // Rust crate's dependency must not land in this set (it would cause a
+    // spurious dry-run skip). Borrow the names directly from the projects
+    // (which outlive the loop) to skip the per-name `String` allocation the old
+    // `HashSet<String>` version paid. `projects.len()` stays a valid upper
+    // bound for the capacity reserve (the Rust `filter` + `filter_map` only
+    // ever drop entries), and `HashSet::extend(iter)` reuses the reserved
+    // allocation, matching the idiom already used across the utils crate (e.g.
+    // `unique_files.extend(diff)` in `find_project_dirs.rs`).
     let mut bumped_package_names: std::collections::HashSet<&str> =
         std::collections::HashSet::new();
     if projects
@@ -474,7 +476,12 @@ async fn execute_dry_run_publish_loop(
         .any(|p| p.language() == changepacks_core::Language::Rust)
     {
         bumped_package_names.reserve(projects.len());
-        bumped_package_names.extend(projects.iter().filter_map(|p| p.name()));
+        bumped_package_names.extend(
+            projects
+                .iter()
+                .filter(|p| p.language() == changepacks_core::Language::Rust)
+                .filter_map(|p| p.name()),
+        );
     }
 
     for project in projects {
@@ -1227,6 +1234,43 @@ mod tests {
         );
         // Neither project should appear in failed_projects: parent was
         // skipped (success), leaf succeeded.
+        assert!(failed.is_empty(), "no project should fail: {failed:?}");
+    }
+
+    /// A Rust crate whose dependency name coincides with a *non-Rust* project's
+    /// name (both in the same publish batch) must NOT be dry-run-skipped: the
+    /// `cargo publish --dry-run` workspace-internal workaround only applies when
+    /// the dependency is another *Rust* crate being bumped in the same run, so
+    /// `bumped_package_names` holds only Rust names. The Node package literally
+    /// named `shared` must therefore not shadow the Rust crate's real (external)
+    /// `shared` dependency and trigger a spurious skip.
+    #[tokio::test]
+    async fn test_execute_dry_run_loop_rust_dep_matching_non_rust_name_not_skipped() {
+        let rust_crate = make_rust_mock("crate-a", "crates/a/Cargo.toml", &["shared"]);
+        let node_named_shared =
+            make_publish_cascade_mock("shared", "packages/shared/package.json", &[], true);
+        let projects: Vec<&Project> = vec![&rust_crate, &node_named_shared];
+        let config = Config::default();
+
+        let (result_map, failed) =
+            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Json).await;
+
+        // The Rust crate must run its real dry-run (mock returns
+        // "dry-run ok for crate-a"), NOT be recorded as a workspace-internal skip.
+        let rust_entry = result_map
+            .get(std::path::Path::new("crates/a/Cargo.toml"))
+            .expect("rust crate should be recorded with a dry-run result");
+        let rust_serialized = serde_json::to_string(rust_entry).expect("serialize");
+        assert!(
+            rust_serialized.contains("dry-run ok for crate-a"),
+            "rust crate should run its dry-run, not be skipped: {rust_serialized}"
+        );
+        assert!(
+            !rust_serialized.contains("dry-run skipped (workspace-internal dep)"),
+            "rust crate must not be falsely skipped: {rust_serialized}"
+        );
+        // The Node package named `shared` is not a Rust crate, so it takes the
+        // normal (non-skip) dry-run path and succeeds via the cascade mock.
         assert!(failed.is_empty(), "no project should fail: {failed:?}");
     }
 }
