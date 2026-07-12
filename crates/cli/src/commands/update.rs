@@ -368,7 +368,7 @@ fn collect_update_project_refs<'a>(
 
 #[cfg(not(tarpaulin_include))]
 fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<WorkspaceRef<'a>> {
-    let mut workspace_projects = Vec::new();
+    let mut workspace_projects = Vec::with_capacity(total_project_count(finders));
 
     for finder in finders {
         for project in finder.projects() {
