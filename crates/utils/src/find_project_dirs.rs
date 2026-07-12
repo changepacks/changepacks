@@ -177,7 +177,7 @@ pub async fn discover_project_dirs(
             .and_then(|r| r.ok())
             .and_then(|remote| {
                 let url = remote.url(gix::remote::Direction::Fetch)?;
-                let path = url.path.to_string();
+                let path = url.path.to_str_lossy();
                 let name = path.rsplit('/').next()?;
                 let name = name.strip_suffix(".git").unwrap_or(name);
                 if name.is_empty() {
