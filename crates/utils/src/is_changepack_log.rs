@@ -4,6 +4,14 @@ use anyhow::{Context, Result};
 use changepacks_core::has_extension_ignore_ascii_case;
 use tokio::fs::{read_dir, read_to_string};
 
+/// Single anyhow context message for every "Failed to read changepacks directory"
+/// error path in `collect_changepack_log_paths` — both the `read_dir` failure
+/// and the `next_entry` failure. Routing both sites through one helper ensures
+/// the message can never drift between them.
+fn read_dir_context(dir: &Path) -> String {
+    format!("Failed to read changepacks directory {}", dir.display())
+}
+
 /// Returns `true` iff `file_name` names a changepack log JSON file — i.e. it
 /// is NOT `config.json` and its extension matches `.json` case-insensitively.
 ///
@@ -43,21 +51,15 @@ pub(crate) async fn collect_changepack_log_paths(changepacks_dir: &Path) -> Resu
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => {
-            return Err(err).with_context(|| {
-                format!(
-                    "Failed to read changepacks directory {}",
-                    changepacks_dir.display()
-                )
-            });
+            return Err(err).with_context(|| read_dir_context(changepacks_dir));
         }
     };
     let mut paths: Vec<PathBuf> = Vec::new();
-    while let Some(file) = entries.next_entry().await.with_context(|| {
-        format!(
-            "Failed to read changepacks directory {}",
-            changepacks_dir.display()
-        )
-    })? {
+    while let Some(file) = entries
+        .next_entry()
+        .await
+        .with_context(|| read_dir_context(changepacks_dir))?
+    {
         let file_name = file.file_name();
         if is_changepack_log_json_name(file_name.to_string_lossy().as_ref()) {
             paths.push(file.path());

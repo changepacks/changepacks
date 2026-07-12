@@ -23,6 +23,17 @@ pub struct PublishOutput {
     pub stderr: String,
 }
 
+/// Normalize Windows backslash path separators to forward slashes.
+///
+/// Config keys and `--project` values are documented and written with forward
+/// slashes. This helper normalizes Windows backslashes to forward slashes so
+/// that filesystem-derived paths (which carry backslashes on Windows) can be
+/// compared against config keys without silent misses.
+#[must_use]
+pub fn normalize_path_separators(s: &str) -> String {
+    s.replace('\\', "/")
+}
+
 /// Shared 2-step lookup: first by the project's relative path, then by the
 /// language's `publish_key()`. Extracted so `resolve_publish_command` and
 /// `resolve_dry_run_publish_command` share ONE resolution ladder; a future
@@ -37,11 +48,23 @@ pub fn lookup_by_path_or_language(
     relative_path: &Path,
     language: Language,
 ) -> Option<String> {
-    // Empty publish maps can only miss; avoid path conversion and hash work.
+    // Empty publish maps can only miss; avoid path conversion and lookup/comparison work.
     if map.is_empty() {
         return None;
     }
-    if let Some(cmd) = map.get(relative_path.to_string_lossy().as_ref()) {
+    let lossy = relative_path.to_string_lossy();
+    if let Some(cmd) = map.get(lossy.as_ref()) {
+        return Some(cmd.clone());
+    }
+    // Config keys are documented/written with forward slashes, but the Rust
+    // finder's filesystem-derived relative paths carry backslashes on Windows.
+    // Retry with forward-slash normalization if the exact lookup missed and
+    // the string contains a backslash, so a forward-slash config key does not
+    // silently miss. See `normalize_path_separators` for the shared normalization
+    // policy used across the CLI and core.
+    if lossy.contains('\\')
+        && let Some(cmd) = map.get(&normalize_path_separators(lossy.as_ref()))
+    {
         return Some(cmd.clone());
     }
     map.get(language.publish_key()).cloned()
@@ -297,6 +320,28 @@ mod tests {
 
         let result = resolve_publish_command(
             Path::new("packages/core/package.json"),
+            Language::Node,
+            || "npm publish".to_string(),
+            &config,
+        );
+        assert_eq!(result, "custom publish");
+    }
+
+    #[test]
+    fn test_resolve_publish_command_by_path_backslash_separators() {
+        // Windows backslash → forward-slash config-key normalization.
+        let mut publish = BTreeMap::new();
+        publish.insert(
+            "packages/core/package.json".to_string(),
+            "custom publish".to_string(),
+        );
+        let config = Config {
+            publish,
+            ..Default::default()
+        };
+
+        let result = resolve_publish_command(
+            Path::new("packages\\core\\package.json"),
             Language::Node,
             || "npm publish".to_string(),
             &config,
@@ -596,5 +641,21 @@ mod tests {
     #[test]
     fn test_utf8_or_lossy_invalid_utf8_lossy_fallback() {
         assert_eq!(utf8_or_lossy(vec![0x66, 0x6f, 0x80, 0x6f]), "fo\u{FFFD}o");
+    }
+
+    #[test]
+    fn test_normalize_path_separators_backslash_to_forward_slash() {
+        assert_eq!(
+            normalize_path_separators("packages\\core\\package.json"),
+            "packages/core/package.json"
+        );
+    }
+
+    #[test]
+    fn test_normalize_path_separators_no_backslash_unchanged() {
+        assert_eq!(
+            normalize_path_separators("packages/core/package.json"),
+            "packages/core/package.json"
+        );
     }
 }

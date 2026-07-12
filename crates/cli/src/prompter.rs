@@ -172,8 +172,8 @@ impl Prompter for MockPrompter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::MockPackage;
     use changepacks_core::Language;
+    use changepacks_core::test_support::MockPackage;
     use rstest::rstest;
 
     #[test]
@@ -256,7 +256,7 @@ mod tests {
     #[case(true, 100)]
     #[case(false, 0)]
     fn test_score_project(#[case] changed: bool, #[case] expected: i64) {
-        let mut pkg = MockPackage::new(
+        let mut pkg = MockPackage::with_all(
             Some("pkg"),
             Some("1.0.0"),
             "package.json",
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_format_selected_projects_single() {
-        let pkg = MockPackage::new(
+        let pkg = MockPackage::with_all(
             Some("my-app"),
             Some("1.0.0"),
             "package.json",
@@ -284,14 +284,14 @@ mod tests {
             Language::Node,
         );
         let project = Project::Package(Box::new(pkg));
-        let projects = vec![&project];
+        let projects = [&project];
         let result = format_selected_projects(projects.iter().copied());
         assert!(result.contains("my-app"));
     }
 
     #[test]
     fn test_format_selected_projects_multiple() {
-        let mut pkg1 = MockPackage::new(
+        let mut pkg1 = MockPackage::with_all(
             Some("app-a"),
             Some("1.0.0"),
             "package.json",
@@ -300,7 +300,7 @@ mod tests {
         );
         pkg1.is_changed = true;
         let p1 = Project::Package(Box::new(pkg1));
-        let pkg2 = MockPackage::new(
+        let pkg2 = MockPackage::with_all(
             Some("app-b"),
             Some("1.0.0"),
             "package.json",
@@ -308,7 +308,7 @@ mod tests {
             Language::Node,
         );
         let p2 = Project::Package(Box::new(pkg2));
-        let projects = vec![&p1, &p2];
+        let projects = [&p1, &p2];
         let result = format_selected_projects(projects.iter().copied());
         assert!(result.contains('\n'));
         let lines: Vec<&str> = result.lines().collect();

@@ -109,6 +109,39 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     Ok(())
 }
 
+/// Collect a project's monorepo-local dependency names, sorted.
+///
+/// Single source of truth for the "keep only deps that resolve in
+/// `name_to_project`, borrow them as `&str`, and `sort_unstable`" policy
+/// shared by `display_tree` (forward-graph construction) and
+/// `format_project_line` (the `[deps: ...]` annotation). Returns an empty
+/// `Vec` when no monorepo-local dependency survives the filter — callers
+/// keep their own empty-guard behavior (skip the graph insert / degrade to
+/// the no-`[deps]` line).
+///
+/// `sort_unstable`: dep names are unique package-name slices and `str::cmp`
+/// is a total order, so stability is not observable in the rendered output.
+fn sorted_monorepo_deps<'a>(
+    project: &'a Project,
+    name_to_project: &HashMap<&str, &Project>,
+) -> Vec<&'a str> {
+    let deps = project.dependencies();
+    // Preallocate to the tight upper bound: `Filter::size_hint` only reports
+    // `(0, Some(deps.len()))`, so a `.filter().collect()` under-reserves and
+    // reallocates geometrically; `deps.len()` overshoots by at most the
+    // non-monorepo deps. The lookup passes `dep.as_str()` because
+    // `HashMap<&str, _>::contains_key(&Q)` resolves with `Q = str` (via
+    // `&str: Borrow<str>`), not `Q = String`.
+    let mut filtered: Vec<&'a str> = Vec::with_capacity(deps.len());
+    for dep in deps {
+        if name_to_project.contains_key(dep.as_str()) {
+            filtered.push(dep.as_str());
+        }
+    }
+    filtered.sort_unstable();
+    filtered
+}
+
 /// Display projects as a dependency tree
 ///
 /// Excluded from coverage: pure CLI display orchestration that emits
@@ -161,54 +194,17 @@ fn display_tree(
     // already own further up the stack.
 
     for project in projects {
-        let deps = project.dependencies();
-        // Filter dependencies to only include monorepo projects.
-        // `name_to_project` now keys on `&str` (see the map's declaration
-        // above); the lookup uses `dep.as_str()` because
-        // `HashMap<&str, _>::contains_key(&Q)` resolves with `Q = str`
-        // (via `&str: Borrow<str>`), not `Q = String`.
-        //
-        // Preallocate: `.filter().cloned().collect::<Vec<_>>()` cannot
-        // preallocate because `Filter::size_hint` only reports
-        // `(0, Some(deps.len()))` and `Vec::from_iter` uses the LOWER
-        // bound, incurring geometric-doubling reallocations on wide dep
-        // lists. `deps.len()` is the tight upper bound. Matches the
-        // preallocation policy already applied to `name_to_project`,
-        // `graph`, `roots`, `has_dependencies`, `sorted_roots`, and
-        // `visited` in this same function.
-        //
-        // Value type is now `Vec<&str>` (see the `graph` declaration
-        // above): push the borrowed `dep.as_str()` slice directly
-        // instead of the owned `dep.clone()`. The `String` sitting
-        // inside `project.dependencies()` outlives every downstream
-        // borrow because `Project` is borrowed for the same scope.
-        let mut monorepo_deps: Vec<&str> = Vec::with_capacity(deps.len());
-        for dep in deps {
-            if name_to_project.contains_key(dep.as_str()) {
-                monorepo_deps.push(dep.as_str());
-            }
-        }
-
+        // `sorted_monorepo_deps` applies the shared monorepo-local + sorted
+        // filter, so the dep list lands in `graph` already sorted ONCE — no
+        // separate `graph.values_mut()` pass is needed. `project` auto-derefs
+        // `&&Project` → `&Project`; the borrowed dep slices live for the
+        // projects' scope, matching the graph's `&str` values. Insert only
+        // non-empty results, so a dependency-free project stays out of
+        // `graph` exactly as before.
+        let monorepo_deps = sorted_monorepo_deps(project, &name_to_project);
         if !monorepo_deps.is_empty() {
             graph.insert(project.name_or_noname(), monorepo_deps);
         }
-    }
-
-    // Pre-sort each graph value ONCE now, before `has_dependencies`
-    // borrows into `graph`. `display_tree_node` then borrows the
-    // already-sorted dep list on every visit instead of doing a per-visit
-    // `deps.clone()` + `.sort()`. Meaningful on diamond/wide graphs where
-    // the same subtree is revisited under multiple parents (each revisit
-    // still re-descends the deps so all edges render). Behavior is
-    // preserved because the sort is applied to identical inputs — the
-    // output ordering is byte-identical.
-    //
-    // `sort_unstable`: dep vectors hold unique package-name slices, and
-    // `str::cmp` is a total order — no two equal-but-distinguishable
-    // elements exist, so stability is not observable in the rendered tree.
-    // Skips the stability bookkeeping the stable sort pays for.
-    for deps in graph.values_mut() {
-        deps.sort_unstable();
     }
 
     // Derive `has_dependencies` AFTER the graph is fully built by
@@ -377,10 +373,10 @@ fn display_tree_node<'a>(
 
     // Always display dependencies, even if the node was already visited
     // This ensures all dependencies are shown in the tree.
-    // NOTE: `deps` is pre-sorted ONCE in `display_tree` (see comment
-    // there); borrowing here avoids the per-visit `deps.clone()` +
-    // `.sort()` — meaningful on diamond graphs where the same subtree is
-    // re-descended under multiple parents.
+    // NOTE: `deps` is pre-sorted ONCE when `display_tree` builds the graph
+    // (via `sorted_monorepo_deps`); borrowing here avoids the per-visit
+    // `deps.clone()` + `.sort()` — meaningful on diamond graphs where the
+    // same subtree is re-descended under multiple parents.
     if let Some(deps) = ctx.graph.get(project_name) {
         let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
         for (idx, dep_name) in deps.iter().enumerate() {
@@ -461,16 +457,11 @@ fn format_project_line(
 
     let changed_marker = changed_marker(project);
 
-    // Fuse the filter + join into a single `String::push_str` loop, matching
-    // the `format_selected_projects` pattern in `prompter.rs`. Collects
-    // monorepo-local dependencies into a `Vec<&str>`, sorts them for
-    // deterministic output, then builds `deps_str` by iterating the sorted
-    // vec. Empty-guard shape preserved: `deps_info` still degrades
-    // to `"".normal()` when no monorepo-local dep survives the filter.
-    //
-    // `name_to_project` now keys on `&str` (see `display_tree`); the lookup
-    // uses `dep.as_str()` because `HashMap<&str, _>::contains_key(&Q)`
-    // needs `Q = str` (via `&str: Borrow<str>`), not `Q = String`.
+    // Collect the monorepo-local deps (sorted) via the shared helper, then
+    // fuse the join into a single `String::push_str` loop, matching the
+    // `format_selected_projects` pattern in `prompter.rs`. Empty-guard shape
+    // preserved: `deps_info` still degrades to `"".normal()` when no
+    // monorepo-local dep survives the filter.
     //
     // Preallocate: `String::new().push_str(...)` grows via geometric
     // doubling on every dep addition. On projects with N monorepo
@@ -481,14 +472,7 @@ fn format_project_line(
     // bytes) is a tight upper bound that overshoots by at most one
     // separator (the first dep skips the leading separator). Matches the
     // preallocation policy already applied throughout the workspace.
-    let deps = project.dependencies();
-    let mut filtered_deps: Vec<&str> = Vec::with_capacity(deps.len());
-    for dep in deps {
-        if name_to_project.contains_key(dep.as_str()) {
-            filtered_deps.push(dep.as_str());
-        }
-    }
-    filtered_deps.sort_unstable();
+    let filtered_deps = sorted_monorepo_deps(project, name_to_project);
     let mut deps_str = String::with_capacity(filtered_deps.iter().map(|d| d.len() + 9).sum());
     for dep in filtered_deps {
         if !deps_str.is_empty() {
@@ -589,11 +573,11 @@ mod tests {
 
     use changepacks_core::Language;
 
-    use crate::test_support::{MockPackage, MockWorkspace};
+    use changepacks_core::test_support::{MockPackage, MockWorkspace};
 
     #[test]
     fn test_format_project_line_package() {
-        let pkg = MockPackage::new(
+        let pkg = MockPackage::with_all(
             Some("my-lib"),
             Some("1.2.3"),
             "/repo/crates/my-lib/Cargo.toml",
@@ -613,7 +597,7 @@ mod tests {
 
     #[test]
     fn test_format_project_line_workspace() {
-        let ws = MockWorkspace::new(
+        let ws = MockWorkspace::with_all(
             Some("my-workspace"),
             Some("2.0.0"),
             "/repo/package.json",
@@ -634,7 +618,7 @@ mod tests {
 
     #[test]
     fn test_format_project_line_with_update() {
-        let pkg = MockPackage::new(
+        let pkg = MockPackage::with_all(
             Some("updated-pkg"),
             Some("1.0.0"),
             "/repo/packages/foo/package.json",
@@ -658,7 +642,7 @@ mod tests {
 
     #[test]
     fn test_format_project_line_changed_marker() {
-        let mut pkg = MockPackage::new(
+        let mut pkg = MockPackage::with_all(
             Some("changed-pkg"),
             Some("3.0.0"),
             "/repo/lib/Cargo.toml",
@@ -678,7 +662,7 @@ mod tests {
 
     #[test]
     fn test_format_project_line_with_dependencies() {
-        let mut pkg = MockPackage::new(
+        let mut pkg = MockPackage::with_all(
             Some("app"),
             Some("1.0.0"),
             "/repo/app/package.json",
@@ -688,7 +672,7 @@ mod tests {
         pkg.dependencies.insert("core-lib".to_string());
         let project = Project::Package(Box::new(pkg));
 
-        let dep_pkg = MockPackage::new(
+        let dep_pkg = MockPackage::with_all(
             Some("core-lib"),
             Some("1.0.0"),
             "/repo/core/package.json",
@@ -711,7 +695,7 @@ mod tests {
 
     #[test]
     fn test_format_project_line_no_deps_shows_no_bracket() {
-        let pkg = MockPackage::new(
+        let pkg = MockPackage::with_all(
             Some("standalone"),
             Some("1.0.0"),
             "/repo/standalone/Cargo.toml",
@@ -730,7 +714,7 @@ mod tests {
 
     #[test]
     fn test_format_project_line_deps_sorted_deterministically() {
-        let mut pkg = MockPackage::new(
+        let mut pkg = MockPackage::with_all(
             Some("app"),
             Some("1.0.0"),
             "/repo/app/package.json",
@@ -743,7 +727,7 @@ mod tests {
         pkg.dependencies.insert("mango".to_string());
         let project = Project::Package(Box::new(pkg));
 
-        let apple_pkg = MockPackage::new(
+        let apple_pkg = MockPackage::with_all(
             Some("apple"),
             Some("1.0.0"),
             "/repo/apple/package.json",
@@ -752,7 +736,7 @@ mod tests {
         );
         let apple_project = Project::Package(Box::new(apple_pkg));
 
-        let zebra_pkg = MockPackage::new(
+        let zebra_pkg = MockPackage::with_all(
             Some("zebra"),
             Some("1.0.0"),
             "/repo/zebra/package.json",
@@ -761,7 +745,7 @@ mod tests {
         );
         let zebra_project = Project::Package(Box::new(zebra_pkg));
 
-        let mango_pkg = MockPackage::new(
+        let mango_pkg = MockPackage::with_all(
             Some("mango"),
             Some("1.0.0"),
             "/repo/mango/package.json",
@@ -788,7 +772,7 @@ mod tests {
     #[test]
     fn test_cached_project_line_distinguishes_same_named_projects() {
         // Create two projects with the SAME name but DIFFERENT paths and versions
-        let pkg1 = MockPackage::new(
+        let pkg1 = MockPackage::with_all(
             Some("core"),
             Some("1.0.0"),
             "/repo/packages/core/package.json",
@@ -797,7 +781,7 @@ mod tests {
         );
         let project1 = Project::Package(Box::new(pkg1));
 
-        let pkg2 = MockPackage::new(
+        let pkg2 = MockPackage::with_all(
             Some("core"),
             Some("2.0.0"),
             "/repo/crates/core/Cargo.toml",
@@ -848,7 +832,7 @@ mod tests {
     #[test]
     fn test_version_display_with_update_empty_map() {
         // Case (a): empty update_map → returns plain version display like "v1.0.0"
-        let pkg = MockPackage::new(
+        let pkg = MockPackage::with_all(
             Some("my-pkg"),
             Some("1.0.0"),
             "/repo/pkg/package.json",
@@ -867,7 +851,7 @@ mod tests {
     fn test_version_display_with_update_key_miss() {
         // Case (b): NON-EMPTY map whose keys do NOT include this project's relative path
         // → still plain "v1.0.0"
-        let pkg = MockPackage::new(
+        let pkg = MockPackage::with_all(
             Some("my-pkg"),
             Some("1.0.0"),
             "/repo/pkg/package.json",
@@ -891,7 +875,7 @@ mod tests {
     fn test_version_display_with_update_key_hit_minor() {
         // Case (c): map keyed by this project's relative path with UpdateType::Minor
         // → display contains "v1.0.0 → v1.1.0"
-        let pkg = MockPackage::new(
+        let pkg = MockPackage::with_all(
             Some("my-pkg"),
             Some("1.0.0"),
             "/repo/pkg/package.json",
@@ -913,7 +897,7 @@ mod tests {
     #[test]
     fn test_version_display_with_update_key_hit_major() {
         // Verify the display format works for other update types too
-        let pkg = MockPackage::new(
+        let pkg = MockPackage::with_all(
             Some("my-pkg"),
             Some("1.0.0"),
             "/repo/pkg/package.json",
@@ -935,7 +919,7 @@ mod tests {
     #[test]
     fn test_version_display_with_update_key_hit_patch() {
         // Verify the display format works for patch updates
-        let pkg = MockPackage::new(
+        let pkg = MockPackage::with_all(
             Some("my-pkg"),
             Some("1.0.0"),
             "/repo/pkg/package.json",
@@ -958,7 +942,7 @@ mod tests {
     fn test_version_display_with_update_path_outside_repo_root() {
         // Case (d): project path outside repo_root with a NON-EMPTY map
         // → Err (from get_relative_path_ref)
-        let pkg = MockPackage::new(
+        let pkg = MockPackage::with_all(
             Some("my-pkg"),
             Some("1.0.0"),
             "/other/pkg/package.json",

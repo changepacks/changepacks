@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::Result;
-use changepacks_core::{Config, Project, PublishOutput, PublishResult};
+use changepacks_core::{Config, Project, PublishOutput, PublishResult, normalize_path_separators};
 use changepacks_utils::sort_by_dependencies;
 use clap::Args;
 
@@ -76,7 +76,7 @@ pub async fn handle_publish_with_prompter(
         // `rust_batch_names` a few lines below and to every other
         // `HashSet` preallocation site in the workspace.
         let mut normalized_args: HashSet<String> = HashSet::with_capacity(args.project.len());
-        normalized_args.extend(args.project.iter().map(|p| p.replace('\\', "/")));
+        normalized_args.extend(args.project.iter().map(|p| normalize_path_separators(p)));
         projects.retain(|project| {
             let relative_path = project.relative_path().to_string_lossy();
             // Only pay the `replace` allocation when the path actually
@@ -85,7 +85,7 @@ pub async fn handle_publish_with_prompter(
             // instead — `HashSet<String>::contains` accepts a `&str` via
             // `Borrow<str>`, so the no-backslash branch is allocation-free.
             if relative_path.contains('\\') {
-                normalized_args.contains(&relative_path.replace('\\', "/"))
+                normalized_args.contains(&normalize_path_separators(relative_path.as_ref()))
             } else {
                 normalized_args.contains(relative_path.as_ref())
             }
@@ -461,11 +461,13 @@ async fn execute_dry_run_publish_loop(
     // workspace crate, so a non-Rust project that merely shares a name with a
     // Rust crate's dependency must not land in this set. Names are borrowed
     // from the projects, which outlive the loop.
-    let rust_batch_names: HashSet<&str> = projects
-        .iter()
-        .filter(|p| p.language() == changepacks_core::Language::Rust)
-        .filter_map(|p| p.name())
-        .collect();
+    let mut rust_batch_names: HashSet<&str> = HashSet::with_capacity(projects.len());
+    rust_batch_names.extend(
+        projects
+            .iter()
+            .filter(|p| p.language() == changepacks_core::Language::Rust)
+            .filter_map(|p| p.name()),
+    );
 
     for project in projects {
         if skip_dry_run_due_to_workspace_internal_dep(project, &rust_batch_names) {

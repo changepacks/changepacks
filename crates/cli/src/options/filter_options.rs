@@ -29,10 +29,10 @@ mod tests {
     use clap::ValueEnum;
     use rstest::rstest;
 
-    use crate::test_support::{MockPackage, MockWorkspace};
+    use changepacks_core::test_support::{MockPackage, MockWorkspace};
 
     fn workspace_project() -> Project {
-        Project::Workspace(Box::new(MockWorkspace::new(
+        Project::Workspace(Box::new(MockWorkspace::with_all(
             Some("workspace"),
             Some("1.0.0"),
             "/repo/package.json",
@@ -42,7 +42,7 @@ mod tests {
     }
 
     fn package_project() -> Project {
-        Project::Package(Box::new(MockPackage::new(
+        Project::Package(Box::new(MockPackage::with_all(
             Some("package"),
             Some("1.0.0"),
             "/repo/crates/pkg/Cargo.toml",

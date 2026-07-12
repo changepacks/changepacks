@@ -64,7 +64,7 @@ mod tests {
     use super::*;
     use rstest::rstest;
 
-    use crate::test_support::MockPackage;
+    use changepacks_core::test_support::MockPackage;
 
     #[rstest]
     #[case(CliLanguage::Python, Language::Python)]
@@ -79,7 +79,7 @@ mod tests {
     }
 
     fn pkg(language: Language) -> Project {
-        Project::Package(Box::new(MockPackage::new(
+        Project::Package(Box::new(MockPackage::with_all(
             None,
             None,
             &format!("/repo/{language:?}/manifest"),
