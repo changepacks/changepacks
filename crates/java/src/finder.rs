@@ -383,12 +383,14 @@ impl ProjectFinder for GradleProjectFinder {
             }
         };
 
-        // Get properties from gradlew command
-        let props = get_gradle_properties(project_dir, java_available).await?;
+        // Read Gradle build file first (fail fast if unreadable)
         let dependencies = read_to_string(path)
             .await
             .map(|content| extract_gradle_project_dependencies(&content))
             .with_context(|| format!("Failed to read Gradle build file {}", path.display()))?;
+
+        // Get properties from gradlew command
+        let props = get_gradle_properties(project_dir, java_available).await?;
 
         // Use directory name as fallback for project name
         let name = props.name.or_else(|| {

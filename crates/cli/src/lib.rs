@@ -25,6 +25,9 @@ mod finders;
 pub mod options;
 pub mod prompter;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 pub use prompter::{UserCancelled, is_user_cancelled};
 
 /// Collect process arguments and run the CLI.

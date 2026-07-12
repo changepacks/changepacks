@@ -221,6 +221,10 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
         for project in self.projects_mut() {
             for path in paths {
                 project.check_changed(path)?;
+                // Early break: check_changed is monotonic, so once changed, remaining paths are redundant.
+                if project.is_changed() {
+                    break;
+                }
             }
         }
         Ok(())

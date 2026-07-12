@@ -577,148 +577,13 @@ mod tests {
 
     // --- format_project_line tests using mock trait implementations ---
 
-    use async_trait::async_trait;
-    use changepacks_core::{Language, Package, Workspace};
-    use std::collections::HashSet;
+    use changepacks_core::Language;
 
-    // Field name `is_changed` matches the `impl_basic_accessors!()`
-    // macro contract (see `crates/core/src/project_finder.rs`) so the
-    // shared macro can generate every trivial accessor. Locks the
-    // macro's field-name contract at the CLI-test surface the same way
-    // `crates/core/src/{package,workspace,project,project_finder}.rs`
-    // already do — a future rename of the macro's expected field name
-    // trips a compile error here immediately.
-    #[derive(Debug)]
-    struct MockPackageForCheck {
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        language: Language,
-        dependencies: HashSet<String>,
-        is_changed: bool,
-    }
-
-    impl MockPackageForCheck {
-        fn new(
-            name: Option<&str>,
-            version: Option<&str>,
-            path: &str,
-            relative_path: &str,
-            language: Language,
-        ) -> Self {
-            Self {
-                name: name.map(String::from),
-                version: version.map(String::from),
-                path: PathBuf::from(path),
-                relative_path: PathBuf::from(relative_path),
-                language,
-                dependencies: HashSet::new(),
-                is_changed: false,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Package for MockPackageForCheck {
-        // Consumes the same `impl_basic_accessors!()` macro that every
-        // core-crate test mock uses — collapses the seven byte-identical
-        // trivial accessors (`name`, `version`, `path`, `relative_path`,
-        // `is_changed`, `set_changed`, `set_name`) into one macro
-        // invocation and locks the field-name contract for the CLI-test
-        // surface too.
-        changepacks_core::impl_basic_accessors!();
-
-        async fn update_version(
-            &mut self,
-            _update_type: changepacks_core::UpdateType,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn language(&self) -> Language {
-            self.language
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
-        }
-    }
-
-    // Field name `is_changed` matches the `impl_basic_accessors!()`
-    // macro contract (see `MockPackageForCheck` above for rationale).
-    #[derive(Debug)]
-    struct MockWorkspaceForCheck {
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        language: Language,
-        dependencies: HashSet<String>,
-        is_changed: bool,
-    }
-
-    impl MockWorkspaceForCheck {
-        fn new(
-            name: Option<&str>,
-            version: Option<&str>,
-            path: &str,
-            relative_path: &str,
-            language: Language,
-        ) -> Self {
-            Self {
-                name: name.map(String::from),
-                version: version.map(String::from),
-                path: PathBuf::from(path),
-                relative_path: PathBuf::from(relative_path),
-                language,
-                dependencies: HashSet::new(),
-                is_changed: false,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Workspace for MockWorkspaceForCheck {
-        // Same macro adoption as `MockPackageForCheck` above — the
-        // `Workspace` trait carries the same seven trivial accessors as
-        // `Package`, so a single `impl_basic_accessors!()` invocation
-        // covers both trait shapes.
-        changepacks_core::impl_basic_accessors!();
-
-        async fn update_version(
-            &mut self,
-            _update_type: changepacks_core::UpdateType,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn language(&self) -> Language {
-            self.language
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
-        }
-    }
+    use crate::test_support::{MockPackage, MockWorkspace};
 
     #[test]
     fn test_format_project_line_package() {
-        let pkg = MockPackageForCheck::new(
+        let pkg = MockPackage::new(
             Some("my-lib"),
             Some("1.2.3"),
             "/repo/crates/my-lib/Cargo.toml",
@@ -738,7 +603,7 @@ mod tests {
 
     #[test]
     fn test_format_project_line_workspace() {
-        let ws = MockWorkspaceForCheck::new(
+        let ws = MockWorkspace::new(
             Some("my-workspace"),
             Some("2.0.0"),
             "/repo/package.json",
@@ -759,7 +624,7 @@ mod tests {
 
     #[test]
     fn test_format_project_line_with_update() {
-        let pkg = MockPackageForCheck::new(
+        let pkg = MockPackage::new(
             Some("updated-pkg"),
             Some("1.0.0"),
             "/repo/packages/foo/package.json",
@@ -783,7 +648,7 @@ mod tests {
 
     #[test]
     fn test_format_project_line_changed_marker() {
-        let mut pkg = MockPackageForCheck::new(
+        let mut pkg = MockPackage::new(
             Some("changed-pkg"),
             Some("3.0.0"),
             "/repo/lib/Cargo.toml",
@@ -803,7 +668,7 @@ mod tests {
 
     #[test]
     fn test_format_project_line_with_dependencies() {
-        let mut pkg = MockPackageForCheck::new(
+        let mut pkg = MockPackage::new(
             Some("app"),
             Some("1.0.0"),
             "/repo/app/package.json",
@@ -813,7 +678,7 @@ mod tests {
         pkg.dependencies.insert("core-lib".to_string());
         let project = Project::Package(Box::new(pkg));
 
-        let dep_pkg = MockPackageForCheck::new(
+        let dep_pkg = MockPackage::new(
             Some("core-lib"),
             Some("1.0.0"),
             "/repo/core/package.json",
@@ -836,7 +701,7 @@ mod tests {
 
     #[test]
     fn test_format_project_line_no_deps_shows_no_bracket() {
-        let pkg = MockPackageForCheck::new(
+        let pkg = MockPackage::new(
             Some("standalone"),
             Some("1.0.0"),
             "/repo/standalone/Cargo.toml",

@@ -149,7 +149,7 @@ mod tests {
     /// in their original order (`Vec::retain` is order-preserving).
     #[test]
     fn test_retain_by_language_two_langs_four_projects() {
-        let projects = vec![
+        let projects = [
             pkg(Language::Python),
             pkg(Language::Node),
             pkg(Language::Rust),
@@ -166,7 +166,7 @@ mod tests {
     /// This locks the "no `--language` flag = no filter" CLI convention.
     #[test]
     fn test_retain_by_language_empty_langs_is_no_op() {
-        let projects = vec![pkg(Language::Python), pkg(Language::Node)];
+        let projects = [pkg(Language::Python), pkg(Language::Node)];
         let mut refs: Vec<&Project> = projects.iter().collect();
         retain_by_language(&[], &mut refs);
         assert_eq!(refs.len(), 2);

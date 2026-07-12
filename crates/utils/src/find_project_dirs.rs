@@ -24,15 +24,11 @@ fn peel_to_tree(reference: gix::Reference<'_>) -> Result<gix::Tree<'_>> {
         .try_into_tree()?)
 }
 
-fn finder_can_visit_path(finder: &dyn ProjectFinder, path: &Path) -> bool {
-    project_files_can_visit_path(finder.project_files(), path)
+fn finder_can_visit_path(finder: &dyn ProjectFinder, path: &Path, file_name: &str) -> bool {
+    project_files_can_visit_path(finder.project_files(), path, file_name)
 }
 
-fn project_files_can_visit_path(project_files: &[&str], path: &Path) -> bool {
-    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-        return false;
-    };
-
+fn project_files_can_visit_path(project_files: &[&str], path: &Path, file_name: &str) -> bool {
     project_files.iter().any(|project_file| {
         if *project_file == file_name {
             return true;
@@ -134,9 +130,17 @@ pub async fn find_project_dirs(
         // matches a path), so a sequential `.await` per finder — rather than
         // `try_join_all` over a filtered set — preserves visit order with no
         // concurrency to gain, and the first `Err` still aborts the walk.
+        //
+        // Hoist file_name extraction before the finder loop: extract once per
+        // git-index entry instead of once per finder per entry. With 6 finders,
+        // this eliminates 5 redundant OsStr decodes per tracked file.
+        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+
         let mut abs_path: Option<PathBuf> = None;
         for finder in project_finders.iter_mut() {
-            if !finder_can_visit_path(finder.as_ref(), path) {
+            if !finder_can_visit_path(finder.as_ref(), path, file_name) {
                 continue;
             }
             let abs = abs_path.get_or_insert_with(|| git_root_path.join(path));
@@ -242,6 +246,7 @@ pub async fn find_project_dirs(
                 .ok()
                 .map(std::path::Path::to_path_buf)
         })
+        .filter(|path| !contains_changepacks_component(path))
         .collect::<Vec<_>>();
 
     // Dedupe status ∪ diff before dispatching to `check_changed`.
@@ -281,10 +286,7 @@ pub async fn find_project_dirs(
                 })
             }),
     );
-    unique_files.extend(
-        diff.into_iter()
-            .filter(|path| !contains_changepacks_component(path)),
-    );
+    unique_files.extend(diff);
 
     // Resolve every unique changed file to an absolute path ONCE, then dispatch
     // the whole batch to each finder. The previous file-major nested loop
@@ -319,11 +321,13 @@ mod tests {
 
         assert!(finder_can_visit_path(
             &finder,
-            Path::new("apps/a/package.json")
+            Path::new("apps/a/package.json"),
+            "package.json"
         ));
         assert!(!finder_can_visit_path(
             &finder,
-            Path::new("apps/a/index.ts")
+            Path::new("apps/a/index.ts"),
+            "index.ts"
         ));
     }
 
@@ -333,15 +337,18 @@ mod tests {
 
         assert!(project_files_can_visit_path(
             &project_files,
-            Path::new("src/App.csproj")
+            Path::new("src/App.csproj"),
+            "App.csproj"
         ));
         assert!(project_files_can_visit_path(
             &project_files,
-            Path::new("src/App.CSPROJ")
+            Path::new("src/App.CSPROJ"),
+            "App.CSPROJ"
         ));
         assert!(!project_files_can_visit_path(
             &project_files,
-            Path::new("src/App.sln")
+            Path::new("src/App.sln"),
+            "App.sln"
         ));
     }
 

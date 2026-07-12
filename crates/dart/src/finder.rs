@@ -122,7 +122,7 @@ impl ProjectFinder for DartProjectFinder {
             )))
         };
 
-        // read dependencies + dev_dependencies sections — track only
+        // read dependencies + dev_dependencies + dependency_overrides sections — track only
         // LOCAL monorepo deps (entries whose value is a mapping
         // containing a `path:` key). Bare version strings like
         // `http: ^1.0.0` point at pub.dev and cannot be resolved by
@@ -135,8 +135,11 @@ impl ProjectFinder for DartProjectFinder {
         // `<ProjectReference Include="..." />`. `dev_dependencies` is
         // scanned with the identical `path:` gate because a local
         // dev-only package (e.g. a shared test harness) still
-        // participates in the monorepo publish order.
-        for section in ["dependencies", "dev_dependencies"] {
+        // participates in the monorepo publish order. `dependency_overrides`
+        // is also scanned with the same gate to capture local path
+        // overrides (e.g. `core: { path: ../core }`) that may not appear
+        // in the base `dependencies` section.
+        for section in ["dependencies", "dev_dependencies", "dependency_overrides"] {
             if let Some(dependencies) = pubspec.get(section).and_then(|d| d.as_mapping()) {
                 for (dep_name, dep_value) in dependencies {
                     if let Some(dep_str) = dep_name.as_str()
@@ -558,6 +561,60 @@ dev_dependencies:
                 assert_eq!(deps.len(), 1);
                 assert!(deps.contains("test_utils"));
                 assert!(!deps.contains("lints"));
+            }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_package_with_dependency_overrides() {
+        // Regression: `dependency_overrides` is scanned with the same
+        // `path:` gate as `dependencies` and `dev_dependencies`. A local
+        // path override (a mapping carrying a `path:` key) must be tracked,
+        // while a bare-version override (a pub.dev package) must be excluded.
+        // This pattern is canonical in melos/pub monorepos where a base
+        // `dependencies: { core: ^1.0.0 }` is overridden by
+        // `dependency_overrides: { core: { path: ../core } }`.
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            r#"name: test_package
+version: 1.0.0
+dependencies:
+  core: ^1.0.0
+  http: ^1.0.0
+dependency_overrides:
+  core:
+    path: ../core
+  other: ^2.0.0
+"#,
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Package(pkg) => {
+                assert_eq!(pkg.name(), Some("test_package"));
+                let deps = pkg.dependencies();
+                // Only the local (`path:`) override is tracked; the
+                // bare-version `other: ^2.0.0` points at pub.dev and is
+                // intentionally excluded. The base `dependencies` entries
+                // (`core: ^1.0.0` and `http: ^1.0.0`) are not tracked
+                // because they lack a `path:` key.
+                assert_eq!(deps.len(), 1);
+                assert!(deps.contains("core"));
+                assert!(!deps.contains("other"));
+                assert!(!deps.contains("http"));
             }
             _ => panic!("Expected Package"),
         }
