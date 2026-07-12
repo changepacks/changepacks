@@ -237,8 +237,16 @@ impl PackageManager {
     }
 }
 
-/// Collect the existing `node_modules/.bin` directories from `start_dir` up
-/// to the filesystem root, nearest first.
+/// Collect the existing `node_modules/.bin` directories from `start_dir`
+/// upward, nearest first.
+///
+/// The walk is BOUNDED to the repository root via `max_depth` — the number of
+/// directories inspected, starting at `start_dir`. Callers pass
+/// `relative_path.components().count()` (the count from the manifest's parent
+/// dir up to and INCLUDING the repo root), the same convention as
+/// `detect_package_manager_recursive`, so a `node_modules/.bin` ABOVE the git
+/// root (e.g. one in the user's home dir) can no longer be prepended to the
+/// publish child process's `PATH`.
 ///
 /// npm, yarn, pnpm, and `bun install` all prepend these directories to `PATH`
 /// when running package scripts, but `bun publish` / `bun pm pack` do not
@@ -250,9 +258,9 @@ impl PackageManager {
 /// `run_dry_run_publish_for_path`) to prepend `node_modules/.bin` to `PATH`
 /// so lifecycle hooks such as `husky` resolve during `bun publish` / `bun pm
 /// pack` (oven-sh/bun#16071, #18055, #23594).
-pub async fn node_modules_bin_dirs_async(start_dir: &Path) -> Vec<PathBuf> {
+pub async fn node_modules_bin_dirs_async(start_dir: &Path, max_depth: usize) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
-    for dir in start_dir.ancestors() {
+    for dir in start_dir.ancestors().take(max_depth) {
         let bin = dir.join("node_modules").join(".bin");
         if tokio::fs::metadata(&bin)
             .await
@@ -401,9 +409,11 @@ pub(crate) async fn dry_run_publish_command_for_path(
     .await
 }
 
-async fn publish_path_dirs_for_path(path: &Path) -> Vec<PathBuf> {
+async fn publish_path_dirs_for_path(path: &Path, relative_path: &Path) -> Vec<PathBuf> {
     match path.parent() {
-        Some(parent) => node_modules_bin_dirs_async(parent).await,
+        Some(parent) => {
+            node_modules_bin_dirs_async(parent, relative_path.components().count()).await
+        }
         None => Vec::new(),
     }
 }
@@ -415,7 +425,7 @@ pub(crate) async fn run_publish_for_path(
     missing_dir_message: &'static str,
 ) -> Result<changepacks_core::publish::PublishOutput> {
     let command = publish_command_for_path(path, relative_path, config).await;
-    let path_dirs = publish_path_dirs_for_path(path).await;
+    let path_dirs = publish_path_dirs_for_path(path, relative_path).await;
     changepacks_core::publish::run_publish_flow(&command, path, &path_dirs, missing_dir_message)
         .await
 }
@@ -431,7 +441,7 @@ pub(crate) async fn run_dry_run_publish_for_path(
     missing_dir_message: &'static str,
 ) -> Result<Option<changepacks_core::publish::PublishOutput>> {
     let command = dry_run_publish_command_for_path(path, relative_path, config).await;
-    let path_dirs = publish_path_dirs_for_path(path).await;
+    let path_dirs = publish_path_dirs_for_path(path, relative_path).await;
     changepacks_core::publish::run_publish_flow(&command, path, &path_dirs, missing_dir_message)
         .await
         .map(Some)
@@ -585,17 +595,54 @@ mod tests {
         let pkg_bin = pkg_dir.join("node_modules").join(".bin");
         fs::create_dir_all(&pkg_bin).unwrap();
 
-        let dirs = node_modules_bin_dirs_async(&pkg_dir).await;
+        // depth 3 simulates the relative path `packages/app/package.json`
+        // (3 components), covering `packages/app` .. `root` inclusive.
+        let dirs = node_modules_bin_dirs_async(&pkg_dir, 3).await;
         // Nearest (package-level) bin dir comes first, ancestor (root) after.
         assert_eq!(dirs.first(), Some(&pkg_bin));
         assert!(dirs.contains(&root_bin));
     }
 
+    /// Decoy: a `node_modules/.bin` ABOVE the repo root must never reach the
+    /// publish child process's `PATH`. Mirrors
+    /// `test_detect_recursive_ignores_lockfile_above_repo_root`.
+    ///
+    /// Fixture: `<tmp>/outer/node_modules/.bin` (decoy, ABOVE the repo root) +
+    /// repo root `<tmp>/outer/repo`, package dir `<tmp>/outer/repo/pkg` (with
+    /// its own `node_modules/.bin`). `relative_path` is repo-root-relative with
+    /// 2 components (`pkg/package.json`) → depth 2: the walk scans
+    /// `<tmp>/outer/repo/pkg` and `<tmp>/outer/repo` only — never `<tmp>/outer`.
+    #[tokio::test]
+    async fn test_node_modules_bin_dirs_ignores_bin_above_repo_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let outer = temp_dir.path().join("outer");
+        // Decoy bin ABOVE the repo root — must be ignored.
+        let outer_bin = outer.join("node_modules").join(".bin");
+        fs::create_dir_all(&outer_bin).unwrap();
+
+        let repo_root = outer.join("repo");
+        let pkg_dir = repo_root.join("pkg");
+        let pkg_bin = pkg_dir.join("node_modules").join(".bin");
+        fs::create_dir_all(&pkg_bin).unwrap();
+
+        // depth 2 == `pkg/package.json`.components().count(): scans `pkg` and
+        // the repo root, never the parent that holds the decoy bin.
+        let dirs = node_modules_bin_dirs_async(&pkg_dir, 2).await;
+        assert!(
+            !dirs.contains(&outer_bin),
+            "expected a node_modules/.bin above the repo root to be ignored"
+        );
+        // The package's own bin is still collected, nearest-first.
+        assert_eq!(dirs.first(), Some(&pkg_bin));
+    }
+
     #[tokio::test]
     async fn test_node_modules_bin_dirs_empty_when_absent() {
         let temp_dir = TempDir::new().unwrap();
+        // depth 1 inspects only the package dir itself — no bin here, and the
+        // bound keeps a stray ancestor `node_modules/.bin` from leaking in.
         assert!(
-            node_modules_bin_dirs_async(temp_dir.path())
+            node_modules_bin_dirs_async(temp_dir.path(), 1)
                 .await
                 .is_empty()
         );
@@ -627,7 +674,8 @@ mod tests {
             }
         }
 
-        let dirs = node_modules_bin_dirs_async(temp_dir.path()).await;
+        // depth 1 covers the package dir, where `node_modules/.bin` lives.
+        let dirs = node_modules_bin_dirs_async(temp_dir.path(), 1).await;
         assert!(dirs.contains(&bin));
 
         // Bare command name; resolvable only via the injected PATH entry.

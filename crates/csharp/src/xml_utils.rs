@@ -123,14 +123,33 @@ pub fn update_version_in_xml(
                     writer.write_event(Event::Text(e))?;
                 }
             }
+            Ok(Event::Empty(e)) => {
+                // A self-closing `<Version/>` carries no `Event::Text`, so
+                // `version_updated` never flips and the `</PropertyGroup>`
+                // "add missing version" branch would otherwise append a
+                // SECOND `<Version>`. Expand the self-closing shape into a
+                // filled `<Version>X</Version>` in place here so exactly one
+                // survives — the sibling of the `<Version></Version>`
+                // (Start/End) fill-in-place above. Every other empty element
+                // (including `<Version/>` outside a PropertyGroup, or once the
+                // version is already updated) passes through unchanged.
+                if in_property_group && e.local_name().as_ref() == b"Version" && !version_updated {
+                    writer.write_event(Event::Start(BytesStart::new("Version")))?;
+                    writer.write_event(Event::Text(BytesText::new(new_version)))?;
+                    writer.write_event(Event::End(BytesEnd::new("Version")))?;
+                    version_updated = true;
+                } else {
+                    writer.write_event(Event::Empty(e))?;
+                }
+            }
             Ok(Event::Eof) => break,
             Err(e) => return Err(anyhow::anyhow!("XML parsing error: {e}")),
             // Pass-through arms for every event that carries no state and
-            // does not need in-place rewriting: Empty, Comment, CData, Decl,
-            // PI, DocType, GeneralRef. Any future variant with no
-            // customization requirement falls into this arm automatically;
-            // a variant that DOES need customization must be added above
-            // (Start / End / Text) before this wildcard.
+            // does not need in-place rewriting: Comment, CData, Decl, PI,
+            // DocType, GeneralRef. Any future variant with no customization
+            // requirement falls into this arm automatically; a variant that
+            // DOES need customization must be added above
+            // (Start / End / Text / Empty) before this wildcard.
             Ok(event) => {
                 writer.write_event(event)?;
             }
@@ -186,6 +205,79 @@ mod tests {
             "expected exactly one <Version> element, got:\n{result}",
         );
         assert!(result.contains("<Version>0.0.1</Version>"));
+    }
+
+    #[test]
+    fn test_update_version_fills_self_closing_version_element() {
+        // Regression: a self-closing `<Version/>` used to yield TWO
+        // `<Version>` elements — the empty original passed through the
+        // wildcard arm plus an appended one from the "add missing version"
+        // branch — because no `Event::Text` fired to set `version_updated`.
+        // It must instead be expanded in place, leaving exactly one
+        // `<Version>` with the surrounding indentation untouched. Sibling of
+        // the `<Version></Version>` case above.
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version/>\n  </PropertyGroup>\n</Project>";
+        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        // Full-string compare: sibling formatting/indentation preserved.
+        assert_eq!(
+            result,
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n</Project>",
+            "self-closing <Version/> should be filled in place, formatting preserved:\n{result}",
+        );
+        assert_eq!(
+            result.matches("<Version>2.0.0</Version>").count(),
+            1,
+            "expected exactly one filled <Version> element, got:\n{result}",
+        );
+        assert!(
+            !result.contains("<Version/>"),
+            "self-closing <Version/> should not survive:\n{result}",
+        );
+        // `<Version` matches only opening/self-closing tags (`</Version>`
+        // contains `</Version`, not `<Version`), so this counts Version
+        // openings: exactly one.
+        assert_eq!(
+            result.matches("<Version").count(),
+            1,
+            "expected exactly one <Version opening, got:\n{result}",
+        );
+    }
+
+    #[test]
+    fn test_update_version_fills_self_closing_version_in_place_after_sibling() {
+        // The filled `<Version>` must stay in the self-closing element's
+        // original position (right after its sibling property), NOT be
+        // appended at the end of the PropertyGroup.
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <Version/>\n  </PropertyGroup>\n</Project>";
+        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        assert_eq!(
+            result,
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n</Project>",
+            "filled <Version> should replace <Version/> in place, not append:\n{result}",
+        );
+        assert_eq!(
+            result.matches("<Version").count(),
+            1,
+            "expected exactly one <Version opening, got:\n{result}",
+        );
+    }
+
+    #[test]
+    fn test_update_version_passes_through_non_version_self_closing_element() {
+        // A self-closing element that is NOT `<Version>` must fall through
+        // the Empty arm's `else` and be emitted unchanged, while the real
+        // `<Version>` is still updated.
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version>1.0.0</Version>\n    <Nullable/>\n  </PropertyGroup>\n</Project>";
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        assert_eq!(
+            result,
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version>2.0.0</Version>\n    <Nullable/>\n  </PropertyGroup>\n</Project>",
+            "non-Version self-closing element should pass through unchanged:\n{result}",
+        );
+        assert!(
+            result.contains("<Nullable/>"),
+            "self-closing <Nullable/> should survive unchanged:\n{result}",
+        );
     }
 
     // Fixtures for `test_update_version_preserves_feature` — one per XML

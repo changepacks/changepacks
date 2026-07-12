@@ -1,6 +1,6 @@
 use changepacks_core::{ChangePackLog, Project, UpdateType};
 use std::{collections::HashMap, path::PathBuf};
-use tokio::fs::write;
+use tokio::fs::{create_dir_all, write};
 
 use changepacks_utils::get_relative_path;
 
@@ -169,6 +169,14 @@ pub async fn handle_changepack_with_prompter(
     let changepack_log_file = ctx
         .changepacks_dir
         .join(format!("changepack_log_{changepack_log_id}.json"));
+    create_dir_all(&ctx.changepacks_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to create changepacks directory {}",
+                ctx.changepacks_dir.display()
+            )
+        })?;
     write(
         &changepack_log_file,
         serde_json::to_string(&changepack_log)?,

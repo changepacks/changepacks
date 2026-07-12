@@ -547,6 +547,69 @@ async fn test_cli_changepacks_with_yes_and_message() {
     assert!(!entries.is_empty(), "No changepack log file was created");
 }
 
+// Regression: the default `changepacks` command must work in a repo that never
+// ran `init`, i.e. one with NO `.changepacks/` directory. Previously the
+// changepack-log write hard-failed with an OS error because the parent
+// directory was missing. Inline the git setup here (instead of the
+// `setup_repo*` helpers, which always create `.changepacks/`) so the fixture
+// truly lacks the directory before the command runs.
+#[tokio::test]
+#[serial]
+async fn test_cli_changepacks_creates_missing_changepacks_dir() {
+    let temp_dir = TempDir::new().unwrap();
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    init_git_repo(&temp_path);
+
+    // Write a package.json WITHOUT creating a `.changepacks/` directory.
+    tokio::fs::write(
+        temp_path.join("package.json"),
+        r#"{"name": "test-pkg", "version": "1.0.0"}"#,
+    )
+    .await
+    .unwrap();
+
+    git_add_and_commit(&temp_path, "Initial commit");
+
+    // Sanity: the repo has no `.changepacks/` directory yet.
+    assert!(
+        !temp_path.join(".changepacks").exists(),
+        "fixture should start without a .changepacks directory"
+    );
+
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // Use --yes and -m to skip interactive prompts, --update-type to specify patch.
+    let args = vec![
+        "changepacks".to_string(),
+        "--yes".to_string(),
+        "-m".to_string(),
+        "Missing dir message".to_string(),
+        "--update-type".to_string(),
+        "patch".to_string(),
+    ];
+    let result = changepacks_cli::main(&args).await;
+
+    assert!(
+        result.is_ok(),
+        "changepacks should create the missing .changepacks dir: {:?}",
+        result.err()
+    );
+
+    // Verify a changepack log file was created in the now-created directory.
+    let changepacks_dir = temp_path.join(".changepacks");
+    let entries: Vec<_> = std::fs::read_dir(&changepacks_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .starts_with("changepack_log_")
+        })
+        .collect();
+    assert!(!entries.is_empty(), "No changepack log file was created");
+}
+
 #[tokio::test]
 #[serial]
 async fn test_cli_changepacks_no_projects() {

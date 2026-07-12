@@ -17,6 +17,6 @@ use napi_derive::napi;
 pub async fn main() -> Result<()> {
   changepacks_cli::main_from_env(true).await.map_err(|e| {
     changepacks_cli::exit_if_user_cancelled(&e);
-    Error::from_reason(e.to_string())
+    Error::from_reason(format!("{e:#}"))
   })
 }

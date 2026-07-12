@@ -52,7 +52,12 @@ pub(crate) async fn collect_changepack_log_paths(changepacks_dir: &Path) -> Resu
         }
     };
     let mut paths: Vec<PathBuf> = Vec::new();
-    while let Some(file) = entries.next_entry().await? {
+    while let Some(file) = entries.next_entry().await.with_context(|| {
+        format!(
+            "Failed to read changepacks directory {}",
+            changepacks_dir.display()
+        )
+    })? {
         let file_name = file.file_name();
         if is_changepack_log_json_name(file_name.to_string_lossy().as_ref()) {
             paths.push(file.path());

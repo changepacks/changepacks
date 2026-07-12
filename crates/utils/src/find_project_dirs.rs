@@ -243,7 +243,10 @@ pub async fn find_project_dirs(
     // `changed_files: Vec<PathBuf>` allocation for the status entries.
     let main_tree = if remote {
         peel_to_tree(
-            repo.find_remote("origin")?
+            repo.find_remote("origin")
+                .context(
+                    "Git remote 'origin' is not configured; --remote requires an 'origin' remote",
+                )?
                 .repo
                 .find_reference(&format!("refs/remotes/origin/{}", config.base_branch))
                 .with_context(|| {
@@ -762,6 +765,45 @@ mod tests {
             msg.contains(&config.base_branch),
             "expected error to mention the base branch name '{}', got: {msg}",
             config.base_branch
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    // Sibling gate to the missing-ref test above. When `--remote` is used in a
+    // repo that has NO `origin` remote configured at all, the `find_remote`
+    // call itself is the failure surface (not `find_reference`). Historically
+    // it surfaced the raw gix "remote not found" error, leaving users unsure
+    // why `--remote` failed. This test locks in the anyhow context so the error
+    // chain names the missing "origin" remote.
+    #[tokio::test]
+    async fn test_find_project_dirs_remote_missing_origin_has_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        init_git_repo(temp_path);
+
+        // Deliberately do NOT add an `origin` remote, so `find_remote("origin")`
+        // is the failure surface when `remote=true`.
+        fs::write(
+            temp_path.join("package.json"),
+            r#"{"name": "test", "version": "1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let config = Config::default();
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        let result = find_project_dirs(&repo, &mut finders, &config, true).await;
+        let err = result.expect_err("expected missing origin remote lookup to fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("origin"),
+            "expected error to mention 'origin', got: {msg}"
         );
 
         temp_dir.close().unwrap();

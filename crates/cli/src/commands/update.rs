@@ -161,29 +161,35 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
             collect_update_project_muts(&mut project_finders, &update_map, &ctx.repo_root_path)?;
         let workspace_projects = collect_workspace_projects(all_finders);
 
-        // Reborrow the `&mut Project` pairs as shared `&Project` pairs so the
-        // preview/confirm gate sees the same slice shape as the ref branch. The
-        // reborrow is dropped before `apply_updates` reclaims the `&mut`.
-        let preview: Vec<UpdateProjectRef<'_>> =
-            update_projects.iter().map(|(p, t)| (&**p, *t)).collect();
-        if !preview_and_confirm(args, prompter, &preview)? {
+        if !preview_and_confirm(args, prompter, &update_projects)? {
             return Ok(());
         }
-        drop(preview);
 
         apply_updates(&mut update_projects, &workspace_projects).await?;
         drop(update_projects);
     } else {
-        let update_projects =
-            collect_update_project_refs(&project_finders, &update_map, &ctx.repo_root_path)?;
+        let mut update_projects =
+            collect_update_project_muts(&mut project_finders, &update_map, &ctx.repo_root_path)?;
 
         if !preview_and_confirm(args, prompter, &update_projects)? {
             return Ok(());
         }
 
+        apply_project_version_updates(&mut update_projects).await?;
         drop(update_projects);
-        apply_updates_from_project_finders(&mut project_finders, &update_map, &ctx.repo_root_path)
-            .await?;
+
+        // Collect workspace projects after the mutable borrow is released
+        let workspace_projects = collect_workspace_projects(&project_finders);
+        if !workspace_projects.is_empty() {
+            let update_projects =
+                collect_update_project_refs(&project_finders, &update_map, &ctx.repo_root_path)?;
+            let projects = packages_of(
+                update_projects.len(),
+                update_projects.iter().map(|(p, _)| *p),
+            );
+
+            apply_workspace_dependency_updates(&workspace_projects, &projects).await?;
+        }
     }
 
     // Snapshot applied paths before gen_changepack_result_map drains update_map.
@@ -254,8 +260,9 @@ fn packages_of<'a>(
 /// returns `Ok(())` and prints nothing more. Returns `Ok(true)` to proceed.
 ///
 /// Extracted to share the identical preview/dry-run/confirm sequence between the
-/// two `handle_update_with_prompter` branches, which differ only in whether the
-/// project collection is held by mutable or shared reference.
+/// two `handle_update_with_prompter` branches. Takes the `&mut Project`-pair
+/// slice directly and reborrows each project as shared (`&**project`) inside the
+/// display loop, so callers need no intermediate shared-reference vec.
 ///
 /// Excluded from coverage: shares the interactive `prompter.confirm(...)` and
 /// stdout display loop of its sole caller `handle_update_with_prompter`, itself
@@ -264,13 +271,13 @@ fn packages_of<'a>(
 fn preview_and_confirm(
     args: &UpdateArgs,
     prompter: &dyn Prompter,
-    projects: &[UpdateProjectRef<'_>],
+    projects: &[UpdateProjectMut<'_>],
 ) -> Result<bool> {
     if let FormatOptions::Stdout = args.format {
         for (project, update_type) in projects {
             println!(
                 "{} {}",
-                project,
+                &**project,
                 display_update(project.version(), *update_type)?
             );
         }
@@ -365,31 +372,6 @@ fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<
     }
 
     workspace_projects
-}
-
-#[cfg(not(tarpaulin_include))]
-async fn apply_updates_from_project_finders(
-    project_finders: &mut [Box<dyn ProjectFinder>],
-    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-    repo_root_path: &Path,
-) -> Result<()> {
-    let mut update_projects =
-        collect_update_project_muts(project_finders, update_map, repo_root_path)?;
-    apply_project_version_updates(&mut update_projects).await?;
-    drop(update_projects);
-
-    let workspace_projects = collect_workspace_projects(project_finders);
-    if workspace_projects.is_empty() {
-        return Ok(());
-    }
-
-    let update_projects = collect_update_project_refs(project_finders, update_map, repo_root_path)?;
-    let projects = packages_of(
-        update_projects.len(),
-        update_projects.iter().map(|(p, _)| *p),
-    );
-
-    apply_workspace_dependency_updates(&workspace_projects, &projects).await
 }
 
 async fn apply_updates(
