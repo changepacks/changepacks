@@ -244,21 +244,19 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         }
 
         let dependencies = project.dependencies();
-        if !dependencies.is_empty() {
-            for dep_name in dependencies {
-                // Fast-path: `HashMap::get_mut` on an existing key skips the
-                // `entry` API's key move on hits — common when multiple
-                // monorepo packages depend on the same core crate (e.g.
-                // `bridge/node` + `bridge/python` both depend on
-                // `changepacks`). Keys and values are `&str` borrowed from
-                // `projects`, so both paths are zero-alloc.
-                let entry = if let Some(existing) = reverse_deps.get_mut(dep_name.as_str()) {
-                    existing
-                } else {
-                    reverse_deps.entry(dep_name.as_str()).or_default()
-                };
-                entry.push((rel_path_buf.clone(), project_name));
-            }
+        for dep_name in dependencies {
+            // Fast-path: `HashMap::get_mut` on an existing key skips the
+            // `entry` API's key move on hits — common when multiple
+            // monorepo packages depend on the same core crate (e.g.
+            // `bridge/node` + `bridge/python` both depend on
+            // `changepacks`). Keys and values are `&str` borrowed from
+            // `projects`, so both paths are zero-alloc.
+            let entry = if let Some(existing) = reverse_deps.get_mut(dep_name.as_str()) {
+                existing
+            } else {
+                reverse_deps.entry(dep_name.as_str()).or_default()
+            };
+            entry.push((rel_path_buf.clone(), project_name));
         }
     }
 

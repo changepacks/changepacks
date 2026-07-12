@@ -8,6 +8,9 @@ homepage.workspace = true
 description = "Shared utilities for changepacks (path handling, version calculation, git operations)"
 readme = "../../README.md"
 
+[features]
+test-support = []
+
 [dependencies]
 gix = { version = "0.85", default-features = false, features = ["index", "status", "parallel", "sha1"] }
 anyhow = "1.0"

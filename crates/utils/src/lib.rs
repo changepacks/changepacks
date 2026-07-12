@@ -63,8 +63,8 @@ mod is_workspace_by_sibling;
 mod next_version;
 mod sort_by_dep;
 mod split_version;
-#[cfg(test)]
-mod test_support;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 mod trailing_newline;
 
 pub(crate) use is_changepack_log::{collect_changepack_log_paths, read_log_bodies};

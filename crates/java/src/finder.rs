@@ -180,8 +180,9 @@ fn gradle_subproject_path(relative: &Path) -> Result<String> {
 
 fn gradle_property_value(caps: &regex::Captures) -> Option<String> {
     caps.get(1)
-        .map(|m| m.as_str().trim().to_string())
-        .filter(|v| v != "unspecified")
+        .map(|m| m.as_str().trim())
+        .filter(|v| *v != "unspecified")
+        .map(std::string::ToString::to_string)
 }
 
 fn gradle_dependency_name(project_path: &str) -> Option<String> {

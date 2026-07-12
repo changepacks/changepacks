@@ -587,4 +587,14 @@ mod tests {
             "expected spawn error for nonexistent binary"
         );
     }
+
+    #[test]
+    fn test_utf8_or_lossy_valid_utf8_passthrough() {
+        assert_eq!(utf8_or_lossy("héllo".as_bytes().to_vec()), "héllo");
+    }
+
+    #[test]
+    fn test_utf8_or_lossy_invalid_utf8_lossy_fallback() {
+        assert_eq!(utf8_or_lossy(vec![0x66, 0x6f, 0x80, 0x6f]), "fo\u{FFFD}o");
+    }
 }

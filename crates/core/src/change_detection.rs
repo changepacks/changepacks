@@ -33,7 +33,9 @@ pub(crate) fn should_mark_changed(candidate: &Path, project_manifest: &Path) -> 
     if contains_changepacks_component(candidate) {
         return Ok(false);
     }
-    let project_dir = project_manifest.parent().context("Parent not found")?;
+    let project_dir = project_manifest
+        .parent()
+        .with_context(|| format!("Parent not found - {}", project_manifest.display()))?;
     Ok(candidate.starts_with(project_dir))
 }
 
@@ -89,8 +91,8 @@ mod tests {
     #[test]
     fn test_should_mark_changed_errors_when_manifest_has_no_parent() {
         let candidate = Path::new("src/index.js");
-        let manifest = Path::new("");
+        let manifest = Path::new("/");
         let err = should_mark_changed(candidate, manifest).unwrap_err();
-        assert!(err.to_string().contains("Parent not found"));
+        assert!(err.to_string().contains("Parent not found - /"));
     }
 }
