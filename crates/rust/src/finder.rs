@@ -134,24 +134,45 @@ impl RustProjectFinder {
         Self::default()
     }
 
+    /// Materialize an inherited-version workspace member: build the
+    /// `RustPackage` seeded with the resolved `workspace_package_version` and
+    /// `workspace_root_path`, attach its in-repo dependency edges, then insert
+    /// it under `abs_path`. Shared by BOTH resolution paths so the member
+    /// construction policy lives in one place: the immediate branch in `visit`
+    /// (workspace root already seen, deps borrowed from the live `cargo_toml`
+    /// as `&str`) and the deferred `resolve_pending_workspace_packages` loop
+    /// (root seen later, deps owned as `String`). The `impl AsRef<str>` dep
+    /// item lets both `&str` and `String` feed the one code path, so a future
+    /// change to how inherited-version members are built lands once instead of
+    /// drifting between the two paths.
+    fn insert_workspace_member(
+        &mut self,
+        name: Option<String>,
+        abs_path: PathBuf,
+        relative_path: PathBuf,
+        deps: impl IntoIterator<Item = impl AsRef<str>>,
+    ) {
+        let mut pkg = RustPackage::new_with_workspace_version(
+            name,
+            self.workspace_package_version.clone(),
+            abs_path.clone(),
+            relative_path,
+            self.workspace_root_path.clone(),
+        );
+        for dep in deps {
+            pkg.add_dependency(dep.as_ref());
+        }
+        self.projects
+            .insert(abs_path, Project::Package(Box::new(pkg)));
+    }
+
     /// Resolve all pending workspace packages by creating `RustPackage` instances
     /// with the workspace version and inserting them into `self.projects`.
     /// Drains `self.pending_workspace_packages` in the process.
     fn resolve_pending_workspace_packages(&mut self) {
         let pending = std::mem::take(&mut self.pending_workspace_packages);
         for p in pending {
-            let mut pkg = RustPackage::new_with_workspace_version(
-                p.name,
-                self.workspace_package_version.clone(),
-                p.abs_path.clone(),
-                p.relative_path,
-                self.workspace_root_path.clone(),
-            );
-            for dep in &p.dependencies {
-                pkg.add_dependency(dep);
-            }
-            self.projects
-                .insert(p.abs_path, Project::Package(Box::new(pkg)));
+            self.insert_workspace_member(p.name, p.abs_path, p.relative_path, p.dependencies);
         }
     }
 }
@@ -255,18 +276,12 @@ impl ProjectFinder for RustProjectFinder {
             if inherits_workspace {
                 if self.workspace_package_version.is_some() {
                     // Workspace already visited — resolve immediately
-                    let mut pkg = RustPackage::new_with_workspace_version(
+                    self.insert_workspace_member(
                         name,
-                        self.workspace_package_version.clone(),
-                        path_key.clone(),
+                        path_key,
                         relative_path_key,
-                        self.workspace_root_path.clone(),
+                        dep_names.iter().copied(),
                     );
-                    for &dep_name in &dep_names {
-                        pkg.add_dependency(dep_name);
-                    }
-                    self.projects
-                        .insert(path_key, Project::Package(Box::new(pkg)));
                 } else {
                     // Workspace not yet visited — defer
                     self.pending_workspace_packages
