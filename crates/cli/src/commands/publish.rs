@@ -453,35 +453,18 @@ async fn execute_dry_run_publish_loop(
         failure: "Dry-run failed for",
     };
 
-    // Pre-compute the set of Rust package names being bumped in this run so
-    // that each iteration can cheaply check whether its dependencies overlap.
-    // Only populated when a Rust project exists in the batch, and restricted
-    // to Rust names, because the set is consulted solely by
-    // `skip_dry_run_due_to_workspace_internal_dep`, which returns `false` for
-    // all non-Rust projects: the skip only guards against
+    // Rust package names being bumped in this run, consulted solely by
+    // `skip_dry_run_due_to_workspace_internal_dep` (which returns `false` for
+    // all non-Rust projects): the skip only guards against
     // `cargo publish --dry-run` failing to resolve a not-yet-published *Rust*
     // workspace crate, so a non-Rust project that merely shares a name with a
-    // Rust crate's dependency must not land in this set (it would cause a
-    // spurious dry-run skip). Borrow the names directly from the projects
-    // (which outlive the loop) to skip the per-name `String` allocation the old
-    // `HashSet<String>` version paid. `projects.len()` stays a valid upper
-    // bound for the capacity reserve (the Rust `filter` + `filter_map` only
-    // ever drop entries), and `HashSet::extend(iter)` reuses the reserved
-    // allocation, matching the idiom already used across the utils crate (e.g.
-    // `unique_files.extend(diff)` in `find_project_dirs.rs`).
-    let mut bumped_package_names: HashSet<&str> = HashSet::new();
-    if projects
+    // Rust crate's dependency must not land in this set. Names are borrowed
+    // from the projects, which outlive the loop.
+    let bumped_package_names: HashSet<&str> = projects
         .iter()
-        .any(|p| p.language() == changepacks_core::Language::Rust)
-    {
-        bumped_package_names.reserve(projects.len());
-        bumped_package_names.extend(
-            projects
-                .iter()
-                .filter(|p| p.language() == changepacks_core::Language::Rust)
-                .filter_map(|p| p.name()),
-        );
-    }
+        .filter(|p| p.language() == changepacks_core::Language::Rust)
+        .filter_map(|p| p.name())
+        .collect();
 
     for project in projects {
         if skip_dry_run_due_to_workspace_internal_dep(project, &bumped_package_names) {

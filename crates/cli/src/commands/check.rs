@@ -296,9 +296,16 @@ fn display_tree(
         }
     }
 
-    // Display projects that weren't part of the tree (orphaned nodes)
+    // Display projects that weren't part of the tree (orphaned nodes).
+    // Key on the unique manifest path via `line_cache`, NOT the project name:
+    // `cached_project_line` inserts into `line_cache` exactly when a line is
+    // printed (by `project.path()`), so "in `line_cache`" ⟺ "already displayed"
+    // under a unique identity. Two distinct projects can legitimately share a
+    // name (e.g. a Node `core` and a Rust `core`), and `name_to_project` keeps
+    // only the last-inserted one, so a name-keyed check would wrongly treat the
+    // dropped twin as already shown and never print it.
     for project in projects {
-        if !visited.contains(project.name_or_noname()) {
+        if !ctx.line_cache.contains_key(project.path()) {
             println!("{}", cached_project_line(project, &mut ctx)?);
         }
     }
@@ -316,15 +323,15 @@ struct TreeContext<'a> {
     name_to_project: &'a HashMap<&'a str, &'a Project>,
     repo_root_path: &'a Path,
     update_map: &'a HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-    line_cache: HashMap<&'a str, String>,
+    line_cache: HashMap<&'a Path, String>,
 }
 
 fn cached_project_line<'a, 'ctx>(
     project: &'a Project,
     ctx: &'ctx mut TreeContext<'a>,
 ) -> Result<&'ctx str> {
-    let project_name = project.name_or_noname();
-    match ctx.line_cache.entry(project_name) {
+    let project_path = project.path();
+    match ctx.line_cache.entry(project_path) {
         Entry::Occupied(entry) => Ok(entry.into_mut().as_str()),
         Entry::Vacant(entry) => {
             let line = format_project_line(
@@ -776,5 +783,63 @@ mod tests {
         assert!(line.contains("deps:"));
         // Verify sorted order: apple, mango, zebra
         assert!(line.contains("deps:\n        apple\n        mango\n        zebra"));
+    }
+
+    #[test]
+    fn test_cached_project_line_distinguishes_same_named_projects() {
+        // Create two projects with the SAME name but DIFFERENT paths and versions
+        let pkg1 = MockPackage::new(
+            Some("core"),
+            Some("1.0.0"),
+            "/repo/packages/core/package.json",
+            "packages/core/package.json",
+            Language::Node,
+        );
+        let project1 = Project::Package(Box::new(pkg1));
+
+        let pkg2 = MockPackage::new(
+            Some("core"),
+            Some("2.0.0"),
+            "/repo/crates/core/Cargo.toml",
+            "crates/core/Cargo.toml",
+            Language::Rust,
+        );
+        let project2 = Project::Package(Box::new(pkg2));
+
+        let repo_root = Path::new("/repo");
+        let update_map = HashMap::new();
+        let name_to_project: HashMap<&str, &Project> = HashMap::new();
+
+        // Create a TreeContext with an empty line_cache
+        let mut ctx = TreeContext {
+            graph: &HashMap::new(),
+            name_to_project: &name_to_project,
+            repo_root_path: repo_root,
+            update_map: &update_map,
+            line_cache: HashMap::new(),
+        };
+
+        // Call cached_project_line for the first project and capture the line
+        let line1 = cached_project_line(&project1, &mut ctx)
+            .unwrap()
+            .to_string();
+
+        // Call cached_project_line for the second project and capture the line
+        let line2 = cached_project_line(&project2, &mut ctx)
+            .unwrap()
+            .to_string();
+
+        // Both lines should contain "core" (the project name)
+        assert!(line1.contains("core"));
+        assert!(line2.contains("core"));
+
+        // But they should be DIFFERENT because they have different versions and paths
+        assert_ne!(line1, line2);
+
+        // line1 should contain v1.0.0 (project1's version)
+        assert!(line1.contains("1.0.0"));
+
+        // line2 should contain v2.0.0 (project2's version)
+        assert!(line2.contains("2.0.0"));
     }
 }

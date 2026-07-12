@@ -1478,6 +1478,74 @@ async fn test_cli_check_tree_with_orphan() {
     );
 }
 
+// Regression: `check --tree` must display EVERY project even when two DISTINCT
+// projects share a name. `name_to_project` keeps only the last-inserted project
+// per name, so the tree walk renders just one of a same-named pair; the orphan
+// pass must therefore key on the printed identity (the unique manifest path via
+// `line_cache`), not the name, or the other same-named project is silently
+// dropped. Flat `check` shows both, so `--tree` must too. Fixture: a Node `core`
+// and a Rust `core`.
+//
+// `check --tree` emits its listing through `println!`, which writes to the
+// process stdout — uncapturable in-process on stable without an extra crate — so
+// observe it through the real workspace `changepacks` binary's captured stdout.
+// `--quiet` keeps cargo's own progress on stderr; `NO_COLOR` strips ANSI styling
+// so the manifest-path substrings match verbatim.
+#[tokio::test]
+#[serial]
+async fn test_cli_check_tree_shows_both_same_named_projects() {
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "packages/core/package.json",
+            r#"{"name": "core", "version": "1.0.0"}"#,
+        ),
+        (
+            "crates/core/Cargo.toml",
+            "[package]\nname = \"core\"\nversion = \"0.1.0\"\n",
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // The binary lives in the workspace `changepacks` crate (two levels up from
+    // this crate's manifest); run it against the fixture repo via its cwd.
+    let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/cli has a workspace root two levels up")
+        .join("Cargo.toml");
+
+    let output = std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"))
+        .args(["run", "--quiet", "-p", "changepacks", "--manifest-path"])
+        .arg(&workspace_manifest)
+        .args(["--", "check", "--tree"])
+        .current_dir(&temp_path)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("failed to run the changepacks binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "check --tree exited non-zero ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+
+    // Normalize separators so the assertion holds on Windows (`\`) and Unix (`/`).
+    let normalized = stdout.replace('\\', "/");
+    assert!(
+        normalized.contains("packages/core/package.json"),
+        "tree output must list the Node `core` at packages/core/package.json; got:\n{stdout}"
+    );
+    assert!(
+        normalized.contains("crates/core/Cargo.toml"),
+        "tree output must list the Rust `core` at crates/core/Cargo.toml; got:\n{stdout}"
+    );
+}
+
 // Test publish with failing command (to cover error path)
 #[tokio::test]
 #[serial]

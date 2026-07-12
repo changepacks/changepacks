@@ -164,25 +164,19 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         println!("Updates found:");
     }
 
-    if let Some(all_finders) = all_finders.as_ref() {
-        let mut update_projects =
-            collect_update_project_muts(&mut project_finders, &update_map, &ctx.repo_root_path)?;
-        let workspace_projects = collect_workspace_projects(all_finders);
+    let mut update_projects =
+        collect_update_project_muts(&mut project_finders, &update_map, &ctx.repo_root_path)?;
 
-        if !preview_and_confirm(args, prompter, &update_projects)? {
-            return Ok(());
-        }
+    if !preview_and_confirm(args, prompter, &update_projects)? {
+        return Ok(());
+    }
+
+    if let Some(all_finders) = all_finders.as_ref() {
+        let workspace_projects = collect_workspace_projects(all_finders);
 
         apply_updates(&mut update_projects, &workspace_projects).await?;
         drop(update_projects);
     } else {
-        let mut update_projects =
-            collect_update_project_muts(&mut project_finders, &update_map, &ctx.repo_root_path)?;
-
-        if !preview_and_confirm(args, prompter, &update_projects)? {
-            return Ok(());
-        }
-
         apply_project_version_updates(&mut update_projects).await?;
         drop(update_projects);
 
@@ -334,7 +328,6 @@ macro_rules! collect_update_projects {
             }
         }
 
-        update_projects.sort();
         update_projects
     }};
 }
@@ -345,12 +338,12 @@ fn collect_update_project_muts<'a>(
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
 ) -> Result<Vec<UpdateProjectMut<'a>>> {
-    Ok(collect_update_projects!(
-        project_finders,
-        update_map,
-        repo_root_path,
-        projects_mut
-    ))
+    let mut update_projects =
+        collect_update_projects!(project_finders, update_map, repo_root_path, projects_mut);
+    // Sorted order is user-visible: it drives the preview loop in
+    // `preview_and_confirm`.
+    update_projects.sort();
+    Ok(update_projects)
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -359,6 +352,8 @@ fn collect_update_project_refs<'a>(
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
 ) -> Result<Vec<UpdateProjectRef<'a>>> {
+    // Unsorted: sole consumer is `packages_of` → `apply_workspace_dependency_updates`,
+    // which looks up packages by name; order is irrelevant.
     Ok(collect_update_projects!(
         project_finders,
         update_map,
