@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 /// The check matches on a full path component so sibling names like
 /// `.changepacks-backup/` or `notes-about-.changepacks.md` are NOT matched.
 /// This is used to filter out changepack logs which are not user changes.
+#[must_use]
 pub fn contains_changepacks_component(path: &Path) -> bool {
     path.components()
         .any(|c| matches!(c, Component::Normal(name) if name == OsStr::new(".changepacks")))

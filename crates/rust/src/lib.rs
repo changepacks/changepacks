@@ -113,6 +113,7 @@ pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) 
 /// `as_table_like()` returns `None` for scalars, `.get("workspace")` returns
 /// `None` when the key is missing, `.as_bool()` returns `None` for non-bool
 /// values, and each `None` path collapses to `false` via `.unwrap_or(false)`.
+#[must_use]
 pub(crate) fn is_workspace_marker(item: &toml_edit::Item) -> bool {
     item.as_table_like()
         .and_then(|t| t.get("workspace"))
