@@ -23,7 +23,8 @@ pub struct InitArgs {
 #[cfg(not(tarpaulin_include))]
 pub async fn handle_init(args: &InitArgs) -> Result<()> {
     // create .changepacks directory
-    let current_dir = std::env::current_dir()?;
+    let current_dir =
+        std::env::current_dir().context("Failed to determine current working directory")?;
     let changepacks_dir = get_changepacks_dir(&current_dir)?;
     if !args.dry_run {
         create_dir_all(&changepacks_dir).await?;

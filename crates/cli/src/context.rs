@@ -48,7 +48,8 @@ impl CommandContext {
     /// surrounding command flow.
     #[cfg(not(tarpaulin_include))]
     pub async fn new(remote: bool) -> Result<Self> {
-        let current_dir = std::env::current_dir()?;
+        let current_dir =
+            std::env::current_dir().context("Failed to determine current working directory")?;
         let repo = find_current_git_repo(&current_dir)?;
         let repo_root_path = repo
             .work_dir()

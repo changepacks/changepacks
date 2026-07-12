@@ -74,9 +74,15 @@ pub async fn find_project_dirs(
     } else {
         let mut builder = GitignoreBuilder::new(git_root_path);
         for pattern in &config.ignore {
-            builder.add_line(None, pattern)?;
+            builder
+                .add_line(None, pattern)
+                .with_context(|| format!("Invalid ignore pattern in config: {pattern}"))?;
         }
-        Some(builder.build()?)
+        Some(
+            builder
+                .build()
+                .context("Failed to build ignore matcher from config patterns")?,
+        )
     };
 
     let repo = repo.to_thread_local();

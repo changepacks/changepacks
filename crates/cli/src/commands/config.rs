@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use changepacks_utils::get_changepacks_config;
 use clap::Args;
 
@@ -11,7 +11,8 @@ pub struct ConfigArgs {}
 /// # Errors
 /// Returns error if reading the configuration fails.
 pub async fn handle_config(_args: &ConfigArgs) -> Result<()> {
-    let current_dir = std::env::current_dir()?;
+    let current_dir =
+        std::env::current_dir().context("Failed to determine current working directory")?;
     let config = get_changepacks_config(&current_dir).await?;
     println!("{}", serde_json::to_string_pretty(&config)?);
     Ok(())

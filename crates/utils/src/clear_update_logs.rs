@@ -27,10 +27,11 @@ pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
     //   Keeping the reader (`gen_update_map`) and cleaner (`clear_update_logs`)
     //   in lock-step on the shape reinforces the shared-predicate invariant.
     let paths = collect_changepack_log_paths(changepacks_dir).await?;
+    let results = futures::future::join_all(paths.iter().map(remove_file)).await;
     let mut error_details = Vec::new();
-    for result in futures::future::join_all(paths.into_iter().map(remove_file)).await {
+    for (path, result) in paths.iter().zip(results) {
         if let Err(err) = result {
-            error_details.push(err.to_string());
+            error_details.push(format!("{}: {err}", path.display()));
         }
     }
     if error_details.is_empty() {
@@ -332,6 +333,12 @@ mod tests {
         assert!(result.is_err());
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("Failed to remove 1 update log(s)"));
+        // The removal error must name the offending path so the user can tell
+        // WHICH `.changepacks/*.json` entry failed to be cleared.
+        assert!(
+            error_msg.contains("update_log.json"),
+            "error should name the failing path, got: {error_msg}"
+        );
     }
 
     #[tokio::test]
