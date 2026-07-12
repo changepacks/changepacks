@@ -44,8 +44,9 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn is_changed(&self) -> bool;
     fn set_changed(&mut self, changed: bool);
 
-    /// Set the workspace name (used for fallback when name is not found in manifest)
-    fn set_name(&mut self, _name: String) {}
+    /// Set the workspace name (used for fallback when name is not found in manifest).
+    /// Implementors typically get this via `impl_basic_accessors!()`.
+    fn set_name(&mut self, name: String);
 
     /// Get the default publish command for this workspace type
     fn default_publish_command(&self) -> String;

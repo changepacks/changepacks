@@ -42,8 +42,9 @@ pub trait Package: std::fmt::Debug + Send + Sync {
 
     fn set_changed(&mut self, changed: bool);
 
-    /// Set the package name (used for fallback when name is not found in manifest)
-    fn set_name(&mut self, _name: String) {}
+    /// Set the package name (used for fallback when name is not found in manifest).
+    /// Implementors typically get this via `impl_basic_accessors!()`.
+    fn set_name(&mut self, name: String);
 
     /// Get the default publish command for this package type
     fn default_publish_command(&self) -> String;

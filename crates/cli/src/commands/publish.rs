@@ -75,8 +75,7 @@ pub async fn handle_publish_with_prompter(
         // Matches the preallocation policy already applied to
         // `bumped_package_names` a few lines below and to every other
         // `HashSet` preallocation site in the workspace.
-        let mut normalized_args: std::collections::HashSet<String> =
-            std::collections::HashSet::with_capacity(args.project.len());
+        let mut normalized_args: HashSet<String> = HashSet::with_capacity(args.project.len());
         normalized_args.extend(args.project.iter().map(|p| p.replace('\\', "/")));
         projects.retain(|project| {
             let relative_path = project.relative_path().to_string_lossy();
@@ -221,7 +220,7 @@ fn print_publish_output(output: &PublishOutput) {
 /// registry during dry-run, so they are unaffected.
 fn skip_dry_run_due_to_workspace_internal_dep(
     project: &Project,
-    bumped_package_names: &std::collections::HashSet<&str>,
+    bumped_package_names: &HashSet<&str>,
 ) -> bool {
     if project.language() != changepacks_core::Language::Rust {
         return false;
@@ -319,7 +318,8 @@ fn failed_dependency<'a>(
     project
         .dependencies()
         .iter()
-        .find(|dep| failed_project_names.contains(dep.as_str()))
+        .filter(|dep| failed_project_names.contains(dep.as_str()))
+        .min()
         .map(String::as_str)
 }
 
@@ -469,8 +469,7 @@ async fn execute_dry_run_publish_loop(
     // ever drop entries), and `HashSet::extend(iter)` reuses the reserved
     // allocation, matching the idiom already used across the utils crate (e.g.
     // `unique_files.extend(diff)` in `find_project_dirs.rs`).
-    let mut bumped_package_names: std::collections::HashSet<&str> =
-        std::collections::HashSet::new();
+    let mut bumped_package_names: HashSet<&str> = HashSet::new();
     if projects
         .iter()
         .any(|p| p.language() == changepacks_core::Language::Rust)
@@ -916,6 +915,8 @@ mod tests {
             self.deps.insert(dep.to_string());
         }
         fn set_changed(&mut self, _changed: bool) {}
+        // test mock — name mutation not exercised
+        fn set_name(&mut self, _name: String) {}
         fn default_publish_command(&self) -> String {
             self.default_publish_command.to_string()
         }
@@ -1235,6 +1236,26 @@ mod tests {
         // Neither project should appear in failed_projects: parent was
         // skipped (success), leaf succeeded.
         assert!(failed.is_empty(), "no project should fail: {failed:?}");
+    }
+
+    #[test]
+    fn test_failed_dependency_deterministic_with_multiple_failed_deps() {
+        // Project with two failed dependencies: "zebra-dep" and "alpha-dep".
+        // failed_dependency must return the lexicographically smallest one ("alpha-dep")
+        // to ensure deterministic skip messages across runs.
+        let project = make_publish_cascade_mock(
+            "pkg-dependent",
+            "packages/dependent/package.json",
+            &["zebra-dep", "alpha-dep"],
+            true,
+        );
+        let mut failed_names: HashSet<String> = HashSet::new();
+        failed_names.insert("zebra-dep".to_string());
+        failed_names.insert("alpha-dep".to_string());
+
+        let result = failed_dependency(&project, &failed_names);
+
+        assert_eq!(result, Some("alpha-dep"));
     }
 
     /// A Rust crate whose dependency name coincides with a *non-Rust* project's

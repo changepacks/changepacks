@@ -122,6 +122,8 @@ mod tests {
             self.dependencies.insert(dep.to_string());
         }
         fn set_changed(&mut self, _changed: bool) {}
+        // test mock — name mutation not exercised
+        fn set_name(&mut self, _name: String) {}
         fn default_publish_command(&self) -> String {
             String::new()
         }

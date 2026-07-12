@@ -15,6 +15,10 @@ use crate::{package::DartPackage, workspace::DartWorkspace};
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["pubspec.yaml"];
 
+/// The pubspec.yaml sections scanned for local (path/workspace) dependencies.
+const PUBSPEC_DEPENDENCY_SECTIONS: &[&str] =
+    &["dependencies", "dev_dependencies", "dependency_overrides"];
+
 /// Look up `<field>` on a parsed pubspec as an owned string, mirroring the
 /// `pubspec.get(field).and_then(|v| v.as_str()).map(String::from)` chain
 /// that used to be open-coded twice inside `visit`. Extracted so the
@@ -139,8 +143,8 @@ impl ProjectFinder for DartProjectFinder {
         // is also scanned with the same gate to capture local path
         // overrides (e.g. `core: { path: ../core }`) that may not appear
         // in the base `dependencies` section.
-        for section in ["dependencies", "dev_dependencies", "dependency_overrides"] {
-            if let Some(dependencies) = pubspec.get(section).and_then(|d| d.as_mapping()) {
+        for section in PUBSPEC_DEPENDENCY_SECTIONS {
+            if let Some(dependencies) = pubspec.get(*section).and_then(|d| d.as_mapping()) {
                 for (dep_name, dep_value) in dependencies {
                     if let Some(dep_str) = dep_name.as_str()
                         && dep_value
@@ -640,13 +644,11 @@ dependency_overrides:
         let error_msg = result.unwrap_err().to_string();
         assert!(
             error_msg.contains("Failed to parse pubspec.yaml"),
-            "error message should contain 'Failed to parse pubspec.yaml', got: {}",
-            error_msg
+            "error message should contain 'Failed to parse pubspec.yaml', got: {error_msg}"
         );
         assert!(
             error_msg.contains(pubspec_path.to_string_lossy().as_ref()),
-            "error message should contain the manifest path, got: {}",
-            error_msg
+            "error message should contain the manifest path, got: {error_msg}"
         );
 
         temp_dir.close().unwrap();

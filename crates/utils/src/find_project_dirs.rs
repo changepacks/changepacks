@@ -44,22 +44,30 @@ fn project_files_can_visit_path(project_files: &[&str], path: &Path, file_name: 
     })
 }
 
-/// Find project directories containing specific files from git tracked files
+/// Discover project directories containing specific files from git tracked
+/// files — the discovery-only walk, with NO git change detection.
+///
+/// This is the first half of [`find_project_dirs`]: build the gitignore
+/// matcher from `config.ignore`, walk the git index dispatching each tracked
+/// file to every finder that can visit it, run post-visit finalization, and
+/// apply the remote-origin / directory-name fallback for projects with no
+/// name. It deliberately skips the base-branch diff / worktree-status pass, so
+/// `is_changed` is never populated — use it for callers that only read the
+/// discovered paths/names/deps/versions and never inspect `is_changed`.
 ///
 /// # Errors
 /// Returns error if git operations fail, gitignore parsing fails, or project visiting fails.
 ///
 /// Excluded from coverage: orchestrates real `gix` operations (index walk,
-/// status, diff against base branch, ref resolution); the inner helpers
-/// (`get_relative_path`, `gitignore matching`, finder visit/check_changed)
-/// are covered by their own unit tests. End-to-end exercise happens via
-/// the cli integration tests.
+/// finalize, remote-origin name lookup); the inner helpers
+/// (`get_relative_path`, `gitignore matching`, finder visit) are covered by
+/// their own unit tests. End-to-end exercise happens via the cli integration
+/// tests.
 #[cfg(not(tarpaulin_include))]
-pub async fn find_project_dirs(
+pub async fn discover_project_dirs(
     repo: &ThreadSafeRepository,
     project_finders: &mut [Box<dyn ProjectFinder>],
     config: &Config,
-    remote: bool,
 ) -> Result<()> {
     // Get git root for relative path conversion
     let git_root_path = repo.work_dir().context("Not a working directory")?;
@@ -204,6 +212,35 @@ pub async fn find_project_dirs(
             last.set_name(repo_name);
         }
     }
+
+    Ok(())
+}
+
+/// Find project directories containing specific files from git tracked files
+///
+/// # Errors
+/// Returns error if git operations fail, gitignore parsing fails, or project visiting fails.
+///
+/// Excluded from coverage: orchestrates real `gix` operations (index walk,
+/// status, diff against base branch, ref resolution); the inner helpers
+/// (`get_relative_path`, `gitignore matching`, finder visit/check_changed)
+/// are covered by their own unit tests. End-to-end exercise happens via
+/// the cli integration tests.
+#[cfg(not(tarpaulin_include))]
+pub async fn find_project_dirs(
+    repo: &ThreadSafeRepository,
+    project_finders: &mut [Box<dyn ProjectFinder>],
+    config: &Config,
+    remote: bool,
+) -> Result<()> {
+    discover_project_dirs(repo, project_finders, config).await?;
+
+    // The change-detection tail re-establishes the git root and a thread-local
+    // repo handle that `discover_project_dirs` scoped to its own discovery
+    // walk, then runs the base-branch diff + worktree-status pass that actually
+    // populates `is_changed`.
+    let git_root_path = repo.work_dir().context("Not a working directory")?;
+    let repo = repo.to_thread_local();
 
     // diff from main branch — compute FIRST so `diff.len()` can seed the
     // `unique_files` capacity below without an intermediate

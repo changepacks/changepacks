@@ -14,6 +14,17 @@ use crate::{package::NodePackage, read_and_parse_package_json, workspace::NodeWo
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["package.json"];
 
+/// Dependency sections in package.json scanned for local workspace dependencies.
+const PACKAGE_JSON_DEPENDENCY_SECTIONS: &[&str] = &[
+    "dependencies",
+    "devDependencies",
+    "peerDependencies",
+    "optionalDependencies",
+];
+
+/// Version-specifier prefixes that mark a dependency as a local in-repo project.
+const LOCAL_DEP_PREFIXES: &[&str] = &["workspace:", "file:", "link:", "portal:"];
+
 /// Look up a field in the `package.json` manifest as an owned string, mirroring the
 /// `doc.get(field).and_then(|v| v.as_str()).map(ToString::to_string)` chain that
 /// used to be open-coded twice inside `visit` (once for `version`, once for `name`).
@@ -39,21 +50,15 @@ impl NodeProjectFinder {
 }
 
 fn add_workspace_dependencies(project: &mut Project, package_json: &serde_json::Value) {
-    for section in [
-        "dependencies",
-        "devDependencies",
-        "peerDependencies",
-        "optionalDependencies",
-    ] {
-        let Some(deps) = package_json.get(section).and_then(|deps| deps.as_object()) else {
+    for section in PACKAGE_JSON_DEPENDENCY_SECTIONS {
+        let Some(deps) = package_json.get(*section).and_then(|deps| deps.as_object()) else {
             continue;
         };
         for (dep_name, value) in deps {
-            if value.as_str().is_some_and(|version| {
-                ["workspace:", "file:", "link:", "portal:"]
-                    .iter()
-                    .any(|p| version.starts_with(p))
-            }) {
+            if value
+                .as_str()
+                .is_some_and(|version| LOCAL_DEP_PREFIXES.iter().any(|p| version.starts_with(p)))
+            {
                 project.add_dependency(dep_name);
             }
         }

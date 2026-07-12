@@ -46,7 +46,8 @@ pub(crate) async fn update_version_from_fields(
     // into `changepacks_utils::next_version_or_default` so the fallback
     // policy lives in ONE place across every language crate. See that
     // helper's doc for the Java/Rust carve-outs.
-    let new_version = next_version_or_default(version.as_deref(), update_type)?;
+    let new_version = next_version_or_default(version.as_deref(), update_type)
+        .with_context(|| format!("Failed to compute next version for {}", path.display()))?;
     write_package_json_version(path, &new_version).await?;
     *version = Some(new_version);
     Ok(())
@@ -93,7 +94,7 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
     package_json.serialize(&mut ser)?;
     write(
         path,
-        finalize_content(&String::from_utf8(ser.into_inner())?, &package_json_raw),
+        finalize_content(String::from_utf8(ser.into_inner())?, &package_json_raw),
     )
     .await
     .with_context(|| format!("Failed to write package.json {}", path.display()))?;
@@ -124,10 +125,16 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
 ///
 /// ```ignore
 /// fn default_publish_command(&self) -> String {
-///     detect_package_manager_recursive(&self.path).publish_command().to_string()
+///     detect_package_manager_recursive(&self.path, self.relative_path.components().count())
+///         .publish_command()
+///         .to_string()
 /// }
 /// fn default_dry_run_publish_command(&self) -> Option<String> {
-///     Some(detect_package_manager_recursive(&self.path).dry_run_publish_command().to_string())
+///     Some(
+///         detect_package_manager_recursive(&self.path, self.relative_path.components().count())
+///             .dry_run_publish_command()
+///             .to_string(),
+///     )
 /// }
 /// ```
 ///
@@ -136,21 +143,31 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
 /// `::std::option::Option` make the macro hygienic — callers do not need
 /// those types in scope at the invocation site.
 ///
-/// Consumer requirement: the struct must have a `path: PathBuf` field
-/// with that exact spelling. Both `NodePackage` and `NodeWorkspace`
+/// Consumer requirement: the struct must have BOTH a `path: PathBuf` and a
+/// `relative_path: PathBuf` field, with those exact spellings. The
+/// `relative_path` (the manifest's path relative to the git root) bounds the
+/// `detect_package_manager_recursive` ancestor walk to the repository root via
+/// `relative_path.components().count()`, so a stray lockfile ABOVE the git root
+/// cannot flip the publish command. Both `NodePackage` and `NodeWorkspace`
 /// satisfy this — the only two intended callers.
 macro_rules! impl_node_publish_wiring {
     () => {
         fn default_publish_command(&self) -> ::std::string::String {
-            $crate::detect_package_manager_recursive(&self.path)
-                .publish_command()
-                .to_string()
+            $crate::detect_package_manager_recursive(
+                &self.path,
+                self.relative_path.components().count(),
+            )
+            .publish_command()
+            .to_string()
         }
         fn default_dry_run_publish_command(&self) -> ::std::option::Option<::std::string::String> {
             ::std::option::Option::Some(
-                $crate::detect_package_manager_recursive(&self.path)
-                    .dry_run_publish_command()
-                    .to_string(),
+                $crate::detect_package_manager_recursive(
+                    &self.path,
+                    self.relative_path.components().count(),
+                )
+                .dry_run_publish_command()
+                .to_string(),
             )
         }
     };
@@ -276,40 +293,60 @@ pub async fn detect_package_manager_async(dir: &Path) -> PackageManager {
     PackageManager::Npm
 }
 
-/// Detects the package manager by searching from the given path up to the root
+/// Detects the package manager by searching from the given path upward.
+///
+/// The walk is BOUNDED to the repository root via `max_depth` — the number of
+/// directories inspected, starting at the manifest's directory. Callers pass
+/// `relative_path.components().count()` (the count from the manifest's parent
+/// dir up to and INCLUDING the repo root), so a stray lockfile ABOVE the git
+/// root can no longer flip the detected package manager. Mirrors the git-scoped
+/// `ancestors().take(max_depth)` bound the sibling Java (`find_gradlew`) and C#
+/// (`is_workspace`) finders apply. "Nearest lockfile wins" still holds within
+/// the bound: the first non-npm hit (or a `package-lock.json`) returns.
 #[must_use]
-pub fn detect_package_manager_recursive(path: &Path) -> PackageManager {
-    let mut current = if path.is_file() {
+pub fn detect_package_manager_recursive(path: &Path, max_depth: usize) -> PackageManager {
+    let start = if path.is_file() {
         path.parent()
     } else {
         Some(path)
     };
+    let Some(start) = start else {
+        return PackageManager::Npm;
+    };
 
-    while let Some(dir) = current {
+    for dir in start.ancestors().take(max_depth) {
         let pm = detect_package_manager(dir);
         if pm != PackageManager::Npm || dir.join("package-lock.json").is_file() {
             return pm;
         }
-        current = dir.parent();
     }
 
     PackageManager::Npm
 }
 
 /// Async equivalent of [`detect_package_manager_recursive`] for publish flows.
-pub async fn detect_package_manager_recursive_async(path: &Path) -> PackageManager {
-    let mut current = if is_regular_file(path).await {
+///
+/// The walk is BOUNDED to the repository root via `max_depth` — the number of
+/// directories inspected, starting at the manifest's directory (see the sync
+/// twin for the full rationale). Kept in strict parity with the sync body.
+pub async fn detect_package_manager_recursive_async(
+    path: &Path,
+    max_depth: usize,
+) -> PackageManager {
+    let start = if is_regular_file(path).await {
         path.parent()
     } else {
         Some(path)
     };
+    let Some(start) = start else {
+        return PackageManager::Npm;
+    };
 
-    while let Some(dir) = current {
+    for dir in start.ancestors().take(max_depth) {
         let pm = detect_package_manager_async(dir).await;
         if pm != PackageManager::Npm || is_regular_file(&dir.join("package-lock.json")).await {
             return pm;
         }
-        current = dir.parent();
     }
 
     PackageManager::Npm
@@ -330,7 +367,10 @@ async fn command_for_path(
     {
         return command;
     }
-    default_fn(detect_package_manager_recursive_async(path).await).to_string()
+    default_fn(
+        detect_package_manager_recursive_async(path, relative_path.components().count()).await,
+    )
+    .to_string()
 }
 
 pub(crate) async fn publish_command_for_path(
@@ -454,8 +494,11 @@ mod tests {
         fs::write(temp_dir.path().join("pnpm-lock.yaml"), "").unwrap();
         fs::write(sub_dir.join("package.json"), "{}").unwrap();
 
+        // Manifest `packages/core/package.json` is repo-root-relative with 3
+        // components, so the walk scans `packages/core`, `packages`, then the
+        // repo root — reaching the root `pnpm-lock.yaml`.
         assert_eq!(
-            detect_package_manager_recursive(&sub_dir.join("package.json")),
+            detect_package_manager_recursive(&sub_dir.join("package.json"), 3),
             PackageManager::Pnpm
         );
     }
@@ -487,10 +530,48 @@ mod tests {
         fs::write(pkg_dir.join("pnpm-lock.yaml"), "").unwrap();
         fs::write(sub_dir.join("package.json"), "{}").unwrap();
 
+        // Manifest `pkg/sub/package.json` is repo-root-relative with 3
+        // components → depth 3: the walk scans `pkg/sub`, `pkg` (nearer
+        // pnpm-lock.yaml), then the root (ancestor bun.lock).
         assert_eq!(
-            detect_package_manager_recursive(&sub_dir.join("package.json")),
+            detect_package_manager_recursive(&sub_dir.join("package.json"), 3),
             PackageManager::Pnpm,
             "expected the nearer pnpm-lock.yaml to beat the ancestor bun.lock"
+        );
+    }
+
+    /// Regression: a decoy lockfile ABOVE the repository root must NOT flip the
+    /// detected package manager. The recursive walk is now BOUNDED by
+    /// `max_depth` (the caller passes `relative_path.components().count()`), so
+    /// it scans only the manifest's in-repo ancestors — down to the repo root —
+    /// and never reaches the out-of-repo directory holding the stray lockfile.
+    /// Package-manager detection is git-scoped: a `pnpm-lock.yaml` in the user's
+    /// home dir, the drive root, or a sibling checkout must not silently switch
+    /// the publish command. Against the old unbounded walk (which climbed to the
+    /// filesystem root) this decoy WOULD have returned Pnpm, so this test fails
+    /// there and passes only once the walk is bounded. Complements
+    /// `test_detect_recursive_nearer_lockfile_wins_over_ancestor`, which pins
+    /// that an IN-repo ancestor lockfile is still honored.
+    ///
+    /// Fixture: `<tmp>/pnpm-lock.yaml` (decoy, ABOVE the repo root) +
+    /// `<tmp>/repo/sub/package.json`. `relative_path` is repo-root-relative
+    /// with 2 components (`sub/package.json`) → depth 2: the walk scans
+    /// `<tmp>/repo/sub` and `<tmp>/repo` only — never `<tmp>`.
+    #[test]
+    fn test_detect_recursive_ignores_lockfile_above_repo_root() {
+        let temp_dir = TempDir::new().unwrap();
+        // Decoy lockfile ABOVE the repo root — must be ignored.
+        fs::write(temp_dir.path().join("pnpm-lock.yaml"), "").unwrap();
+
+        let repo_root = temp_dir.path().join("repo");
+        let sub_dir = repo_root.join("sub");
+        fs::create_dir_all(&sub_dir).unwrap();
+        fs::write(sub_dir.join("package.json"), "{}").unwrap();
+
+        assert_eq!(
+            detect_package_manager_recursive(&sub_dir.join("package.json"), 2),
+            PackageManager::Npm,
+            "expected a decoy pnpm-lock.yaml above the repo root to be ignored"
         );
     }
 
@@ -642,10 +723,56 @@ mod tests {
         fs::write(pkg_dir.join("pnpm-lock.yaml"), "").unwrap();
         fs::write(sub_dir.join("package.json"), "{}").unwrap();
 
+        // Manifest `pkg/sub/package.json` is repo-root-relative with 3
+        // components → depth 3: the walk scans `pkg/sub`, `pkg` (nearer
+        // pnpm-lock.yaml), then the root (ancestor bun.lock).
         assert_eq!(
-            detect_package_manager_recursive_async(&sub_dir.join("package.json")).await,
+            detect_package_manager_recursive_async(&sub_dir.join("package.json"), 3).await,
             PackageManager::Pnpm,
             "expected the nearer pnpm-lock.yaml to beat the ancestor bun.lock"
+        );
+    }
+
+    /// Async parity test: mirrors `test_detect_recursive_ignores_lockfile_above_repo_root`
+    /// to ensure async and sync recursive detection remain in sync. Regression
+    /// lock: a decoy lockfile ABOVE the repo root must not flip the async
+    /// detector's result now that its walk is bounded by `max_depth`. By
+    /// construction the old unbounded walk would have returned Pnpm.
+    #[tokio::test]
+    async fn test_detect_package_manager_recursive_async_ignores_lockfile_above_repo_root() {
+        let temp_dir = TempDir::new().unwrap();
+        // Decoy lockfile ABOVE the repo root — must be ignored.
+        fs::write(temp_dir.path().join("pnpm-lock.yaml"), "").unwrap();
+
+        let repo_root = temp_dir.path().join("repo");
+        let sub_dir = repo_root.join("sub");
+        fs::create_dir_all(&sub_dir).unwrap();
+        fs::write(sub_dir.join("package.json"), "{}").unwrap();
+
+        // `sub/package.json` → 2 components → depth 2: the walk scans
+        // `<tmp>/repo/sub` and `<tmp>/repo` only — never `<tmp>`.
+        assert_eq!(
+            detect_package_manager_recursive_async(&sub_dir.join("package.json"), 2).await,
+            PackageManager::Npm,
+            "expected a decoy pnpm-lock.yaml above the repo root to be ignored"
+        );
+    }
+
+    /// Regression: a malformed version must fail the bump and name the
+    /// manifest in the error chain — completing the path-in-error-context
+    /// pattern the read/parse/write helpers in this file already use. The bump
+    /// errors BEFORE any file I/O, so no on-disk fixture is needed.
+    #[tokio::test]
+    async fn test_update_version_from_fields_bump_error_includes_path() {
+        let manifest = PathBuf::from("/nonexistent/node-bump/package.json");
+        let mut version = Some("abc".to_string());
+        let err = update_version_from_fields(&mut version, &manifest, UpdateType::Patch)
+            .await
+            .expect_err("a malformed version must fail the bump");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&manifest.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
         );
     }
 }

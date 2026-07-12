@@ -8,9 +8,9 @@ use changepacks_core::{
     ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType, Workspace,
 };
 use changepacks_utils::{
-    apply_reverse_dependencies, clear_applied_update_logs, clear_update_logs, display_update,
-    find_project_dirs, gen_changepack_result_map, gen_update_map, get_relative_path,
-    get_relative_path_ref,
+    apply_reverse_dependencies, clear_applied_update_logs, clear_update_logs,
+    discover_project_dirs, display_update, gen_changepack_result_map, gen_update_map,
+    get_relative_path, get_relative_path_ref,
 };
 use clap::Args;
 
@@ -83,15 +83,21 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
 
         // Reuse the ThreadSafeRepository already discovered by CommandContext::new
         // instead of re-running `gix::discover` per invocation. `all_config` clears
-        // only the `ignore` filter (so nothing is filtered out here) while
-        // preserving the rest of the user's config — critically `base_branch`, so a
-        // repo with a custom `baseBranch` and no `main` is still walked correctly.
-        // `ctx.config` is not read after this point, so move it instead of cloning.
+        // only the `ignore` filter (so nothing is filtered out here); the spread
+        // moves `ctx.config` — not read after this point — instead of cloning it.
+        //
+        // Use the discovery-only `discover_project_dirs`: this second walk exists
+        // solely to materialize the full unfiltered project set for
+        // `apply_reverse_dependencies` / `merge_workspace_inherited_updates` /
+        // `collect_workspace_projects`, which read only paths/names/deps/versions.
+        // `is_changed` is never read from `all_finders`, so paying for the
+        // base-branch diff + worktree-status change detection here would be pure
+        // waste — skip it.
         let all_config = changepacks_core::Config {
             ignore: Vec::new(),
             ..ctx.config
         };
-        find_project_dirs(&ctx.repo, &mut all_finders, &all_config, args.remote).await?;
+        discover_project_dirs(&ctx.repo, &mut all_finders, &all_config).await?;
         Some(all_finders)
     };
 
@@ -103,8 +109,12 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     let all_projects = collect_projects(all_finders.as_deref().unwrap_or(&project_finders));
     apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path);
 
-    // Merge workspace-inherited package updates into workspace entries
-    merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
+    // Merge workspace-inherited package updates into workspace entries. The
+    // returned (member, workspace-root) pairs let the language-filtered
+    // `applied_paths` snapshot below clear a folded member's changepack log in
+    // lock-step with its workspace root.
+    let merged_pairs =
+        merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
 
     if let FormatOptions::Stdout = args.format {
         println!("Updates found:");
@@ -176,10 +186,24 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
             .await?;
     }
 
-    // Snapshot applied paths before gen_changepack_result_map drains update_map
+    // Snapshot applied paths before gen_changepack_result_map drains update_map.
+    //
+    // A workspace-inherited member folded by `merge_workspace_inherited_updates`
+    // is no longer a key in `update_map` (its bump is owned by the workspace
+    // root, whose path IS a key). Without re-adding the member path here,
+    // `clear_applied_update_logs` would retain the member's changepack log and
+    // re-apply it (double-bump) on the next `update`. Re-add each folded member
+    // path IFF its workspace root actually survived the language filter (its
+    // path is still in the applied set), so logs clear in lock-step with the
+    // bump that satisfied them.
     let applied_paths = language_filter_active.then(|| {
-        let mut set = HashSet::with_capacity(update_map.len());
+        let mut set = HashSet::with_capacity(update_map.len() + merged_pairs.len());
         set.extend(update_map.keys().cloned());
+        for (pkg_path, ws_path) in &merged_pairs {
+            if set.contains(ws_path.as_path()) {
+                set.insert(pkg_path.clone());
+            }
+        }
         set
     });
 
@@ -272,26 +296,46 @@ fn preview_and_confirm(
     Ok(true)
 }
 
+/// Shared body of the two `collect_update_project_*` collectors below, which
+/// are byte-identical except for the finder accessor: `projects_mut()` yields
+/// `&mut Project`, `projects()` yields `&Project`. That mutability difference
+/// cannot be abstracted by plain generics, so — matching the repo's "same
+/// body, different accessor" macro idiom (cf. the core crate's
+/// `impl_projects_hashmap_accessors!` / `impl_basic_accessors!`) — a file-local
+/// `macro_rules!` collapses the duplication. Preallocates to `update_map.len()`
+/// (the loop pushes at most one entry per project) and relies on the enclosing
+/// fn's `-> Result<...>` for the `?` on `get_relative_path_ref`.
+macro_rules! collect_update_projects {
+    ($finders:expr, $update_map:expr, $repo_root_path:expr, $accessor:ident) => {{
+        let mut update_projects = Vec::with_capacity($update_map.len());
+
+        for finder in $finders {
+            for project in finder.$accessor() {
+                if let Some((update_type, _)) =
+                    $update_map.get(get_relative_path_ref($repo_root_path, project.path())?)
+                {
+                    update_projects.push((project, *update_type));
+                }
+            }
+        }
+
+        update_projects.sort();
+        update_projects
+    }};
+}
+
 #[cfg(not(tarpaulin_include))]
 fn collect_update_project_muts<'a>(
     project_finders: &'a mut [Box<dyn ProjectFinder>],
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
 ) -> Result<Vec<UpdateProjectMut<'a>>> {
-    let mut update_projects = Vec::with_capacity(update_map.len());
-
-    for finder in project_finders {
-        for project in finder.projects_mut() {
-            if let Some((update_type, _)) =
-                update_map.get(get_relative_path_ref(repo_root_path, project.path())?)
-            {
-                update_projects.push((project, *update_type));
-            }
-        }
-    }
-
-    update_projects.sort();
-    Ok(update_projects)
+    Ok(collect_update_projects!(
+        project_finders,
+        update_map,
+        repo_root_path,
+        projects_mut
+    ))
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -300,20 +344,12 @@ fn collect_update_project_refs<'a>(
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
 ) -> Result<Vec<UpdateProjectRef<'a>>> {
-    let mut update_projects = Vec::with_capacity(update_map.len());
-
-    for finder in project_finders {
-        for project in finder.projects() {
-            if let Some((update_type, _)) =
-                update_map.get(get_relative_path_ref(repo_root_path, project.path())?)
-            {
-                update_projects.push((project, *update_type));
-            }
-        }
-    }
-
-    update_projects.sort();
-    Ok(update_projects)
+    Ok(collect_update_projects!(
+        project_finders,
+        update_map,
+        repo_root_path,
+        projects
+    ))
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -413,11 +449,19 @@ async fn apply_workspace_dependency_updates(
 /// Packages with `version.workspace = true` should have their bumps promoted
 /// to the workspace level (most significant bump wins). The packages are then
 /// removed from the update map since their Cargo.toml doesn't need changes.
+///
+/// Returns the `(pkg_rel_path, ws_rel_path)` pairs that were actually folded
+/// (member entry present and removed). The caller needs these to clear a folded
+/// member's changepack log in lock-step with its workspace root: the member's
+/// own path vanishes from `update_map` here, so a language-filtered
+/// `applied_paths` snapshot must re-add it whenever its workspace root survived
+/// the filter — otherwise `clear_applied_update_logs` retains the member's log
+/// and it is re-applied (double-bumped) on the next `update`.
 fn merge_workspace_inherited_updates(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     projects: &[&Project],
     repo_root_path: &Path,
-) {
+) -> Vec<(PathBuf, PathBuf)> {
     // Collect (pkg_rel_path, ws_rel_path) pairs to merge.
     // Preallocate: the loop below pushes AT MOST one entry per project
     // in the slice, so `projects.len()` is a tight upper bound that
@@ -439,19 +483,38 @@ fn merge_workspace_inherited_updates(
         }
     }
 
+    // Return the pairs actually folded so the caller can clear each member's
+    // changepack log alongside its workspace root. `merge_targets.len()` is a
+    // tight upper bound (each fold pushes at most one pair), matching the
+    // preallocation policy applied throughout this file.
+    let mut merged_pairs: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(merge_targets.len());
     for (pkg_path, ws_path) in merge_targets {
         // Remove takes ownership, avoiding Clone requirement
         if let Some((update_type, logs)) = update_map.remove(&pkg_path) {
-            let ws_entry = update_map
-                .entry(ws_path)
-                .or_insert((UpdateType::Patch, vec![]));
+            // Fast-path: `HashMap::get_mut` on an existing key is zero-alloc,
+            // whereas `entry(ws_path.clone()).or_insert(...)` unconditionally
+            // clones the `PathBuf` even when the workspace root is already a
+            // key — common when several workspace-inheriting members fold into
+            // the same root, or the root was already directly bumped. Mirrors
+            // the established idiom in `gen_update_map.rs` and
+            // `apply_reverse_dependencies`; semantics are byte-identical (same
+            // mutable entry for the same `ws_path`).
+            let ws_entry = if let Some(existing) = update_map.get_mut(&ws_path) {
+                existing
+            } else {
+                update_map
+                    .entry(ws_path.clone())
+                    .or_insert((UpdateType::Patch, vec![]))
+            };
             // More significant bump wins (Major=0 < Minor=1 < Patch=2)
             if update_type < ws_entry.0 {
                 ws_entry.0 = update_type;
             }
             ws_entry.1.extend(logs);
+            merged_pairs.push((pkg_path, ws_path));
         }
     }
+    merged_pairs
 }
 
 #[cfg(test)]

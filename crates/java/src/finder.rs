@@ -113,7 +113,18 @@ async fn java_home_has_java(java_home: Option<&OsStr>) -> bool {
 /// only contain `build.gradle.kts`. This function searches upward from `start_dir`
 /// until it finds `gradlew` (Unix) or `gradlew.bat` (Windows).
 ///
-/// Returns `(gradlew_path, gradlew_dir)` or `None` if not found.
+/// The ancestor walk is BOUNDED to the repository root by `max_depth`: the
+/// caller passes `relative_path.components().count()` — the number of
+/// directories from the project dir up to and INCLUDING the repo root — so
+/// `start_dir.ancestors().take(max_depth)` stops AT the repository root and
+/// never touches the drive root, the user's home dir, or a sibling checkout.
+/// An out-of-repo `gradlew` must never be discovered (and then executed):
+/// project discovery is git-scoped, so a stray wrapper ABOVE the repo root
+/// must not be picked up and run. Mirrors the git-scoped bounds the sibling
+/// C# finder applies in `is_workspace` and the Rust finder applies in its
+/// version-inheritance walk.
+///
+/// Returns `(gradlew_path, gradlew_dir)`, or `None` if not found within the bound.
 ///
 /// Excluded from coverage: the cross-platform `cfg!(windows)` arm only
 /// executes one branch per test host, leaving the other permanently
@@ -121,15 +132,17 @@ async fn java_home_has_java(java_home: Option<&OsStr>) -> bool {
 /// which CI exercises via the matrix build but tarpaulin sees only on
 /// Linux.
 #[cfg(not(tarpaulin_include))]
-async fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+async fn find_gradlew(start_dir: &Path, max_depth: usize) -> Option<(PathBuf, PathBuf)> {
     let gradlew_name = if cfg!(windows) {
         "gradlew.bat"
     } else {
         "gradlew"
     };
 
-    let mut current = start_dir.to_path_buf();
-    loop {
+    // `Path::ancestors()` yields `[start_dir, parent, …, root]`; `take(max_depth)`
+    // caps the climb at the repository root so the walk never leaves the repo
+    // and can never adopt an out-of-repo wrapper.
+    for current in start_dir.ancestors().take(max_depth) {
         let gradlew = current.join(gradlew_name);
         // Probe with the shared `changepacks_core::is_regular_file` (a
         // `tokio::fs::metadata().is_file()` check) so this file-vs-dir question
@@ -141,12 +154,10 @@ async fn find_gradlew(start_dir: &Path) -> Option<(PathBuf, PathBuf)> {
         // would then fail confusingly at execution time.
         let exists = changepacks_core::is_regular_file(&gradlew).await;
         if exists {
-            return Some((gradlew, current));
-        }
-        if !current.pop() {
-            return None;
+            return Some((gradlew, current.to_path_buf()));
         }
     }
+    None
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -220,8 +231,9 @@ async fn java_is_available() -> bool {
 async fn get_gradle_properties(
     project_dir: &Path,
     java_available: bool,
+    max_depth: usize,
 ) -> Result<GradleProperties> {
-    let (gradlew, gradlew_dir) = find_gradlew(project_dir).await.context(
+    let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth).await.context(
         "Gradle wrapper (gradlew) not found. \
          Ensure the project root contains gradlew or gradlew.bat.",
     )?;
@@ -389,8 +401,17 @@ impl ProjectFinder for GradleProjectFinder {
             .map(|content| extract_gradle_project_dependencies(&content))
             .with_context(|| format!("Failed to read Gradle build file {}", path.display()))?;
 
+        // Bound the gradlew search to the repository root: `relative_path` is
+        // the build file's path relative to the git repo root, so its component
+        // count equals the number of directories from `project_dir` up to and
+        // INCLUDING the repo root (root project: `build.gradle.kts` → count 1 →
+        // check `project_dir` only). This stops the ancestor walk at the repo
+        // boundary so an out-of-repo `gradlew` is never discovered or executed.
+        // Mirrors the C# finder's `is_workspace` bound.
+        let max_depth = relative_path.components().count();
+
         // Get properties from gradlew command
-        let props = get_gradle_properties(project_dir, java_available).await?;
+        let props = get_gradle_properties(project_dir, java_available, max_depth).await?;
 
         // Use directory name as fallback for project name
         let name = props.name.or_else(|| {
@@ -895,7 +916,9 @@ version = "1.0.0"
             fs::write(temp_dir.path().join("gradlew"), "#!/bin/sh").unwrap();
         }
 
-        let result = find_gradlew(temp_dir.path()).await;
+        // Root project: the build file sits AT the repo root, so `visit`
+        // computes `max_depth = 1` and the walk scans only `temp_dir`.
+        let result = find_gradlew(temp_dir.path(), 1).await;
         assert!(result.is_some());
         let (_, gradlew_dir) = result.unwrap();
         assert_eq!(gradlew_dir, temp_dir.path());
@@ -916,7 +939,11 @@ version = "1.0.0"
             fs::write(temp_dir.path().join("gradlew"), "#!/bin/sh").unwrap();
         }
 
-        let result = find_gradlew(&subproject).await;
+        // Subproject `libs/core` is two directories below the repo root, so
+        // its build file is `libs/core/build.gradle.kts` (3 components) →
+        // `max_depth = 3`. The walk scans `libs/core`, `libs`, then `temp_dir`
+        // (the repo root), where the wrapper lives.
+        let result = find_gradlew(&subproject, 3).await;
         assert!(result.is_some());
         let (_, gradlew_dir) = result.unwrap();
         assert_eq!(gradlew_dir, temp_dir.path().to_path_buf());
@@ -930,11 +957,53 @@ version = "1.0.0"
         let subdir = temp_dir.path().join("no_gradlew_here");
         fs::create_dir_all(&subdir).unwrap();
 
-        // Don't create gradlew anywhere — but find_gradlew walks to filesystem
-        // root, so this test just verifies it doesn't panic. In practice it
-        // returns None only when no gradlew exists anywhere up the tree.
-        // For a reliable "not found" test, we rely on the no-gradlew properties test below.
-        let _ = find_gradlew(&subdir).await;
+        // No gradlew in `subdir` or its parent. The walk is now BOUNDED to
+        // `max_depth`, so with depth 2 it scans only `subdir` and `temp_dir`
+        // and stops — it can no longer climb to the filesystem root and pick
+        // up an out-of-repo wrapper, so it reliably returns `None`.
+        let result = find_gradlew(&subdir, 2).await;
+        assert!(result.is_none());
+
+        temp_dir.close().unwrap();
+    }
+
+    /// Regression: a decoy `gradlew` ABOVE the repository root must NOT be
+    /// discovered (and later executed) when resolving a subproject's wrapper.
+    /// The ancestor walk is bounded by `max_depth` (the caller passes
+    /// `relative_path.components().count()`), so it scans only the manifest's
+    /// in-repo ancestors — down to the repo root — and never reaches the
+    /// out-of-repo directory holding the stray wrapper. Project discovery is
+    /// git-scoped; a `gradlew` in the user's home dir, the drive root, or a
+    /// sibling checkout must not be picked up and run. Against the old
+    /// unbounded walk (`loop { current.pop() }` to the filesystem root) this
+    /// decoy WAS found, so this test fails there and passes only once the walk
+    /// is bounded. Complements `test_find_gradlew_in_parent_dir`, which pins
+    /// that an IN-repo ancestor `gradlew` is still found.
+    #[tokio::test]
+    async fn test_find_gradlew_ignores_gradlew_above_repo_root() {
+        let temp_dir = TempDir::new().unwrap();
+        // The simulated repo root is a nested subdir; the decoy wrapper lives
+        // one level ABOVE it (outside the repo).
+        let repo_root = temp_dir.path().join("repo");
+        let sub = repo_root.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+
+        // Decoy gradlew ABOVE the repo root — must be ignored. (`gradlew.bat`
+        // on Windows, `gradlew` elsewhere, matching `create_mock_gradlew`.)
+        if cfg!(windows) {
+            fs::write(temp_dir.path().join("gradlew.bat"), "@echo off").unwrap();
+        } else {
+            fs::write(temp_dir.path().join("gradlew"), "#!/bin/sh").unwrap();
+        }
+
+        // `relative_path` is repo-root-relative with 2 components
+        // (`sub/build.gradle.kts`), so the walk scans `<repo_root>/sub` and
+        // `<repo_root>` — never `temp_dir`, where the decoy wrapper lives.
+        let result = find_gradlew(&sub, 2).await;
+        assert!(
+            result.is_none(),
+            "expected a decoy gradlew above the repo root to be ignored, got {result:?}"
+        );
 
         temp_dir.close().unwrap();
     }
@@ -944,11 +1013,12 @@ version = "1.0.0"
         let temp_dir = TempDir::new().unwrap();
         let subdir = temp_dir.path().join("isolated");
         fs::create_dir_all(&subdir).unwrap();
-        // No gradlew anywhere in this subtree → should error
-        let result = get_gradle_properties(&subdir, true).await;
-        // May find a system gradlew higher up; the key contract is it doesn't panic.
-        // If no gradlew found at all, it returns Err.
-        let _ = result;
+        // No gradlew in `subdir` or its parent. The walk is BOUNDED to
+        // `max_depth`, so with depth 2 it scans only `subdir` and `temp_dir`
+        // and cannot climb to a system gradlew higher up — so it reliably
+        // returns Err ("Gradle wrapper (gradlew) not found").
+        let result = get_gradle_properties(&subdir, true, 2).await;
+        assert!(result.is_err());
         temp_dir.close().unwrap();
     }
 
@@ -958,7 +1028,9 @@ version = "1.0.0"
 
         create_mock_gradlew(temp_dir.path(), MockGradlew::package("myproject", "1.2.3"));
 
-        let props = get_gradle_properties(temp_dir.path(), true).await.unwrap();
+        let props = get_gradle_properties(temp_dir.path(), true, 1)
+            .await
+            .unwrap();
         assert_eq!(props.name, Some("myproject".to_string()));
         assert_eq!(props.version, Some("1.2.3".to_string()));
         assert!(!props.has_subprojects);
@@ -975,7 +1047,9 @@ version = "1.0.0"
             MockGradlew::workspace("root", "1.0.0", "[project ':app', project ':lib']"),
         );
 
-        let props = get_gradle_properties(temp_dir.path(), true).await.unwrap();
+        let props = get_gradle_properties(temp_dir.path(), true, 1)
+            .await
+            .unwrap();
         assert_eq!(props.name, Some("root".to_string()));
         assert!(props.has_subprojects);
 
@@ -988,7 +1062,9 @@ version = "1.0.0"
 
         create_mock_gradlew(temp_dir.path(), MockGradlew::package("leaf", "1.0.0"));
 
-        let props = get_gradle_properties(temp_dir.path(), true).await.unwrap();
+        let props = get_gradle_properties(temp_dir.path(), true, 1)
+            .await
+            .unwrap();
         assert_eq!(props.name, Some("leaf".to_string()));
         assert!(!props.has_subprojects);
 
@@ -1005,7 +1081,9 @@ version = "1.0.0"
         // Mock: ignore the :sub1:properties arg, just output properties
         create_mock_gradlew(temp_dir.path(), MockGradlew::package("sub1", "2.0.0"));
 
-        let props = get_gradle_properties(&subproject, true).await.unwrap();
+        // Subproject `sub1` is one directory below the repo root → build file
+        // `sub1/build.gradle.kts` (2 components) → `max_depth = 2`.
+        let props = get_gradle_properties(&subproject, true, 2).await.unwrap();
         assert_eq!(props.name, Some("sub1".to_string()));
         assert_eq!(props.version, Some("2.0.0".to_string()));
 
@@ -1022,7 +1100,10 @@ version = "1.0.0"
         // The mock script receives ":libs:core:properties" "-q" as args.
         create_mock_gradlew(temp_dir.path(), MockGradlew::package("core", "3.1.0"));
 
-        let props = get_gradle_properties(&subproject, true).await.unwrap();
+        // Nested subproject `libs/core` is two directories below the repo root
+        // → build file `libs/core/build.gradle.kts` (3 components) →
+        // `max_depth = 3` (nesting levels + 1).
+        let props = get_gradle_properties(&subproject, true, 3).await.unwrap();
         assert_eq!(props.name, Some("core".to_string()));
         assert_eq!(props.version, Some("3.1.0".to_string()));
 
@@ -1077,7 +1158,9 @@ dependencies {
             MockGradlew::package("unspecified", "unspecified"),
         );
 
-        let props = get_gradle_properties(temp_dir.path(), true).await.unwrap();
+        let props = get_gradle_properties(temp_dir.path(), true, 1)
+            .await
+            .unwrap();
         assert!(props.name.is_none());
         assert!(props.version.is_none());
 
@@ -1091,7 +1174,9 @@ dependencies {
         create_failing_gradlew(temp_dir.path());
 
         // gradlew exits non-zero → returns default props (no name, no version)
-        let props = get_gradle_properties(temp_dir.path(), true).await.unwrap();
+        let props = get_gradle_properties(temp_dir.path(), true, 1)
+            .await
+            .unwrap();
         assert!(props.name.is_none());
         assert!(props.version.is_none());
 

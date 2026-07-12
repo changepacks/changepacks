@@ -79,7 +79,7 @@ pub use clear_update_logs::{clear_applied_update_logs, clear_update_logs};
 pub use detect_indent::detect_indent_str;
 pub use display_update::display_update;
 pub use find_current_git_repo::find_current_git_repo;
-pub use find_project_dirs::find_project_dirs;
+pub use find_project_dirs::{discover_project_dirs, find_project_dirs};
 pub use gen_changepack_result_map::gen_changepack_result_map;
 pub use gen_update_map::{apply_reverse_dependencies, gen_update_map};
 pub use get_changepacks_config::{get_changepacks_config, get_changepacks_config_at};

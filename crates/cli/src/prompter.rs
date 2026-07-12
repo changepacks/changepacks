@@ -224,6 +224,8 @@ mod tests {
         fn set_changed(&mut self, changed: bool) {
             self.changed = changed;
         }
+        // test mock — name mutation not exercised
+        fn set_name(&mut self, _name: String) {}
         fn default_publish_command(&self) -> String {
             "echo test".to_string()
         }
