@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use changepacks_core::UpdateType;
+use changepacks_core::{UpdateType, has_extension_ignore_ascii_case};
 use changepacks_utils::next_version;
 use regex::Regex;
 use std::borrow::Cow;
@@ -87,10 +87,7 @@ pub async fn update_gradle_version_at(
     // extension-less inputs: `Path::extension()` yields `None` when the file
     // stem is empty or missing, matching the old `unwrap_or_default() →
     // Path::new("").extension() == None` fallthrough.
-    let is_kts = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|s| s.eq_ignore_ascii_case("kts"));
+    let is_kts = has_extension_ignore_ascii_case(path, "kts");
 
     let updated_content = if is_kts {
         update_version_in_kts(&content, &new_version)

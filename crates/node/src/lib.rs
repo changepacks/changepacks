@@ -420,6 +420,10 @@ pub(crate) async fn run_publish_for_path(
         .await
 }
 
+/// Run the dry-run publish command for a Node package.
+///
+/// Node package managers (npm, yarn, pnpm) always support `--dry-run`, so this
+/// always returns `Ok(Some(output))` on success (never `Ok(None)`).
 pub(crate) async fn run_dry_run_publish_for_path(
     path: &Path,
     relative_path: &Path,
@@ -428,13 +432,9 @@ pub(crate) async fn run_dry_run_publish_for_path(
 ) -> Result<Option<changepacks_core::publish::PublishOutput>> {
     let command = dry_run_publish_command_for_path(path, relative_path, config).await;
     let path_dirs = publish_path_dirs_for_path(path).await;
-    changepacks_core::publish::run_dry_run_publish_flow(
-        Some(&command),
-        path,
-        &path_dirs,
-        missing_dir_message,
-    )
-    .await
+    changepacks_core::publish::run_publish_flow(&command, path, &path_dirs, missing_dir_message)
+        .await
+        .map(Some)
 }
 
 #[cfg(test)]
@@ -774,5 +774,180 @@ mod tests {
             chain.contains(&manifest.display().to_string()),
             "error chain should name the manifest path, got: {chain}"
         );
+    }
+
+    // ── publish_command_for_path / dry_run_publish_command_for_path precedence ──
+    //
+    // The resolution ladder (highest → lowest priority):
+    //   1. per-path entry in config.publish / config.publish_dry_run
+    //   2. per-language "node" entry in the same map
+    //   3. detected package manager (lockfile walk) → default command string
+    //
+    // Tests (a)–(d) below pin each rung of that ladder for both the publish
+    // and dry-run variants, mirroring the tempdir/lockfile fixture style used
+    // by the existing tests above.
+
+    /// (a) Per-path entry in `config.publish` wins over everything else,
+    /// including a `pnpm-lock.yaml` that would otherwise select pnpm.
+    /// The dry-run variant is covered by the separate `publish_dry_run` map.
+    #[tokio::test]
+    async fn test_publish_command_per_path_wins() {
+        let temp_dir = TempDir::new().unwrap();
+        // A pnpm lockfile is present — without the per-path override it would
+        // resolve to "pnpm publish".
+        fs::write(temp_dir.path().join("pnpm-lock.yaml"), "").unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        // relative_path key must match what lookup_by_path_or_language uses:
+        // relative_path.to_string_lossy().
+        let relative_path = PathBuf::from("package.json");
+        let mut config = Config::default();
+        config
+            .publish
+            .insert("package.json".to_string(), "custom-publish".to_string());
+
+        let cmd = publish_command_for_path(&manifest, &relative_path, &config).await;
+        assert_eq!(cmd, "custom-publish");
+    }
+
+    /// (a-dry) Per-path entry in `config.publish_dry_run` wins over the
+    /// lockfile-detected default dry-run command.
+    #[tokio::test]
+    async fn test_dry_run_publish_command_per_path_wins() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("pnpm-lock.yaml"), "").unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        let relative_path = PathBuf::from("package.json");
+        let mut config = Config::default();
+        config
+            .publish_dry_run
+            .insert("package.json".to_string(), "custom-dry-run".to_string());
+
+        let cmd = dry_run_publish_command_for_path(&manifest, &relative_path, &config).await;
+        assert_eq!(cmd, "custom-dry-run");
+    }
+
+    /// (b) Per-language "node" entry in `config.publish` wins when no per-path
+    /// entry exists, even when a lockfile would otherwise select a different
+    /// package manager.
+    #[tokio::test]
+    async fn test_publish_command_per_language_wins_over_lockfile() {
+        let temp_dir = TempDir::new().unwrap();
+        // bun.lock would normally resolve to "bun publish".
+        fs::write(temp_dir.path().join("bun.lock"), "").unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        let relative_path = PathBuf::from("package.json");
+        let mut config = Config::default();
+        config
+            .publish
+            .insert("node".to_string(), "node-lang-publish".to_string());
+
+        let cmd = publish_command_for_path(&manifest, &relative_path, &config).await;
+        assert_eq!(cmd, "node-lang-publish");
+    }
+
+    /// (b-dry) Per-language "node" entry in `config.publish_dry_run` wins
+    /// when no per-path entry exists.
+    #[tokio::test]
+    async fn test_dry_run_publish_command_per_language_wins_over_lockfile() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("bun.lock"), "").unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        let relative_path = PathBuf::from("package.json");
+        let mut config = Config::default();
+        config
+            .publish_dry_run
+            .insert("node".to_string(), "node-lang-dry-run".to_string());
+
+        let cmd = dry_run_publish_command_for_path(&manifest, &relative_path, &config).await;
+        assert_eq!(cmd, "node-lang-dry-run");
+    }
+
+    /// (b-precedence) Per-path entry beats the per-language "node" entry when
+    /// both are present in the same config map.
+    #[tokio::test]
+    async fn test_publish_command_per_path_beats_per_language() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        let relative_path = PathBuf::from("package.json");
+        let mut config = Config::default();
+        config
+            .publish
+            .insert("node".to_string(), "node-lang-publish".to_string());
+        config
+            .publish
+            .insert("package.json".to_string(), "path-publish".to_string());
+
+        let cmd = publish_command_for_path(&manifest, &relative_path, &config).await;
+        assert_eq!(cmd, "path-publish");
+    }
+
+    /// (c) Empty config + `pnpm-lock.yaml` in the tempdir → `"pnpm publish"`.
+    #[tokio::test]
+    async fn test_publish_command_detects_pnpm_from_lockfile() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("pnpm-lock.yaml"), "").unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        // relative_path with 1 component → depth 1: only the manifest's own
+        // directory is scanned, which is where pnpm-lock.yaml lives.
+        let relative_path = PathBuf::from("package.json");
+        let config = Config::default();
+
+        let cmd = publish_command_for_path(&manifest, &relative_path, &config).await;
+        assert_eq!(cmd, "pnpm publish");
+    }
+
+    /// (c-dry) Empty config + `pnpm-lock.yaml` → `"pnpm publish --dry-run"`.
+    #[tokio::test]
+    async fn test_dry_run_publish_command_detects_pnpm_from_lockfile() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(temp_dir.path().join("pnpm-lock.yaml"), "").unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        let relative_path = PathBuf::from("package.json");
+        let config = Config::default();
+
+        let cmd = dry_run_publish_command_for_path(&manifest, &relative_path, &config).await;
+        assert_eq!(cmd, "pnpm publish --dry-run");
+    }
+
+    /// (d) Empty config + no lockfile in tempdir → `"npm publish"` (default).
+    #[tokio::test]
+    async fn test_publish_command_defaults_to_npm_when_no_lockfile() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        let relative_path = PathBuf::from("package.json");
+        let config = Config::default();
+
+        let cmd = publish_command_for_path(&manifest, &relative_path, &config).await;
+        assert_eq!(cmd, "npm publish");
+    }
+
+    /// (d-dry) Empty config + no lockfile → `"npm publish --dry-run"`.
+    #[tokio::test]
+    async fn test_dry_run_publish_command_defaults_to_npm_when_no_lockfile() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        fs::write(&manifest, "{}").unwrap();
+
+        let relative_path = PathBuf::from("package.json");
+        let config = Config::default();
+
+        let cmd = dry_run_publish_command_for_path(&manifest, &relative_path, &config).await;
+        assert_eq!(cmd, "npm publish --dry-run");
     }
 }

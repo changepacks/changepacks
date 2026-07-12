@@ -131,6 +131,24 @@ macro_rules! impl_language {
     };
 }
 
+/// Returns `true` when `path`'s extension matches `ext` case-insensitively
+/// (ASCII only).
+///
+/// Mirrors the `path.extension().and_then(|e| e.to_str()).is_some_and(|e|
+/// e.eq_ignore_ascii_case(ext))` idiom used across language crates so the
+/// predicate lives in exactly one place. Returns `false` when the path has
+/// no extension (including dotfiles such as `.json`, where
+/// [`std::path::Path::extension`] returns `None`).
+///
+/// Public so cross-crate callers (e.g. `changepacks-csharp`,
+/// `changepacks-java`, `changepacks-utils`) can reuse it via the re-export
+/// from `changepacks_core::lib.rs`.
+pub fn has_extension_ignore_ascii_case(path: &Path, ext: &str) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case(ext))
+}
+
 /// Returns `true` when `path` refers to an existing regular file.
 ///
 /// AGENTS.md rule: never blocking I/O in async — use `tokio::fs::metadata`.
@@ -244,7 +262,31 @@ mod tests {
     use super::*;
     use crate::test_support::{MockPackage, MockWorkspace};
     use async_trait::async_trait;
+    use rstest::rstest;
     use std::path::PathBuf;
+
+    // `Path::new(".json").extension()` returns `None` in Rust — dotfiles have
+    // no extension — so `has_extension_ignore_ascii_case(Path::new(".json"), "json")`
+    // is `false`. This matches the behaviour of every call site that wraps a
+    // bare filename with `Path::new(file_name)`.
+    #[rstest]
+    #[case("foo.json", "json", true)]
+    #[case("foo.JSON", "json", true)]
+    #[case("foo.Json", "json", true)]
+    #[case("foo", "json", false)]
+    #[case(".json", "json", false)]
+    #[case("foo.jsonx", "json", false)]
+    fn test_has_extension_ignore_ascii_case(
+        #[case] file: &str,
+        #[case] ext: &str,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            has_extension_ignore_ascii_case(Path::new(file), ext),
+            expected,
+            "has_extension_ignore_ascii_case(Path::new({file:?}), {ext:?})"
+        );
+    }
 
     #[derive(Debug)]
     struct MockProjectFinder {

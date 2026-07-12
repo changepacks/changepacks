@@ -38,7 +38,7 @@ use anyhow::{Context, Result};
 use changepacks_core::publish::{
     resolve_dry_run_publish_command, run_publish_command, run_publish_command_os_args,
 };
-use changepacks_core::{Config, Language, PublishOutput};
+use changepacks_core::{Config, Language, PublishOutput, has_extension_ignore_ascii_case};
 use tempfile::TempDir;
 use tokio::fs::read_dir;
 
@@ -189,10 +189,7 @@ async fn collect_nupkgs(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::with_capacity(4);
     while let Some(entry) = entries.next_entry().await? {
         let file_name = entry.file_name();
-        let is_nupkg = Path::new(&file_name)
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|e| e.eq_ignore_ascii_case("nupkg"));
+        let is_nupkg = has_extension_ignore_ascii_case(Path::new(&file_name), "nupkg");
         // Symbol packages (`.snupkg`) never satisfy the `is_nupkg` extension
         // check above — the extension is literally `"snupkg"`, which is never
         // equal-ignore-case to `"nupkg"` (different lengths). So the extension

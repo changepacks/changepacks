@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use changepacks_core::{Project, ProjectFinder, is_regular_file};
+use changepacks_core::{Project, ProjectFinder, has_extension_ignore_ascii_case, is_regular_file};
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
 use quick_xml::events::Event;
@@ -208,11 +208,7 @@ async fn dir_has_solution_file(dir: &Path) -> Option<bool> {
                 // Case-insensitive `.sln` match so a Windows-native `Solution.SLN` /
                 // `Foo.Sln` is recognized the same as lowercase `.sln`.
                 let file_name = entry.file_name();
-                let has_sln_extension = Path::new(&file_name)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("sln"));
-                if has_sln_extension {
+                if has_extension_ignore_ascii_case(Path::new(&file_name), "sln") {
                     let Ok(file_type) = entry.file_type().await else {
                         continue;
                     };
@@ -312,11 +308,7 @@ impl ProjectFinder for CSharpProjectFinder {
         // written project files) resolves the same as the canonical
         // lowercase form. Matches the case-insensitive suffix decoder
         // used by `extract_project_name_from_path`.
-        let matches_ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("csproj"));
-        if !matches_ext {
+        if !has_extension_ignore_ascii_case(path, "csproj") {
             return Ok(());
         }
 

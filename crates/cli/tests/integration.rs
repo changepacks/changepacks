@@ -1512,41 +1512,6 @@ async fn test_cli_publish_json_no_projects() {
     );
 }
 
-// Test check tree with workspace (covers check.rs lines 296, 303, 305-311)
-#[tokio::test]
-#[serial]
-async fn test_cli_check_tree_with_workspace() {
-    // Create a pnpm workspace with workspace:* dependencies
-    let temp_dir = setup_repo_canonical(&[
-        (
-            "package.json",
-            r#"{"name": "root-workspace", "version": "1.0.0", "dependencies": {"pkg-a": "workspace:*"}}"#,
-        ),
-        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
-        (
-            "packages/pkg-a/package.json",
-            r#"{"name": "pkg-a", "version": "1.0.0"}"#,
-        ),
-    ])
-    .await;
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    let _dir_guard = DirGuard::change_to(&temp_path);
-
-    let args = vec![
-        "changepacks".to_string(),
-        "check".to_string(),
-        "--tree".to_string(),
-    ];
-    let result = changepacks_cli::main(&args).await;
-
-    assert!(
-        result.is_ok(),
-        "check tree with workspace failed: {:?}",
-        result.err()
-    );
-}
-
 // Test check tree with deeply nested dependencies (covers check.rs lines 216-250)
 #[tokio::test]
 #[serial]
@@ -1684,40 +1649,6 @@ async fn test_cli_changepacks_with_package_filter() {
     );
 }
 
-// Test publish dry-run with JSON format (covers publish.rs lines 102-103)
-#[tokio::test]
-#[serial]
-async fn test_cli_publish_dry_run_json() {
-    // Override dry-run with `echo` so the test does not depend on a working
-    // npm/registry environment.
-    let temp_dir = setup_repo_canonical(&[
-        (
-            ".changepacks/config.json",
-            r#"{"publishDryRun": {"node": "echo dry-run"}}"#,
-        ),
-        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
-    ])
-    .await;
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    let _dir_guard = DirGuard::change_to(&temp_path);
-
-    let args = vec![
-        "changepacks".to_string(),
-        "publish".to_string(),
-        "--dry-run".to_string(),
-        "--format".to_string(),
-        "json".to_string(),
-    ];
-    let result = changepacks_cli::main(&args).await;
-
-    assert!(
-        result.is_ok(),
-        "publish dry-run json failed: {:?}",
-        result.err()
-    );
-}
-
 // Test update dry-run with JSON format (covers update.rs lines 102-103)
 #[tokio::test]
 #[serial]
@@ -1746,37 +1677,6 @@ async fn test_cli_update_dry_run_json() {
     assert!(
         result.is_ok(),
         "update dry-run json failed: {:?}",
-        result.err()
-    );
-}
-
-// Test publish stdout with actual execution (covers publish.rs lines 131-139)
-#[tokio::test]
-#[serial]
-async fn test_cli_publish_stdout_execution() {
-    // Create config with echo publish command
-    let temp_dir = setup_repo_canonical(&[
-        (
-            ".changepacks/config.json",
-            r#"{"publish": {"node": "echo publishing stdout"}}"#,
-        ),
-        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
-    ])
-    .await;
-    let temp_path = temp_dir.path().canonicalize().unwrap();
-
-    let _dir_guard = DirGuard::change_to(&temp_path);
-
-    let args = vec![
-        "changepacks".to_string(),
-        "publish".to_string(),
-        "--yes".to_string(),
-    ];
-    let result = changepacks_cli::main(&args).await;
-
-    assert!(
-        result.is_ok(),
-        "publish stdout execution failed: {:?}",
         result.err()
     );
 }

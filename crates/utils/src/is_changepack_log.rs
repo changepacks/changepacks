@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use changepacks_core::has_extension_ignore_ascii_case;
 use tokio::fs::{read_dir, read_to_string};
 
 /// Returns `true` iff `file_name` names a changepack log JSON file — i.e. it
@@ -23,9 +24,7 @@ use tokio::fs::{read_dir, read_to_string};
 #[must_use]
 fn is_changepack_log_json_name(file_name: &str) -> bool {
     !file_name.eq_ignore_ascii_case("config.json")
-        && Path::new(file_name)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        && has_extension_ignore_ascii_case(Path::new(file_name), "json")
 }
 
 /// Collect all changepack log file paths from the `.changepacks/` directory.

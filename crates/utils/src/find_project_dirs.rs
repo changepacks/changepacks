@@ -1,5 +1,7 @@
 use anyhow::{Context, Result};
-use changepacks_core::{Config, Project, ProjectFinder, contains_changepacks_component};
+use changepacks_core::{
+    Config, Project, ProjectFinder, contains_changepacks_component, has_extension_ignore_ascii_case,
+};
 use gix::{ThreadSafeRepository, bstr::ByteSlice, features::progress};
 use ignore::gitignore::GitignoreBuilder;
 use std::{
@@ -34,9 +36,7 @@ fn project_files_can_visit_path(project_files: &[&str], path: &Path, file_name: 
             return false;
         };
 
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .is_some_and(|ext| ext.eq_ignore_ascii_case(extension))
+        has_extension_ignore_ascii_case(path, extension)
     })
 }
 

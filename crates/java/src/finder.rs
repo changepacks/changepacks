@@ -1295,4 +1295,19 @@ dependencies {
 
         temp_dir.close().unwrap();
     }
+
+    #[rstest]
+    #[case(":lib", Some("lib"))]
+    #[case(":a:b", Some("b"))]
+    #[case(":::", None)]
+    #[case("lib", Some("lib"))]
+    #[case("", None)]
+    #[case(":", None)]
+    #[case("::", None)]
+    #[case("a:b:c", Some("c"))]
+    #[case(":a:b:c:d", Some("d"))]
+    fn test_gradle_dependency_name(#[case] input: &str, #[case] expected: Option<&str>) {
+        let result = gradle_dependency_name(input);
+        assert_eq!(result, expected.map(|s| s.to_string()));
+    }
 }
