@@ -346,7 +346,7 @@ pub async fn find_project_dirs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{git_add_and_commit, init_git_repo, run_git};
+    use crate::test_support::{discover_repo, git_add_and_commit, init_git_repo, run_git};
     use changepacks_node::finder::NodeProjectFinder;
     use tempfile::TempDir;
     use tokio::fs;
@@ -405,7 +405,7 @@ mod tests {
 
         git_add_and_commit(temp_path, "Initial commit");
 
-        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let repo = discover_repo(temp_path);
         let config = Config::default();
         let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
 
@@ -450,7 +450,7 @@ mod tests {
 
         git_add_and_commit(temp_path, "Initial commit");
 
-        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let repo = discover_repo(temp_path);
         let config = Config {
             ignore: vec!["packages/ignored/**".to_string()],
             ..Default::default()
@@ -502,7 +502,7 @@ mod tests {
         .await
         .unwrap();
 
-        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let repo = discover_repo(temp_path);
         let config = Config::default();
         let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
 
@@ -534,7 +534,7 @@ mod tests {
 
         git_add_and_commit(temp_path, "Initial commit");
 
-        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let repo = discover_repo(temp_path);
         // Empty ignore list
         let config = Config {
             ignore: vec![],
@@ -574,7 +574,7 @@ mod tests {
 
         git_add_and_commit(temp_path, "Initial commit");
 
-        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let repo = discover_repo(temp_path);
         let config = Config::default();
         let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
 
@@ -631,7 +631,7 @@ mod tests {
 
         git_add_and_commit(temp_path, "Feature commit");
 
-        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let repo = discover_repo(temp_path);
         let config = Config::default();
         let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
 
@@ -695,7 +695,7 @@ mod tests {
 
         git_add_and_commit(local_path, "Feature commit");
 
-        let repo = gix::discover(local_path).unwrap().into_sync();
+        let repo = discover_repo(local_path);
         let config = Config::default();
         let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
 
@@ -750,7 +750,7 @@ mod tests {
 
         git_add_and_commit(temp_path, "Initial commit");
 
-        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let repo = discover_repo(temp_path);
         let config = Config::default(); // base_branch defaults to "main"
         let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
 
@@ -794,7 +794,7 @@ mod tests {
 
         git_add_and_commit(temp_path, "Initial commit");
 
-        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let repo = discover_repo(temp_path);
         let config = Config::default();
         let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
 
@@ -834,7 +834,7 @@ mod tests {
 
         git_add_and_commit(temp_path, "Initial commit");
 
-        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let repo = discover_repo(temp_path);
         let config = Config::default();
         let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
 
@@ -873,7 +873,7 @@ mod tests {
 
         git_add_and_commit(temp_path, "Initial commit");
 
-        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let repo = discover_repo(temp_path);
         let config = Config::default();
         let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
 
@@ -915,7 +915,7 @@ mod tests {
 
         git_add_and_commit(temp_path, "Initial commit");
 
-        let repo = gix::discover(temp_path).unwrap().into_sync();
+        let repo = discover_repo(temp_path);
         let config = Config::default();
         let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
 

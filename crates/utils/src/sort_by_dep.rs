@@ -38,8 +38,13 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     // in name_to_index, so an ambiguous dependency cannot silently bind to any duplicate.
     // in_degree[i] = number of dependencies that project i has
     let mut in_degree: Vec<usize> = vec![0; projects.len()];
-    // graph[i] = list of projects that depend on project i
-    let mut graph: Vec<Vec<usize>> = vec![Vec::new(); projects.len()];
+    // Collect edges in the same order the old adjacency Vecs received pushes:
+    // project-major, then dependency iteration order.
+    let dependency_count: usize = projects
+        .iter()
+        .map(|project| project.dependencies().len())
+        .sum();
+    let mut edges: Vec<(usize, usize)> = Vec::with_capacity(dependency_count);
 
     for (idx, project) in projects.iter().enumerate() {
         let deps = project.dependencies();
@@ -47,10 +52,29 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
             if let Some(&Some(dep_idx)) = name_to_index.get(dep.as_str()) {
                 // Project at idx depends on project at dep_idx
                 // So dep_idx should come before idx
-                graph[dep_idx].push(idx);
+                edges.push((dep_idx, idx));
                 in_degree[idx] += 1;
             }
         }
+    }
+
+    // Store adjacency as CSR: adj[offsets[i]..offsets[i + 1]] contains the
+    // projects that depend on project i. Stable counting-sort fill preserves
+    // the old graph[dep_idx].push(idx) order within each source exactly.
+    let mut offsets: Vec<usize> = vec![0; projects.len() + 1];
+    for &(dep_idx, _) in &edges {
+        offsets[dep_idx + 1] += 1;
+    }
+    for idx in 1..offsets.len() {
+        offsets[idx] += offsets[idx - 1];
+    }
+
+    let mut cursor = offsets.clone();
+    let mut adj: Vec<usize> = vec![0; edges.len()];
+    for (dep_idx, dependent_idx) in edges {
+        let slot = cursor[dep_idx];
+        adj[slot] = dependent_idx;
+        cursor[dep_idx] += 1;
     }
 
     // Kahn's algorithm for topological sort
@@ -86,7 +110,7 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
         sorted_indices.push(idx);
 
         // Decrease in-degree of dependent projects
-        for &dependent_idx in &graph[idx] {
+        for &dependent_idx in &adj[offsets[idx]..offsets[idx + 1]] {
             in_degree[dependent_idx] -= 1;
             if in_degree[dependent_idx] == 0 {
                 queue.push_back(dependent_idx);

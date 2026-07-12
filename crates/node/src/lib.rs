@@ -69,10 +69,16 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
     let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);
     let writer = Vec::with_capacity(package_json_raw.len());
     let mut ser = serde_json::Serializer::with_formatter(writer, formatter);
-    package_json.serialize(&mut ser)?;
+    package_json
+        .serialize(&mut ser)
+        .with_context(|| format!("Failed to serialize package.json {}", path.display()))?;
     write(
         path,
-        finalize_content(String::from_utf8(ser.into_inner())?, &package_json_raw),
+        finalize_content(
+            String::from_utf8(ser.into_inner())
+                .with_context(|| format!("Failed to serialize package.json {}", path.display()))?,
+            &package_json_raw,
+        ),
     )
     .await
     .with_context(|| format!("Failed to write package.json {}", path.display()))?;

@@ -19,7 +19,9 @@
 //! - **Semver arithmetic** — [`next_version`] applies an `UpdateType` bump
 //!   to a version string; [`next_version_or_default`] wraps it with a
 //!   `0.0.0` fallback for the unversioned-manifest case shared across every
-//!   language crate's `update_version`.
+//!   language crate's `update_version`; [`bump_version_with`] is the shared
+//!   compute-write-store helper that four language crates use to atomically
+//!   bump a manifest's version field.
 //! - **Semver prefix split** — [`split_version`] cleaves a range specifier
 //!   (`^`, `~`, `>=`, `helloworld-`) from the numeric tail so callers can
 //!   rebuild `"<prefix><new_version>"` while preserving the prefix.

@@ -31,8 +31,11 @@ pub(crate) const fn trailing_newline(source: &str) -> &'static str {
 /// every call site — every existing "preserves formatting" and
 /// "preserves newline" regression test continues to pass unchanged.
 #[must_use]
-pub fn finalize_content(body: &str, original: &str) -> String {
-    format!("{}{}", body.trim_end(), trailing_newline(original))
+pub fn finalize_content(mut body: String, original: &str) -> String {
+    let trimmed_len = body.trim_end().len();
+    body.truncate(trimmed_len);
+    body.push_str(trailing_newline(original));
+    body
 }
 
 #[cfg(test)]
@@ -74,6 +77,6 @@ mod tests {
     #[case("hello\n", "content\r\n", "hello\n")]
     #[case("", "content\n", "\n")]
     fn test_finalize_content(#[case] body: &str, #[case] original: &str, #[case] expected: &str) {
-        assert_eq!(finalize_content(body, original), expected);
+        assert_eq!(finalize_content(body.to_string(), original), expected);
     }
 }

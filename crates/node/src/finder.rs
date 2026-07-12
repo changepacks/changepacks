@@ -93,18 +93,7 @@ impl ProjectFinder for NodeProjectFinder {
         // hoist so each branch collapses to a single constructor call.
         let version = package_json_str(&package_json, "version");
         let name = package_json_str(&package_json, "name");
-        // Rename `path_buf` → `path_key` to align with the Java, CSharp,
-        // and Python finders' local naming convention: the
-        // value is used once as the `HashMap` insert key (the "key"
-        // role), while the branch constructors take their own owned
-        // `PathBuf` via `.clone()`. Pure rename — clone count is
-        // unchanged.
         let path_key = path.to_path_buf();
-        // Rename `relative_path_buf` → `relative_path_key` to match the
-        // Dart, Java, and CSharp finders' local naming convention
-        // (matches the docstring at `crates/dart/src/finder.rs`
-        // claiming "Node, Python, CSharp, Java, and Rust" all use
-        // this name). Pure rename — behavior unchanged.
         let relative_path_key = relative_path.to_path_buf();
         // Workspace detection is short-circuited: a `workspaces` field in
         // `package.json` (npm / yarn / bun monorepos — the common case)

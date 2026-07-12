@@ -27,7 +27,12 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
         std::env::current_dir().context("Failed to determine current working directory")?;
     let changepacks_dir = get_changepacks_dir(&current_dir)?;
     if !args.dry_run {
-        create_dir_all(&changepacks_dir).await?;
+        create_dir_all(&changepacks_dir).await.with_context(|| {
+            format!(
+                "Failed to create changepacks directory {}",
+                changepacks_dir.display()
+            )
+        })?;
     }
     // create config.json file
     let config_file = changepacks_dir.join("config.json");
@@ -51,10 +56,16 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
             );
         } else {
             write(
-                config_file,
+                &config_file,
                 serde_json::to_string_pretty(&Config::default())?,
             )
-            .await?;
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to write changepacks config {}",
+                    config_file.display()
+                )
+            })?;
             println!(
                 "changepacks project initialized in {}",
                 changepacks_dir.display()

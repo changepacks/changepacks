@@ -18,3 +18,6 @@ changepacks-dart = { path = "crates/dart", version = "^0.2.21" }
 changepacks-csharp = { path = "crates/csharp", version = "^0.2.21" }
 changepacks-java = { path = "crates/java", version = "^0.2.25" }
 changepacks-utils = { path = "crates/utils", version = "^0.2.22" }
+
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

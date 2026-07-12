@@ -185,7 +185,10 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         set
     });
 
-    let json_output = if let FormatOptions::Json = args.format {
+    // In --dry-run mode, preview_and_confirm returns Ok(false) and the handler returns
+    // early (line ~202-204), so json_output is never printed. Skip the expensive
+    // gen_changepack_result_map walk and serde_json::to_string_pretty serialization.
+    let json_output = if !args.dry_run && matches!(args.format, FormatOptions::Json) {
         let output = serde_json::to_string_pretty(&gen_changepack_result_map(
             collect_projects(&project_finders).as_slice(),
             &ctx.repo_root_path,

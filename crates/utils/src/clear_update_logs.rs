@@ -431,4 +431,47 @@ mod tests {
 
         assert!(result.is_ok());
     }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_preserves_key_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        crate::test_support::init_git_repo(temp_path);
+
+        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        // Create a changepack log with keys in order: changes, note, date
+        // (note BEFORE date to test order preservation)
+        let log_file = changepacks_dir.join("changepack_log_1.json");
+        fs::write(
+            &log_file,
+            r#"{"changes":{"packages/a/package.json":"Patch","packages/b/package.json":"Minor"},"note":"test note","date":"2026-01-01"}"#,
+        )
+        .unwrap();
+
+        // Apply only one change, so the file gets rewritten (not deleted)
+        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
+
+        assert!(result.is_ok());
+        assert!(
+            log_file.exists(),
+            "log file should be rewritten, not deleted"
+        );
+
+        // Read the rewritten file as a raw string
+        let content = fs::read_to_string(&log_file).unwrap();
+
+        // Assert that key order is preserved: "note" appears before "date"
+        let note_pos = content.find("\"note\"").expect("\"note\" key should exist");
+        let date_pos = content.find("\"date\"").expect("\"date\" key should exist");
+        assert!(
+            note_pos < date_pos,
+            "key order not preserved: \"note\" at {} should come before \"date\" at {}",
+            note_pos,
+            date_pos
+        );
+    }
 }

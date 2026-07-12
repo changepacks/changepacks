@@ -17,7 +17,7 @@ anyhow = "1.0"
 changepacks-core.workspace = true
 tokio = { version = "1.52", features = ["fs"] }
 futures = "0.3"
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
 ignore = "0.4"
 glob = "0.3"
 
@@ -28,8 +28,8 @@ tokio = { version = "1.52", features = ["test-util", "macros"] }
 changepacks-node = { path = "../node" }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+[lints]
+workspace = true
 
 [[bench]]
 name = "utils_bench"

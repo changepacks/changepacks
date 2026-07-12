@@ -239,10 +239,6 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         let name_opt = project.name();
         let project_name: &str = name_opt.unwrap_or("unknown");
 
-        if name_opt.is_some() {
-            path_to_name.insert(rel_path_buf.clone(), project_name);
-        }
-
         let dependencies = project.dependencies();
         for dep_name in dependencies {
             // Fast-path: `HashMap::get_mut` on an existing key skips the
@@ -258,6 +254,14 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
             };
             entry.push((rel_path_buf.clone(), project_name));
         }
+
+        // Move `rel_path_buf` into its final consumer instead of cloning it:
+        // the edge loop above only borrows it (one clone per edge), so once
+        // the loop ends the buffer is free to move — the "move into the last
+        // consumer" idiom from `find_project_dirs`'s repo-name fallback.
+        if name_opt.is_some() {
+            path_to_name.insert(rel_path_buf, project_name);
+        }
     }
 
     // Find all packages that need to be updated due to dependencies.
@@ -268,12 +272,12 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // single `HashMap` allocation and cuts per-edge clones from 2 to 1
     // (`dep_path` is cloned once as the map key, vs. once for the set
     // insert and once again for the vec push in the old shape).
-    let mut packages_to_add: HashMap<PathBuf, String> = HashMap::with_capacity(projects.len());
+    let mut packages_to_add: HashMap<PathBuf, &str> = HashMap::with_capacity(projects.len());
 
     // Seed the DFS with names already scheduled for update. The DFS guards
     // against reprocessing through `update_map` and `packages_to_add`.
-    // Use borrowed &str in the worklist to avoid cloning String names during
-    // traversal; only clone when inserting into packages_to_add.
+    // Names stay borrowed `&str` end to end — through the worklist and into
+    // `packages_to_add` — so the `PathBuf` keys are the only thing cloned.
     let mut to_process: Vec<&str> = Vec::with_capacity(update_map.len());
     to_process.extend(
         update_map
@@ -286,7 +290,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
                 if !update_map.contains_key(dependent_path)
                     && !packages_to_add.contains_key(dependent_path)
                 {
-                    packages_to_add.insert(dependent_path.clone(), trigger_name.to_string());
+                    packages_to_add.insert(dependent_path.clone(), trigger_name);
                     to_process.push(*dependent_name);
                 }
             }

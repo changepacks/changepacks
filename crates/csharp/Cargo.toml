@@ -22,5 +22,5 @@ tokio = { version = "1.52", features = ["test-util", "macros"] }
 rstest = "0.26"
 changepacks-utils = { workspace = true, features = ["test-support"] }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+[lints]
+workspace = true

@@ -1,10 +1,21 @@
-//! Shared `#[cfg(test)]` mocks for this crate's unit tests.
+//! Shared mocks for this crate's unit tests and for sibling crates' test suites.
 //!
-//! Declared `#[cfg(test)] pub(crate) mod test_support;` in `lib.rs`, so nothing
-//! here is compiled into a non-test build or shipped in the public API. This
-//! consolidates the previously duplicated `MockPackage` / `MockWorkspace`
+//! This module plays a dual role, mirroring `changepacks-utils`'s own
+//! `test_support`: it is compiled for this crate's unit tests via `#[cfg(test)]`,
+//! and it is exported to sibling crates' test suites (e.g. `changepacks-cli`'s
+//! command / option tests) via the `test-support` feature — declared
+//! `#[cfg(any(test, feature = "test-support"))] pub mod test_support;` in
+//! `lib.rs`. The feature path deliberately pulls in **no** dev-dependencies:
+//! everything here only touches `std`, `anyhow`, `async-trait`, and this crate's
+//! own production types / macros, so it compiles in a plain (non-dev) build
+//! enabled solely by the feature. In a build with neither `test` nor the
+//! feature the module is not compiled at all, so nothing ships in the default
+//! public API.
+//!
+//! This consolidates the previously duplicated `MockPackage` / `MockWorkspace`
 //! definitions from `package.rs`, `workspace.rs`, `project.rs`, and
-//! `project_finder.rs` behind one parameterized surface.
+//! `project_finder.rs` — and, via the `test-support` feature, the former
+//! `crates/cli/src/test_support.rs` duplicate — behind one parameterized surface.
 //!
 //! Both mocks consume the production `crate::impl_basic_accessors!()` macro so
 //! the macro's field-name contract is still locked by the type system: rename a
@@ -48,24 +59,20 @@ macro_rules! impl_test_publish_commands {
 macro_rules! define_mock {
     ($type_name:ident, $default_path:expr, $default_relative:expr) => {
         #[derive(Debug)]
-        pub(crate) struct $type_name {
-            pub(crate) name: Option<String>,
-            pub(crate) version: Option<String>,
-            pub(crate) path: PathBuf,
-            pub(crate) relative_path: PathBuf,
-            pub(crate) language: Language,
-            pub(crate) dependencies: HashSet<String>,
-            pub(crate) is_changed: bool,
+        pub struct $type_name {
+            pub name: Option<String>,
+            pub version: Option<String>,
+            pub path: PathBuf,
+            pub relative_path: PathBuf,
+            pub language: Language,
+            pub dependencies: HashSet<String>,
+            pub is_changed: bool,
         }
 
         impl $type_name {
             /// Construct with an explicit `name` / `version` / `language`, defaulting
             /// the paths to the type's default manifest path.
-            pub(crate) fn new(
-                name: Option<&str>,
-                version: Option<&str>,
-                language: Language,
-            ) -> Self {
+            pub fn new(name: Option<&str>, version: Option<&str>, language: Language) -> Self {
                 Self {
                     name: name.map(String::from),
                     version: version.map(String::from),
@@ -77,9 +84,35 @@ macro_rules! define_mock {
                 }
             }
 
+            /// Construct with every field specified explicitly: `name` / `version` /
+            /// `path` / `relative_path` / `language` (with `dependencies` empty and
+            /// `is_changed` false).
+            ///
+            /// This is the fully-explicit form consumed by `changepacks-cli`'s test
+            /// suites via the `test-support` feature, where each mock pins an exact
+            /// path, relative path, and version — replacing the former CLI-local
+            /// `MockPackage::new(name, version, path, relative_path, language)`.
+            pub fn with_all(
+                name: Option<&str>,
+                version: Option<&str>,
+                path: &str,
+                relative_path: &str,
+                language: Language,
+            ) -> Self {
+                Self {
+                    name: name.map(String::from),
+                    version: version.map(String::from),
+                    path: PathBuf::from(path),
+                    relative_path: PathBuf::from(relative_path),
+                    language,
+                    dependencies: HashSet::new(),
+                    is_changed: false,
+                }
+            }
+
             /// Construct with an explicit `path` / `relative_path`, defaulting the
             /// version to `1.0.0` and the language to `Node`.
-            pub(crate) fn with_paths(name: Option<&str>, path: &str, relative_path: &str) -> Self {
+            pub fn with_paths(name: Option<&str>, path: &str, relative_path: &str) -> Self {
                 Self {
                     name: name.map(String::from),
                     version: Some("1.0.0".to_string()),
@@ -93,12 +126,12 @@ macro_rules! define_mock {
 
             /// Construct with a required `name` and a single `path` reused as both
             /// `path` and `relative_path` (version `1.0.0`, language `Node`).
-            pub(crate) fn same_path(name: &str, path: &str) -> Self {
+            pub fn same_path(name: &str, path: &str) -> Self {
                 Self::with_paths(Some(name), path, path)
             }
 
             /// Builder override for the mock's language.
-            pub(crate) fn with_language(mut self, language: Language) -> Self {
+            pub fn with_language(mut self, language: Language) -> Self {
                 self.language = language;
                 self
             }

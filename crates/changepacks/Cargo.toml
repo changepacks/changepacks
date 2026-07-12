@@ -20,5 +20,5 @@ embed-manifest = "1.5"
 name = "changepacks"
 path = "src/main.rs"
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+[lints]
+workspace = true
