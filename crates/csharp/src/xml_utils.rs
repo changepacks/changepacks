@@ -91,6 +91,18 @@ pub fn update_version_in_xml(
                     property_group_close_ws = None;
                     first_property_group_ended = true;
                 } else if name.as_ref() == b"Version" {
+                    // A content-less `<Version></Version>` produces no
+                    // `Event::Text`, so `version_updated` never flips and the
+                    // `</PropertyGroup>` "add missing version" branch would
+                    // otherwise append a SECOND `<Version>`. Fill the empty
+                    // element in place here so exactly one survives. The
+                    // happy path (`<Version>X</Version>`) is untouched: its
+                    // `Event::Text` already set `version_updated = true`, so
+                    // this guard is false.
+                    if in_version && !version_updated {
+                        writer.write_event(Event::Text(BytesText::new(new_version)))?;
+                        version_updated = true;
+                    }
                     in_version = false;
                 }
                 writer.write_event(Event::End(e))?;
@@ -156,6 +168,23 @@ mod tests {
 </Project>"#;
 
         let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        assert!(result.contains("<Version>0.0.1</Version>"));
+    }
+
+    #[test]
+    fn test_update_version_fills_content_less_version_element() {
+        // Regression: a content-less `<Version></Version>` element used to
+        // yield TWO `<Version>` elements — the empty original plus an
+        // appended one from the "add missing version" branch — because no
+        // `Event::Text` fired to set `version_updated`. It must instead be
+        // filled in place, leaving exactly one `<Version>`.
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version></Version>\n  </PropertyGroup>\n</Project>";
+        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        assert_eq!(
+            result.matches("<Version>").count(),
+            1,
+            "expected exactly one <Version> element, got:\n{result}",
+        );
         assert!(result.contains("<Version>0.0.1</Version>"));
     }
 
