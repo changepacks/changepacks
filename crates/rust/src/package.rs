@@ -1,11 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::next_version_or_default;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-
-use crate::write_cargo_package_version;
 
 #[derive(Debug)]
 pub struct RustPackage {
@@ -84,15 +81,11 @@ impl Package for RustPackage {
         if self.workspace_version_inherited {
             return Ok(());
         }
-        // Two-line "reserve `0.0.0` when unversioned" prelude consolidated
-        // into `changepacks_utils::next_version_or_default` so the fallback
-        // policy lives in ONE place across every language crate. Mirrors
-        // the shared `update_version_from_fields` helper used by Node,
-        // Python, Dart, and CSharp.
-        let new_version = next_version_or_default(self.version.as_deref(), update_type)?;
-        write_cargo_package_version(&self.path, &new_version).await?;
-        self.version = Some(new_version);
-        Ok(())
+        let path = &self.path;
+        changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
+            crate::write_cargo_package_version(path, new).await
+        })
+        .await
     }
 
     // Byte-identical `fn language(&self) -> Language { Language::Rust }`
@@ -361,5 +354,29 @@ edition = "2024"
         // NOT the bumped `1.0.1` — because the workspace root owns the bump
         // and will reflect it back through `new_with_workspace_version`.
         assert_eq!(package.version(), Some("1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn test_rust_package_update_version_bump_error_includes_path() {
+        // A malformed on-disk version must fail the bump and name the
+        // offending manifest — completing this crate's path-in-error-context
+        // pattern (the read/write around the bump already carry it). The bump
+        // errors BEFORE any file write, so no on-disk fixture is needed.
+        let manifest = PathBuf::from("/nonexistent/rustpkg-bump/Cargo.toml");
+        let mut package = RustPackage::new(
+            Some("test-package".to_string()),
+            Some("abc".to_string()),
+            manifest.clone(),
+            PathBuf::from("rustpkg-bump/Cargo.toml"),
+        );
+        let err = package
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("a malformed version must fail the bump");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&manifest.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
     }
 }

@@ -62,11 +62,9 @@ pub fn retain_by_language(langs: &[CliLanguage], projects: &mut Vec<&Project>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use changepacks_core::{Package, UpdateType};
     use rstest::rstest;
-    use std::collections::HashSet;
-    use std::path::{Path, PathBuf};
+
+    use crate::test_support::MockPackage;
 
     #[rstest]
     #[case(CliLanguage::Python, Language::Python)]
@@ -80,65 +78,14 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    /// Minimal `Package` mock scoped to this test module — only carries
-    /// the `language: Language` needed by `retain_by_language`. Mirrors
-    /// the same-shape mock already used in `filter_options.rs`; kept
-    /// local so the test does not add a workspace-visible test util.
-    #[derive(Debug)]
-    struct MockPackage {
-        path: PathBuf,
-        relative_path: PathBuf,
-        language: Language,
-        dependencies: HashSet<String>,
-    }
-
-    #[async_trait]
-    impl Package for MockPackage {
-        fn name(&self) -> Option<&str> {
-            None
-        }
-        fn version(&self) -> Option<&str> {
-            None
-        }
-        fn path(&self) -> &Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
-        async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            false
-        }
-        fn language(&self) -> Language {
-            self.language
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-        fn add_dependency(&mut self, dep: &str) {
-            self.dependencies.insert(dep.to_string());
-        }
-        fn set_changed(&mut self, _changed: bool) {}
-        // test mock — name mutation not exercised
-        fn set_name(&mut self, _name: String) {}
-        fn default_publish_command(&self) -> String {
-            String::new()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            None
-        }
-    }
-
     fn pkg(language: Language) -> Project {
-        Project::Package(Box::new(MockPackage {
-            path: PathBuf::from(format!("/repo/{language:?}/manifest")),
-            relative_path: PathBuf::from(format!("{language:?}/manifest")),
+        Project::Package(Box::new(MockPackage::new(
+            None,
+            None,
+            &format!("/repo/{language:?}/manifest"),
+            &format!("{language:?}/manifest"),
             language,
-            dependencies: HashSet::new(),
-        }))
+        )))
     }
 
     /// Regression: confirms the inlined `.iter().any(...)` implementation

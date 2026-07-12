@@ -1037,23 +1037,88 @@ mod tests {
         assert!(failed.is_empty());
     }
 
-    /// Drives the top-level `--dry-run` bail!() path: when the dry-run loop
-    /// reports any failed project, `handle_publish_with_prompter` must surface
-    /// that as an error containing the count and project list.
+    // Direct unit tests for `finish_publish_run` production function.
+    // These tests pin the exact bail message format consumed by integration tests/CI.
+
     #[test]
-    fn test_dry_run_bail_message_format() {
-        // We exercise the bail formatting indirectly through the helper used
-        // in the actual publish failure path; the format string is identical
-        // to lines 102-106 of execute_dry_run flow.
-        let failed: Vec<String> = vec!["pkg-a".to_string(), "pkg-b".to_string()];
-        let msg = format!(
-            "Dry-run failed for {} project(s): {}",
-            failed.len(),
-            failed.join(", ")
+    fn test_finish_publish_run_empty_failed_projects_stdout() {
+        let result_map = BTreeMap::new();
+        let failed_projects: Vec<String> = vec![];
+        let format = FormatOptions::Stdout;
+
+        let result = finish_publish_run(
+            &result_map,
+            &failed_projects,
+            0,
+            &format,
+            "Dry-run failed for",
         );
-        assert!(msg.contains("Dry-run failed for 2 project(s)"));
-        assert!(msg.contains("pkg-a"));
-        assert!(msg.contains("pkg-b"));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_finish_publish_run_empty_failed_projects_json() {
+        let mut result_map = BTreeMap::new();
+        // Populate result_map so JSON emission branch executes
+        result_map.insert(
+            PathBuf::from("packages/test/package.json"),
+            PublishResult::new(true, None, "test stdout".to_string(), String::new()),
+        );
+        let failed_projects: Vec<String> = vec![];
+        let format = FormatOptions::Json;
+
+        let result = finish_publish_run(
+            &result_map,
+            &failed_projects,
+            1,
+            &format,
+            "Dry-run failed for",
+        );
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_finish_publish_run_two_failed_dry_run() {
+        let result_map = BTreeMap::new();
+        let failed_projects = vec!["pkg-a".to_string(), "pkg-b".to_string()];
+        let format = FormatOptions::Stdout;
+
+        let result = finish_publish_run(
+            &result_map,
+            &failed_projects,
+            2,
+            &format,
+            "Dry-run failed for",
+        );
+
+        assert!(result.is_err());
+        let err_msg = format!("{:#}", result.unwrap_err());
+        assert!(err_msg.contains("Dry-run failed for 2 project(s)"));
+        assert!(err_msg.contains("pkg-a"));
+        assert!(err_msg.contains("pkg-b"));
+    }
+
+    #[test]
+    fn test_finish_publish_run_two_failed_publish() {
+        let result_map = BTreeMap::new();
+        let failed_projects = vec!["pkg-a".to_string(), "pkg-b".to_string()];
+        let format = FormatOptions::Stdout;
+
+        let result = finish_publish_run(
+            &result_map,
+            &failed_projects,
+            2,
+            &format,
+            "Failed to publish",
+        );
+
+        assert!(result.is_err());
+        let err_msg = format!("{:#}", result.unwrap_err());
+        assert!(err_msg.contains("Failed to publish 2 project(s)"));
+        assert!(err_msg.contains("pkg-a"));
+        assert!(err_msg.contains("pkg-b"));
     }
 
     // Used by leaf packages in the workspace-internal-dep integration tests

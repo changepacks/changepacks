@@ -81,9 +81,14 @@ pub(crate) fn score_project(project: &Project) -> i64 {
 /// the final joined `String`. Called on every redraw inside the
 /// `inquire::MultiSelect` formatter closure, so the savings compound with UI
 /// updates.
-pub(crate) fn format_selected_projects(projects: &[&Project]) -> String {
+///
+/// Accepts any iterator of project references to avoid materializing a `Vec`
+/// in the formatter closure.
+pub(crate) fn format_selected_projects<'a>(
+    projects: impl IntoIterator<Item = &'a Project>,
+) -> String {
     let mut out = String::new();
-    for (i, p) in projects.iter().enumerate() {
+    for (i, p) in projects.into_iter().enumerate() {
         if i > 0 {
             out.push('\n');
         }
@@ -111,10 +116,7 @@ impl Prompter for InquirePrompter {
         selector.default = Some(defaults);
         selector.scorer =
             &|_input, option, _string_value, _idx| -> Option<i64> { Some(score_project(option)) };
-        selector.formatter = &|option| {
-            let projects: Vec<&Project> = option.iter().map(|o| *o.value).collect();
-            format_selected_projects(&projects)
-        };
+        selector.formatter = &|option| format_selected_projects(option.iter().map(|o| *o.value));
         handle_inquire_result(selector.prompt())
     }
 
@@ -170,69 +172,9 @@ impl Prompter for MockPrompter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use changepacks_core::{Language, Package, UpdateType};
+    use crate::test_support::MockPackage;
+    use changepacks_core::Language;
     use rstest::rstest;
-    use std::collections::HashSet;
-    use std::path::Path;
-
-    /// Minimal mock Package for testing scorer and formatter functions
-    #[derive(Debug)]
-    struct MockTestPackage {
-        name: Option<String>,
-        changed: bool,
-    }
-
-    impl MockTestPackage {
-        fn new(name: &str, changed: bool) -> Self {
-            Self {
-                name: Some(name.to_string()),
-                changed,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Package for MockTestPackage {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn version(&self) -> Option<&str> {
-            Some("1.0.0")
-        }
-        fn path(&self) -> &Path {
-            Path::new("package.json")
-        }
-        fn relative_path(&self) -> &Path {
-            Path::new("package.json")
-        }
-        async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
-            Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-        fn language(&self) -> Language {
-            Language::Node
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            static EMPTY: std::sync::LazyLock<HashSet<String>> =
-                std::sync::LazyLock::new(HashSet::new);
-            &EMPTY
-        }
-        fn add_dependency(&mut self, _dep: &str) {}
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
-        }
-        // test mock — name mutation not exercised
-        fn set_name(&mut self, _name: String) {}
-        fn default_publish_command(&self) -> String {
-            "echo test".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo test --dry-run".to_string())
-        }
-    }
 
     #[test]
     fn test_mock_prompter_default() {
@@ -314,30 +256,60 @@ mod tests {
     #[case(true, 100)]
     #[case(false, 0)]
     fn test_score_project(#[case] changed: bool, #[case] expected: i64) {
-        let project = Project::Package(Box::new(MockTestPackage::new("pkg", changed)));
+        let mut pkg = MockPackage::new(
+            Some("pkg"),
+            Some("1.0.0"),
+            "package.json",
+            "package.json",
+            Language::Node,
+        );
+        pkg.is_changed = changed;
+        let project = Project::Package(Box::new(pkg));
         assert_eq!(score_project(&project), expected);
     }
 
     #[test]
     fn test_format_selected_projects_empty() {
         let projects: Vec<&Project> = vec![];
-        assert_eq!(format_selected_projects(&projects), "");
+        assert_eq!(format_selected_projects(projects.iter().copied()), "");
     }
 
     #[test]
     fn test_format_selected_projects_single() {
-        let project = Project::Package(Box::new(MockTestPackage::new("my-app", false)));
+        let pkg = MockPackage::new(
+            Some("my-app"),
+            Some("1.0.0"),
+            "package.json",
+            "package.json",
+            Language::Node,
+        );
+        let project = Project::Package(Box::new(pkg));
         let projects = vec![&project];
-        let result = format_selected_projects(&projects);
+        let result = format_selected_projects(projects.iter().copied());
         assert!(result.contains("my-app"));
     }
 
     #[test]
     fn test_format_selected_projects_multiple() {
-        let p1 = Project::Package(Box::new(MockTestPackage::new("app-a", true)));
-        let p2 = Project::Package(Box::new(MockTestPackage::new("app-b", false)));
+        let mut pkg1 = MockPackage::new(
+            Some("app-a"),
+            Some("1.0.0"),
+            "package.json",
+            "package.json",
+            Language::Node,
+        );
+        pkg1.is_changed = true;
+        let p1 = Project::Package(Box::new(pkg1));
+        let pkg2 = MockPackage::new(
+            Some("app-b"),
+            Some("1.0.0"),
+            "package.json",
+            "package.json",
+            Language::Node,
+        );
+        let p2 = Project::Package(Box::new(pkg2));
         let projects = vec![&p1, &p2];
-        let result = format_selected_projects(&projects);
+        let result = format_selected_projects(projects.iter().copied());
         assert!(result.contains('\n'));
         let lines: Vec<&str> = result.lines().collect();
         assert_eq!(lines.len(), 2);

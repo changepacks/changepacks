@@ -842,4 +842,139 @@ mod tests {
         // line2 should contain v2.0.0 (project2's version)
         assert!(line2.contains("2.0.0"));
     }
+
+    // --- version_display_with_update tests ---
+
+    #[test]
+    fn test_version_display_with_update_empty_map() {
+        // Case (a): empty update_map → returns plain version display like "v1.0.0"
+        let pkg = MockPackage::new(
+            Some("my-pkg"),
+            Some("1.0.0"),
+            "/repo/pkg/package.json",
+            "pkg/package.json",
+            Language::Node,
+        );
+        let project = Project::Package(Box::new(pkg));
+        let repo_root = Path::new("/repo");
+        let update_map = HashMap::new();
+
+        let result = version_display_with_update(&project, repo_root, &update_map).unwrap();
+        assert_eq!(result, "v1.0.0");
+    }
+
+    #[test]
+    fn test_version_display_with_update_key_miss() {
+        // Case (b): NON-EMPTY map whose keys do NOT include this project's relative path
+        // → still plain "v1.0.0"
+        let pkg = MockPackage::new(
+            Some("my-pkg"),
+            Some("1.0.0"),
+            "/repo/pkg/package.json",
+            "pkg/package.json",
+            Language::Node,
+        );
+        let project = Project::Package(Box::new(pkg));
+        let repo_root = Path::new("/repo");
+        let mut update_map = HashMap::new();
+        // Key the map by a DIFFERENT relative path
+        update_map.insert(
+            PathBuf::from("other/package.json"),
+            (UpdateType::Minor, vec![]),
+        );
+
+        let result = version_display_with_update(&project, repo_root, &update_map).unwrap();
+        assert_eq!(result, "v1.0.0");
+    }
+
+    #[test]
+    fn test_version_display_with_update_key_hit_minor() {
+        // Case (c): map keyed by this project's relative path with UpdateType::Minor
+        // → display contains "v1.0.0 → v1.1.0"
+        let pkg = MockPackage::new(
+            Some("my-pkg"),
+            Some("1.0.0"),
+            "/repo/pkg/package.json",
+            "pkg/package.json",
+            Language::Node,
+        );
+        let project = Project::Package(Box::new(pkg));
+        let repo_root = Path::new("/repo");
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("pkg/package.json"),
+            (UpdateType::Minor, vec![]),
+        );
+
+        let result = version_display_with_update(&project, repo_root, &update_map).unwrap();
+        assert_eq!(result, "v1.0.0 → v1.1.0");
+    }
+
+    #[test]
+    fn test_version_display_with_update_key_hit_major() {
+        // Verify the display format works for other update types too
+        let pkg = MockPackage::new(
+            Some("my-pkg"),
+            Some("1.0.0"),
+            "/repo/pkg/package.json",
+            "pkg/package.json",
+            Language::Node,
+        );
+        let project = Project::Package(Box::new(pkg));
+        let repo_root = Path::new("/repo");
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("pkg/package.json"),
+            (UpdateType::Major, vec![]),
+        );
+
+        let result = version_display_with_update(&project, repo_root, &update_map).unwrap();
+        assert_eq!(result, "v1.0.0 → v2.0.0");
+    }
+
+    #[test]
+    fn test_version_display_with_update_key_hit_patch() {
+        // Verify the display format works for patch updates
+        let pkg = MockPackage::new(
+            Some("my-pkg"),
+            Some("1.0.0"),
+            "/repo/pkg/package.json",
+            "pkg/package.json",
+            Language::Node,
+        );
+        let project = Project::Package(Box::new(pkg));
+        let repo_root = Path::new("/repo");
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("pkg/package.json"),
+            (UpdateType::Patch, vec![]),
+        );
+
+        let result = version_display_with_update(&project, repo_root, &update_map).unwrap();
+        assert_eq!(result, "v1.0.0 → v1.0.1");
+    }
+
+    #[test]
+    fn test_version_display_with_update_path_outside_repo_root() {
+        // Case (d): project path outside repo_root with a NON-EMPTY map
+        // → Err (from get_relative_path_ref)
+        let pkg = MockPackage::new(
+            Some("my-pkg"),
+            Some("1.0.0"),
+            "/other/pkg/package.json",
+            "pkg/package.json",
+            Language::Node,
+        );
+        let project = Project::Package(Box::new(pkg));
+        let repo_root = Path::new("/repo");
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("pkg/package.json"),
+            (UpdateType::Minor, vec![]),
+        );
+
+        let result = version_display_with_update(&project, repo_root, &update_map);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not within"));
+    }
 }
