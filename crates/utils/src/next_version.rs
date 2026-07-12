@@ -109,10 +109,20 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     // Rebuild via `format!` — one allocation for the result string, no
     // per-part heap traffic. Lower components reset to `0` for Major /
     // Minor bumps, matching the previous "reset lower parts to 0" loop.
+    //
+    // Guard each increment with `checked_add(1)`: a component of exactly
+    // `u64::MAX` (18446744073709551615) parses fine and clears every guard
+    // above, so a bare `+ 1` would debug-panic on overflow or silently wrap
+    // to `0` in release (e.g. a Major bump of `18446744073709551615.0.0`
+    // yielding `0.0.0`, a silently wrong version). Route the overflow through
+    // the SAME `invalid_version` constructor as the parse/shape errors so the
+    // function honors its documented "invalid version format" contract for
+    // every structurally-valid input, from one place — no second error path.
+    let bump = |n: u64| n.checked_add(1).ok_or_else(|| invalid_version(version));
     let mut result = match update_type {
-        UpdateType::Major => format!("{}.0.0", major_num + 1),
-        UpdateType::Minor => format!("{}.{}.0", major_num, minor_num + 1),
-        UpdateType::Patch => format!("{}.{}.{}", major_num, minor_num, patch_num + 1),
+        UpdateType::Major => format!("{}.0.0", bump(major_num)?),
+        UpdateType::Minor => format!("{}.{}.0", major_num, bump(minor_num)?),
+        UpdateType::Patch => format!("{}.{}.{}", major_num, minor_num, bump(patch_num)?),
     };
 
     if let Some(p) = plus_part {
@@ -174,5 +184,24 @@ mod tests {
     fn test_next_version_invalid_input(#[case] version: &str, #[case] update_type: UpdateType) {
         let result = next_version(version, update_type);
         assert!(result.is_err());
+    }
+
+    // A component of exactly `u64::MAX` (18446744073709551615) parses cleanly
+    // and clears every shape / `.` / `+` guard, so the ONLY thing between it
+    // and a debug-build overflow panic (or a release-build silent wrap to `0`,
+    // e.g. a Major bump of `18446744073709551615.0.0` yielding `0.0.0`) is the
+    // `checked_add(1)` guard on the bumped component. Each update type bumps a
+    // DIFFERENT component, so the boundary must be rejected for whichever
+    // component that update actually increments — the other two stay small and
+    // valid to prove the error comes from the overflow guard, not the parse.
+    #[rstest]
+    #[case("18446744073709551615.0.0", UpdateType::Major)]
+    #[case("1.18446744073709551615.0", UpdateType::Minor)]
+    #[case("1.0.18446744073709551615", UpdateType::Patch)]
+    fn test_next_version_component_overflow_is_err(
+        #[case] version: &str,
+        #[case] update_type: UpdateType,
+    ) {
+        assert!(next_version(version, update_type).is_err());
     }
 }
