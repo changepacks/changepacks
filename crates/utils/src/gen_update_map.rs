@@ -8,9 +8,8 @@ use std::{
 use anyhow::{Context, Result};
 use changepacks_core::{ChangePackLog, ChangePackResultLog, Config, Project, UpdateType};
 use glob::Pattern;
-use tokio::fs::read_to_string;
 
-use crate::{collect_changepack_log_paths, get_relative_path};
+use crate::{collect_changepack_log_paths, get_relative_path, read_log_bodies};
 
 /// Generate update map from changepack logs
 ///
@@ -23,9 +22,10 @@ pub async fn gen_update_map(
     // Two-phase reader (mirrors `clear_update_logs`):
     //   Phase 1: single directory walk to collect the paths of every matching
     //            `changepack_log_*.json` entry — pure name filtering, no IO body.
-    //   Phase 2: `futures::future::try_join_all` reads every body concurrently,
-    //            collapsing N sequential `read_to_string` round-trips into one
-    //            parallel batch on IO-bound systems.
+    //   Phase 2: the shared `read_log_bodies` helper reads every body
+    //            concurrently via `try_join_all`, collapsing N sequential
+    //            `read_to_string` round-trips into one parallel batch on
+    //            IO-bound systems.
     //   Phase 3: the existing sequential parse+merge loop is unchanged. Final
     //            output ordering was never derived from filesystem order — the
     //            `ret.0 > *update_type` guard is driven by `UpdateType::Ord` and
@@ -42,12 +42,7 @@ pub async fn gen_update_map(
     // identical map contents.
     let mut update_map: HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)> =
         HashMap::with_capacity(paths.len());
-    let bodies: Vec<String> = futures::future::try_join_all(paths.iter().map(|path| async move {
-        read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read changepack log {}", path.display()))
-    }))
-    .await?;
+    let bodies = read_log_bodies(&paths, "changepack log").await?;
     // Zip `paths` with `bodies` so a malformed `changepack_log_*.json`
     // surfaces WHICH file failed rather than a bare `serde_json` error.
     // Users then jump straight to the offender instead of grepping every

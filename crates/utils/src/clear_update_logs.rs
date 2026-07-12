@@ -4,9 +4,9 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use tokio::fs::{read_to_string, remove_file, write};
+use tokio::fs::{remove_file, write};
 
-use crate::collect_changepack_log_paths;
+use crate::{collect_changepack_log_paths, read_log_bodies};
 
 /// Remove all update logs without confirmation
 ///
@@ -60,19 +60,15 @@ pub async fn clear_applied_update_logs(
     // Two-phase read, mirroring `gen_update_map`:
     //   Phase 1: single directory walk to collect the paths of every matching
     //            `changepack_log_*.json` entry — pure name filtering, no IO body.
-    //   Phase 2: `futures::future::try_join_all` reads every body concurrently,
-    //            collapsing N sequential `read_to_string` round-trips into one
-    //            parallel batch on IO-bound systems.
+    //   Phase 2: the shared `read_log_bodies` helper reads every body
+    //            concurrently via `try_join_all`, collapsing N sequential
+    //            `read_to_string` round-trips into one parallel batch on
+    //            IO-bound systems.
     //   Phase 3: the existing sequential parse+retain+remove-or-rewrite loop is
     //            unchanged — it must remain sequential because each file may be
     //            removed or rewritten depending on the `applied_paths` set.
     let paths = collect_changepack_log_paths(changepacks_dir).await?;
-    let bodies: Vec<String> = futures::future::try_join_all(paths.iter().map(|path| async move {
-        read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read update log {}", path.display()))
-    }))
-    .await?;
+    let bodies = read_log_bodies(&paths, "update log").await?;
     for (path, content) in paths.iter().zip(bodies) {
         let mut value: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse update log {}", path.display()))?;

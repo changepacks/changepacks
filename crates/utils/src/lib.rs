@@ -67,7 +67,7 @@ mod split_version;
 mod test_support;
 mod trailing_newline;
 
-pub(crate) use is_changepack_log::collect_changepack_log_paths;
+pub(crate) use is_changepack_log::{collect_changepack_log_paths, read_log_bodies};
 
 // Re-export the concrete `gix` handle type so downstream crates (e.g.
 // `changepacks-cli`) can hold onto it (e.g. caching on `CommandContext`)

@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use tokio::fs::read_dir;
+use tokio::fs::{read_dir, read_to_string};
 
 /// Returns `true` iff `file_name` names a changepack log JSON file — i.e. it
 /// is NOT `config.json` and its extension matches `.json` case-insensitively.
@@ -60,6 +60,28 @@ pub(crate) async fn collect_changepack_log_paths(changepacks_dir: &Path) -> Resu
         }
     }
     Ok(paths)
+}
+
+/// Concurrently read the bodies of every collected changepack-log path.
+///
+/// Shared by [`crate::gen_update_map`] (the reader) and
+/// [`crate::clear_applied_update_logs`] (the selective cleaner): both need the
+/// full set of log bodies read in one `try_join_all` batch and differ ONLY in
+/// the human-facing `label` woven into the error context (`"changepack log"`
+/// vs `"update log"`). Threading `label` keeps each caller's error message
+/// byte-identical while collapsing the previously copy-pasted read loop into a
+/// single well-named helper.
+///
+/// # Errors
+/// Returns the first read failure, contextualized with `label` and the
+/// offending path — exactly as the two inlined loops did before.
+pub(crate) async fn read_log_bodies(paths: &[PathBuf], label: &str) -> Result<Vec<String>> {
+    futures::future::try_join_all(paths.iter().map(|path| async move {
+        read_to_string(path)
+            .await
+            .with_context(|| format!("Failed to read {label} {}", path.display()))
+    }))
+    .await
 }
 
 #[cfg(test)]
