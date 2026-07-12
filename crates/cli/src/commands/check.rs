@@ -533,33 +533,15 @@ mod tests {
         assert!(cli.check.tree);
     }
 
-    // Discriminant helper so `matches!(...)` becomes a case-parameterizable
-    // value comparison. `FilterOptions` derives `Debug` + `Clone` but not
-    // `PartialEq`, so we bounce through this shadow enum.
-    #[derive(Debug, PartialEq, Eq)]
-    enum FilterKind {
-        Workspace,
-        Package,
-    }
-
-    impl From<&FilterOptions> for FilterKind {
-        fn from(f: &FilterOptions) -> Self {
-            match f {
-                FilterOptions::Workspace => Self::Workspace,
-                FilterOptions::Package => Self::Package,
-            }
-        }
-    }
-
     // `--filter` (long) and `-f` (short) both parse into `Some(FilterOptions::X)`.
     #[rstest]
-    #[case(&["test", "--filter", "workspace"], FilterKind::Workspace)]
-    #[case(&["test", "--filter", "package"], FilterKind::Package)]
-    #[case(&["test", "-f", "workspace"], FilterKind::Workspace)]
-    fn test_check_args_filter_flag(#[case] args: &[&str], #[case] expected: FilterKind) {
+    #[case(&["test", "--filter", "workspace"], FilterOptions::Workspace)]
+    #[case(&["test", "--filter", "package"], FilterOptions::Package)]
+    #[case(&["test", "-f", "workspace"], FilterOptions::Workspace)]
+    fn test_check_args_filter_flag(#[case] args: &[&str], #[case] expected: FilterOptions) {
         let cli = TestCli::parse_from(args);
         let filter = cli.check.filter.expect("filter should be present");
-        assert_eq!(FilterKind::from(&filter), expected);
+        assert_eq!(filter, expected);
     }
 
     #[test]

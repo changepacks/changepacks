@@ -3,7 +3,7 @@ use clap::ValueEnum;
 /// CLI output format selection.
 ///
 /// Controls whether commands print human-readable output or JSON for CI integration.
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FormatOptions {
     /// JSON format for CI/CD pipelines
     #[value(name = "json")]
@@ -46,11 +46,9 @@ mod tests {
     }
 
     #[test]
-    fn test_format_options_clone() {
-        let json = FormatOptions::Json;
-        let stdout = FormatOptions::Stdout;
-
-        assert!(matches!(json.clone(), FormatOptions::Json));
-        assert!(matches!(stdout.clone(), FormatOptions::Stdout));
+    fn test_format_options_eq() {
+        assert_eq!(FormatOptions::Json, FormatOptions::Json);
+        assert_eq!(FormatOptions::Stdout, FormatOptions::Stdout);
+        assert_ne!(FormatOptions::Json, FormatOptions::Stdout);
     }
 }

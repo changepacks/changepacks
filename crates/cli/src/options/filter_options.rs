@@ -4,7 +4,7 @@ use clap::ValueEnum;
 /// CLI filter for workspace-only or package-only listing.
 ///
 /// Used by the check command to filter projects by type.
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FilterOptions {
     /// Show only workspace projects
     Workspace,
