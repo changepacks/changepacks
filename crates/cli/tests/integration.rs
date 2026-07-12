@@ -820,6 +820,51 @@ async fn test_cli_update_json_format() {
     );
 }
 
+#[tokio::test]
+#[serial]
+async fn test_cli_update_json_reports_pre_bump_version() {
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_test.json",
+            r#"{"changes": {"package.json": "Patch"}, "note": "test", "date": "2025-01-01T00:00:00Z"}"#,
+        ),
+        ("package.json", r#"{"name": "test", "version": "1.0.0"}"#),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/cli has a workspace root two levels up")
+        .join("Cargo.toml");
+
+    let output = std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"))
+        .args(["run", "--quiet", "-p", "changepacks", "--manifest-path"])
+        .arg(&workspace_manifest)
+        .args(["--", "update", "--yes", "--format", "json"])
+        .current_dir(&temp_path)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("failed to run the changepacks binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "update --format json exited non-zero ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    assert!(
+        stdout.contains(r#""version": "1.0.0""#),
+        "JSON output must report the pre-bump version; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains(r#""nextVersion": "1.0.1""#),
+        "JSON output must report the single-bumped next version; got:\n{stdout}"
+    );
+}
+
 // Test update with language filter and JSON format clears applied changepack logs
 #[tokio::test]
 #[serial]

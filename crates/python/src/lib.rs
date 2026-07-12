@@ -25,8 +25,7 @@ use std::path::Path;
 use tokio::fs::read_to_string;
 
 use anyhow::{Context, Result};
-use changepacks_core::UpdateType;
-use changepacks_utils::{finalize_content, next_version_or_default};
+use changepacks_utils::finalize_content;
 use tokio::fs::write;
 use toml_edit::DocumentMut;
 
@@ -43,39 +42,6 @@ pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String
         .parse::<DocumentMut>()
         .with_context(|| format!("Failed to parse pyproject.toml {}", path.display()))?;
     Ok((raw, parsed))
-}
-
-/// Shared body for `PythonPackage::update_version` and
-/// `PythonWorkspace::update_version`.
-///
-/// Consolidates the "read current version, compute next, write pyproject,
-/// stash new version on `self`" 5-line sequence — previously duplicated
-/// between `PythonPackage` and `PythonWorkspace` — into
-/// ONE source of truth. Both trait impls now delegate here so a future
-/// rewording of the "reserve `0.0.0` when unversioned" fallback lands in
-/// exactly one place.
-///
-/// A shared helper (rather than a parameterized `macro_rules!` producing
-/// `async fn`) is required because `#[async_trait]` runs BEFORE
-/// declarative-macro expansion — see the twin helper in
-/// `crates/dart/src/lib.rs` for the full E0195 rationale.
-///
-/// # Errors
-/// Returns error if the version update or pyproject write fails.
-pub(crate) async fn update_version_from_fields(
-    version: &mut Option<String>,
-    path: &Path,
-    update_type: UpdateType,
-) -> Result<()> {
-    // Two-line "reserve `0.0.0` when unversioned" prelude consolidated
-    // into `changepacks_utils::next_version_or_default` so the fallback
-    // policy lives in ONE place across every language crate. See that
-    // helper's doc for the Java/Rust carve-outs.
-    let new_version = next_version_or_default(version.as_deref(), update_type)?;
-
-    write_pyproject_version(path, &new_version).await?;
-    *version = Some(new_version);
-    Ok(())
 }
 
 /// Update `pyproject.toml` at `path` to set `[project].version` to
@@ -96,15 +62,81 @@ pub(crate) async fn update_version_from_fields(
 /// fails.
 pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> Result<()> {
     let (pyproject_toml_raw, mut pyproject_toml) = read_and_parse_pyproject_toml(path).await?;
+    if pyproject_toml
+        .get("project")
+        .is_some_and(|project| !project.is_table_like())
+    {
+        anyhow::bail!(
+            "pyproject.toml {} has a non-table [project] item",
+            path.display()
+        );
+    }
     if pyproject_toml.get("project").is_none() {
         pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
     pyproject_toml["project"]["version"] = new_version.into();
     write(
         path,
-        finalize_content(&pyproject_toml.to_string(), &pyproject_toml_raw),
+        finalize_content(pyproject_toml.to_string(), &pyproject_toml_raw),
     )
     .await
     .with_context(|| format!("Failed to write pyproject.toml {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_write_pyproject_version_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(&pyproject_toml, "[project]\nversion = \"1.0.0\"\n").unwrap();
+
+        // The read succeeds (readonly still permits reads); it is the
+        // write-back that must fail, so flip the readonly bit after seeding.
+        let mut permissions = fs::metadata(&pyproject_toml).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&pyproject_toml, permissions).unwrap();
+
+        // A NEW version guarantees the write is actually attempted against the
+        // readonly file rather than being short-circuited as an unchanged no-op.
+        let result = write_pyproject_version(&pyproject_toml, "2.0.0").await;
+
+        // Restore write permission BEFORE asserting so `TempDir` cleanup
+        // succeeds even if an assertion panics.
+        let mut permissions = fs::metadata(&pyproject_toml).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&pyproject_toml, permissions).unwrap();
+
+        let err = result.expect_err("write to a readonly pyproject.toml must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_pyproject_version_non_table_project_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(&pyproject_toml, "project = 3\n").unwrap();
+
+        let err = write_pyproject_version(&pyproject_toml, "2.0.0")
+            .await
+            .expect_err("non-table project item must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+        assert!(
+            chain.contains("non-table [project]"),
+            "error chain should mention the non-table project item, got: {chain}"
+        );
+    }
 }

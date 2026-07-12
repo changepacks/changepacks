@@ -24,16 +24,12 @@ impl Package for PythonPackage {
     // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
 
-    // `update_version` shares its body with `PythonWorkspace` via the
-    // shared `update_version_from_fields` helper in `crates/python/src/lib.rs`
-    // so the "reserve `0.0.0`" fallback and `next_version` computation live
-    // in ONE place. A pyproject.toml with only `[build-system]` (no
-    // `[project]`) is a valid PEP 517 shape, so the helper creates the
-    // `[project]` table if missing. See the helper's doc comment for why a
-    // `macro_rules!` producing `async fn` is incompatible with `#[async_trait]`
-    // (E0195 lifetime mismatch).
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        crate::update_version_from_fields(&mut self.version, &self.path, update_type).await
+        let path = &self.path;
+        changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
+            crate::write_pyproject_version(path, new).await
+        })
+        .await
     }
 
     // Fixed language accessor.

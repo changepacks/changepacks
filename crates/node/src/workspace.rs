@@ -24,14 +24,12 @@ impl Workspace for NodeWorkspace {
     // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
 
-    // `update_version` shares its byte-identical body with `NodePackage`.
-    // Consolidated via the shared `update_version_from_fields` helper in
-    // `crates/node/src/lib.rs` so the "reserve `0.0.0`" fallback lives in
-    // ONE place. See the helper's doc comment for why a `macro_rules!`
-    // producing `async fn` is incompatible with `#[async_trait]` (E0195
-    // lifetime mismatch).
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        crate::update_version_from_fields(&mut self.version, &self.path, update_type).await
+        let path = &self.path;
+        changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
+            crate::write_package_json_version(path, new).await
+        })
+        .await
     }
 
     // Fixed language accessor.

@@ -15,8 +15,6 @@ mod xml_utils;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use changepacks_core::UpdateType;
-use changepacks_utils::next_version_or_default;
 use tokio::fs::{read_to_string, write};
 
 pub use finder::CSharpProjectFinder;
@@ -29,39 +27,6 @@ pub use finder::CSharpProjectFinder;
 /// actual dry-run flow lives in the RAII-managed `dry_run_publish`
 /// override (`crate::dry_run::resolve_and_run_dry_run`).
 pub(crate) const PUBLISH_COMMAND: &str = "dotnet pack -c Release && dotnet nuget push";
-
-/// Shared body for `CSharpPackage::update_version` and
-/// `CSharpWorkspace::update_version`.
-///
-/// Consolidates the "read current version, compute next, write csproj,
-/// stash new version on `self`" 5-line sequence — previously duplicated
-/// byte-for-byte between `CSharpPackage` and `CSharpWorkspace` — into ONE
-/// source of truth. Both trait impls now delegate here so a future
-/// rewording of the "reserve `0.0.0` when unversioned" fallback or the
-/// `has_version` derivation lands in exactly one place.
-///
-/// A shared helper (rather than a `macro_rules!` mirroring
-/// `impl_node_publish_wiring!()`) is required because `#[async_trait]`
-/// runs BEFORE declarative-macro expansion — see the twin helper in
-/// `crates/dart/src/lib.rs` for the full E0195 rationale.
-///
-/// # Errors
-/// Returns error if the version update or csproj write fails.
-pub(crate) async fn update_version_from_fields(
-    version: &mut Option<String>,
-    path: &Path,
-    update_type: UpdateType,
-) -> Result<()> {
-    // Two-line "reserve `0.0.0` when unversioned" prelude consolidated
-    // into `changepacks_utils::next_version_or_default` so the fallback
-    // policy lives in ONE place across every language crate. See that
-    // helper's doc for the Java/Rust carve-outs.
-    let new_version = next_version_or_default(version.as_deref(), update_type)
-        .with_context(|| format!("Failed to compute next version for {}", path.display()))?;
-    write_csproj_version(path, &new_version, version.is_some()).await?;
-    *version = Some(new_version);
-    Ok(())
-}
 
 /// Update the `<Version>` element of the `.csproj` XML at `path` to
 /// `new_version`, delegating to [`xml_utils::update_version_in_xml`] to
@@ -96,6 +61,7 @@ pub(crate) async fn write_csproj_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use changepacks_core::UpdateType;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -129,12 +95,17 @@ mod tests {
     /// errors BEFORE any file I/O, so no on-disk fixture is needed and the
     /// dummy path is never touched.
     #[tokio::test]
-    async fn test_update_version_from_fields_bump_error_includes_path() {
+    async fn test_bump_version_with_bump_error_includes_path() {
         let manifest = Path::new("/nonexistent/csharp-bump/Example.csproj");
         let mut version = Some("abc".to_string());
-        let err = update_version_from_fields(&mut version, manifest, UpdateType::Patch)
-            .await
-            .expect_err("a malformed version must fail the bump");
+        let err = changepacks_utils::bump_version_with(
+            &mut version,
+            manifest,
+            UpdateType::Patch,
+            async |_| Ok(()),
+        )
+        .await
+        .expect_err("a malformed version must fail the bump");
         let chain = format!("{err:#}");
         assert!(
             chain.contains(&manifest.display().to_string()),

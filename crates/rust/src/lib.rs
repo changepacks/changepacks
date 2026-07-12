@@ -86,10 +86,19 @@ pub(crate) async fn read_and_parse_cargo_toml(path: &Path) -> Result<(String, Do
 /// or the write fails.
 pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) -> Result<()> {
     let (cargo_toml_raw, mut cargo_toml) = read_and_parse_cargo_toml(path).await?;
+    if cargo_toml
+        .get("package")
+        .is_some_and(|package| !package.is_table_like())
+    {
+        anyhow::bail!(
+            "Cargo.toml {} has a non-table [package] item",
+            path.display()
+        );
+    }
     cargo_toml["package"]["version"] = new_version.into();
     write(
         path,
-        finalize_content(&cargo_toml.to_string(), &cargo_toml_raw),
+        finalize_content(cargo_toml.to_string(), &cargo_toml_raw),
     )
     .await
     .with_context(|| format!("Failed to write Cargo.toml {}", path.display()))?;
@@ -119,4 +128,61 @@ pub(crate) fn is_workspace_marker(item: &toml_edit::Item) -> bool {
         .and_then(|t| t.get("workspace"))
         .and_then(|w| w.as_bool())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_write_cargo_package_version_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, "[package]\nversion = \"1.0.0\"\n").unwrap();
+
+        // The read succeeds (readonly still permits reads); it is the
+        // write-back that must fail, so flip the readonly bit after seeding.
+        let mut permissions = fs::metadata(&cargo_toml).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&cargo_toml, permissions).unwrap();
+
+        // A NEW version guarantees the write is actually attempted against the
+        // readonly file rather than being short-circuited as an unchanged no-op.
+        let result = write_cargo_package_version(&cargo_toml, "2.0.0").await;
+
+        // Restore write permission BEFORE asserting so `TempDir` cleanup
+        // succeeds even if an assertion panics.
+        let mut permissions = fs::metadata(&cargo_toml).unwrap().permissions();
+        permissions.set_readonly(false);
+        fs::set_permissions(&cargo_toml, permissions).unwrap();
+
+        let err = result.expect_err("write to a readonly Cargo.toml must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&cargo_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_cargo_package_version_non_table_package_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, "package = 3\n").unwrap();
+
+        let err = write_cargo_package_version(&cargo_toml, "2.0.0")
+            .await
+            .expect_err("non-table package item must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&cargo_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+        assert!(
+            chain.contains("non-table [package]"),
+            "error chain should mention the non-table package item, got: {chain}"
+        );
+    }
 }

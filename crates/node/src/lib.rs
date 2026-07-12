@@ -15,43 +15,10 @@ pub use finder::NodeProjectFinder;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use changepacks_core::{Config, Language, UpdateType, is_regular_file};
-use changepacks_utils::{detect_indent_str, finalize_content, next_version_or_default};
+use changepacks_core::{Config, Language, is_regular_file};
+use changepacks_utils::{detect_indent_str, finalize_content};
 use serde::Serialize;
 use tokio::fs::{read_to_string, write};
-
-/// Shared body for `NodePackage::update_version` and
-/// `NodeWorkspace::update_version`.
-///
-/// Consolidates the "read current version, compute next, write
-/// package.json, stash new version on `self`" 5-line sequence —
-/// previously duplicated (semantically identical) between `NodePackage`
-/// and `NodeWorkspace` — into ONE source of truth. Both trait impls now
-/// delegate here so a future rewording of the "reserve `0.0.0` when
-/// unversioned" fallback lands in exactly one place.
-///
-/// A shared helper (rather than a `macro_rules!` mirroring
-/// `impl_node_publish_wiring!()`) is required because `#[async_trait]`
-/// runs BEFORE declarative-macro expansion — see the twin helper in
-/// `crates/dart/src/lib.rs` for the full E0195 rationale.
-///
-/// # Errors
-/// Returns error if the version update or package.json write fails.
-pub(crate) async fn update_version_from_fields(
-    version: &mut Option<String>,
-    path: &Path,
-    update_type: UpdateType,
-) -> Result<()> {
-    // Two-line "reserve `0.0.0` when unversioned" prelude consolidated
-    // into `changepacks_utils::next_version_or_default` so the fallback
-    // policy lives in ONE place across every language crate. See that
-    // helper's doc for the Java/Rust carve-outs.
-    let new_version = next_version_or_default(version.as_deref(), update_type)
-        .with_context(|| format!("Failed to compute next version for {}", path.display()))?;
-    write_package_json_version(path, &new_version).await?;
-    *version = Some(new_version);
-    Ok(())
-}
 
 /// Read and parse a `package.json` file, returning both the raw content and
 /// the parsed JSON value.
@@ -86,7 +53,18 @@ pub(crate) async fn read_and_parse_package_json(
 pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -> Result<()> {
     let (package_json_raw, mut package_json) = read_and_parse_package_json(path).await?;
     let indent_str = detect_indent_str(&package_json_raw);
-    package_json["version"] = serde_json::Value::String(new_version.to_string());
+    let Some(obj) = package_json.as_object_mut() else {
+        anyhow::bail!(
+            "package.json {} does not have a top-level JSON object",
+            path.display()
+        );
+    };
+    let new_value = serde_json::Value::String(new_version.to_string());
+    if let Some(v) = obj.get_mut("version") {
+        *v = new_value;
+    } else {
+        obj.insert("version".to_string(), new_value);
+    }
     let ind = indent_str.as_bytes();
     let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);
     let writer = Vec::with_capacity(package_json_raw.len());
@@ -450,6 +428,7 @@ pub(crate) async fn run_dry_run_publish_for_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use changepacks_core::UpdateType;
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
@@ -727,6 +706,30 @@ mod tests {
         );
     }
 
+    /// Regression: a non-object root in `package.json` must fail with an error
+    /// that names the manifest path, rather than panicking via serde_json's
+    /// IndexMut. A `[]` root is valid JSON but degenerate — the error must
+    /// clearly indicate the problem and include the file path.
+    #[tokio::test]
+    async fn test_write_package_json_version_errors_on_non_object_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(&package_json, "[]").unwrap();
+
+        let result = write_package_json_version(&package_json, "1.0.0").await;
+
+        let err = result.expect_err("non-object root must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&package_json.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+        assert!(
+            chain.contains("does not have a top-level JSON object"),
+            "error chain should describe the problem, got: {chain}"
+        );
+    }
+
     // Async parity tests: mirror the sync `test_detect_package_manager` rstest
     // table to ensure async and sync detection remain in sync. A drift between
     // them would ship unnoticed without these tests.
@@ -811,12 +814,17 @@ mod tests {
     /// pattern the read/parse/write helpers in this file already use. The bump
     /// errors BEFORE any file I/O, so no on-disk fixture is needed.
     #[tokio::test]
-    async fn test_update_version_from_fields_bump_error_includes_path() {
+    async fn test_bump_version_with_bump_error_includes_path() {
         let manifest = PathBuf::from("/nonexistent/node-bump/package.json");
         let mut version = Some("abc".to_string());
-        let err = update_version_from_fields(&mut version, &manifest, UpdateType::Patch)
-            .await
-            .expect_err("a malformed version must fail the bump");
+        let err = changepacks_utils::bump_version_with(
+            &mut version,
+            &manifest,
+            UpdateType::Patch,
+            async |_| Ok(()),
+        )
+        .await
+        .expect_err("a malformed version must fail the bump");
         let chain = format!("{err:#}");
         assert!(
             chain.contains(&manifest.display().to_string()),

@@ -48,6 +48,7 @@
 //!   [`get_changepacks_dir`] resolves the `.changepacks` directory path
 //!   from the git repository root.
 
+mod bump_version_with;
 mod clear_update_logs;
 mod detect_indent;
 mod display_update;
@@ -75,6 +76,7 @@ pub(crate) use is_changepack_log::{collect_changepack_log_paths, read_log_bodies
 // wraps every other gix touch point.
 pub use gix::ThreadSafeRepository;
 
+pub use bump_version_with::bump_version_with;
 pub use clear_update_logs::{clear_applied_update_logs, clear_update_logs};
 pub use detect_indent::detect_indent_str;
 pub use display_update::display_update;

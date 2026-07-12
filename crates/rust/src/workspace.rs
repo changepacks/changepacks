@@ -50,6 +50,15 @@ impl Workspace for RustWorkspace {
 
         let (cargo_toml_raw, mut cargo_toml) = crate::read_and_parse_cargo_toml(&self.path).await?;
 
+        if cargo_toml
+            .get("package")
+            .is_some_and(|package| !package.is_table_like())
+        {
+            anyhow::bail!(
+                "Cargo.toml {} has a non-table [package] item",
+                self.path.display()
+            );
+        }
         let has_package = cargo_toml.get("package").is_some();
 
         if has_package {
@@ -174,7 +183,7 @@ impl Workspace for RustWorkspace {
 
         write(
             &self.path,
-            finalize_content(&cargo_toml.to_string(), &cargo_toml_raw),
+            finalize_content(cargo_toml.to_string(), &cargo_toml_raw),
         )
         .await
         .with_context(|| format!("Failed to write Cargo.toml {}", self.path.display()))?;
@@ -293,7 +302,7 @@ impl Workspace for RustWorkspace {
 
         write(
             &self.path,
-            finalize_content(&cargo_toml.to_string(), &cargo_toml_raw),
+            finalize_content(cargo_toml.to_string(), &cargo_toml_raw),
         )
         .await
         .with_context(|| format!("Failed to write Cargo.toml {}", self.path.display()))?;
@@ -399,6 +408,36 @@ version = "1.0.0"
 
         let content = read_to_string(&cargo_toml).await.unwrap();
         assert!(content.contains(&format!("version = \"{expected}\"")));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_non_table_package_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, "package = 3\n").unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let err = workspace
+            .update_version(UpdateType::Minor)
+            .await
+            .expect_err("non-table package item must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&cargo_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+        assert!(
+            chain.contains("non-table [package]"),
+            "error chain should mention the non-table package item, got: {chain}"
+        );
 
         temp_dir.close().unwrap();
     }

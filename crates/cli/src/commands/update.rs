@@ -164,6 +164,47 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         println!("Updates found:");
     }
 
+    // Snapshot applied paths before gen_changepack_result_map drains update_map.
+    //
+    // A workspace-inherited member folded by `merge_workspace_inherited_updates`
+    // is no longer a key in `update_map` (its bump is owned by the workspace
+    // root, whose path IS a key). Without re-adding the member path here,
+    // `clear_applied_update_logs` would retain the member's changepack log and
+    // re-apply it (double-bump) on the next `update`. Re-add each folded member
+    // path IFF its workspace root actually survived the language filter (its
+    // path is still in the applied set), so logs clear in lock-step with the
+    // bump that satisfied them.
+    let applied_paths = language_filter_active.then(|| {
+        let mut set = HashSet::with_capacity(update_map.len() + merged_pairs.len());
+        set.extend(update_map.keys().cloned());
+        for (pkg_path, ws_path) in &merged_pairs {
+            if set.contains(ws_path.as_path()) {
+                set.insert(pkg_path.clone());
+            }
+        }
+        set
+    });
+
+    let json_output = if let FormatOptions::Json = args.format {
+        let update_types: Vec<_> = update_map
+            .iter()
+            .map(|(path, (update_type, _))| (path.clone(), *update_type))
+            .collect();
+        let output = serde_json::to_string_pretty(&gen_changepack_result_map(
+            collect_projects(&project_finders).as_slice(),
+            &ctx.repo_root_path,
+            &mut update_map,
+        )?)?;
+        update_map.extend(
+            update_types
+                .into_iter()
+                .map(|(path, update_type)| (path, (update_type, Vec::new()))),
+        );
+        Some(output)
+    } else {
+        None
+    };
+
     let mut update_projects =
         collect_update_project_muts(&mut project_finders, &update_map, &ctx.repo_root_path)?;
 
@@ -194,36 +235,8 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         }
     }
 
-    // Snapshot applied paths before gen_changepack_result_map drains update_map.
-    //
-    // A workspace-inherited member folded by `merge_workspace_inherited_updates`
-    // is no longer a key in `update_map` (its bump is owned by the workspace
-    // root, whose path IS a key). Without re-adding the member path here,
-    // `clear_applied_update_logs` would retain the member's changepack log and
-    // re-apply it (double-bump) on the next `update`. Re-add each folded member
-    // path IFF its workspace root actually survived the language filter (its
-    // path is still in the applied set), so logs clear in lock-step with the
-    // bump that satisfied them.
-    let applied_paths = language_filter_active.then(|| {
-        let mut set = HashSet::with_capacity(update_map.len() + merged_pairs.len());
-        set.extend(update_map.keys().cloned());
-        for (pkg_path, ws_path) in &merged_pairs {
-            if set.contains(ws_path.as_path()) {
-                set.insert(pkg_path.clone());
-            }
-        }
-        set
-    });
-
-    if let FormatOptions::Json = args.format {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&gen_changepack_result_map(
-                collect_projects(&project_finders).as_slice(),
-                &ctx.repo_root_path,
-                &mut update_map,
-            )?)?
-        );
+    if let Some(json_output) = json_output {
+        println!("{json_output}");
     }
 
     // Clear files
@@ -590,13 +603,7 @@ mod tests {
             self.language
         }
 
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-
-        fn add_dependency(&mut self, dep: &str) {
-            self.dependencies.insert(dep.to_string());
-        }
+        changepacks_core::impl_dependencies_accessors!();
 
         fn default_publish_command(&self) -> String {
             "echo publish".to_string()

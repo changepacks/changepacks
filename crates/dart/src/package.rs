@@ -25,15 +25,13 @@ impl Package for DartPackage {
     // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
 
-    // `update_version` shares its byte-identical body with `DartWorkspace`.
-    // Consolidated via the shared `update_version_from_fields` helper in
-    // `crates/dart/src/lib.rs` so the "reserve `0.0.0`" fallback and the
-    // `existing_version` derivation live in ONE place. A `macro_rules!`
-    // producing an `async fn` (mirroring `impl_node_publish_wiring!()`)
-    // would trip E0195 because `#[async_trait]` runs BEFORE declarative
-    // macro expansion — see `update_version_from_fields`'s doc comment.
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        crate::update_version_from_fields(&mut self.version, &self.path, update_type).await
+        let path = &self.path;
+        let existing_version = self.version.is_some();
+        changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
+            crate::write_pubspec_version(path, new, existing_version).await
+        })
+        .await
     }
 
     // Fixed language accessor.

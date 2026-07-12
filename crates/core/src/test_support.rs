@@ -37,58 +37,76 @@ macro_rules! impl_test_publish_commands {
     };
 }
 
-#[derive(Debug)]
-pub(crate) struct MockPackage {
-    pub(crate) name: Option<String>,
-    pub(crate) version: Option<String>,
-    pub(crate) path: PathBuf,
-    pub(crate) relative_path: PathBuf,
-    pub(crate) language: Language,
-    pub(crate) dependencies: HashSet<String>,
-    pub(crate) is_changed: bool,
+/// Declarative macro to generate a mock struct and its inherent impl.
+///
+/// Expands to:
+/// - A `#[derive(Debug)]` struct with the standard 7 fields
+/// - An inherent impl with four constructors: `new`, `with_paths`, `same_path`, `with_language`
+///
+/// The only parameterization is the type name and the default manifest path literal
+/// (e.g., `/test/Cargo.toml` for MockPackage, `/test/package.json` for MockWorkspace).
+macro_rules! define_mock {
+    ($type_name:ident, $default_path:expr, $default_relative:expr) => {
+        #[derive(Debug)]
+        pub(crate) struct $type_name {
+            pub(crate) name: Option<String>,
+            pub(crate) version: Option<String>,
+            pub(crate) path: PathBuf,
+            pub(crate) relative_path: PathBuf,
+            pub(crate) language: Language,
+            pub(crate) dependencies: HashSet<String>,
+            pub(crate) is_changed: bool,
+        }
+
+        impl $type_name {
+            /// Construct with an explicit `name` / `version` / `language`, defaulting
+            /// the paths to the type's default manifest path.
+            pub(crate) fn new(
+                name: Option<&str>,
+                version: Option<&str>,
+                language: Language,
+            ) -> Self {
+                Self {
+                    name: name.map(String::from),
+                    version: version.map(String::from),
+                    path: PathBuf::from($default_path),
+                    relative_path: PathBuf::from($default_relative),
+                    language,
+                    dependencies: HashSet::new(),
+                    is_changed: false,
+                }
+            }
+
+            /// Construct with an explicit `path` / `relative_path`, defaulting the
+            /// version to `1.0.0` and the language to `Node`.
+            pub(crate) fn with_paths(name: Option<&str>, path: &str, relative_path: &str) -> Self {
+                Self {
+                    name: name.map(String::from),
+                    version: Some("1.0.0".to_string()),
+                    path: PathBuf::from(path),
+                    relative_path: PathBuf::from(relative_path),
+                    language: Language::Node,
+                    dependencies: HashSet::new(),
+                    is_changed: false,
+                }
+            }
+
+            /// Construct with a required `name` and a single `path` reused as both
+            /// `path` and `relative_path` (version `1.0.0`, language `Node`).
+            pub(crate) fn same_path(name: &str, path: &str) -> Self {
+                Self::with_paths(Some(name), path, path)
+            }
+
+            /// Builder override for the mock's language.
+            pub(crate) fn with_language(mut self, language: Language) -> Self {
+                self.language = language;
+                self
+            }
+        }
+    };
 }
 
-impl MockPackage {
-    /// Construct with an explicit `name` / `version` / `language`, defaulting
-    /// the paths to `/test/Cargo.toml` (relative `Cargo.toml`).
-    pub(crate) fn new(name: Option<&str>, version: Option<&str>, language: Language) -> Self {
-        Self {
-            name: name.map(String::from),
-            version: version.map(String::from),
-            path: PathBuf::from("/test/Cargo.toml"),
-            relative_path: PathBuf::from("Cargo.toml"),
-            language,
-            dependencies: HashSet::new(),
-            is_changed: false,
-        }
-    }
-
-    /// Construct with an explicit `path` / `relative_path`, defaulting the
-    /// version to `1.0.0` and the language to `Node`.
-    pub(crate) fn with_paths(name: Option<&str>, path: &str, relative_path: &str) -> Self {
-        Self {
-            name: name.map(String::from),
-            version: Some("1.0.0".to_string()),
-            path: PathBuf::from(path),
-            relative_path: PathBuf::from(relative_path),
-            language: Language::Node,
-            dependencies: HashSet::new(),
-            is_changed: false,
-        }
-    }
-
-    /// Construct with a required `name` and a single `path` reused as both
-    /// `path` and `relative_path` (version `1.0.0`, language `Node`).
-    pub(crate) fn same_path(name: &str, path: &str) -> Self {
-        Self::with_paths(Some(name), path, path)
-    }
-
-    /// Builder override for the mock's language.
-    pub(crate) fn with_language(mut self, language: Language) -> Self {
-        self.language = language;
-        self
-    }
-}
+define_mock!(MockPackage, "/test/Cargo.toml", "Cargo.toml");
 
 #[async_trait]
 impl Package for MockPackage {
@@ -106,85 +124,24 @@ impl Package for MockPackage {
     fn language(&self) -> Language {
         self.language
     }
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
-    }
+    crate::impl_dependencies_accessors!();
     impl_test_publish_commands!();
 }
 
-#[derive(Debug)]
-pub(crate) struct MockWorkspace {
-    pub(crate) name: Option<String>,
-    pub(crate) version: Option<String>,
-    pub(crate) path: PathBuf,
-    pub(crate) relative_path: PathBuf,
-    pub(crate) language: Language,
-    pub(crate) dependencies: HashSet<String>,
-    pub(crate) is_changed: bool,
-}
-
-impl MockWorkspace {
-    /// Construct with an explicit `name` / `version` / `language`, defaulting
-    /// the paths to `/test/package.json` (relative `package.json`).
-    pub(crate) fn new(name: Option<&str>, version: Option<&str>, language: Language) -> Self {
-        Self {
-            name: name.map(String::from),
-            version: version.map(String::from),
-            path: PathBuf::from("/test/package.json"),
-            relative_path: PathBuf::from("package.json"),
-            language,
-            dependencies: HashSet::new(),
-            is_changed: false,
-        }
-    }
-
-    /// Construct with an explicit `path` / `relative_path`, defaulting the
-    /// version to `1.0.0` and the language to `Node`.
-    pub(crate) fn with_paths(name: Option<&str>, path: &str, relative_path: &str) -> Self {
-        Self {
-            name: name.map(String::from),
-            version: Some("1.0.0".to_string()),
-            path: PathBuf::from(path),
-            relative_path: PathBuf::from(relative_path),
-            language: Language::Node,
-            dependencies: HashSet::new(),
-            is_changed: false,
-        }
-    }
-
-    /// Construct with a required `name` and a single `path` reused as both
-    /// `path` and `relative_path` (version `1.0.0`, language `Node`).
-    pub(crate) fn same_path(name: &str, path: &str) -> Self {
-        Self::with_paths(Some(name), path, path)
-    }
-
-    /// Builder override for the mock's language.
-    pub(crate) fn with_language(mut self, language: Language) -> Self {
-        self.language = language;
-        self
-    }
-}
+define_mock!(MockWorkspace, "/test/package.json", "package.json");
 
 #[async_trait]
 impl Workspace for MockWorkspace {
     // Locks the `impl_basic_accessors!()` field-name contract at the test
     // surface for the `Workspace` trait too -- see the `MockPackage` impl above.
     crate::impl_basic_accessors!();
+    crate::impl_dependencies_accessors!();
 
     async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
         Ok(())
     }
     fn language(&self) -> Language {
         self.language
-    }
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
     }
     impl_test_publish_commands!();
 }
