@@ -272,11 +272,19 @@ async fn get_gradle_properties(
         })?;
 
     if !output.status.success() {
-        eprintln!(
-            "{}",
-            gradle_failure_diagnostic(project_dir, &gradlew, output.status, &output.stderr)
-        );
-        return Ok(GradleProperties::default());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr_trimmed = stderr.trim();
+        return Err(anyhow::anyhow!(
+            "Gradle properties failed for '{}' using '{}' with status {}{}",
+            project_dir.display(),
+            gradlew.display(),
+            output.status,
+            if stderr_trimmed.is_empty() {
+                String::new()
+            } else {
+                format!("; stderr: {}", stderr_trimmed)
+            }
+        ));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -348,27 +356,6 @@ impl GradleCommandSpec {
         command.args(&self.args).current_dir(&self.current_dir);
         command
     }
-}
-
-fn gradle_failure_diagnostic(
-    project_dir: &Path,
-    gradlew: &Path,
-    status: std::process::ExitStatus,
-    stderr: &[u8],
-) -> String {
-    let mut msg = format!(
-        "Gradle properties failed for '{}' using '{}' with status {}; falling back to default metadata.",
-        project_dir.display(),
-        gradlew.display(),
-        status
-    );
-    let stderr = String::from_utf8_lossy(stderr);
-    let stderr = stderr.trim();
-    if !stderr.is_empty() {
-        msg.push_str(" stderr: ");
-        msg.push_str(stderr);
-    }
-    msg
 }
 
 #[async_trait]
@@ -541,42 +528,21 @@ mod tests {
 
     fn create_failing_gradlew(dir: &Path) {
         if cfg!(windows) {
-            fs::write(dir.join("gradlew.bat"), "@echo off\nexit /b 1\n").unwrap();
+            fs::write(
+                dir.join("gradlew.bat"),
+                "@echo off\n(echo broken build script) >&2\nexit /b 1\n",
+            )
+            .unwrap();
         } else {
             let gradlew_path = dir.join("gradlew");
-            fs::write(&gradlew_path, "#!/bin/sh\nexit 1\n").unwrap();
+            fs::write(
+                &gradlew_path,
+                "#!/bin/sh\necho 'broken build script' >&2\nexit 1\n",
+            )
+            .unwrap();
             #[cfg(unix)]
             make_executable(&gradlew_path);
         }
-    }
-
-    #[cfg(unix)]
-    fn failed_exit_status() -> std::process::ExitStatus {
-        use std::os::unix::process::ExitStatusExt;
-
-        std::process::ExitStatus::from_raw(256)
-    }
-
-    #[cfg(windows)]
-    fn failed_exit_status() -> std::process::ExitStatus {
-        use std::os::windows::process::ExitStatusExt;
-
-        std::process::ExitStatus::from_raw(1)
-    }
-
-    #[test]
-    fn test_gradle_failure_diagnostic_includes_context_and_stderr() {
-        let msg = gradle_failure_diagnostic(
-            Path::new("apps/demo"),
-            Path::new("gradlew"),
-            failed_exit_status(),
-            b"broken build script\n",
-        );
-
-        assert!(msg.contains("apps/demo"));
-        assert!(msg.contains("gradlew"));
-        assert!(msg.contains("falling back to default metadata"));
-        assert!(msg.contains("broken build script"));
     }
 
     #[test]
@@ -1179,12 +1145,34 @@ dependencies {
 
         create_failing_gradlew(temp_dir.path());
 
-        // gradlew exits non-zero → returns default props (no name, no version)
-        let props = get_gradle_properties(temp_dir.path(), true, 1)
-            .await
-            .unwrap();
-        assert!(props.name.is_none());
-        assert!(props.version.is_none());
+        let result = get_gradle_properties(temp_dir.path(), true, 1).await;
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+
+        // Error contains project path
+        assert!(err_msg.contains(temp_dir.path().to_string_lossy().as_ref()));
+
+        // Error contains exact wrapper path (platform-specific)
+        let expected_wrapper = temp_dir.path().join(if cfg!(windows) {
+            "gradlew.bat"
+        } else {
+            "gradlew"
+        });
+        assert!(
+            err_msg.contains(expected_wrapper.display().to_string().as_str()),
+            "Error should contain exact wrapper path: {}",
+            expected_wrapper.display()
+        );
+
+        // Error contains exit status
+        assert!(err_msg.contains("status"));
+
+        // Error ends with trimmed stderr (proves trailing newline was removed)
+        assert!(
+            err_msg.ends_with("; stderr: broken build script"),
+            "Error should end with trimmed stderr, got: {}",
+            err_msg
+        );
 
         temp_dir.close().unwrap();
     }
@@ -1298,6 +1286,30 @@ dependencies {
             }
             _ => panic!("Expected Package"),
         }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_gradle_project_finder_visit_fails_when_gradlew_fails() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_dir = temp_dir.path().join("my-project");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let build_gradle = project_dir.join("build.gradle.kts");
+        fs::write(&build_gradle, "plugins { id 'java' }").unwrap();
+
+        create_failing_gradlew(&project_dir);
+
+        let mut finder = GradleProjectFinder::new();
+        let result = finder
+            .visit(&build_gradle, &PathBuf::from("my-project/build.gradle.kts"))
+            .await;
+
+        // visit should propagate the error from get_gradle_properties
+        assert!(result.is_err());
+        // No projects should be added when gradlew fails
+        assert_eq!(finder.project_count(), 0);
 
         temp_dir.close().unwrap();
     }

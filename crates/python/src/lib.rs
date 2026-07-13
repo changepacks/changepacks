@@ -71,6 +71,17 @@ pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> R
             path.display()
         );
     }
+    let has_dynamic_version = pyproject_toml
+        .get("project")
+        .and_then(|project| project.get("dynamic"))
+        .and_then(toml_edit::Item::as_array)
+        .is_some_and(|dynamic| dynamic.iter().any(|item| item.as_str() == Some("version")));
+    if has_dynamic_version {
+        anyhow::bail!(
+            "pyproject.toml {} has backend-managed version in project.dynamic",
+            path.display()
+        );
+    }
     if pyproject_toml.get("project").is_none() {
         pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
@@ -134,6 +145,62 @@ mod tests {
         assert!(
             chain.contains("non-table [project]"),
             "error chain should mention the non-table project item, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_pyproject_version_rejects_dynamic_version_multiline() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        let content = "[project]\ndynamic = [ \"version\" ]\n";
+        fs::write(&pyproject_toml, content).unwrap();
+
+        let err = write_pyproject_version(&pyproject_toml, "2.0.0")
+            .await
+            .expect_err("dynamic version must be rejected");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+        assert!(
+            chain.contains("project.dynamic"),
+            "error chain should mention project.dynamic, got: {chain}"
+        );
+
+        let after = fs::read(&pyproject_toml).unwrap();
+        assert_eq!(
+            after,
+            content.as_bytes(),
+            "file bytes must be unchanged after rejection"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_pyproject_version_rejects_dynamic_version_compact() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        let content = "[project]\ndynamic = [\"version\"]\n";
+        fs::write(&pyproject_toml, content).unwrap();
+
+        let err = write_pyproject_version(&pyproject_toml, "2.0.0")
+            .await
+            .expect_err("dynamic version must be rejected");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+        assert!(
+            chain.contains("project.dynamic"),
+            "error chain should mention project.dynamic, got: {chain}"
+        );
+
+        let after = fs::read(&pyproject_toml).unwrap();
+        assert_eq!(
+            after,
+            content.as_bytes(),
+            "file bytes must be unchanged after rejection"
         );
     }
 }
