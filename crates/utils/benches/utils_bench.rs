@@ -49,6 +49,14 @@ fn build_graph(n: usize) -> Vec<Project> {
         .collect()
 }
 
+/// Build one directed cycle, the worst case for the old per-residual-node
+/// reachability searches and the target workload for SCC detection.
+fn build_cyclic_graph(n: usize) -> Vec<Project> {
+    (0..n)
+        .map(|i| make_project(&format!("cycle{i}"), &[format!("cycle{}", (i + 1) % n)]))
+        .collect()
+}
+
 fn bench_next_version(c: &mut Criterion) {
     c.bench_function("next_version/patch", |b| {
         b.iter(|| next_version(black_box("10.20.30"), black_box(UpdateType::Patch)).unwrap());
@@ -87,12 +95,34 @@ fn bench_sort_by_dependencies(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_sort_by_dependencies_cyclic(c: &mut Criterion) {
+    let mut group = c.benchmark_group("sort_by_dependencies_cyclic");
+    for size in [64_usize, 256, 1_024] {
+        let projects = build_cyclic_graph(size);
+        group.bench_with_input(
+            BenchmarkId::from_parameter(size),
+            &projects,
+            |b, projects| {
+                b.iter(|| {
+                    let refs: Vec<&Project> = projects.iter().collect();
+                    black_box(
+                        sort_by_dependencies(black_box(refs))
+                            .expect_err("benchmark graph contains one cycle"),
+                    );
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(2))
         .sample_size(60);
-    targets = bench_next_version, bench_split_version, bench_sort_by_dependencies
+    targets = bench_next_version, bench_split_version, bench_sort_by_dependencies,
+        bench_sort_by_dependencies_cyclic
 }
 criterion_main!(benches);

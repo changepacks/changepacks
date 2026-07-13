@@ -122,22 +122,102 @@ impl std::error::Error for DependencySortError {
     }
 }
 
-fn is_cycle_member(start: usize, adj: &[usize], offsets: &[usize]) -> bool {
-    let mut visited = vec![false; offsets.len() - 1];
-    let mut stack = adj[offsets[start]..offsets[start + 1]].to_vec();
+/// Find cycle members with one iterative Kosaraju pass over the residual graph.
+///
+/// A node is cyclic when it belongs to an SCC with multiple nodes, or when its
+/// singleton SCC has a self-edge. Residual nodes outside those SCCs are merely
+/// blocked dependents and are intentionally left unmarked.
+fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], residual: &[bool]) -> Vec<bool> {
+    let node_count = residual.len();
+    let mut visited = vec![false; node_count];
+    let mut finish_order = Vec::with_capacity(node_count);
+    let mut dfs_stack: Vec<(usize, usize)> = Vec::new();
 
-    while let Some(index) = stack.pop() {
-        if index == start {
-            return true;
-        }
-        if visited[index] {
+    for root in 0..node_count {
+        if !residual[root] || visited[root] {
             continue;
         }
-        visited[index] = true;
-        stack.extend_from_slice(&adj[offsets[index]..offsets[index + 1]]);
+
+        visited[root] = true;
+        dfs_stack.push((root, offsets[root]));
+        while let Some((node, next_edge)) = dfs_stack.last_mut() {
+            if *next_edge < offsets[*node + 1] {
+                let target = adj[*next_edge];
+                *next_edge += 1;
+                if residual[target] && !visited[target] {
+                    visited[target] = true;
+                    dfs_stack.push((target, offsets[target]));
+                }
+            } else {
+                let (finished, _) = dfs_stack.pop().expect("DFS stack is non-empty");
+                finish_order.push(finished);
+            }
+        }
     }
 
-    false
+    // Build the transpose CSR for residual edges only.
+    let mut reverse_offsets = vec![0; node_count + 1];
+    for source in 0..node_count {
+        if !residual[source] {
+            continue;
+        }
+        for &target in &adj[offsets[source]..offsets[source + 1]] {
+            if residual[target] {
+                reverse_offsets[target + 1] += 1;
+            }
+        }
+    }
+    for index in 1..reverse_offsets.len() {
+        reverse_offsets[index] += reverse_offsets[index - 1];
+    }
+
+    let mut reverse_cursor = reverse_offsets.clone();
+    let mut reverse_adj = vec![0; reverse_offsets[node_count]];
+    for source in 0..node_count {
+        if !residual[source] {
+            continue;
+        }
+        for &target in &adj[offsets[source]..offsets[source + 1]] {
+            if residual[target] {
+                let slot = reverse_cursor[target];
+                reverse_adj[slot] = source;
+                reverse_cursor[target] += 1;
+            }
+        }
+    }
+
+    let mut assigned = vec![false; node_count];
+    let mut cycle_members = vec![false; node_count];
+    let mut component = Vec::new();
+    let mut stack = Vec::new();
+
+    for root in finish_order.into_iter().rev() {
+        if assigned[root] {
+            continue;
+        }
+
+        assigned[root] = true;
+        stack.push(root);
+        while let Some(node) = stack.pop() {
+            component.push(node);
+            for &source in &reverse_adj[reverse_offsets[node]..reverse_offsets[node + 1]] {
+                if !assigned[source] {
+                    assigned[source] = true;
+                    stack.push(source);
+                }
+            }
+        }
+
+        let cyclic = component.len() > 1 || adj[offsets[root]..offsets[root + 1]].contains(&root);
+        if cyclic {
+            for &node in &component {
+                cycle_members[node] = true;
+            }
+        }
+        component.clear();
+    }
+
+    cycle_members
 }
 
 /// Sort projects by their dependencies using topological sort.
@@ -264,10 +344,12 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
     }
 
     if sorted_indices.len() < projects.len() {
+        let residual: Vec<bool> = in_degree.iter().map(|&degree| degree > 0).collect();
+        let cycle_members = cycle_members_in_residual(&adj, &offsets, &residual);
         let mut members: Vec<_> = in_degree
             .iter()
             .enumerate()
-            .filter(|(index, degree)| **degree > 0 && is_cycle_member(*index, &adj, &offsets))
+            .filter(|(index, _)| cycle_members[*index])
             .map(|(index, _)| DependencyCycleMember {
                 name: projects[index].name().unwrap_or("<unnamed>").to_string(),
                 path: projects[index].relative_path().to_path_buf(),
@@ -690,5 +772,109 @@ mod tests {
             error.to_string(),
             "dependency cycle detected: alpha (alpha/package.json), zeta (zeta/package.json)"
         );
+    }
+
+    #[test]
+    fn test_residual_scc_membership_marks_only_cycles() {
+        // 0 <-> 1 is cyclic, 2 is blocked by that cycle, 3 has a self-edge,
+        // and 4 is an acyclic residual singleton.
+        let offsets = vec![0, 1, 3, 4, 5, 5];
+        let adj = vec![1, 0, 2, 4, 3];
+        let residual = vec![true; 5];
+
+        assert_eq!(
+            cycle_members_in_residual(&adj, &offsets, &residual),
+            vec![true, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn test_cycle_error_excludes_a_chain_blocked_by_the_cycle() {
+        let cycle_a = create_project("cycle-a", vec!["cycle-b"]);
+        let cycle_b = create_project("cycle-b", vec!["cycle-a"]);
+        let blocked_a = create_project("blocked-a", vec!["cycle-a"]);
+        let blocked_b = create_project("blocked-b", vec!["blocked-a"]);
+
+        let error = sort_by_dependencies(vec![&blocked_b, &cycle_b, &blocked_a, &cycle_a])
+            .expect_err("cycle must fail");
+
+        assert_eq!(
+            error
+                .members()
+                .iter()
+                .map(|member| member.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cycle-a", "cycle-b"]
+        );
+    }
+
+    #[test]
+    fn test_singleton_scc_requires_a_self_edge() {
+        let self_cycle = create_project("self-cycle", vec!["self-cycle"]);
+        let blocked = create_project("blocked", vec!["self-cycle"]);
+
+        let error =
+            sort_by_dependencies(vec![&blocked, &self_cycle]).expect_err("self-cycle must fail");
+
+        assert_eq!(
+            error
+                .members()
+                .iter()
+                .map(|member| member.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["self-cycle"]
+        );
+    }
+
+    #[test]
+    fn test_disjoint_cycles_are_all_reported_in_deterministic_order() {
+        let zeta = create_project_at("zeta", "z/zeta.json");
+        let alpha = create_project_at("alpha", "a/alpha.json");
+        let delta = create_project_at("delta", "d/delta.json");
+        let beta = create_project_at("beta", "b/beta.json");
+
+        let mut zeta = zeta;
+        let mut alpha = alpha;
+        let mut delta = delta;
+        let mut beta = beta;
+        zeta.add_dependency("alpha");
+        alpha.add_dependency("zeta");
+        delta.add_dependency("beta");
+        beta.add_dependency("delta");
+
+        let error = sort_by_dependencies(vec![&zeta, &delta, &alpha, &beta])
+            .expect_err("disjoint cycles must fail");
+
+        assert_eq!(
+            error
+                .members()
+                .iter()
+                .map(|member| (member.name.as_str(), member.path.as_path()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("alpha", Path::new("a/alpha.json")),
+                ("beta", Path::new("b/beta.json")),
+                ("delta", Path::new("d/delta.json")),
+                ("zeta", Path::new("z/zeta.json")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_large_cycle_reports_every_member() {
+        const SIZE: usize = 4_096;
+        let mut projects: Vec<_> = (0..SIZE)
+            .map(|index| create_project(&format!("cycle-{index:04}"), vec![]))
+            .collect();
+        for (index, project) in projects.iter_mut().enumerate() {
+            project.add_dependency(&format!("cycle-{:04}", (index + 1) % SIZE));
+        }
+        let refs = projects.iter().collect();
+
+        let error = sort_by_dependencies(refs).expect_err("large cycle must fail");
+
+        assert_eq!(error.members().len(), SIZE);
+        assert_eq!(error.members().first().unwrap().name, "cycle-0000");
+        assert_eq!(error.members().last().unwrap().name, "cycle-4095");
     }
 }

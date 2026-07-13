@@ -70,7 +70,7 @@ mod split_version;
 pub mod test_support;
 mod trailing_newline;
 
-pub(crate) use is_changepack_log::{collect_changepack_log_paths, read_log_bodies};
+pub(crate) use is_changepack_log::read_log_bodies;
 
 // Re-export the concrete `gix` handle type so downstream crates (e.g.
 // `changepacks-cli`) can hold onto it (e.g. caching on `CommandContext`)
@@ -89,6 +89,7 @@ pub use gen_update_map::{apply_reverse_dependencies, gen_update_map};
 pub use get_changepacks_config::{get_changepacks_config, get_changepacks_config_at};
 pub use get_changepacks_dir::get_changepacks_dir;
 pub use get_relative_path::{get_relative_path, get_relative_path_ref};
+pub use is_changepack_log::collect_changepack_log_paths;
 pub use is_workspace_by_sibling::is_workspace_by_sibling;
 pub use next_version::{next_version, next_version_or_default};
 pub use sort_by_dep::{

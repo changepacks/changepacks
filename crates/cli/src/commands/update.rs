@@ -10,8 +10,8 @@ use changepacks_core::{
 };
 use changepacks_utils::{
     apply_reverse_dependencies, clear_applied_update_logs, clear_update_logs,
-    discover_project_dirs, display_update, gen_changepack_result_map, gen_update_map,
-    get_relative_path, get_relative_path_ref,
+    collect_changepack_log_paths, discover_project_dirs, display_update, gen_changepack_result_map,
+    gen_update_map, get_relative_path, get_relative_path_ref,
 };
 use clap::Args;
 
@@ -213,58 +213,82 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         return Ok(());
     }
 
+    let mut manifest_paths = update_projects
+        .iter()
+        .map(|(project, _)| project.path().to_path_buf())
+        .collect::<Vec<_>>();
+    if let Some(all_finders) = all_finders.as_ref() {
+        manifest_paths.extend(
+            collect_workspace_projects(all_finders)
+                .into_iter()
+                .map(|workspace| workspace.path().to_path_buf()),
+        );
+    } else {
+        manifest_paths.extend(workspace_manifest_paths.unwrap_or_default());
+    }
+
     if let Some(all_finders) = all_finders.as_ref() {
         let workspace_projects = collect_workspace_projects(all_finders);
-
-        apply_updates(&mut update_projects, &workspace_projects).await?;
+        run_update_transaction(
+            manifest_paths,
+            &ctx.changepacks_dir,
+            apply_updates_unchecked(&mut update_projects, &workspace_projects),
+            async {
+                match applied_paths {
+                    Some(applied) => {
+                        clear_applied_update_logs(&ctx.changepacks_dir, &applied).await
+                    }
+                    None => clear_update_logs(&ctx.changepacks_dir).await,
+                }
+            },
+        )
+        .await?;
         drop(update_projects);
     } else {
-        let mut manifest_paths = workspace_manifest_paths.unwrap_or_default();
-        manifest_paths.extend(
-            update_projects
-                .iter()
-                .map(|(project, _)| project.path().to_path_buf()),
-        );
-
-        let snapshots = snapshot_manifests(manifest_paths).await?;
-        let project_update_result = apply_project_version_updates(&mut update_projects).await;
+        let snapshots = snapshot_update_state(manifest_paths, &ctx.changepacks_dir).await?;
+        let project_result = apply_project_version_updates(&mut update_projects).await;
         drop(update_projects);
-        if let Err(error) = project_update_result {
-            return rollback_update_error(&snapshots, error).await;
-        }
 
-        // Collect workspace projects after the mutable borrow is released
-        let workspace_projects = collect_workspace_projects(&project_finders);
-        if !workspace_projects.is_empty() {
-            let update_projects = match collect_update_project_refs(
-                &project_finders,
-                &update_map,
-                &ctx.repo_root_path,
-            ) {
-                Ok(projects) => projects,
-                Err(error) => return rollback_update_error(&snapshots, error).await,
-            };
-            let projects = packages_of(
-                update_projects.len(),
-                update_projects.iter().map(|(p, _)| *p),
-            );
-
-            if let Err(error) =
-                apply_workspace_dependency_updates(&workspace_projects, &projects).await
-            {
-                return rollback_update_error(&snapshots, error).await;
+        let update_result = match project_result {
+            Ok(()) => {
+                // Collect workspace projects after the mutable borrow is released.
+                let workspace_projects = collect_workspace_projects(&project_finders);
+                if workspace_projects.is_empty() {
+                    Ok(())
+                } else {
+                    match collect_update_project_refs(
+                        &project_finders,
+                        &update_map,
+                        &ctx.repo_root_path,
+                    ) {
+                        Ok(update_projects) => {
+                            let projects = packages_of(
+                                update_projects.len(),
+                                update_projects.iter().map(|(p, _)| *p),
+                            );
+                            apply_workspace_dependency_updates(&workspace_projects, &projects).await
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
             }
+            Err(error) => Err(error),
+        };
+
+        let transaction_result = match update_result {
+            Ok(()) => match applied_paths {
+                Some(applied) => clear_applied_update_logs(&ctx.changepacks_dir, &applied).await,
+                None => clear_update_logs(&ctx.changepacks_dir).await,
+            },
+            Err(error) => Err(error),
+        };
+        if let Err(error) = transaction_result {
+            return rollback_update_error(&snapshots, error).await;
         }
     }
 
     if let Some(json_output) = json_output {
         println!("{json_output}");
-    }
-
-    // Clear files
-    match applied_paths {
-        Some(applied) => clear_applied_update_logs(&ctx.changepacks_dir, &applied).await?,
-        None => clear_update_logs(&ctx.changepacks_dir).await?,
     }
 
     Ok(())
@@ -431,29 +455,6 @@ fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<
     workspace_projects
 }
 
-async fn apply_updates(
-    update_projects: &mut [UpdateProjectMut<'_>],
-    workspace_projects: &[WorkspaceRef<'_>],
-) -> Result<()> {
-    let mut manifest_paths = Vec::with_capacity(update_projects.len() + workspace_projects.len());
-    manifest_paths.extend(
-        update_projects
-            .iter()
-            .map(|(project, _)| project.path().to_path_buf()),
-    );
-    manifest_paths.extend(
-        workspace_projects
-            .iter()
-            .map(|workspace| workspace.path().to_path_buf()),
-    );
-
-    run_update_transaction(
-        manifest_paths,
-        apply_updates_unchecked(update_projects, workspace_projects),
-    )
-    .await
-}
-
 async fn apply_updates_unchecked(
     update_projects: &mut [UpdateProjectMut<'_>],
     workspace_projects: &[WorkspaceRef<'_>],
@@ -484,48 +485,124 @@ async fn apply_updates_unchecked(
 
 async fn run_update_transaction(
     manifest_paths: Vec<PathBuf>,
+    changepacks_dir: &Path,
     update: impl Future<Output = Result<()>>,
+    cleanup: impl Future<Output = Result<()>>,
 ) -> Result<()> {
-    let snapshots = snapshot_manifests(manifest_paths).await?;
-    match update.await {
+    let snapshots = snapshot_update_state(manifest_paths, changepacks_dir).await?;
+    let result = match update.await {
+        Ok(()) => cleanup.await,
+        Err(error) => Err(error),
+    };
+    match result {
         Ok(()) => Ok(()),
         Err(update_error) => rollback_update_error(&snapshots, update_error).await,
     }
 }
 
+struct FileSnapshot {
+    path: PathBuf,
+    bytes: Option<Vec<u8>>,
+}
+
+struct UpdateStateSnapshot {
+    manifests: Vec<FileSnapshot>,
+    changepacks_dir: PathBuf,
+    logs: Vec<FileSnapshot>,
+}
+
 async fn rollback_update_error(
-    snapshots: &[(PathBuf, Vec<u8>)],
+    snapshots: &UpdateStateSnapshot,
     update_error: anyhow::Error,
 ) -> Result<()> {
-    match rollback_manifests(snapshots).await {
+    match rollback_update_state(snapshots).await {
         Ok(()) => Err(update_error),
         Err(rollback_error) => Err(update_error.context(format!(
-            "failed to restore manifests after update error: {rollback_error}"
+            "failed to restore update transaction after error: {rollback_error}"
         ))),
     }
 }
 
-async fn snapshot_manifests(manifest_paths: Vec<PathBuf>) -> Result<Vec<(PathBuf, Vec<u8>)>> {
+async fn snapshot_update_state(
+    manifest_paths: Vec<PathBuf>,
+    changepacks_dir: &Path,
+) -> Result<UpdateStateSnapshot> {
     let mut seen = HashSet::with_capacity(manifest_paths.len());
     let mut snapshots = Vec::with_capacity(manifest_paths.len());
     for path in manifest_paths {
         if seen.insert(path.clone()) {
-            let bytes = tokio::fs::read(&path)
-                .await
-                .with_context(|| format!("failed to snapshot manifest {}", path.display()))?;
-            snapshots.push((path, bytes));
+            let bytes = match tokio::fs::read(&path).await {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("failed to snapshot manifest {}", path.display())
+                    });
+                }
+            };
+            snapshots.push(FileSnapshot { path, bytes });
         }
     }
-    Ok(snapshots)
+
+    let log_paths = collect_changepack_log_paths(changepacks_dir).await?;
+    let mut logs = Vec::with_capacity(log_paths.len());
+    for path in log_paths {
+        let bytes = tokio::fs::read(&path)
+            .await
+            .with_context(|| format!("failed to snapshot changepack log {}", path.display()))?;
+        logs.push(FileSnapshot {
+            path,
+            bytes: Some(bytes),
+        });
+    }
+
+    Ok(UpdateStateSnapshot {
+        manifests: snapshots,
+        changepacks_dir: changepacks_dir.to_path_buf(),
+        logs,
+    })
 }
 
-async fn rollback_manifests(snapshots: &[(PathBuf, Vec<u8>)]) -> Result<()> {
-    let mut failures = Vec::new();
-    for (path, bytes) in snapshots {
-        if let Err(error) = tokio::fs::write(path, bytes).await {
-            failures.push(format!("{}: {error}", path.display()));
+async fn restore_file_snapshots(snapshots: &[FileSnapshot], failures: &mut Vec<String>) {
+    for snapshot in snapshots {
+        let result = match &snapshot.bytes {
+            Some(bytes) => tokio::fs::write(&snapshot.path, bytes).await,
+            None => match tokio::fs::remove_file(&snapshot.path).await {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            },
+        };
+        if let Err(error) = result {
+            failures.push(format!("{}: {error}", snapshot.path.display()));
         }
     }
+}
+
+async fn rollback_update_state(snapshots: &UpdateStateSnapshot) -> Result<()> {
+    let mut failures = Vec::new();
+
+    restore_file_snapshots(&snapshots.manifests, &mut failures).await;
+
+    let original_logs = snapshots
+        .logs
+        .iter()
+        .map(|snapshot| snapshot.path.as_path())
+        .collect::<HashSet<_>>();
+    match collect_changepack_log_paths(&snapshots.changepacks_dir).await {
+        Ok(current_logs) => {
+            for path in current_logs {
+                if !original_logs.contains(path.as_path())
+                    && let Err(error) = tokio::fs::remove_file(&path).await
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    failures.push(format!("{}: {error}", path.display()));
+                }
+            }
+        }
+        Err(error) => failures.push(format!("{}: {error}", snapshots.changepacks_dir.display())),
+    }
+    restore_file_snapshots(&snapshots.logs, &mut failures).await;
 
     if failures.is_empty() {
         Ok(())
@@ -634,9 +711,9 @@ fn merge_workspace_inherited_updates(
 #[cfg(test)]
 mod tests {
     use super::{
-        UpdateArgs, apply_updates, collect_projects, collect_update_project_muts,
+        UpdateArgs, apply_updates_unchecked, collect_projects, collect_update_project_muts,
         collect_update_project_refs, collect_workspace_projects, merge_workspace_inherited_updates,
-        preview_and_confirm, validate_update_project_paths,
+        preview_and_confirm, run_update_transaction, validate_update_project_paths,
     };
     use anyhow::{Result, bail};
     use async_trait::async_trait;
@@ -1036,14 +1113,67 @@ mod tests {
         let mut update_projects = vec![(&mut project, UpdateType::Patch)];
         let workspaces: Vec<&dyn Workspace> = vec![&workspace];
 
-        let error = apply_updates(&mut update_projects, &workspaces)
-            .await
-            .expect_err("the workspace rewrite should fail after writing");
+        let error = run_update_transaction(
+            vec![package_path.clone(), workspace_path.clone()],
+            &changepacks_dir,
+            apply_updates_unchecked(&mut update_projects, &workspaces),
+            async { Ok(()) },
+        )
+        .await
+        .expect_err("the workspace rewrite should fail after writing");
 
         assert_eq!(error.to_string(), "deliberate workspace dependency failure");
         assert_eq!(tokio::fs::read(&package_path).await?, original_package);
         assert_eq!(tokio::fs::read(&workspace_path).await?, original_workspace);
         assert_eq!(tokio::fs::read(&log_path).await?, original_log);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_failure_restores_manifests_and_complete_log_snapshot() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let manifest_path = temp_dir.path().join("package.json");
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        let removed_log = changepacks_dir.join("changepack_log_removed.json");
+        let rewritten_log = changepacks_dir.join("changepack_log_rewritten.JSON");
+        let created_log = changepacks_dir.join("changepack_log_created.json");
+        let original_manifest = b"{\r\n  \"version\": \"1.0.0\"\r\n}\r\n";
+        let original_removed_log = b"{\"changes\":{\"package.json\":\"Patch\"}}\n";
+        let original_rewritten_log = b"{\n  \"changes\": {\"other/package.json\": \"Minor\"}\n}\n";
+
+        tokio::fs::create_dir(&changepacks_dir).await?;
+        tokio::fs::write(&manifest_path, original_manifest).await?;
+        tokio::fs::write(&removed_log, original_removed_log).await?;
+        tokio::fs::write(&rewritten_log, original_rewritten_log).await?;
+
+        let error = run_update_transaction(
+            vec![manifest_path.clone()],
+            &changepacks_dir,
+            async {
+                tokio::fs::write(&manifest_path, b"{\"version\":\"1.0.1\"}\n").await?;
+                Ok(())
+            },
+            async {
+                tokio::fs::remove_file(&removed_log).await?;
+                tokio::fs::write(&rewritten_log, b"{\"changes\":{}}\n").await?;
+                tokio::fs::write(&created_log, b"new log that did not exist before\n").await?;
+                bail!("deliberate mid-cleanup failure")
+            },
+        )
+        .await
+        .expect_err("cleanup should fail after partially mutating the log set");
+
+        assert_eq!(error.to_string(), "deliberate mid-cleanup failure");
+        assert_eq!(tokio::fs::read(&manifest_path).await?, original_manifest);
+        assert_eq!(tokio::fs::read(&removed_log).await?, original_removed_log);
+        assert_eq!(
+            tokio::fs::read(&rewritten_log).await?,
+            original_rewritten_log
+        );
+        assert!(
+            !created_log.exists(),
+            "rollback must remove newly created logs"
+        );
         Ok(())
     }
 
@@ -1066,8 +1196,13 @@ mod tests {
         let mut update_projects = vec![(&mut project, UpdateType::Patch)];
         let workspaces: Vec<&dyn Workspace> = vec![&workspace];
 
-        apply_updates(&mut update_projects, &workspaces).await?;
-        clear_update_logs(&changepacks_dir).await?;
+        run_update_transaction(
+            vec![package_path.clone(), workspace_path.clone()],
+            &changepacks_dir,
+            apply_updates_unchecked(&mut update_projects, &workspaces),
+            clear_update_logs(&changepacks_dir),
+        )
+        .await?;
 
         assert_eq!(tokio::fs::read(&package_path).await?, updated_package);
         assert_eq!(tokio::fs::read(&workspace_path).await?, updated_workspace);

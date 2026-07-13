@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::project::Project;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 
 /// Generates `projects()`, `projects_mut()`, and `project_count()` for finders backed by a
@@ -149,24 +149,25 @@ pub fn has_extension_ignore_ascii_case(path: &Path, ext: &str) -> bool {
         .is_some_and(|e| e.eq_ignore_ascii_case(ext))
 }
 
-/// Returns `true` when `path` refers to an existing regular file.
+/// Returns `Ok(true)` when `path` refers to an existing regular file.
 ///
 /// AGENTS.md rule: never blocking I/O in async — use `tokio::fs::metadata`.
-/// `unwrap_or(false)` mirrors the previous inline `is_file()` semantics on
-/// stat errors (broken symlink, permission denied, missing path): treat as
-/// "not a regular file" and short-circuit, rather than propagating an error
-/// the caller would silently ignore.
+/// A missing path or directory returns `Ok(false)`. Other metadata errors are
+/// propagated with the failing path in their context.
 ///
 /// Shared between `ProjectFinder::matches_project_file` (name-based match
 /// used by every language) and `CSharpProjectFinder::visit` (extension-based
 /// match) so the byte-identical stat + `is_file()` fallthrough lives in ONE
 /// place. Public so cross-crate callers (e.g. `changepacks-csharp`) can
 /// reuse it via the re-export from `changepacks_core::lib.rs`.
-pub async fn is_regular_file(path: &Path) -> bool {
-    tokio::fs::metadata(path)
-        .await
-        .map(|m| m.is_file())
-        .unwrap_or(false)
+pub async fn is_regular_file(path: &Path) -> Result<bool> {
+    match tokio::fs::metadata(path).await {
+        Ok(metadata) => Ok(metadata.is_file()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => {
+            Err(error).with_context(|| format!("Failed to read metadata for {}", path.display()))
+        }
+    }
 }
 
 /// Visitor pattern for discovering projects by walking the git tree.
@@ -202,17 +203,18 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// semantically identical to the previous with_context error paths
     /// — which were unreachable for git-index-derived paths.
     ///
-    /// This check is infallible: stat errors are normalized to `false` by
-    /// [`is_regular_file`].
-    async fn matches_project_file(&self, path: &Path) -> bool {
+    /// # Errors
+    /// Returns an error when metadata for a recognized manifest path cannot be
+    /// read for a reason other than the path not existing.
+    async fn matches_project_file(&self, path: &Path) -> Result<bool> {
         let Some(name_os) = path.file_name() else {
-            return false;
+            return Ok(false);
         };
         let Some(name) = name_os.to_str() else {
-            return false;
+            return Ok(false);
         };
         if !self.project_files().contains(&name) {
-            return false;
+            return Ok(false);
         }
         is_regular_file(path).await
     }
@@ -453,7 +455,7 @@ mod tests {
         std::fs::write(&file_path, "test content").unwrap();
 
         let result = is_regular_file(&file_path).await;
-        assert!(result);
+        assert!(result.unwrap());
     }
 
     #[tokio::test]
@@ -463,7 +465,7 @@ mod tests {
         std::fs::create_dir(&dir_path).unwrap();
 
         let result = is_regular_file(&dir_path).await;
-        assert!(!result);
+        assert!(!result.unwrap());
     }
 
     #[tokio::test]
@@ -472,6 +474,30 @@ mod tests {
         let missing_path = temp_dir.path().join("nonexistent.txt");
 
         let result = is_regular_file(&missing_path).await;
-        assert!(!result);
+        assert!(!result.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_is_regular_file_propagates_metadata_error_with_path_context() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        #[cfg(windows)]
+        let invalid_path = temp_dir.path().join("invalid\0path");
+        #[cfg(unix)]
+        let invalid_path = {
+            use std::os::unix::fs::symlink;
+
+            let path = temp_dir.path().join("metadata-loop");
+            symlink(&path, &path).unwrap();
+            path
+        };
+
+        let error = is_regular_file(&invalid_path)
+            .await
+            .expect_err("metadata errors other than NotFound must be propagated");
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains(&invalid_path.display().to_string()),
+            "error chain should name the path whose metadata failed, got: {chain}"
+        );
     }
 }

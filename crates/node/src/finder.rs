@@ -6,7 +6,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{package::NodePackage, read_and_parse_package_json, workspace::NodeWorkspace};
+use crate::{
+    detect_package_manager_recursive_async, package::NodePackage, read_and_parse_package_json,
+    workspace::NodeWorkspace,
+};
 
 /// Manifest filenames this finder recognizes. Static because the list is
 /// compile-time constant — no per-instance heap `Vec` is needed and the
@@ -73,7 +76,7 @@ impl ProjectFinder for NodeProjectFinder {
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
         // Parse this manifest if it is a recognized project file not already visited.
-        if !self.matches_project_file(path).await {
+        if !self.matches_project_file(path).await? {
             return Ok(());
         }
         if self.projects.contains_key(path) {
@@ -87,13 +90,17 @@ impl ProjectFinder for NodeProjectFinder {
         let name = package_json_str(&package_json, "name");
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();
+        let package_manager =
+            detect_package_manager_recursive_async(path, relative_path.components().count())
+                .await?;
         // Workspace detection is short-circuited: a `workspaces` field in
         // `package.json` (npm / yarn / bun monorepos — the common case)
         // is enough on its own, so only fall back to a `pnpm-workspace.yaml`
         // stat when that field is absent. Shared with the Dart finder via
         // `changepacks_utils::is_workspace_by_sibling` — the one source of
         // truth for the "declared field OR fixed sibling file" policy
-        // (stat error → not-a-workspace; all file ops via `tokio::fs`).
+        // (missing/directory marker → not-a-workspace; other metadata errors
+        // propagate; all file ops via `tokio::fs`).
         let is_workspace = changepacks_utils::is_workspace_by_sibling(
             package_json.get("workspaces").is_some(),
             path,
@@ -101,18 +108,20 @@ impl ProjectFinder for NodeProjectFinder {
         )
         .await?;
         let mut project = if is_workspace {
-            Project::Workspace(Box::new(NodeWorkspace::new(
+            Project::Workspace(Box::new(NodeWorkspace::new_with_package_manager(
                 name,
                 version,
                 path_key.clone(),
                 relative_path_key,
+                package_manager,
             )))
         } else {
-            Project::Package(Box::new(NodePackage::new(
+            Project::Package(Box::new(NodePackage::new_with_package_manager(
                 name,
                 version,
                 path_key.clone(),
                 relative_path_key,
+                package_manager,
             )))
         };
 
@@ -172,6 +181,37 @@ mod tests {
         }
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_caches_async_package_manager_detection() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        let lockfile = temp_dir.path().join("pnpm-lock.yaml");
+        fs::write(
+            &package_json,
+            r#"{"name":"test-package","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(&lockfile, "").unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+        fs::remove_file(lockfile).unwrap();
+
+        match finder.projects()[0] {
+            Project::Package(package) => {
+                assert_eq!(package.default_publish_command(), "pnpm publish");
+                assert_eq!(
+                    package.default_dry_run_publish_command().as_deref(),
+                    Some("pnpm publish --dry-run")
+                );
+            }
+            _ => panic!("Expected Package"),
+        }
     }
 
     #[tokio::test]

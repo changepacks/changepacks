@@ -329,10 +329,9 @@ impl ProjectFinder for CSharpProjectFinder {
 
         // Only after the cheap gates pass do we pay for a stat. Delegates
         // to the shared `is_regular_file` helper in `changepacks_core`
-        // (same `unwrap_or(false)` fallthrough on stat errors as the
-        // previous inline call — broken symlink / permission denied →
-        // "not a file").
-        if !is_regular_file(path).await {
+        // so missing paths and directories are skipped while other metadata
+        // errors are propagated to the discovery caller.
+        if !is_regular_file(path).await? {
             return Ok(());
         }
 

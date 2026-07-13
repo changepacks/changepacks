@@ -138,9 +138,11 @@ pub fn update_version_in_xml(
                 // (including `<Version/>` outside a PropertyGroup, or once the
                 // version is already updated) passes through unchanged.
                 if in_property_group && e.local_name().as_ref() == b"Version" && !version_updated {
-                    writer.write_event(Event::Start(BytesStart::new("Version")))?;
+                    let start = e.into_owned();
+                    let end = BytesEnd::from(start.name()).into_owned();
+                    writer.write_event(Event::Start(start))?;
                     writer.write_event(Event::Text(BytesText::new(new_version)))?;
-                    writer.write_event(Event::End(BytesEnd::new("Version")))?;
+                    writer.write_event(Event::End(end))?;
                     version_updated = true;
                 } else {
                     writer.write_event(Event::Empty(e))?;
@@ -288,6 +290,28 @@ mod tests {
             result.matches("<Version").count(),
             1,
             "expected exactly one <Version opening, got:\n{result}",
+        );
+    }
+
+    #[test]
+    fn test_update_version_preserves_prefixed_self_closing_version_qname() {
+        let content = "<msb:Project xmlns:msb=\"urn:msbuild\">\n  <msb:PropertyGroup>\n    <msb:Version/>\n  </msb:PropertyGroup>\n</msb:Project>";
+        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+
+        assert_eq!(
+            result,
+            "<msb:Project xmlns:msb=\"urn:msbuild\">\n  <msb:PropertyGroup>\n    <msb:Version>2.0.0</msb:Version>\n  </msb:PropertyGroup>\n</msb:Project>"
+        );
+    }
+
+    #[test]
+    fn test_update_version_preserves_attributes_and_spacing_on_self_closing_version() {
+        let content = "<Project>\n  <PropertyGroup>\n    <Version Condition=\"'$(Configuration)' == 'Release'\" />\n  </PropertyGroup>\n</Project>";
+        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+
+        assert_eq!(
+            result,
+            "<Project>\n  <PropertyGroup>\n    <Version Condition=\"'$(Configuration)' == 'Release'\" >2.0.0</Version>\n  </PropertyGroup>\n</Project>"
         );
     }
 

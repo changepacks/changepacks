@@ -12,11 +12,44 @@ pub struct NodePackage {
     relative_path: PathBuf,
     is_changed: bool,
     dependencies: HashSet<String>,
+    pub(crate) package_manager: crate::PackageManager,
 }
 
 impl NodePackage {
-    // Standard package/workspace constructor.
-    changepacks_core::impl_default_new!();
+    #[must_use]
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
+        Self::new_with_package_manager(
+            name,
+            version,
+            path,
+            relative_path,
+            crate::PackageManager::Npm,
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn new_with_package_manager(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        package_manager: crate::PackageManager,
+    ) -> Self {
+        Self {
+            name,
+            version,
+            path,
+            relative_path,
+            is_changed: false,
+            dependencies: HashSet::new(),
+            package_manager,
+        }
+    }
 }
 
 #[async_trait]

@@ -62,7 +62,7 @@ impl ProjectFinder for DartProjectFinder {
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
         // Parse this manifest if it is a recognized project file not already visited.
-        if !self.matches_project_file(path).await {
+        if !self.matches_project_file(path).await? {
             return Ok(());
         }
         if self.projects.contains_key(path) {

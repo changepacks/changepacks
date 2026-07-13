@@ -230,11 +230,9 @@ impl PartialOrd for Project {
 /// Shared language-then-name comparator for the Workspace × Workspace and
 /// Package × Package arms of `Project::cmp`. Both arms follow the same
 /// precedence — language first, then `(Some, Some) < (Some, None) < (None,
-/// Some) < (None, None)` — and the ONLY divergence is the `(None, None)`
-/// tie-breaker: Workspace falls back to version comparison, Package returns
-/// `Ordering::Equal`. Threading that final branch through the caller-supplied
-/// `none_none` closure preserves the byte-identical behavior of the two arms
-/// while eliminating ~30 lines of duplication.
+/// Some) < (None, None)` — and the divergence is the `(None, None)` tie-breaker:
+/// Workspace falls back to version comparison, while Package has no additional
+/// primary tie-breaker.
 fn cmp_lang_then_name(
     lhs: (crate::Language, Option<&str>),
     rhs: (crate::Language, Option<&str>),
@@ -252,6 +250,15 @@ fn cmp_lang_then_name(
     }
 }
 
+fn cmp_paths(lhs_relative: &Path, lhs_raw: &Path, rhs_relative: &Path, rhs_raw: &Path) -> Ordering {
+    let lhs_normalized = lhs_relative.to_string_lossy().replace('\\', "/");
+    let rhs_normalized = rhs_relative.to_string_lossy().replace('\\', "/");
+
+    lhs_normalized
+        .cmp(&rhs_normalized)
+        .then_with(|| lhs_raw.cmp(rhs_raw))
+}
+
 impl Ord for Project {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
@@ -261,12 +268,14 @@ impl Ord for Project {
                 (w1.language(), w1.name()),
                 (w2.language(), w2.name()),
                 || w1.version().unwrap_or("").cmp(w2.version().unwrap_or("")),
-            ),
+            )
+            .then_with(|| cmp_paths(w1.relative_path(), w1.path(), w2.relative_path(), w2.path())),
             (Self::Package(p1), Self::Package(p2)) => cmp_lang_then_name(
                 (p1.language(), p1.name()),
                 (p2.language(), p2.name()),
                 || Ordering::Equal,
-            ),
+            )
+            .then_with(|| cmp_paths(p1.relative_path(), p1.path(), p2.relative_path(), p2.path())),
         }
     }
 }
@@ -613,6 +622,113 @@ mod tests {
         let p1 = Project::Package(Box::new(pkg1));
         let p2 = Project::Package(Box::new(pkg2));
         assert_ne!(p1.cmp(&p2), Ordering::Equal);
+    }
+
+    fn assert_path_order(mut projects: Vec<Project>, expected_paths: &[&str]) {
+        let left_to_right = projects[0].cmp(&projects[1]);
+        let right_to_left = projects[1].cmp(&projects[0]);
+
+        assert_ne!(left_to_right, Ordering::Equal);
+        assert_eq!(left_to_right, right_to_left.reverse());
+
+        projects.sort();
+        let sorted_paths: Vec<_> = projects
+            .iter()
+            .map(|project| project.path().to_string_lossy())
+            .collect();
+        assert_eq!(sorted_paths, expected_paths);
+    }
+
+    #[test]
+    fn test_project_ord_packages_with_equal_names_by_relative_path() {
+        let later = Project::Package(Box::new(MockPackage::with_all(
+            Some("same"),
+            Some("1.0.0"),
+            "/repo/z/Cargo.toml",
+            "packages/z/Cargo.toml",
+            Language::Rust,
+        )));
+        let earlier = Project::Package(Box::new(MockPackage::with_all(
+            Some("same"),
+            Some("1.0.0"),
+            "/repo/a/Cargo.toml",
+            "packages/a/Cargo.toml",
+            Language::Rust,
+        )));
+
+        assert_path_order(
+            vec![later, earlier],
+            &["/repo/a/Cargo.toml", "/repo/z/Cargo.toml"],
+        );
+    }
+
+    #[test]
+    fn test_project_ord_workspaces_with_equal_names_by_relative_path() {
+        let later = Project::Workspace(Box::new(MockWorkspace::with_all(
+            Some("same"),
+            Some("1.0.0"),
+            "/repo/z/package.json",
+            "workspaces/z/package.json",
+            Language::Node,
+        )));
+        let earlier = Project::Workspace(Box::new(MockWorkspace::with_all(
+            Some("same"),
+            Some("1.0.0"),
+            "/repo/a/package.json",
+            "workspaces/a/package.json",
+            Language::Node,
+        )));
+
+        assert_path_order(
+            vec![later, earlier],
+            &["/repo/a/package.json", "/repo/z/package.json"],
+        );
+    }
+
+    #[test]
+    fn test_project_ord_unnamed_packages_by_raw_path_after_normalization() {
+        let earlier = Project::Package(Box::new(MockPackage::with_all(
+            None,
+            Some("1.0.0"),
+            "/repo/a/Cargo.toml",
+            "packages\\core\\Cargo.toml",
+            Language::Rust,
+        )));
+        let later = Project::Package(Box::new(MockPackage::with_all(
+            None,
+            Some("1.0.0"),
+            "/repo/z/Cargo.toml",
+            "packages/core/Cargo.toml",
+            Language::Rust,
+        )));
+
+        assert_path_order(
+            vec![later, earlier],
+            &["/repo/a/Cargo.toml", "/repo/z/Cargo.toml"],
+        );
+    }
+
+    #[test]
+    fn test_project_ord_unnamed_workspaces_by_raw_path_after_normalization() {
+        let earlier = Project::Workspace(Box::new(MockWorkspace::with_all(
+            None,
+            Some("1.0.0"),
+            "/repo/a/package.json",
+            "workspaces\\root\\package.json",
+            Language::Node,
+        )));
+        let later = Project::Workspace(Box::new(MockWorkspace::with_all(
+            None,
+            Some("1.0.0"),
+            "/repo/z/package.json",
+            "workspaces/root/package.json",
+            Language::Node,
+        )));
+
+        assert_path_order(
+            vec![later, earlier],
+            &["/repo/a/package.json", "/repo/z/package.json"],
+        );
     }
 
     #[rstest]

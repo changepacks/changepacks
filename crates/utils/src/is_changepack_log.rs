@@ -39,7 +39,7 @@ fn is_changepack_log_json_name(file_name: &str) -> bool {
 /// Returns an error if the directory exists but cannot be read. A missing
 /// directory is not an error — `read_dir` reports `NotFound`, which is mapped
 /// to an empty list so callers need not pre-check the directory's existence.
-pub(crate) async fn collect_changepack_log_paths(changepacks_dir: &Path) -> Result<Vec<PathBuf>> {
+pub async fn collect_changepack_log_paths(changepacks_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut entries = match read_dir(changepacks_dir).await {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),

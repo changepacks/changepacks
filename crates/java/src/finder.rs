@@ -76,30 +76,34 @@ struct GradleProperties {
 /// Scans the split paths for a `java` / `java.exe` executable.
 /// Returns `None` if `path_var` is `None` or empty.
 ///
+/// Metadata errors other than missing candidates are propagated.
+///
 /// This function is testable without mutating process env.
-async fn which_java_in(path_var: Option<&OsStr>) -> Option<PathBuf> {
-    let path_var = path_var?;
+async fn which_java_in(path_var: Option<&OsStr>) -> Result<Option<PathBuf>> {
+    let Some(path_var) = path_var else {
+        return Ok(None);
+    };
     if path_var.is_empty() {
-        return None;
+        return Ok(None);
     }
     for dir in std::env::split_paths(path_var) {
         let candidate = dir.join(JAVA_EXECUTABLE);
         // Async probe via the shared `changepacks_core::is_regular_file`
         // (a `tokio::fs::metadata().is_file()` check), matching the sibling
         // `java_home_has_java` and honoring the crate's no-blocking-I/O rule.
-        if changepacks_core::is_regular_file(&candidate).await {
-            return Some(candidate);
+        if changepacks_core::is_regular_file(&candidate).await? {
+            return Ok(Some(candidate));
         }
     }
-    None
+    Ok(None)
 }
 
-async fn java_home_has_java(java_home: Option<&OsStr>) -> bool {
+async fn java_home_has_java(java_home: Option<&OsStr>) -> Result<bool> {
     let Some(java_home) = java_home else {
-        return false;
+        return Ok(false);
     };
     if java_home.is_empty() {
-        return false;
+        return Ok(false);
     }
 
     let candidate = Path::new(java_home).join("bin").join(JAVA_EXECUTABLE);
@@ -129,7 +133,7 @@ fn gradle_wrapper_name(windows: bool) -> &'static str {
     if windows { "gradlew.bat" } else { "gradlew" }
 }
 
-async fn find_gradlew(start_dir: &Path, max_depth: usize) -> Option<(PathBuf, PathBuf)> {
+async fn find_gradlew(start_dir: &Path, max_depth: usize) -> Result<Option<(PathBuf, PathBuf)>> {
     find_gradlew_named(start_dir, max_depth, gradle_wrapper_name(cfg!(windows))).await
 }
 
@@ -137,19 +141,19 @@ async fn find_gradlew_named(
     start_dir: &Path,
     max_depth: usize,
     gradlew_name: &str,
-) -> Option<(PathBuf, PathBuf)> {
+) -> Result<Option<(PathBuf, PathBuf)>> {
     // `Path::ancestors()` yields `[start_dir, parent, …, root]`; `take(max_depth)`
     // caps the climb at the repository root so the walk never leaves the repo
     // and can never adopt an out-of-repo wrapper.
     for current in start_dir.ancestors().take(max_depth) {
         let gradlew = current.join(gradlew_name);
-        // Reject directories and inaccessible paths while continuing the
-        // bounded search for the selected platform wrapper filename.
-        if changepacks_core::is_regular_file(&gradlew).await {
-            return Some((gradlew, current.to_path_buf()));
+        // Reject directories while continuing the bounded search; propagate
+        // metadata failures other than a missing wrapper candidate.
+        if changepacks_core::is_regular_file(&gradlew).await? {
+            return Ok(Some((gradlew, current.to_path_buf())));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Run a built-in Gradle publish task through the repository-bounded wrapper.
@@ -166,7 +170,7 @@ pub(crate) async fn run_gradle_publish(
 ) -> Result<changepacks_core::publish::PublishOutput> {
     let project_dir = manifest_path.parent().context(missing_dir_ctx)?;
     let max_depth = relative_path.components().count();
-    let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth).await.context(
+    let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth).await?.context(
         "Gradle wrapper (gradlew) not found. \
          Ensure the project root contains gradlew or gradlew.bat.",
     )?;
@@ -237,13 +241,13 @@ fn extract_gradle_project_dependencies(content: &str) -> Vec<&str> {
 }
 
 /// Returns true when a Java runtime is available via JAVA_HOME or PATH.
-async fn java_is_available() -> bool {
+async fn java_is_available() -> Result<bool> {
     let java_home = std::env::var_os("JAVA_HOME");
-    if java_home_has_java(java_home.as_deref()).await {
-        return true;
+    if java_home_has_java(java_home.as_deref()).await? {
+        return Ok(true);
     }
     let path = std::env::var_os("PATH");
-    which_java_in(path.as_deref()).await.is_some()
+    Ok(which_java_in(path.as_deref()).await?.is_some())
 }
 
 /// Get project properties using gradlew command.
@@ -259,7 +263,7 @@ async fn get_gradle_properties(
     java_available: bool,
     max_depth: usize,
 ) -> Result<GradleProperties> {
-    let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth).await.context(
+    let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth).await?.context(
         "Gradle wrapper (gradlew) not found. \
          Ensure the project root contains gradlew or gradlew.bat.",
     )?;
@@ -394,7 +398,7 @@ impl ProjectFinder for GradleProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        if !self.matches_project_file(path).await {
+        if !self.matches_project_file(path).await? {
             return Ok(());
         }
 
@@ -409,7 +413,7 @@ impl ProjectFinder for GradleProjectFinder {
         let java_available = match self.java_available {
             Some(value) => value,
             None => {
-                let value = java_is_available().await;
+                let value = java_is_available().await?;
                 self.java_available = Some(value);
                 value
             }
@@ -519,7 +523,10 @@ mod tests {
             )
             .unwrap();
 
-            let found = find_gradlew_named(&project, 2, wrapper_name).await.unwrap();
+            let found = find_gradlew_named(&project, 2, wrapper_name)
+                .await
+                .unwrap()
+                .unwrap();
 
             assert_eq!(found.0, repo.join(wrapper_name));
             assert_eq!(found.1, repo);
@@ -1019,7 +1026,7 @@ version = "1.0.0"
 
         // Root project: the build file sits AT the repo root, so `visit`
         // computes `max_depth = 1` and the walk scans only `temp_dir`.
-        let result = find_gradlew(temp_dir.path(), 1).await;
+        let result = find_gradlew(temp_dir.path(), 1).await.unwrap();
         assert!(result.is_some());
         let (_, gradlew_dir) = result.unwrap();
         assert_eq!(gradlew_dir, temp_dir.path());
@@ -1044,7 +1051,7 @@ version = "1.0.0"
         // its build file is `libs/core/build.gradle.kts` (3 components) →
         // `max_depth = 3`. The walk scans `libs/core`, `libs`, then `temp_dir`
         // (the repo root), where the wrapper lives.
-        let result = find_gradlew(&subproject, 3).await;
+        let result = find_gradlew(&subproject, 3).await.unwrap();
         assert!(result.is_some());
         let (_, gradlew_dir) = result.unwrap();
         assert_eq!(gradlew_dir, temp_dir.path().to_path_buf());
@@ -1062,7 +1069,7 @@ version = "1.0.0"
         // `max_depth`, so with depth 2 it scans only `subdir` and `temp_dir`
         // and stops — it can no longer climb to the filesystem root and pick
         // up an out-of-repo wrapper, so it reliably returns `None`.
-        let result = find_gradlew(&subdir, 2).await;
+        let result = find_gradlew(&subdir, 2).await.unwrap();
         assert!(result.is_none());
 
         temp_dir.close().unwrap();
@@ -1100,7 +1107,7 @@ version = "1.0.0"
         // `relative_path` is repo-root-relative with 2 components
         // (`sub/build.gradle.kts`), so the walk scans `<repo_root>/sub` and
         // `<repo_root>` — never `temp_dir`, where the decoy wrapper lives.
-        let result = find_gradlew(&sub, 2).await;
+        let result = find_gradlew(&sub, 2).await.unwrap();
         assert!(
             result.is_none(),
             "expected a decoy gradlew above the repo root to be ignored, got {result:?}"
@@ -1321,14 +1328,14 @@ dependencies {
 
     #[tokio::test]
     async fn test_which_java_in_none() {
-        let result = which_java_in(None).await;
+        let result = which_java_in(None).await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
     async fn test_which_java_in_empty() {
         let empty = std::ffi::OsStr::new("");
-        let result = which_java_in(Some(empty)).await;
+        let result = which_java_in(Some(empty)).await.unwrap();
         assert!(result.is_none());
     }
 
@@ -1346,7 +1353,7 @@ dependencies {
         }
 
         let path_var = temp_dir.path().as_os_str();
-        let result = which_java_in(Some(path_var)).await;
+        let result = which_java_in(Some(path_var)).await.unwrap();
         assert!(result.is_some());
         assert_eq!(result.unwrap().file_name().unwrap(), java_name);
 
@@ -1360,7 +1367,7 @@ dependencies {
         fs::create_dir_all(temp_dir.path().join("subdir")).unwrap();
 
         let path_var = temp_dir.path().as_os_str();
-        let result = which_java_in(Some(path_var)).await;
+        let result = which_java_in(Some(path_var)).await.unwrap();
         assert!(result.is_none());
 
         temp_dir.close().unwrap();
@@ -1368,8 +1375,12 @@ dependencies {
 
     #[tokio::test]
     async fn test_java_home_has_java_rejects_empty_value() {
-        assert!(!java_home_has_java(None).await);
-        assert!(!java_home_has_java(Some(std::ffi::OsStr::new(""))).await);
+        assert!(!java_home_has_java(None).await.unwrap());
+        assert!(
+            !java_home_has_java(Some(std::ffi::OsStr::new("")))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -1378,7 +1389,11 @@ dependencies {
         let invalid_home = temp_dir.path().join("missing-java");
         fs::create_dir_all(&invalid_home).unwrap();
 
-        assert!(!java_home_has_java(Some(invalid_home.as_os_str())).await);
+        assert!(
+            !java_home_has_java(Some(invalid_home.as_os_str()))
+                .await
+                .unwrap()
+        );
 
         temp_dir.close().unwrap();
     }
@@ -1391,7 +1406,11 @@ dependencies {
         fs::create_dir_all(java_path.parent().unwrap()).unwrap();
         fs::write(&java_path, "").unwrap();
 
-        assert!(java_home_has_java(Some(temp_dir.path().as_os_str())).await);
+        assert!(
+            java_home_has_java(Some(temp_dir.path().as_os_str()))
+                .await
+                .unwrap()
+        );
 
         temp_dir.close().unwrap();
     }

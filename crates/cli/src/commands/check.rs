@@ -109,37 +109,49 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     Ok(())
 }
 
-/// Collect a project's monorepo-local dependency names, sorted.
+/// Resolve and sort a project's monorepo-local dependencies.
 ///
-/// Single source of truth for the "keep only deps that resolve in
-/// `name_to_project`, borrow them as `&str`, and `sort_unstable`" policy
-/// shared by `display_tree` (forward-graph construction) and
-/// `format_project_line` (the `[deps: ...]` annotation). Returns an empty
-/// `Vec` when no monorepo-local dependency survives the filter — callers
-/// keep their own empty-guard behavior (skip the graph insert / degrade to
-/// the no-`[deps]` line).
-///
-/// `sort_unstable`: dep names are unique package-name slices and `str::cmp`
-/// is a total order, so stability is not observable in the rendered output.
-fn sorted_monorepo_deps<'a>(
+/// Unknown dependency names are external and ignored. A local name must map
+/// to exactly one manifest; ambiguous names are rejected before rendering.
+enum NameIndexEntry<'a> {
+    Unique(&'a Project),
+    Ambiguous(Vec<&'a Project>),
+}
+
+type NameIndex<'a> = HashMap<&'a str, NameIndexEntry<'a>>;
+
+fn resolved_monorepo_deps<'a>(
     project: &'a Project,
-    name_to_project: &HashMap<&str, &Project>,
-) -> Vec<&'a str> {
-    let deps = project.dependencies();
-    // Preallocate to the tight upper bound: `Filter::size_hint` only reports
-    // `(0, Some(deps.len()))`, so a `.filter().collect()` under-reserves and
-    // reallocates geometrically; `deps.len()` overshoots by at most the
-    // non-monorepo deps. The lookup passes `dep.as_str()` because
-    // `HashMap<&str, _>::contains_key(&Q)` resolves with `Q = str` (via
-    // `&str: Borrow<str>`), not `Q = String`.
-    let mut filtered: Vec<&'a str> = Vec::with_capacity(deps.len());
+    name_index: &NameIndex<'a>,
+) -> Result<Vec<(&'a str, &'a Project)>> {
+    let mut deps: Vec<&str> = project.dependencies().iter().map(String::as_str).collect();
+    deps.sort_unstable();
+    let mut resolved = Vec::with_capacity(deps.len());
     for dep in deps {
-        if name_to_project.contains_key(dep.as_str()) {
-            filtered.push(dep.as_str());
+        match name_index.get(dep) {
+            Some(NameIndexEntry::Unique(dep_project)) => {
+                resolved.push((dep, *dep_project));
+            }
+            Some(NameIndexEntry::Ambiguous(candidates)) => {
+                let mut paths: Vec<String> = candidates
+                    .iter()
+                    .map(|candidate| {
+                        candidate
+                            .relative_path()
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    })
+                    .collect();
+                paths.sort_unstable();
+                anyhow::bail!(
+                    "dependency `{dep}` is ambiguous; candidate manifests: {}",
+                    paths.join(", ")
+                );
+            }
+            None => {}
         }
     }
-    filtered.sort_unstable();
-    filtered
+    Ok(resolved)
 }
 
 /// Display projects as a dependency tree
@@ -150,152 +162,72 @@ fn display_tree(
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     writer: &mut impl Write,
 ) -> Result<()> {
-    // Create a map from project name (fallback "noname") to project.
-    // Project names — not paths — key this map because both the graph and the
-    // dependency lookups (`project.dependencies()`) speak the *name* namespace.
-    //
-    // Keys are borrowed `&str` from `project.name()` (or the `"noname"`
-    // static fallback), matching the same pattern the sibling `roots`
-    // and `has_dependencies` HashSet<&str> collections use in this
-    // function. The `Project` refs already outlive `handle_check`'s
-    // scope, so the borrowed name slices they own outlive every
-    // downstream tree traversal below — no lifetime cascade to plumb.
-    // Cuts N `String::from_str` allocations per `check --tree` invocation
-    // (one per project name) with byte-identical map contents.
-    let mut name_to_project: HashMap<&str, &Project> = HashMap::with_capacity(projects.len());
+    let mut name_index = NameIndex::with_capacity(projects.len());
     for project in projects {
-        name_to_project.insert(project.name_or_noname(), project);
+        let Some(name) = project.name() else {
+            continue;
+        };
+        match name_index.entry(name) {
+            Entry::Vacant(entry) => {
+                entry.insert(NameIndexEntry::Unique(project));
+            }
+            Entry::Occupied(mut entry) => match entry.get_mut() {
+                NameIndexEntry::Unique(existing) => {
+                    let existing = *existing;
+                    entry.insert(NameIndexEntry::Ambiguous(vec![existing, project]));
+                }
+                NameIndexEntry::Ambiguous(candidates) => candidates.push(project),
+            },
+        }
     }
 
-    // Build the forward dependency graph: graph[project] = that project's
-    // monorepo-local dependency names, which `display_tree_node` renders as
-    // that project's children in the tree below.
-    // Preallocate: `projects.len()` is a tight upper bound for every map/set built
-    // below by a single pass over `projects`. Matches the preallocation policy
-    // already applied in `sort_by_dep.rs` and `apply_reverse_dependencies`.
-    //
-    // Keys and dep-list values borrow `&str` from the projects — the
-    // same borrowing pattern the sibling `name_to_project`, `roots`,
-    // `has_dependencies`, and `visited` collections in this function
-    // already use. Projects live for `handle_check`'s scope
-    // (`&[&Project]`), so every borrowed name slice outlives every
-    // downstream tree traversal. Retires the per-project
-    // `project.name().unwrap_or("noname").to_string()` key allocation
-    // AND the per-edge `dep.clone()` value allocation, closing the last
-    // "owned string" gap in this function.
-    let mut graph: HashMap<&str, Vec<&str>> = HashMap::with_capacity(projects.len());
-    // Borrow the `&str` name that already lives inside each `Project`;
-    // `name_to_project` keys on `&str` too, so these names look up
-    // directly. Avoids N per-invocation `String::clone`s of names we
-    // already own further up the stack.
+    // Graph nodes use manifest paths as identity; names are only for resolving edges.
+    let mut graph: HashMap<&Path, Vec<&Project>> = HashMap::with_capacity(projects.len());
 
     for project in projects {
-        // `sorted_monorepo_deps` applies the shared monorepo-local + sorted
-        // filter, so the dep list lands in `graph` already sorted ONCE — no
-        // separate `graph.values_mut()` pass is needed. `project` auto-derefs
-        // `&&Project` → `&Project`; the borrowed dep slices live for the
-        // projects' scope, matching the graph's `&str` values. Insert only
-        // non-empty results, so a dependency-free project stays out of
-        // `graph` exactly as before.
-        let monorepo_deps = sorted_monorepo_deps(project, &name_to_project);
+        // Resolve every edge before output so ambiguity never produces a partial tree.
+        let monorepo_deps: Vec<&Project> = resolved_monorepo_deps(project, &name_index)?
+            .into_iter()
+            .map(|(_, project)| project)
+            .collect();
         if !monorepo_deps.is_empty() {
-            graph.insert(project.name_or_noname(), monorepo_deps);
+            graph.insert(project.path(), monorepo_deps);
         }
     }
 
-    // Derive `has_dependencies` AFTER the graph is fully built by
-    // borrowing the `&str` slices that already live inside
-    // `graph.values()` (`HashSet<&str>`). Byte-identical membership to
-    // the previous `String::as_str` map: `graph.values().flatten()`
-    // yields `&&str`, and `.copied()` unwraps that to `&str` without
-    // touching the underlying storage.
-    //
-    // Preallocate against the exact upper bound: the total edge count is
-    // `graph.values().map(Vec::len).sum()`. `HashSet::from_iter` (via
-    // `.collect()`) does NOT reserve capacity from `Iterator::size_hint`,
-    // so seeding + `.extend(...)` skips the log2(N) geometric-doubling
-    // reallocations the un-hinted collect incurs. Matches the
-    // preallocation policy already applied to `name_to_project`, `graph`,
-    // `roots`, and `visited` in this same function.
+    // Manifest paths keep same-named projects distinct in root detection.
     let has_dependencies_cap: usize = graph.values().map(Vec::len).sum();
-    let mut has_dependencies: HashSet<&str> = HashSet::with_capacity(has_dependencies_cap);
-    has_dependencies.extend(graph.values().flatten().copied());
+    let mut has_dependencies: HashSet<&Path> = HashSet::with_capacity(has_dependencies_cap);
+    has_dependencies.extend(graph.values().flatten().map(|project| project.path()));
 
-    // Root nodes are projects that are not dependencies of any other project.
-    // Build sorted_roots directly by filtering projects and sorting, which
-    // achieves the same deduplication as the previous HashSet approach.
-    // `sort_unstable()` + `dedup()` collapses duplicates identically to what
-    // the HashSet collapsed. Roots are project NAMES, not unique keys: two
-    // distinct projects can legitimately share a name (e.g. a Node `core` and
-    // a Rust `core`, which `sort_by_dependencies` explicitly supports), so
-    // both push the same `"core"` string here. `dedup()` is therefore
-    // load-bearing — after the sort it collapses those duplicate name entries
-    // so a shared-name root renders once, not once per project sharing it.
-    //
-    // Sort roots for consistent output. `Vec<&str>` sorts identically to
-    // `Vec<String>` for the same name strings (byte-identical order), and
-    // `name_to_project.get(root)` still resolves because the map keys on
-    // `&str` (the loop below derefs `&&str` → `&str` to match).
-    //
-    // `sort_unstable`: `str::cmp` is a total order and any equal names are
-    // byte-identical strings, so their relative order is not observable in the
-    // printed tree. Skips the stability bookkeeping the stable sort pays for.
-    //
-    // Preallocate: `projects.len()` is the tight upper bound for roots
-    // (at most all projects are roots if none have dependencies). Making
-    // the reservation explicit matches the visually-uniform preallocation
-    // policy already applied throughout this same function (`name_to_project`,
-    // `graph`, `has_dependencies`, `visited`, `monorepo_deps`). Byte-identical
-    // output; the goal is a uniform preallocation idiom so a future
-    // maintainer can trust every `Vec::from_iter` was deliberate.
-    let mut sorted_roots: Vec<&str> = Vec::with_capacity(projects.len());
+    // Root order remains name-first; manifest path breaks ties for duplicates.
+    let mut sorted_roots: Vec<&Project> = Vec::with_capacity(projects.len());
     for project in projects {
-        let name = project.name_or_noname();
-        if !has_dependencies.contains(name) {
-            sorted_roots.push(name);
+        if !has_dependencies.contains(project.path()) {
+            sorted_roots.push(project);
         }
     }
-    sorted_roots.sort_unstable();
-    sorted_roots.dedup();
+    sorted_roots.sort_unstable_by(|left, right| {
+        left.name_or_noname()
+            .cmp(right.name_or_noname())
+            .then_with(|| left.relative_path().cmp(right.relative_path()))
+    });
 
     // Display tree starting from roots.
-    // Preallocate: `visited.insert(project_name)` fires at most once per
-    // unique project (up to `projects.len()`), so seeding the HashSet with
-    // that capacity avoids the geometric-doubling reallocations the
-    // default `HashSet::new()` would trigger on trees with dozens of
-    // nodes. Matches the preallocation policy already applied to
-    // `name_to_project`, `graph`, and `roots` above in this same
-    // function.
-    //
-    // Borrow the `&str` name that already lives inside each `Project` —
-    // the same borrowing pattern the sibling `roots` and
-    // `has_dependencies` sets use above. Cuts N `String::clone()` calls
-    // (one per tree-node visit) with byte-identical membership.
-    let mut visited: HashSet<&str> = HashSet::with_capacity(projects.len());
+    let mut visited: HashSet<&Path> = HashSet::with_capacity(projects.len());
     let mut ctx = TreeContext {
         graph: &graph,
-        name_to_project: &name_to_project,
+        name_index: &name_index,
         repo_root_path,
         update_map,
         line_cache: HashMap::with_capacity(projects.len()),
     };
     for (idx, root) in sorted_roots.iter().enumerate() {
-        // Deref `&&str` → `&str` to match `name_to_project`'s `&str` key
-        // type (`HashMap<&str, _>::get` resolves via `&str: Borrow<str>`).
-        if let Some(project) = name_to_project.get(*root) {
-            let is_last = idx == sorted_roots.len() - 1;
-            display_tree_node(project, &mut ctx, "", is_last, &mut visited, writer)?;
-        }
+        let is_last = idx == sorted_roots.len() - 1;
+        display_tree_node(root, &mut ctx, "", is_last, &mut visited, writer)?;
     }
 
-    // Display projects that weren't part of the tree (orphaned nodes).
-    // Key on the unique manifest path via `line_cache`, NOT the project name:
-    // `cached_project_line` inserts into `line_cache` exactly when a line is
-    // printed (by `project.path()`), so "in `line_cache`" ⟺ "already displayed"
-    // under a unique identity. Two distinct projects can legitimately share a
-    // name (e.g. a Node `core` and a Rust `core`), and `name_to_project` keeps
-    // only the last-inserted one, so a name-keyed check would wrongly treat the
-    // dropped twin as already shown and never print it.
+    // Display projects that weren't part of the tree (for example rootless cycles).
     for project in projects {
         if !ctx.line_cache.contains_key(project.path()) {
             writeln!(writer, "{}", cached_project_line(project, &mut ctx)?)?;
@@ -307,12 +239,8 @@ fn display_tree(
 
 /// Context for tree display operations
 struct TreeContext<'a> {
-    // `graph` now keys and values borrow `&str` from the projects, matching
-    // the same borrowing pattern the sibling `name_to_project` field
-    // already uses. Retires the `HashMap<String, Vec<String>>` shape's
-    // per-node key/value clones on every `display_tree_node` walk.
-    graph: &'a HashMap<&'a str, Vec<&'a str>>,
-    name_to_project: &'a HashMap<&'a str, &'a Project>,
+    graph: &'a HashMap<&'a Path, Vec<&'a Project>>,
+    name_index: &'a NameIndex<'a>,
     repo_root_path: &'a Path,
     update_map: &'a HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     line_cache: HashMap<&'a Path, String>,
@@ -326,12 +254,8 @@ fn cached_project_line<'a, 'ctx>(
     match ctx.line_cache.entry(project_path) {
         Entry::Occupied(entry) => Ok(entry.into_mut().as_str()),
         Entry::Vacant(entry) => {
-            let line = format_project_line(
-                project,
-                ctx.repo_root_path,
-                ctx.update_map,
-                ctx.name_to_project,
-            )?;
+            let line =
+                format_project_line(project, ctx.repo_root_path, ctx.update_map, ctx.name_index)?;
             Ok(entry.insert(line).as_str())
         }
     }
@@ -343,19 +267,11 @@ fn display_tree_node<'a>(
     ctx: &mut TreeContext<'a>,
     prefix: &str,
     is_last: bool,
-    visited: &mut HashSet<&'a str>,
+    visited: &mut HashSet<&'a Path>,
     writer: &mut impl Write,
 ) -> Result<()> {
-    // Borrow the name out of the project rather than allocating a fresh
-    // `String` per visit — the `Project` outlives every downstream
-    // borrow (`visited`, `ctx.graph`, `ctx.name_to_project` all live for
-    // `handle_check`'s scope), so the name slice is safe to thread
-    // through the recursion. Diamond graphs re-descend the same subtree
-    // under multiple parents, so retiring the per-visit `String::from`
-    // + `.clone()` pair collapses two heap ops per tree node down to a
-    // pointer copy.
-    let project_name: &'a str = project.name_or_noname();
-    let is_first_visit = visited.insert(project_name);
+    let project_path = project.path();
+    let is_first_visit = visited.insert(project_path);
 
     // Only print the project line if this is the first time visiting it
     if is_first_visit {
@@ -371,38 +287,22 @@ fn display_tree_node<'a>(
 
     // Always display dependencies, even if the node was already visited
     // This ensures all dependencies are shown in the tree.
-    // NOTE: `deps` is pre-sorted ONCE when `display_tree` builds the graph
-    // (via `sorted_monorepo_deps`); borrowing here avoids the per-visit
-    // `deps.clone()` + `.sort()` — meaningful on diamond graphs where the
-    // same subtree is re-descended under multiple parents.
-    if let Some(deps) = ctx.graph.get(project_name) {
+    // Dependencies were resolved and sorted when the graph was built.
+    if let Some(deps) = ctx.graph.get(project_path) {
         let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
-        for (idx, dep_name) in deps.iter().enumerate() {
-            // `deps: &Vec<&str>` now, so `deps.iter()` yields
-            // `dep_name: &&str`. Deref once with `*dep_name` at the two
-            // call sites below so `HashMap<&str, _>::get(&&str)` and
-            // `HashSet<&str>::contains(&&str)` both resolve via
-            // `&str: Borrow<str>` — byte-identical semantics to the
-            // previous `dep_name.as_str()` chain on `&String`.
-            if let Some(dep_project) = ctx.name_to_project.get(*dep_name) {
-                // `deps.iter().enumerate()` guarantees `deps.len() >= 1`
-                // inside the loop, so plain subtraction is safe.
-                let is_last_dep = idx == deps.len() - 1;
-                // Use a separate visited set for dependencies to avoid infinite loops
-                // but still show all dependencies
-                if visited.contains(*dep_name) {
-                    // If already visited, just print it without recursion to avoid loops
-                    let dep_connector = tree_connector(is_last_dep);
-                    writeln!(
-                        writer,
-                        "{}{}{}",
-                        new_prefix,
-                        dep_connector,
-                        cached_project_line(dep_project, ctx)?
-                    )?;
-                } else {
-                    display_tree_node(dep_project, ctx, &new_prefix, is_last_dep, visited, writer)?;
-                }
+        for (idx, dep_project) in deps.iter().enumerate() {
+            let is_last_dep = idx == deps.len() - 1;
+            if visited.contains(dep_project.path()) {
+                let dep_connector = tree_connector(is_last_dep);
+                writeln!(
+                    writer,
+                    "{}{}{}",
+                    new_prefix,
+                    dep_connector,
+                    cached_project_line(dep_project, ctx)?
+                )?;
+            } else {
+                display_tree_node(dep_project, ctx, &new_prefix, is_last_dep, visited, writer)?;
             }
         }
     }
@@ -441,7 +341,7 @@ fn format_project_line(
     project: &Project,
     repo_root_path: &std::path::Path,
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-    name_to_project: &HashMap<&str, &Project>,
+    name_index: &NameIndex<'_>,
 ) -> Result<String> {
     use colored::Colorize;
 
@@ -464,9 +364,10 @@ fn format_project_line(
     // bytes) is a tight upper bound that overshoots by at most one
     // separator (the first dep skips the leading separator). Matches the
     // preallocation policy already applied throughout the workspace.
-    let filtered_deps = sorted_monorepo_deps(project, name_to_project);
-    let mut deps_str = String::with_capacity(filtered_deps.iter().map(|d| d.len() + 9).sum());
-    for dep in filtered_deps {
+    let filtered_deps = resolved_monorepo_deps(project, name_index)?;
+    let mut deps_str =
+        String::with_capacity(filtered_deps.iter().map(|(dep, _)| dep.len() + 9).sum());
+    for (dep, _) in filtered_deps {
         if !deps_str.is_empty() {
             deps_str.push_str("\n        ");
         }
@@ -583,10 +484,14 @@ mod tests {
         Project::Package(Box::new(package))
     }
 
-    fn render_tree(projects: &[&Project]) -> String {
+    fn try_render_tree(projects: &[&Project]) -> Result<String> {
         let mut output = Vec::new();
-        display_tree(projects, Path::new("/repo"), &HashMap::new(), &mut output).unwrap();
-        String::from_utf8(output).unwrap()
+        display_tree(projects, Path::new("/repo"), &HashMap::new(), &mut output)?;
+        Ok(String::from_utf8(output).unwrap())
+    }
+
+    fn render_tree(projects: &[&Project]) -> String {
+        try_render_tree(projects).unwrap()
     }
 
     #[test]
@@ -663,6 +568,128 @@ mod tests {
     }
 
     #[test]
+    fn test_display_tree_rejects_referenced_duplicate_name_with_sorted_manifest_paths() {
+        let app = package("app", &["shared"]);
+        let shared_z = package("shared", &[]);
+        let shared_a = Project::Package(Box::new(MockPackage::with_all(
+            Some("shared"),
+            Some("2.0.0"),
+            "/repo/crates/shared/Cargo.toml",
+            "crates/shared/Cargo.toml",
+            Language::Rust,
+        )));
+
+        let error = try_render_tree(&[&shared_z, &app, &shared_a]).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "dependency `shared` is ambiguous; candidate manifests: crates/shared/Cargo.toml, packages/shared/package.json"
+        );
+    }
+
+    #[test]
+    fn test_display_tree_selects_first_ambiguous_dependency_deterministically() {
+        let alpha_node = package("alpha", &[]);
+        let alpha_rust = Project::Package(Box::new(MockPackage::with_all(
+            Some("alpha"),
+            Some("2.0.0"),
+            "/repo/crates/alpha/Cargo.toml",
+            "crates/alpha/Cargo.toml",
+            Language::Rust,
+        )));
+        let zeta_node = package("zeta", &[]);
+        let zeta_rust = Project::Package(Box::new(MockPackage::with_all(
+            Some("zeta"),
+            Some("2.0.0"),
+            "/repo/crates/zeta/Cargo.toml",
+            "crates/zeta/Cargo.toml",
+            Language::Rust,
+        )));
+
+        for _ in 0..64 {
+            let app = package("app", &["zeta", "alpha"]);
+            let error = try_render_tree(&[&app, &zeta_node, &alpha_rust, &alpha_node, &zeta_rust])
+                .unwrap_err();
+
+            assert_eq!(
+                error.to_string(),
+                "dependency `alpha` is ambiguous; candidate manifests: crates/alpha/Cargo.toml, packages/alpha/package.json"
+            );
+        }
+    }
+
+    #[test]
+    fn test_display_tree_resolves_real_noname_without_unnamed_manifest_collision() {
+        let app = package("app", &["noname"]);
+        let real_noname = package("noname", &[]);
+        let unnamed = Project::Package(Box::new(MockPackage::with_all(
+            None,
+            Some("1.0.0"),
+            "/repo/packages/unnamed/package.json",
+            "packages/unnamed/package.json",
+            Language::Node,
+        )));
+
+        assert_eq!(
+            render_tree(&[&unnamed, &real_noname, &app]),
+            concat!(
+                "├── [Node.js] app (v1.0.0) - packages/app/package.json [deps:\n",
+                "        noname]\n",
+                "│   └── [Node.js] noname (v1.0.0) - packages/noname/package.json\n",
+                "└── [Node.js] noname (v1.0.0) - packages/unnamed/package.json\n",
+            )
+        );
+    }
+
+    #[test]
+    fn test_display_tree_does_not_resolve_multiple_unnamed_manifests_as_noname() {
+        let app = package("app", &["noname"]);
+        let unnamed_a = Project::Package(Box::new(MockPackage::with_all(
+            None,
+            Some("1.0.0"),
+            "/repo/packages/a/package.json",
+            "packages/a/package.json",
+            Language::Node,
+        )));
+        let unnamed_z = Project::Package(Box::new(MockPackage::with_all(
+            None,
+            Some("1.0.0"),
+            "/repo/packages/z/package.json",
+            "packages/z/package.json",
+            Language::Node,
+        )));
+
+        assert_eq!(
+            render_tree(&[&unnamed_z, &app, &unnamed_a]),
+            concat!(
+                "├── [Node.js] app (v1.0.0) - packages/app/package.json\n",
+                "├── [Node.js] noname (v1.0.0) - packages/a/package.json\n",
+                "└── [Node.js] noname (v1.0.0) - packages/z/package.json\n",
+            )
+        );
+    }
+
+    #[test]
+    fn test_display_tree_renders_every_unreferenced_duplicate_by_manifest_path() {
+        let node_core = package("core", &[]);
+        let rust_core = Project::Package(Box::new(MockPackage::with_all(
+            Some("core"),
+            Some("2.0.0"),
+            "/repo/crates/core/Cargo.toml",
+            "crates/core/Cargo.toml",
+            Language::Rust,
+        )));
+
+        assert_eq!(
+            render_tree(&[&node_core, &rust_core]),
+            concat!(
+                "├── [Rust] core (v2.0.0) - crates/core/Cargo.toml\n",
+                "└── [Node.js] core (v1.0.0) - packages/core/package.json\n",
+            )
+        );
+    }
+
+    #[test]
     fn test_format_project_line_package() {
         let pkg = MockPackage::with_all(
             Some("my-lib"),
@@ -674,8 +701,8 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut name_to_project: HashMap<&str, &Project> = HashMap::new();
-        name_to_project.insert("my-lib", &project);
+        let mut name_to_project = NameIndex::new();
+        name_to_project.insert("my-lib", NameIndexEntry::Unique(&project));
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("my-lib"));
@@ -694,8 +721,8 @@ mod tests {
         let project = Project::Workspace(Box::new(ws));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut name_to_project: HashMap<&str, &Project> = HashMap::new();
-        name_to_project.insert("my-workspace", &project);
+        let mut name_to_project = NameIndex::new();
+        name_to_project.insert("my-workspace", NameIndexEntry::Unique(&project));
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("my-workspace"));
@@ -719,7 +746,7 @@ mod tests {
             PathBuf::from("packages/foo/package.json"),
             (UpdateType::Minor, vec![]),
         );
-        let name_to_project: HashMap<&str, &Project> = HashMap::new();
+        let name_to_project = NameIndex::new();
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("updated-pkg"));
@@ -740,7 +767,7 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let name_to_project: HashMap<&str, &Project> = HashMap::new();
+        let name_to_project = NameIndex::new();
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("changed-pkg"));
@@ -770,9 +797,9 @@ mod tests {
 
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut name_to_project: HashMap<&str, &Project> = HashMap::new();
-        name_to_project.insert("app", &project);
-        name_to_project.insert("core-lib", &dep_project);
+        let mut name_to_project = NameIndex::new();
+        name_to_project.insert("app", NameIndexEntry::Unique(&project));
+        name_to_project.insert("core-lib", NameIndexEntry::Unique(&dep_project));
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("app"));
@@ -792,7 +819,7 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let name_to_project: HashMap<&str, &Project> = HashMap::new();
+        let name_to_project = NameIndex::new();
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("standalone"));
@@ -843,11 +870,11 @@ mod tests {
 
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut name_to_project: HashMap<&str, &Project> = HashMap::new();
-        name_to_project.insert("app", &project);
-        name_to_project.insert("apple", &apple_project);
-        name_to_project.insert("zebra", &zebra_project);
-        name_to_project.insert("mango", &mango_project);
+        let mut name_to_project = NameIndex::new();
+        name_to_project.insert("app", NameIndexEntry::Unique(&project));
+        name_to_project.insert("apple", NameIndexEntry::Unique(&apple_project));
+        name_to_project.insert("zebra", NameIndexEntry::Unique(&zebra_project));
+        name_to_project.insert("mango", NameIndexEntry::Unique(&mango_project));
 
         let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
         assert!(line.contains("app"));
@@ -879,12 +906,12 @@ mod tests {
 
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let name_to_project: HashMap<&str, &Project> = HashMap::new();
+        let name_to_project = NameIndex::new();
 
         // Create a TreeContext with an empty line_cache
         let mut ctx = TreeContext {
             graph: &HashMap::new(),
-            name_to_project: &name_to_project,
+            name_index: &name_to_project,
             repo_root_path: repo_root,
             update_map: &update_map,
             line_cache: HashMap::new(),

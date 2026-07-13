@@ -13,16 +13,15 @@ use anyhow::{Context, Result};
 /// (`pnpm-workspace.yaml`, `melos.yaml`) is checked next to the manifest via the
 /// shared `changepacks_core::is_regular_file` marker-file discipline: only a
 /// *regular file* counts, so a directory bearing that name is rejected (not a
-/// workspace), and a stat error (broken symlink, permission denied) is likewise
-/// treated as "not a workspace" — the same fallthrough-on-error behavior as the
-/// finders' previous `try_exists(...).unwrap_or(false)`.
+/// workspace). Missing sibling files also return false, while other metadata
+/// errors are propagated.
 ///
 /// AGENTS.md rule: all file ops go through `tokio::fs`.
 ///
 /// # Errors
-/// Returns an error only when `manifest_path` has no parent directory (a root
-/// or empty path), mirroring the `parent()` guard the finders used before this
-/// helper was extracted.
+/// Returns an error when `manifest_path` has no parent directory (a root or
+/// empty path), or when sibling metadata cannot be read for a reason other
+/// than the sibling not existing.
 pub async fn is_workspace_by_sibling(
     field_present: bool,
     manifest_path: &Path,
@@ -35,7 +34,7 @@ pub async fn is_workspace_by_sibling(
         .parent()
         .with_context(|| format!("Parent not found - {}", manifest_path.display()))?
         .join(sibling_file);
-    Ok(changepacks_core::is_regular_file(&sibling).await)
+    changepacks_core::is_regular_file(&sibling).await
 }
 
 #[cfg(test)]
