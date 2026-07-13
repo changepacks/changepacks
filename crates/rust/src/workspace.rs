@@ -278,7 +278,8 @@ impl Workspace for RustWorkspace {
             else {
                 continue;
             };
-            if let Some(current_version) = dep.get("version").and_then(|v| v.as_str())
+            if dep.get("path").is_some()
+                && let Some(current_version) = dep.get("version").and_then(|v| v.as_str())
                 && let Some(next_version) = package.version()
             {
                 // `current_version` borrows `dep`; delegate the prefix-
@@ -568,6 +569,7 @@ members = ["crates/*"]
 [workspace.dependencies]
 core = { version = "1.0.0", path = "crates/core" }
 utils = { version = "2.0.0", path = "crates/utils" }
+serde = { version = "1.0.0" }
 "#,
         )
         .unwrap();
@@ -579,7 +581,6 @@ utils = { version = "2.0.0", path = "crates/utils" }
             PathBuf::from("Cargo.toml"),
         );
 
-        // Create mock packages with updated versions
         let mut core_pkg = RustPackage::new(
             Some("core".to_string()),
             Some("1.1.0".to_string()),
@@ -588,7 +589,15 @@ utils = { version = "2.0.0", path = "crates/utils" }
         );
         core_pkg.set_changed(true);
 
-        let packages: Vec<&dyn Package> = vec![&core_pkg];
+        let mut serde_pkg = RustPackage::new(
+            Some("serde".to_string()),
+            Some("1.1.0".to_string()),
+            PathBuf::from("/test/serde/Cargo.toml"),
+            PathBuf::from("serde/Cargo.toml"),
+        );
+        serde_pkg.set_changed(true);
+
+        let packages: Vec<&dyn Package> = vec![&core_pkg, &serde_pkg];
 
         workspace
             .update_workspace_dependencies(&packages)
@@ -596,9 +605,17 @@ utils = { version = "2.0.0", path = "crates/utils" }
             .unwrap();
 
         let content = read_to_string(&cargo_toml).await.unwrap();
-        assert!(content.contains("version = \"1.1.0\""));
-        // utils should remain unchanged
-        assert!(content.contains("version = \"2.0.0\""));
+        assert_eq!(
+            content,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+core = { version = "1.1.0", path = "crates/core" }
+utils = { version = "2.0.0", path = "crates/utils" }
+serde = { version = "1.0.0" }
+"#
+        );
 
         temp_dir.close().unwrap();
     }
@@ -1160,6 +1177,10 @@ path = "crates/core"
 [workspace.dependencies.utils]
 version = "2.0.0"
 path = "crates/utils"
+
+[workspace.dependencies.serde]
+version = "1.0.0"
+features = ["derive"]
 "#,
         )
         .unwrap();
@@ -1179,7 +1200,15 @@ path = "crates/utils"
         );
         core_pkg.set_changed(true);
 
-        let packages: Vec<&dyn Package> = vec![&core_pkg];
+        let mut serde_pkg = RustPackage::new(
+            Some("serde".to_string()),
+            Some("1.1.0".to_string()),
+            PathBuf::from("/test/serde/Cargo.toml"),
+            PathBuf::from("serde/Cargo.toml"),
+        );
+        serde_pkg.set_changed(true);
+
+        let packages: Vec<&dyn Package> = vec![&core_pkg, &serde_pkg];
 
         workspace
             .update_workspace_dependencies(&packages)
@@ -1187,19 +1216,24 @@ path = "crates/utils"
             .unwrap();
 
         let content = read_to_string(&cargo_toml).await.unwrap();
-        let doc: toml_edit::DocumentMut = content.parse().unwrap();
-        let ws_deps = doc["workspace"]["dependencies"].as_table().unwrap();
+        assert_eq!(
+            content,
+            r#"[workspace]
+members = ["crates/*"]
 
-        // core sub-table dep bumped to the package version
-        assert_eq!(ws_deps["core"]["version"].as_str(), Some("1.1.0"));
-        // sibling path preserved
-        assert_eq!(ws_deps["core"]["path"].as_str(), Some("crates/core"));
-        // utils (not in the package set) untouched
-        assert_eq!(ws_deps["utils"]["version"].as_str(), Some("2.0.0"));
+[workspace.dependencies.core]
+version = "1.1.0"
+path = "crates/core"
 
-        // Sub-table shape + formatting preserved
-        assert!(content.contains("[workspace.dependencies.core]"));
-        assert!(content.contains(r#"path = "crates/core""#));
+[workspace.dependencies.utils]
+version = "2.0.0"
+path = "crates/utils"
+
+[workspace.dependencies.serde]
+version = "1.0.0"
+features = ["derive"]
+"#
+        );
 
         temp_dir.close().unwrap();
     }
