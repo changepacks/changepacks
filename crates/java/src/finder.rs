@@ -160,6 +160,41 @@ async fn find_gradlew(start_dir: &Path, max_depth: usize) -> Option<(PathBuf, Pa
     None
 }
 
+/// Run a built-in Gradle publish task through the repository-bounded wrapper.
+///
+/// The wrapper and task are passed as OS arguments rather than interpolated
+/// into a shell command, so paths containing spaces or shell metacharacters
+/// remain intact. Configured publish commands do not use this path; their
+/// existing shell semantics are preserved by the package/workspace callers.
+#[cfg(not(tarpaulin_include))]
+pub(crate) async fn run_gradle_publish(
+    manifest_path: &Path,
+    relative_path: &Path,
+    task: &str,
+    missing_dir_ctx: &'static str,
+) -> Result<changepacks_core::publish::PublishOutput> {
+    let project_dir = manifest_path.parent().context(missing_dir_ctx)?;
+    let max_depth = relative_path.components().count();
+    let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth).await.context(
+        "Gradle wrapper (gradlew) not found. \
+         Ensure the project root contains gradlew or gradlew.bat.",
+    )?;
+    let args = vec![gradle_task_arg(project_dir, &gradlew_dir, task)?];
+    let output = GradleCommandSpec::new(&gradlew, &gradlew_dir, args)
+        .command()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .with_context(|| format!("Failed to execute Gradle wrapper '{}'", gradlew.display()))?;
+
+    Ok(changepacks_core::publish::PublishOutput {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    })
+}
+
 #[cfg(not(tarpaulin_include))]
 fn gradle_subproject_path(relative: &Path) -> Result<String> {
     // Preallocate against the source path's byte length: each `:` separator we
@@ -312,18 +347,22 @@ async fn get_gradle_properties(
 }
 
 fn gradle_properties_args(project_dir: &Path, gradlew_dir: &Path) -> Result<Vec<OsString>> {
+    Ok(vec![
+        gradle_task_arg(project_dir, gradlew_dir, "properties")?,
+        OsString::from("-q"),
+    ])
+}
+
+fn gradle_task_arg(project_dir: &Path, gradlew_dir: &Path, task: &str) -> Result<OsString> {
     if gradlew_dir == project_dir {
-        return Ok(vec![OsString::from("properties"), OsString::from("-q")]);
+        return Ok(OsString::from(task));
     }
 
     let relative = project_dir
         .strip_prefix(gradlew_dir)
         .context("Failed to compute subproject path")?;
     let gradle_path = gradle_subproject_path(relative)?;
-    Ok(vec![
-        OsString::from(format!(":{gradle_path}:properties")),
-        OsString::from("-q"),
-    ])
+    Ok(OsString::from(format!(":{gradle_path}:{task}")))
 }
 
 #[derive(Debug)]

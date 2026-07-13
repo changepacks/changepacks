@@ -510,7 +510,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_gen_update_map_reports_unreadable_log_path() {
+    async fn test_gen_update_map_ignores_json_directory() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
         let config = Config::default();
@@ -520,20 +520,16 @@ mod tests {
         let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).await.unwrap();
 
-        let unreadable_log_path = changepacks_dir.join("changepack_log_unreadable.json");
-        fs::create_dir(&unreadable_log_path).await.unwrap();
+        let json_dir_path = changepacks_dir.join("changepack_log_directory.json");
+        fs::create_dir(&json_dir_path).await.unwrap();
 
-        let err = gen_update_map(&changepacks_dir, &config)
+        let update_map = gen_update_map(&changepacks_dir, &config)
             .await
-            .expect_err("unreadable changepack log must surface as an error");
-        let msg = format!("{err:#}");
+            .expect("JSON-named directory must be ignored");
+        assert!(update_map.is_empty());
         assert!(
-            msg.contains("changepack_log_unreadable.json"),
-            "expected path in error message, got: {msg}"
-        );
-        assert!(
-            msg.contains("Failed to read changepack log"),
-            "expected context prefix in error message, got: {msg}"
+            json_dir_path.is_dir(),
+            "JSON-named directory must be preserved"
         );
 
         temp_dir.close().unwrap();

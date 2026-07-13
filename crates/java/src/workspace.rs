@@ -1,5 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
+#[cfg(not(tarpaulin_include))]
+use changepacks_core::Config;
 use changepacks_core::{Language, UpdateType, Workspace};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -62,6 +64,31 @@ impl Workspace for GradleWorkspace {
         crate::DRY_RUN_PUBLISH_COMMAND
     );
 
+    #[cfg(not(tarpaulin_include))]
+    async fn publish(&self, config: &Config) -> Result<changepacks_core::publish::PublishOutput> {
+        crate::run_publish_for_path(
+            self.path(),
+            self.relative_path(),
+            config,
+            changepacks_core::publish::WORKSPACE_DIR_NOT_FOUND,
+        )
+        .await
+    }
+
+    #[cfg(not(tarpaulin_include))]
+    async fn dry_run_publish(
+        &self,
+        config: &Config,
+    ) -> Result<Option<changepacks_core::publish::PublishOutput>> {
+        crate::run_dry_run_publish_for_path(
+            self.path(),
+            self.relative_path(),
+            config,
+            changepacks_core::publish::WORKSPACE_DIR_NOT_FOUND,
+        )
+        .await
+    }
+
     // `dependencies()` / `add_dependency()` share their byte-identical
     // body with every other language crate's `Package` and `Workspace`
     // impl (all use `dependencies: HashSet<String>` as their backing
@@ -78,8 +105,31 @@ mod tests {
     use changepacks_core::UpdateType;
     use rstest::rstest;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
+
+    fn create_publish_wrapper(root: &Path) {
+        #[cfg(windows)]
+        fs::write(
+            root.join("gradlew.bat"),
+            "@echo off\necho cwd=%CD%\necho args=%*\n",
+        )
+        .unwrap();
+
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let wrapper = root.join("gradlew");
+            fs::write(
+                &wrapper,
+                "#!/bin/sh\nprintf 'cwd=%s\\nargs=%s\\n' \"$PWD\" \"$*\"\n",
+            )
+            .unwrap();
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
 
     fn assert_gradle_workspace_defaults(workspace: &GradleWorkspace) {
         assert_eq!(workspace.name(), Some("test-workspace"));
@@ -151,6 +201,38 @@ mod tests {
         assert!(workspace.is_changed());
         workspace.set_changed(false);
         assert!(!workspace.is_changed());
+    }
+
+    #[tokio::test]
+    async fn test_publish_root_project_uses_platform_wrapper_publish_task() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path().join("repo with spaces");
+        fs::create_dir_all(&root).unwrap();
+        create_publish_wrapper(&root);
+        let manifest = root.join("build.gradle.kts");
+        fs::write(&manifest, "version = \"1.0.0\"\n").unwrap();
+        let workspace = GradleWorkspace::new(
+            Some("root".to_string()),
+            Some("1.0.0".to_string()),
+            manifest,
+            PathBuf::from("build.gradle.kts"),
+        );
+
+        let output = workspace
+            .publish(&changepacks_core::Config::default())
+            .await
+            .unwrap();
+        let dry_run = workspace
+            .dry_run_publish(&changepacks_core::Config::default())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains(&format!("cwd={}", root.display())));
+        assert!(output.stdout.contains("args=publish"));
+        assert!(dry_run.success, "stderr: {}", dry_run.stderr);
+        assert!(dry_run.stdout.contains("args=publishToMavenLocal"));
     }
 
     #[rstest]

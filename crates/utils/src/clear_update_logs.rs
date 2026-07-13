@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_clear_update_logs_file_deletion_failure() {
+    async fn test_clear_update_logs_ignores_json_directory() {
         // Create a temporary directory and initialize git
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
@@ -323,22 +323,14 @@ mod tests {
         let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
         fs::create_dir_all(&changepacks_dir).unwrap();
 
-        // Create a subdirectory with a name that looks like a JSON file
-        // This will cause remove_file to fail because it's a directory, not a file
+        // Create a subdirectory with a name that looks like a JSON file.
         let log_dir = changepacks_dir.join("update_log.json");
         fs::create_dir_all(&log_dir).unwrap();
 
-        // Test clearing logs - should fail because we're trying to remove a directory
+        // Directories are not changepack logs, so clearing succeeds and preserves it.
         let result = clear_update_logs(&changepacks_dir).await;
-        assert!(result.is_err());
-        let error_msg = result.unwrap_err().to_string();
-        assert!(error_msg.contains("Failed to remove 1 update log(s)"));
-        // The removal error must name the offending path so the user can tell
-        // WHICH `.changepacks/*.json` entry failed to be cleared.
-        assert!(
-            error_msg.contains("update_log.json"),
-            "error should name the failing path, got: {error_msg}"
-        );
+        assert!(result.is_ok());
+        assert!(log_dir.is_dir(), "JSON-named directory must be preserved");
     }
 
     #[tokio::test]

@@ -62,7 +62,17 @@ pub(crate) async fn collect_changepack_log_paths(changepacks_dir: &Path) -> Resu
     {
         let file_name = file.file_name();
         if is_changepack_log_json_name(file_name.to_string_lossy().as_ref()) {
-            paths.push(file.path());
+            let path = file.path();
+            let file_type = file.file_type().await.with_context(|| {
+                format!(
+                    "Failed to read metadata for changepack log candidate {} in directory {}",
+                    path.display(),
+                    changepacks_dir.display()
+                )
+            })?;
+            if file_type.is_file() {
+                paths.push(path);
+            }
         }
     }
     // Sort paths to ensure deterministic order: `read_dir` order is filesystem-dependent,
@@ -156,6 +166,18 @@ mod tests {
         )
         .await
         .unwrap();
+        fs::write(
+            changepacks_dir.join("config.json"),
+            r#"{"baseBranch": "main"}"#,
+        )
+        .await
+        .unwrap();
+        fs::write(changepacks_dir.join("README.md"), "not a changepack log")
+            .await
+            .unwrap();
+        fs::create_dir(changepacks_dir.join("not_a_log.json"))
+            .await
+            .unwrap();
 
         let paths = collect_changepack_log_paths(changepacks_dir).await.unwrap();
 

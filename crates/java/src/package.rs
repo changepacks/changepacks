@@ -1,5 +1,7 @@
 use anyhow::Result;
 use async_trait::async_trait;
+#[cfg(not(tarpaulin_include))]
+use changepacks_core::Config;
 use changepacks_core::{Language, Package, UpdateType};
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -49,6 +51,31 @@ impl Package for GradlePackage {
         crate::DRY_RUN_PUBLISH_COMMAND
     );
 
+    #[cfg(not(tarpaulin_include))]
+    async fn publish(&self, config: &Config) -> Result<changepacks_core::publish::PublishOutput> {
+        crate::run_publish_for_path(
+            self.path(),
+            self.relative_path(),
+            config,
+            changepacks_core::publish::PACKAGE_DIR_NOT_FOUND,
+        )
+        .await
+    }
+
+    #[cfg(not(tarpaulin_include))]
+    async fn dry_run_publish(
+        &self,
+        config: &Config,
+    ) -> Result<Option<changepacks_core::publish::PublishOutput>> {
+        crate::run_dry_run_publish_for_path(
+            self.path(),
+            self.relative_path(),
+            config,
+            changepacks_core::publish::PACKAGE_DIR_NOT_FOUND,
+        )
+        .await
+    }
+
     // Dependency set accessors.
     changepacks_core::impl_dependencies_accessors!();
 }
@@ -56,11 +83,43 @@ impl Package for GradlePackage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use changepacks_core::UpdateType;
+    use changepacks_core::{Config, UpdateType};
     use rstest::rstest;
+    use std::collections::BTreeMap;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
+
+    fn create_publish_wrapper(root: &Path) {
+        #[cfg(windows)]
+        fs::write(
+            root.join("gradlew.bat"),
+            "@echo off\necho cwd=%CD%\necho args=%*\n",
+        )
+        .unwrap();
+
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let wrapper = root.join("gradlew");
+            fs::write(
+                &wrapper,
+                "#!/bin/sh\nprintf 'cwd=%s\\nargs=%s\\n' \"$PWD\" \"$*\"\n",
+            )
+            .unwrap();
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn shell_echo_command(message: &str) -> String {
+        #[cfg(windows)]
+        return format!("echo {message} && echo shell-override");
+
+        #[cfg(not(windows))]
+        format!("echo {message} && echo shell-override")
+    }
 
     fn assert_gradle_package_defaults(package: &GradlePackage) {
         assert_eq!(package.name(), Some("test-package"));
@@ -116,6 +175,116 @@ mod tests {
         assert!(package.is_changed());
         package.set_changed(false);
         assert!(!package.is_changed());
+    }
+
+    #[tokio::test]
+    async fn test_publish_nested_project_uses_wrapper_root_and_exact_task_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path().join("repo with spaces");
+        let project_dir = root.join("libs").join("core");
+        fs::create_dir_all(&project_dir).unwrap();
+        create_publish_wrapper(&root);
+        let manifest = project_dir.join("build.gradle.kts");
+        fs::write(&manifest, "version = \"1.0.0\"\n").unwrap();
+        let package = GradlePackage::new(
+            Some("core".to_string()),
+            Some("1.0.0".to_string()),
+            manifest,
+            PathBuf::from("libs/core/build.gradle.kts"),
+        );
+
+        let output = package.publish(&Config::default()).await.unwrap();
+        let dry_run = package
+            .dry_run_publish(&Config::default())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains(&format!("cwd={}", root.display())));
+        assert!(output.stdout.contains("args=:libs:core:publish"));
+        assert!(dry_run.success, "stderr: {}", dry_run.stderr);
+        assert!(
+            dry_run
+                .stdout
+                .contains("args=:libs:core:publishToMavenLocal")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publish_default_errors_when_platform_wrapper_is_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("build.gradle.kts");
+        fs::write(&manifest, "version = \"1.0.0\"\n").unwrap();
+        let package = GradlePackage::new(
+            Some("root".to_string()),
+            Some("1.0.0".to_string()),
+            manifest,
+            PathBuf::from("build.gradle.kts"),
+        );
+
+        let error = package.publish(&Config::default()).await.unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Gradle wrapper (gradlew) not found")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_publish_path_override_keeps_shell_execution_and_skips_wrapper_lookup() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("build.gradle.kts");
+        fs::write(&manifest, "version = \"1.0.0\"\n").unwrap();
+        let package = GradlePackage::new(
+            Some("root".to_string()),
+            Some("1.0.0".to_string()),
+            manifest,
+            PathBuf::from("build.gradle.kts"),
+        );
+        let mut publish = BTreeMap::new();
+        publish.insert(
+            "build.gradle.kts".to_string(),
+            shell_echo_command("path-override"),
+        );
+        publish.insert("java".to_string(), shell_echo_command("language-override"));
+        let config = Config {
+            publish,
+            ..Default::default()
+        };
+
+        let output = package.publish(&config).await.unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains("path-override"));
+        assert!(output.stdout.contains("shell-override"));
+        assert!(!output.stdout.contains("language-override"));
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_publish_language_override_keeps_shell_execution() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("build.gradle.kts");
+        fs::write(&manifest, "version = \"1.0.0\"\n").unwrap();
+        let package = GradlePackage::new(
+            Some("root".to_string()),
+            Some("1.0.0".to_string()),
+            manifest,
+            PathBuf::from("build.gradle.kts"),
+        );
+        let mut publish_dry_run = BTreeMap::new();
+        publish_dry_run.insert("java".to_string(), shell_echo_command("language-dry-run"));
+        let config = Config {
+            publish_dry_run,
+            ..Default::default()
+        };
+
+        let output = package.dry_run_publish(&config).await.unwrap().unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains("language-dry-run"));
+        assert!(output.stdout.contains("shell-override"));
     }
 
     #[rstest]
