@@ -226,6 +226,27 @@ version = project.findProperty("releaseVersion") ?: "1.0.11"
         temp_dir.close().unwrap();
     }
 
+    #[tokio::test]
+    async fn test_gradle_package_update_version_errors_without_editable_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let build_gradle = temp_dir.path().join("build.gradle.kts");
+        let content = "plugins { id(\"java\") }\ngroup = \"com.example\"\n";
+        fs::write(&build_gradle, content).unwrap();
+        let bytes_before = fs::read(&build_gradle).unwrap();
+        let mut package = GradlePackage::new(
+            Some("myproject".to_string()),
+            Some("1.0.0".to_string()),
+            build_gradle.clone(),
+            PathBuf::from("build.gradle.kts"),
+        );
+
+        let result = package.update_version(UpdateType::Patch).await;
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&build_gradle).unwrap(), bytes_before);
+        assert_eq!(package.version(), Some("1.0.0"));
+    }
+
     #[test]
     fn test_gradle_package_dependencies() {
         let mut package = GradlePackage::new(

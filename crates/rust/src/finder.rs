@@ -123,8 +123,7 @@ fn workspace_dep_names(doc: &toml_edit::DocumentMut) -> Vec<&str> {
 #[derive(Debug, Default)]
 pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
-    workspace_package_version: Option<String>,
-    workspace_root_path: Option<PathBuf>,
+    workspace_package_versions: HashMap<PathBuf, String>,
     pending_workspace_packages: Vec<PendingWorkspacePackage>,
 }
 
@@ -134,45 +133,67 @@ impl RustProjectFinder {
         Self::default()
     }
 
-    /// Materialize an inherited-version workspace member: build the
-    /// `RustPackage` seeded with the resolved `workspace_package_version` and
-    /// `workspace_root_path`, attach its in-repo dependency edges, then insert
-    /// it under `abs_path`. Shared by BOTH resolution paths so the member
-    /// construction policy lives in one place: the immediate branch in `visit`
-    /// (workspace root already seen, deps borrowed from the live `cargo_toml`
-    /// as `&str`) and the deferred `resolve_pending_workspace_packages` loop
-    /// (root seen later, deps owned as `String`). The `impl AsRef<str>` dep
-    /// item lets both `&str` and `String` feed the one code path, so a future
-    /// change to how inherited-version members are built lands once instead of
-    /// drifting between the two paths.
+    fn nearest_workspace_package(&self, member_path: &Path) -> Option<(String, PathBuf)> {
+        self.workspace_package_versions
+            .iter()
+            .filter(|(root_path, _)| {
+                root_path
+                    .parent()
+                    .is_some_and(|root_dir| member_path.starts_with(root_dir))
+            })
+            .max_by_key(|(root_path, _)| root_path.components().count())
+            .map(|(root_path, version)| (version.clone(), root_path.clone()))
+    }
+
     fn insert_workspace_member(
         &mut self,
-        name: Option<String>,
-        abs_path: PathBuf,
-        relative_path: PathBuf,
-        deps: impl IntoIterator<Item = impl AsRef<str>>,
+        package: PendingWorkspacePackage,
+        workspace_package_version: Option<String>,
+        workspace_root_path: Option<PathBuf>,
     ) {
+        let PendingWorkspacePackage {
+            name,
+            abs_path,
+            relative_path,
+            dependencies,
+        } = package;
         let mut pkg = RustPackage::new_with_workspace_version(
             name,
-            self.workspace_package_version.clone(),
+            workspace_package_version,
             abs_path.clone(),
             relative_path,
-            self.workspace_root_path.clone(),
+            workspace_root_path,
         );
-        for dep in deps {
-            pkg.add_dependency(dep.as_ref());
+        for dependency in dependencies {
+            pkg.add_dependency(&dependency);
         }
         self.projects
             .insert(abs_path, Project::Package(Box::new(pkg)));
     }
 
-    /// Resolve all pending workspace packages by creating `RustPackage` instances
-    /// with the workspace version and inserting them into `self.projects`.
-    /// Drains `self.pending_workspace_packages` in the process.
+    fn resolve_pending_workspace_packages_for_root(&mut self, workspace_root_path: &Path) {
+        let pending = std::mem::take(&mut self.pending_workspace_packages);
+        for package in pending {
+            let workspace_package = self.nearest_workspace_package(&package.abs_path);
+            if let Some((version, root_path)) = workspace_package
+                && root_path == workspace_root_path
+            {
+                self.insert_workspace_member(package, Some(version), Some(root_path));
+            } else {
+                self.pending_workspace_packages.push(package);
+            }
+        }
+    }
+
     fn resolve_pending_workspace_packages(&mut self) {
         let pending = std::mem::take(&mut self.pending_workspace_packages);
-        for p in pending {
-            self.insert_workspace_member(p.name, p.abs_path, p.relative_path, p.dependencies);
+        for package in pending {
+            let (version, root_path) = self
+                .nearest_workspace_package(&package.abs_path)
+                .map_or((None, None), |(version, root_path)| {
+                    (Some(version), Some(root_path))
+                });
+            self.insert_workspace_member(package, version, root_path);
         }
     }
 }
@@ -202,11 +223,13 @@ impl ProjectFinder for RustProjectFinder {
 
         // if workspace
         if cargo_toml.get("workspace").is_some() {
+            let path_key = path.to_path_buf();
+
             // Read [workspace.package].version if present
             let ws_pkg_version = workspace_package_str(&cargo_toml, "version");
-            if ws_pkg_version.is_some() {
-                self.workspace_package_version = ws_pkg_version;
-                self.workspace_root_path = Some(path.to_path_buf());
+            if let Some(version) = ws_pkg_version {
+                self.workspace_package_versions
+                    .insert(path_key.clone(), version);
             }
 
             // A visited workspace root's own version: prefer its `[package].version`
@@ -230,7 +253,6 @@ impl ProjectFinder for RustProjectFinder {
             // semantics — the same `PathBuf` bytes flow into
             // `RustWorkspace::new` and the map key, just materialized
             // once up front.
-            let path_key = path.to_path_buf();
             let mut project = Project::Workspace(Box::new(RustWorkspace::new(
                 name,
                 version,
@@ -240,10 +262,10 @@ impl ProjectFinder for RustProjectFinder {
             for &dep_name in &dep_names {
                 project.add_dependency(dep_name);
             }
-            self.projects.insert(path_key, project);
+            self.projects.insert(path_key.clone(), project);
 
-            // Resolve any pending packages that were visited before this workspace
-            self.resolve_pending_workspace_packages();
+            // Resolve only members contained by this workspace root.
+            self.resolve_pending_workspace_packages_for_root(&path_key);
         } else {
             // Check if version.workspace = true — same table-like +
             // `workspace = true` shape as `workspace_dep_names`
@@ -274,23 +296,18 @@ impl ProjectFinder for RustProjectFinder {
             let relative_path_key = relative_path.to_path_buf();
 
             if inherits_workspace {
-                if self.workspace_package_version.is_some() {
-                    // Workspace already visited — resolve immediately
-                    self.insert_workspace_member(
-                        name,
-                        path_key,
-                        relative_path_key,
-                        dep_names.iter().copied(),
-                    );
+                let package = PendingWorkspacePackage {
+                    name,
+                    abs_path: path_key,
+                    relative_path: relative_path_key,
+                    dependencies: dep_names.iter().map(|dep| (*dep).to_string()).collect(),
+                };
+                if let Some((version, root_path)) =
+                    self.nearest_workspace_package(&package.abs_path)
+                {
+                    self.insert_workspace_member(package, Some(version), Some(root_path));
                 } else {
-                    // Workspace not yet visited — defer
-                    self.pending_workspace_packages
-                        .push(PendingWorkspacePackage {
-                            name,
-                            abs_path: path_key,
-                            relative_path: relative_path_key,
-                            dependencies: dep_names.iter().map(|s| s.to_string()).collect(),
-                        });
+                    self.pending_workspace_packages.push(package);
                 }
             } else {
                 let version = package_str(&cargo_toml, "version");
@@ -310,85 +327,37 @@ impl ProjectFinder for RustProjectFinder {
     }
 
     async fn finalize(&mut self) -> Result<()> {
-        // If workspace root was never visited (e.g. excluded by ignore patterns),
-        // walk up from the first pending package to find and read it.
-        //
-        // The `!pending_workspace_packages.is_empty()` guard that used to sit
-        // between `workspace_package_version.is_none()` and the `let Some(...)
-        // = ..first()` bind has been dropped: `Vec::first()` returns `None`
-        // iff the vec is empty, so the following `let-else` bind is a strict
-        // superset of the emptiness check. One fewer condition, byte-identical
-        // control flow.
-        if self.workspace_package_version.is_none()
-            && let Some(first_pkg) = self.pending_workspace_packages.first()
-        {
-            // Derive git root from the first pending package's absolute/relative
-            // paths: strip `rel_component_count` trailing components from
-            // `abs_path`. `Path::ancestors()` already exposes that walk as an
-            // iterator (matching the `abs_path.ancestors().skip(2)` walk-up
-            // used a few lines below), and `nth(n)` yields the same result as
-            // `n` sequential `PathBuf::pop()` calls without cloning + mutating
-            // the buffer in a for-loop. The `unwrap_or_else` fallback
-            // preserves the previous behaviour for the pathological edge case
-            // where the count exceeds the ancestor depth: the old pop loop
-            // stopped at `""`, and the safe cousin `first_pkg.abs_path.clone()`
-            // still yields the same lookup result downstream because
-            // `strip_prefix(&git_root)` in the subsequent block just falls
-            // back to `Path::new("Cargo.toml")`.
-            let git_root = first_pkg
-                .abs_path
-                .ancestors()
-                .nth(first_pkg.relative_path.components().count())
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| first_pkg.abs_path.clone());
+        let unresolved_packages = self
+            .pending_workspace_packages
+            .iter()
+            .map(|package| (package.abs_path.clone(), package.relative_path.clone()))
+            .collect::<Vec<_>>();
 
-            // `Path::ancestors()` yields `[self, parent, grandparent, …, root]`,
-            // so `skip(2)` starts at grandparent — the same starting point as
-            // the previous `first_pkg.abs_path.parent().and_then(Path::parent)`
-            // seed. Using the iterator lets the walk-up terminate cleanly with
-            // a plain `break` instead of a mutable `dir` slot juggled by hand.
-            for parent in first_pkg.abs_path.ancestors().skip(2) {
-                // Bound the fallback walk to the `git_root` computed above:
-                // never climb PAST the repository root and adopt an out-of-repo
-                // `Cargo.toml` (e.g. a parent Rust project this repo is nested
-                // inside), which would silently rewrite inherited-version
-                // resolution for every member. `ancestors()` still yields
-                // `git_root` itself — `starts_with` is true there, so the real
-                // root stays reachable — then its parents, where `starts_with`
-                // turns false and the walk stops. Mirrors the git-scoped bound
-                // the C# finder applies in `is_workspace`
-                // (`parent.ancestors().take(max_depth)` in
-                // `crates/csharp/src/finder.rs`).
+        // Roots can be omitted by ignore patterns, so discover the nearest root
+        // independently for every unresolved member.
+        for (abs_path, relative_path) in unresolved_packages {
+            let git_root = abs_path
+                .ancestors()
+                .nth(relative_path.components().count())
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| abs_path.clone());
+
+            for parent in abs_path.ancestors().skip(2) {
                 if !parent.starts_with(&git_root) {
                     break;
                 }
                 let candidate = parent.join("Cargo.toml");
-                // AGENTS.md rule: all file ops via `tokio::fs`. A stat error
-                // is treated as "does not exist", matching the previous
-                // sync `is_file()` fallthrough on error. Delegated to the
-                // shared `changepacks_core::is_regular_file` helper so the
-                // same "stat, coerce error to false" shape lives in ONE
-                // place — this is the same import + call the CSharp finder
-                // already uses (`crates/csharp/src/finder.rs:3` + call site
-                // in its own `finalize`).
+                if self.workspace_package_versions.contains_key(&candidate) {
+                    break;
+                }
                 if is_regular_file(&candidate).await
                     && let Ok(content) = read_to_string(&candidate).await
                     && let Ok(parsed) = content.parse::<toml_edit::DocumentMut>()
-                    && let Some(version) = workspace_package_str(&parsed, "version")
+                    && let Some(workspace_version) = workspace_package_str(&parsed, "version")
                 {
-                    // Hoist `candidate` into a `root_path` local so both the
-                    // `self.workspace_root_path` write and the `self.projects`
-                    // insert key resolve to the same value without re-`clone()
-                    // .unwrap()`ing back out of `workspace_root_path`. Retires
-                    // one `.unwrap()` — the insert key was previously
-                    // `self.workspace_root_path.clone().unwrap()` on the value
-                    // we already have in hand as `candidate`. Byte-identical
-                    // semantics: the map key inserted into `self.projects` and
-                    // the path stored in `self.workspace_root_path` remain the
-                    // same `candidate` value.
                     let root_path = candidate;
-                    self.workspace_package_version = Some(version);
-                    self.workspace_root_path = Some(root_path.clone());
+                    self.workspace_package_versions
+                        .insert(root_path.clone(), workspace_version.clone());
 
                     // Insert synthetic workspace project so apply_updates() can find it
                     let ws_name = package_str(&parsed, "name");
@@ -401,7 +370,7 @@ impl ProjectFinder for RustProjectFinder {
                     let workspace = RustWorkspace::new(
                         ws_name,
                         // For virtual workspaces (no [package]), use [workspace.package].version
-                        ws_pkg_version.or_else(|| self.workspace_package_version.clone()),
+                        ws_pkg_version.or(Some(workspace_version)),
                         root_path.clone(),
                         ws_relative_path,
                     );
@@ -424,6 +393,43 @@ mod tests {
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
+
+    fn write_inherited_version_workspace(
+        root: &Path,
+        package_name: &str,
+        version: &str,
+    ) -> (PathBuf, PathBuf) {
+        fs::create_dir_all(root).unwrap();
+        let workspace_toml = root.join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            format!(
+                r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "{version}"
+"#
+            ),
+        )
+        .unwrap();
+
+        let package_dir = root.join("crates").join(package_name);
+        fs::create_dir_all(&package_dir).unwrap();
+        let package_toml = package_dir.join("Cargo.toml");
+        fs::write(
+            &package_toml,
+            format!(
+                r#"[package]
+name = "{package_name}"
+version.workspace = true
+"#
+            ),
+        )
+        .unwrap();
+
+        (workspace_toml, package_toml)
+    }
 
     // Both `RustProjectFinder::new()` and `RustProjectFinder::default()` must
     // yield the same empty, `Cargo.toml`-scoped finder.
@@ -863,6 +869,128 @@ wasm-build-helper = { workspace = true }
         }
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_isolates_sibling_workspaces_during_interleaved_visits() {
+        // Given: sibling workspaces with distinct inherited versions
+        let temp_dir = TempDir::new().unwrap();
+        let (alpha_workspace, alpha_package) = write_inherited_version_workspace(
+            &temp_dir.path().join("alpha"),
+            "alpha-package",
+            "1.2.3",
+        );
+        let (beta_workspace, beta_package) = write_inherited_version_workspace(
+            &temp_dir.path().join("beta"),
+            "beta-package",
+            "4.5.6",
+        );
+
+        // When: member and root visits are interleaved across the workspaces
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(
+                &alpha_package,
+                Path::new("alpha/crates/alpha-package/Cargo.toml"),
+            )
+            .await
+            .unwrap();
+        finder
+            .visit(&beta_workspace, Path::new("beta/Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(
+                &beta_package,
+                Path::new("beta/crates/beta-package/Cargo.toml"),
+            )
+            .await
+            .unwrap();
+        finder
+            .visit(&alpha_workspace, Path::new("alpha/Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        // Then: each member inherits only from its containing workspace
+        let projects = finder.projects();
+        for (name, version, workspace_root) in [
+            ("alpha-package", "1.2.3", &alpha_workspace),
+            ("beta-package", "4.5.6", &beta_workspace),
+        ] {
+            let package = projects
+                .iter()
+                .copied()
+                .find(|project| project.name() == Some(name))
+                .unwrap();
+            assert_eq!(package.version(), Some(version));
+            match package {
+                Project::Package(package) => {
+                    assert_eq!(
+                        package.workspace_root_path(),
+                        Some(workspace_root.as_path())
+                    );
+                }
+                Project::Workspace(_) => panic!("expected package"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_finalize_discovers_each_unvisited_sibling_workspace() {
+        // Given: inherited-version members in sibling workspaces whose roots are ignored
+        let temp_dir = TempDir::new().unwrap();
+        let (alpha_workspace, alpha_package) = write_inherited_version_workspace(
+            &temp_dir.path().join("alpha"),
+            "alpha-package",
+            "1.2.3",
+        );
+        let (beta_workspace, beta_package) = write_inherited_version_workspace(
+            &temp_dir.path().join("beta"),
+            "beta-package",
+            "4.5.6",
+        );
+
+        // When: only the members are visited before finalization
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(
+                &alpha_package,
+                Path::new("alpha/crates/alpha-package/Cargo.toml"),
+            )
+            .await
+            .unwrap();
+        finder
+            .visit(
+                &beta_package,
+                Path::new("beta/crates/beta-package/Cargo.toml"),
+            )
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        // Then: finalization discovers and applies each member's own workspace root
+        let projects = finder.projects();
+        for (name, version, workspace_root) in [
+            ("alpha-package", "1.2.3", &alpha_workspace),
+            ("beta-package", "4.5.6", &beta_workspace),
+        ] {
+            let package = projects
+                .iter()
+                .copied()
+                .find(|project| project.name() == Some(name))
+                .unwrap();
+            assert_eq!(package.version(), Some(version));
+            match package {
+                Project::Package(package) => {
+                    assert_eq!(
+                        package.workspace_root_path(),
+                        Some(workspace_root.as_path())
+                    );
+                }
+                Project::Workspace(_) => panic!("expected package"),
+            }
+        }
     }
 
     #[tokio::test]

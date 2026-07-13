@@ -265,6 +265,27 @@ version = "0.0.0"
         temp_dir.close().unwrap();
     }
 
+    #[tokio::test]
+    async fn test_gradle_workspace_update_version_errors_for_unsupported_declaration() {
+        let temp_dir = TempDir::new().unwrap();
+        let build_gradle = temp_dir.path().join("build.gradle.kts");
+        let content = "version = providers.gradleProperty(\"releaseVersion\").get()\n";
+        fs::write(&build_gradle, content).unwrap();
+        let bytes_before = fs::read(&build_gradle).unwrap();
+        let mut workspace = GradleWorkspace::new(
+            Some("multiproject".to_string()),
+            Some("1.0.0".to_string()),
+            build_gradle.clone(),
+            PathBuf::from("build.gradle.kts"),
+        );
+
+        let result = workspace.update_version(UpdateType::Patch).await;
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&build_gradle).unwrap(), bytes_before);
+        assert_eq!(workspace.version(), Some("1.0.0"));
+    }
+
     #[test]
     fn test_gradle_workspace_dependencies() {
         let mut workspace = GradleWorkspace::new(

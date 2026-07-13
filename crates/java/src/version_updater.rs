@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use changepacks_core::has_extension_ignore_ascii_case;
 use regex::Regex;
 use std::borrow::Cow;
@@ -61,11 +61,11 @@ pub fn update_version_in_groovy<'a>(content: &'a str, new_version: &str) -> Cow<
 }
 
 /// Write `new_version` into a Gradle build file (`.kts` or Groovy),
-/// preserving formatting and skipping the write when no `version = ...`
-/// line matched (byte-identical no-op for version-less build files).
+/// preserving formatting.
 ///
 /// # Errors
-/// Returns an error if the file cannot be read or written back.
+/// Returns an error if the file cannot be read or written, or if no supported
+/// editable version declaration exists.
 pub async fn write_gradle_version(path: &Path, new_version: &str) -> Result<()> {
     let content = read_to_string(path)
         .await
@@ -85,17 +85,16 @@ pub async fn write_gradle_version(path: &Path, new_version: &str) -> Result<()> 
         update_version_in_groovy(&content, new_version)
     };
 
-    // Skip the write when neither regex matched: both `update_version_in_kts`
-    // and `update_version_in_groovy` return `Cow::Borrowed(content)` unchanged
-    // for build files with no `version = ...` line (e.g. a root
-    // `settings.gradle.kts` that defers versioning to sub-projects). Guarding
-    // the write keeps those files byte-identical on disk and avoids a mtime
-    // bump plus a syscall pair on no-ops.
-    if updated_content.as_ref() != content {
-        write(path, updated_content.as_ref())
-            .await
-            .with_context(|| format!("Failed to write Gradle build file {}", path.display()))?;
+    if updated_content.as_ref() == content {
+        bail!(
+            "No supported editable version declaration found in Gradle build file {}",
+            path.display()
+        );
     }
+
+    write(path, updated_content.as_ref())
+        .await
+        .with_context(|| format!("Failed to write Gradle build file {}", path.display()))?;
     Ok(())
 }
 
@@ -206,18 +205,10 @@ group = 'com.example'
         assert_eq!(result, content);
     }
 
-    // Locks in the "skip write on unchanged content" fast-path: a build file
-    // with no `version = ...` line MUST be left byte-identical on disk (no
-    // mtime bump, no rewrite). The version bump arithmetic lives in
-    // `changepacks_utils::bump_version_with`; this writer only applies the
-    // already-computed version string when a Gradle version line exists.
     #[tokio::test]
-    async fn test_write_gradle_version_no_match_leaves_file_unchanged() {
+    async fn test_write_gradle_version_errors_when_no_editable_version_exists() {
         let temp_dir = tempfile::TempDir::new().unwrap();
         let path = temp_dir.path().join("build.gradle.kts");
-        // A build file with NO `version = ...` line — this is the shape a
-        // root `settings.gradle.kts` or a sub-project that inherits its
-        // version from the parent typically has.
         let content = r#"
 plugins {
     id("java")
@@ -226,16 +217,17 @@ plugins {
 group = "com.example"
 "#;
         tokio::fs::write(&path, content).await.unwrap();
-
-        // Record the file's exact bytes AND its mtime before the call so we
-        // can assert both stay untouched. Reading via `tokio::fs::metadata`
-        // avoids blocking the runtime.
         let bytes_before = tokio::fs::read(&path).await.unwrap();
 
-        write_gradle_version(&path, "1.0.1").await.unwrap();
+        let error = write_gradle_version(&path, "1.0.1").await.unwrap_err();
 
-        // File bytes are byte-identical: no rewrite happened.
         let bytes_after = tokio::fs::read(&path).await.unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("No supported editable version declaration found")
+        );
+        assert!(error.to_string().contains(&path.display().to_string()));
         assert_eq!(bytes_after, bytes_before);
     }
 }
