@@ -286,7 +286,7 @@ fn preview_and_confirm(
         for (project, update_type) in projects {
             println!(
                 "{} {}",
-                &**project,
+                **project,
                 display_update(project.version(), *update_type)?
             );
         }
