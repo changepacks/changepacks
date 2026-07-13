@@ -3,7 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use changepacks_core::{
     ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType, Workspace,
 };
@@ -201,6 +201,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
 
     let mut update_projects =
         collect_update_project_muts(&mut project_finders, &update_map, &ctx.repo_root_path)?;
+    validate_update_project_paths(&update_map, &update_projects, &ctx.repo_root_path)?;
 
     if !preview_and_confirm(args, prompter, &update_projects)? {
         return Ok(());
@@ -351,6 +352,37 @@ fn collect_update_project_muts<'a>(
     // `preview_and_confirm`.
     update_projects.sort();
     Ok(update_projects)
+}
+
+fn validate_update_project_paths(
+    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    update_projects: &[UpdateProjectMut<'_>],
+    repo_root_path: &Path,
+) -> Result<()> {
+    let mut project_paths = HashSet::with_capacity(update_projects.len());
+    for (project, _) in update_projects {
+        project_paths.insert(get_relative_path_ref(repo_root_path, project.path())?);
+    }
+
+    let mut unresolved_paths: Vec<&Path> = update_map
+        .keys()
+        .map(PathBuf::as_path)
+        .filter(|path| !project_paths.contains(path))
+        .collect();
+    unresolved_paths.sort_unstable();
+
+    if unresolved_paths.is_empty() {
+        return Ok(());
+    }
+
+    bail!(
+        "unresolved changepack update paths: {}",
+        unresolved_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 #[cfg(not(tarpaulin_include))]
@@ -511,7 +543,10 @@ fn merge_workspace_inherited_updates(
 
 #[cfg(test)]
 mod tests {
-    use super::{UpdateArgs, collect_projects, merge_workspace_inherited_updates};
+    use super::{
+        UpdateArgs, collect_projects, collect_update_project_muts,
+        merge_workspace_inherited_updates, validate_update_project_paths,
+    };
     use anyhow::Result;
     use async_trait::async_trait;
     use changepacks_core::{
@@ -670,6 +705,101 @@ mod tests {
             .iter()
             .map(|(path, (update_type, logs))| (path.clone(), (*update_type, logs.len())))
             .collect()
+    }
+
+    #[test]
+    fn test_validate_update_project_paths_accepts_complete_matches() -> Result<()> {
+        let repo_root = Path::new("/repo");
+        let mut project_finders: Vec<Box<dyn ProjectFinder>> =
+            vec![Box::new(MockFinder::new(vec![mock_package_project(
+                "/repo/Cargo.toml",
+                "Cargo.toml",
+                false,
+                None,
+            )]))];
+        let update_map = HashMap::from([(
+            PathBuf::from("Cargo.toml"),
+            (UpdateType::Minor, vec![mock_log("workspace update")]),
+        )]);
+        let update_projects =
+            collect_update_project_muts(&mut project_finders, &update_map, repo_root)?;
+
+        let result = validate_update_project_paths(&update_map, &update_projects, repo_root);
+
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn test_validate_update_project_paths_rejects_one_unresolved_key() -> Result<()> {
+        let repo_root = Path::new("/repo");
+        let mut project_finders: Vec<Box<dyn ProjectFinder>> =
+            vec![Box::new(MockFinder::new(vec![mock_package_project(
+                "/repo/crates/foo/Cargo.toml",
+                "crates/foo/Cargo.toml",
+                false,
+                None,
+            )]))];
+        let update_map = HashMap::from([
+            (
+                PathBuf::from("crates/foo/Cargo.toml"),
+                (UpdateType::Minor, vec![mock_log("foo update")]),
+            ),
+            (
+                PathBuf::from("missing/Cargo.toml"),
+                (UpdateType::Patch, vec![mock_log("missing update")]),
+            ),
+        ]);
+        let update_projects =
+            collect_update_project_muts(&mut project_finders, &update_map, repo_root)?;
+
+        let error = validate_update_project_paths(&update_map, &update_projects, repo_root)
+            .expect_err("the unmatched update path should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "unresolved changepack update paths: missing/Cargo.toml"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_validate_update_project_paths_preserves_language_filtered_logs() -> Result<()> {
+        let repo_root = Path::new("/repo");
+        let mut project_finders: Vec<Box<dyn ProjectFinder>> =
+            vec![Box::new(MockFinder::new(vec![mock_package_project(
+                "/repo/crates/foo/Cargo.toml",
+                "crates/foo/Cargo.toml",
+                false,
+                None,
+            )]))];
+        let update_map = HashMap::from([
+            (
+                PathBuf::from("selected/z/Cargo.toml"),
+                (UpdateType::Patch, vec![mock_log("selected z update")]),
+            ),
+            (
+                PathBuf::from("crates/foo/Cargo.toml"),
+                (UpdateType::Minor, vec![mock_log("selected foo update")]),
+            ),
+            (
+                PathBuf::from("selected/a/Cargo.toml"),
+                (UpdateType::Patch, vec![mock_log("selected a update")]),
+            ),
+        ]);
+        let before = summarize_update_map(&update_map);
+        let update_projects =
+            collect_update_project_muts(&mut project_finders, &update_map, repo_root)?;
+
+        let error = validate_update_project_paths(&update_map, &update_projects, repo_root)
+            .expect_err("unresolved selected-language paths should block log clearing");
+
+        assert_eq!(
+            error.to_string(),
+            "unresolved changepack update paths: selected/a/Cargo.toml, selected/z/Cargo.toml"
+        );
+        assert_eq!(summarize_update_map(&update_map), before);
+        Ok(())
     }
 
     #[test]
