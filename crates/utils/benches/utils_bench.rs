@@ -77,7 +77,9 @@ fn bench_sort_by_dependencies(c: &mut Criterion) {
             |b, projects| {
                 b.iter(|| {
                     let refs: Vec<&Project> = projects.iter().collect();
-                    black_box(sort_by_dependencies(black_box(refs)));
+                    black_box(
+                        sort_by_dependencies(black_box(refs)).expect("benchmark graph is a DAG"),
+                    );
                 });
             },
         );

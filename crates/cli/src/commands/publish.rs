@@ -93,7 +93,7 @@ pub async fn handle_publish_with_prompter(
     }
 
     // Sort projects by dependencies (no cloning, just reordering references)
-    let projects = sort_by_dependencies(projects);
+    let projects = sort_by_dependencies(projects)?;
 
     if projects.is_empty() {
         args.format.print("No projects found");
@@ -617,9 +617,12 @@ async fn execute_publish_loop(
 mod tests {
     use super::*;
     use changepacks_core::{Language, Package, UpdateType};
+    use changepacks_utils::test_support::{git_add_and_commit, init_git_repo};
     use clap::Parser;
     use rstest::rstest;
+    use serial_test::serial;
     use std::collections::HashSet;
+    use tempfile::tempdir;
 
     #[derive(Parser)]
     struct TestCli {
@@ -1170,6 +1173,105 @@ mod tests {
             .expect("independent project should still publish");
         let independent_serialized = serde_json::to_string(independent_entry).expect("serialize");
         assert!(independent_serialized.contains("publish pkg-c"));
+    }
+
+    struct PanicPrompter;
+
+    impl Prompter for PanicPrompter {
+        fn multi_select<'a>(
+            &self,
+            _message: &str,
+            _options: Vec<&'a Project>,
+            _defaults: Vec<usize>,
+        ) -> anyhow::Result<Vec<&'a Project>> {
+            panic!("project selection must not be reached")
+        }
+
+        fn confirm(&self, _message: &str) -> anyhow::Result<bool> {
+            panic!("publish confirmation must not be reached")
+        }
+
+        fn text(&self, _message: &str) -> anyhow::Result<String> {
+            panic!("text prompt must not be reached")
+        }
+    }
+
+    struct CurrentDirGuard(PathBuf);
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.0).expect("restore test working directory");
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_publish_handler_rejects_cycle_before_prompt_dry_run_or_publish_command() {
+        let repository = tempdir().expect("create temporary repository");
+        init_git_repo(repository.path());
+        let alpha_dir = repository.path().join("packages/alpha");
+        let beta_dir = repository.path().join("packages/beta");
+        let changepacks_dir = repository.path().join(".changepacks");
+        std::fs::create_dir_all(&alpha_dir).expect("create alpha directory");
+        std::fs::create_dir_all(&beta_dir).expect("create beta directory");
+        std::fs::create_dir_all(&changepacks_dir).expect("create config directory");
+        std::fs::write(
+            alpha_dir.join("package.json"),
+            r#"{"name":"alpha","version":"1.0.0","dependencies":{"beta":"^1.0.0"}}"#,
+        )
+        .expect("write alpha manifest");
+        std::fs::write(
+            beta_dir.join("package.json"),
+            r#"{"name":"beta","version":"1.0.0","dependencies":{"alpha":"^1.0.0"}}"#,
+        )
+        .expect("write beta manifest");
+
+        let sentinel = repository.path().join("command-reached");
+        let sentinel_command = if cfg!(windows) {
+            format!("type nul > \"{}\"", sentinel.display())
+        } else {
+            format!("touch \"{}\"", sentinel.display())
+        };
+        let config = serde_json::json!({
+            "publish": { "node": sentinel_command.clone() },
+            "publishDryRun": { "node": sentinel_command },
+        });
+        std::fs::write(
+            changepacks_dir.join("config.json"),
+            serde_json::to_vec(&config).expect("serialize config"),
+        )
+        .expect("write config");
+        git_add_and_commit(repository.path(), "cyclic publish fixture");
+
+        let original_dir = std::env::current_dir().expect("read test working directory");
+        let _current_dir_guard = CurrentDirGuard(original_dir);
+        std::env::set_current_dir(repository.path()).expect("enter temporary repository");
+
+        for (dry_run, yes) in [(false, false), (true, true), (false, true)] {
+            let args = PublishArgs {
+                dry_run,
+                yes,
+                format: FormatOptions::Json,
+                remote: false,
+                language: vec![],
+                project: vec![],
+            };
+
+            let error = handle_publish_with_prompter(&args, &PanicPrompter)
+                .await
+                .expect_err("handler must reject the discovered dependency cycle");
+            let message = error.to_string();
+            assert!(
+                message.starts_with("dependency cycle detected:"),
+                "{message}"
+            );
+            assert!(message.contains("alpha (packages/alpha/package.json)"));
+            assert!(message.contains("beta (packages/beta/package.json)"));
+            assert!(
+                !sentinel.exists(),
+                "publish command was executed for dry_run={dry_run}, yes={yes}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -15,7 +15,8 @@ use crate::{package::DartPackage, workspace::DartWorkspace};
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["pubspec.yaml"];
 
-/// The pubspec.yaml sections scanned for local (path/workspace) dependencies.
+/// The pubspec.yaml sections scanned for dependency candidate names.
+/// Graph consumers later intersect these names with the discovered projects.
 const PUBSPEC_DEPENDENCY_SECTIONS: &[&str] =
     &["dependencies", "dev_dependencies", "dependency_overrides"];
 
@@ -126,31 +127,15 @@ impl ProjectFinder for DartProjectFinder {
             )))
         };
 
-        // read dependencies + dev_dependencies + dependency_overrides sections — track only
-        // LOCAL monorepo deps (entries whose value is a mapping
-        // containing a `path:` key). Bare version strings like
-        // `http: ^1.0.0` point at pub.dev and cannot be resolved by
-        // `sort_by_dependencies` (which filters via `name_to_index` over
-        // local project names), so tracking them just burns a `HashSet`
-        // insertion + a `String` allocation per external dep. This also
-        // aligns Dart with every other finder: Node keeps only
-        // `workspace:*`, Python only `[tool.uv.sources]`, Rust only
-        // `dep.workspace == true`, and C# only
-        // `<ProjectReference Include="..." />`. `dev_dependencies` is
-        // scanned with the identical `path:` gate because a local
-        // dev-only package (e.g. a shared test harness) still
-        // participates in the monorepo publish order. `dependency_overrides`
-        // is also scanned with the same gate to capture local path
-        // overrides (e.g. `core: { path: ../core }`) that may not appear
-        // in the base `dependencies` section.
+        // Collect every dependency name from the supported pubspec sections.
+        // Dart workspace packages commonly use ordinary version constraints
+        // rather than `path:` mappings; graph consumers resolve these names
+        // against the complete project-name set and ignore unmatched external
+        // packages.
         for section in PUBSPEC_DEPENDENCY_SECTIONS {
             if let Some(dependencies) = pubspec.get(*section).and_then(|d| d.as_mapping()) {
-                for (dep_name, dep_value) in dependencies {
-                    if let Some(dep_str) = dep_name.as_str()
-                        && dep_value
-                            .as_mapping()
-                            .is_some_and(|m| m.contains_key("path"))
-                    {
+                for dep_name in dependencies.keys() {
+                    if let Some(dep_str) = dep_name.as_str() {
                         project.add_dependency(dep_str);
                     }
                 }
@@ -466,14 +451,10 @@ dependencies:
             Project::Package(pkg) => {
                 assert_eq!(pkg.name(), Some("test_package"));
                 let deps = pkg.dependencies();
-                // Only local (`path:`) deps are tracked — matches the
-                // "only monorepo deps" invariant every other language
-                // finder already honors. `http: ^1.0.0` points at
-                // pub.dev, so it is intentionally excluded here.
-                assert_eq!(deps.len(), 2);
+                assert_eq!(deps.len(), 3);
                 assert!(deps.contains("core"));
                 assert!(deps.contains("utils"));
-                assert!(!deps.contains("http"));
+                assert!(deps.contains("http"));
             }
             _ => panic!("Expected Package"),
         }
@@ -483,12 +464,6 @@ dependencies:
 
     #[tokio::test]
     async fn test_visit_package_with_only_external_deps() {
-        // Regression: a pubspec whose `dependencies:` is entirely bare
-        // version strings (all external pub.dev packages) must yield an
-        // empty `dependencies()` HashSet on the resulting project.
-        // `sort_by_dependencies` already ignores names it cannot resolve
-        // via `name_to_index`, so tracking them was pure allocation waste
-        // — and made Dart the odd one out among the language finders.
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
@@ -514,11 +489,10 @@ dependencies:
         match projects[0] {
             Project::Package(pkg) => {
                 assert_eq!(pkg.name(), Some("test_package"));
-                assert!(
-                    pkg.dependencies().is_empty(),
-                    "expected zero local deps, got {:?}",
-                    pkg.dependencies()
-                );
+                assert_eq!(pkg.dependencies().len(), 3);
+                assert!(pkg.dependencies().contains("http"));
+                assert!(pkg.dependencies().contains("path"));
+                assert!(pkg.dependencies().contains("intl"));
             }
             _ => panic!("Expected Package"),
         }
@@ -528,11 +502,6 @@ dependencies:
 
     #[tokio::test]
     async fn test_visit_package_with_dev_dependencies() {
-        // Regression: `dev_dependencies` is scanned with the same
-        // `path:` gate as `dependencies`. A local dev-only dep (a
-        // mapping carrying a `path:` key) must be tracked, while a
-        // bare-version dev dep (a pub.dev package) must be excluded —
-        // mirroring the `dependencies` behavior exactly.
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
@@ -559,12 +528,9 @@ dev_dependencies:
             Project::Package(pkg) => {
                 assert_eq!(pkg.name(), Some("test_package"));
                 let deps = pkg.dependencies();
-                // Only the local (`path:`) dev dep is tracked; the
-                // bare-version `lints: ^3.0.0` points at pub.dev and is
-                // intentionally excluded.
-                assert_eq!(deps.len(), 1);
+                assert_eq!(deps.len(), 2);
                 assert!(deps.contains("test_utils"));
-                assert!(!deps.contains("lints"));
+                assert!(deps.contains("lints"));
             }
             _ => panic!("Expected Package"),
         }
@@ -574,13 +540,6 @@ dev_dependencies:
 
     #[tokio::test]
     async fn test_visit_package_with_dependency_overrides() {
-        // Regression: `dependency_overrides` is scanned with the same
-        // `path:` gate as `dependencies` and `dev_dependencies`. A local
-        // path override (a mapping carrying a `path:` key) must be tracked,
-        // while a bare-version override (a pub.dev package) must be excluded.
-        // This pattern is canonical in melos/pub monorepos where a base
-        // `dependencies: { core: ^1.0.0 }` is overridden by
-        // `dependency_overrides: { core: { path: ../core } }`.
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
@@ -610,18 +569,104 @@ dependency_overrides:
             Project::Package(pkg) => {
                 assert_eq!(pkg.name(), Some("test_package"));
                 let deps = pkg.dependencies();
-                // Only the local (`path:`) override is tracked; the
-                // bare-version `other: ^2.0.0` points at pub.dev and is
-                // intentionally excluded. The base `dependencies` entries
-                // (`core: ^1.0.0` and `http: ^1.0.0`) are not tracked
-                // because they lack a `path:` key.
-                assert_eq!(deps.len(), 1);
+                assert_eq!(deps.len(), 3);
                 assert!(deps.contains("core"));
-                assert!(!deps.contains("other"));
-                assert!(!deps.contains("http"));
+                assert!(deps.contains("other"));
+                assert!(deps.contains("http"));
             }
             _ => panic!("Expected Package"),
         }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_version_dependencies_feed_local_graphs_and_ignore_unmatched_names() {
+        use changepacks_core::{ChangePackResultLog, UpdateType};
+        use changepacks_utils::{apply_reverse_dependencies, sort_by_dependencies};
+        use std::collections::HashMap;
+
+        let temp_dir = TempDir::new().unwrap();
+        let manifests = [
+            ("foo", "name: foo\nversion: 1.0.0\n"),
+            ("path_dep", "name: path_dep\nversion: 1.0.0\n"),
+            ("override_dep", "name: override_dep\nversion: 1.0.0\n"),
+            (
+                "app",
+                r#"name: app
+version: 1.0.0
+dependencies:
+  foo: ^1.0.0
+  path_dep:
+    path: ../path_dep
+  unmatched_external: ^9.0.0
+dependency_overrides:
+  override_dep:
+    path: ../override_dep
+"#,
+            ),
+        ];
+
+        let mut finder = DartProjectFinder::new();
+        for (directory, contents) in manifests {
+            let path = temp_dir.path().join(directory).join("pubspec.yaml");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, contents).unwrap();
+            finder
+                .visit(&path, &PathBuf::from(directory).join("pubspec.yaml"))
+                .await
+                .unwrap();
+        }
+
+        let projects = finder.projects();
+        let by_name = |name: &str| {
+            *projects
+                .iter()
+                .find(|project| project.name() == Some(name))
+                .unwrap()
+        };
+        let app = by_name("app");
+        assert_eq!(app.dependencies().len(), 4);
+        assert!(app.dependencies().contains("foo"));
+        assert!(app.dependencies().contains("path_dep"));
+        assert!(app.dependencies().contains("override_dep"));
+        assert!(app.dependencies().contains("unmatched_external"));
+
+        let sorted = sort_by_dependencies(vec![
+            app,
+            by_name("foo"),
+            by_name("path_dep"),
+            by_name("override_dep"),
+        ])
+        .expect("fixture graph is a DAG");
+        let sorted_names: Vec<_> = sorted
+            .iter()
+            .map(|project| project.name().unwrap())
+            .collect();
+        assert_eq!(sorted_names.last(), Some(&"app"));
+
+        // The unmatched external name creates no additional edge; only the
+        // matching `foo` name moves ahead of `app`.
+        let sorted_without_matching_external =
+            sort_by_dependencies(vec![app, by_name("foo")]).expect("fixture graph is a DAG");
+        assert_eq!(sorted_without_matching_external[0].name(), Some("foo"));
+
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("foo").join("pubspec.yaml"),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "Update foo".to_string(),
+                )],
+            ),
+        );
+        apply_reverse_dependencies(&mut update_map, &projects, temp_dir.path());
+        assert_eq!(
+            update_map[&PathBuf::from("app").join("pubspec.yaml")].0,
+            UpdateType::Patch
+        );
 
         temp_dir.close().unwrap();
     }

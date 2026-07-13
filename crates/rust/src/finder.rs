@@ -65,6 +65,22 @@ fn is_local_path_dep(value: &toml_edit::Item) -> bool {
         .is_some_and(|table| table.contains_key("path"))
 }
 
+/// Resolve the package name represented by a Cargo dependency entry.
+///
+/// Cargo dependency keys may be aliases (`alias = { package = "real-name", ... }`).
+/// In that case graph edges and workspace version updates must bind to the
+/// package named by `package`; ordinary dependencies continue to use their key.
+pub(crate) fn effective_dependency_name<'a>(
+    dependency_key: &'a str,
+    value: &'a toml_edit::Item,
+) -> &'a str {
+    value
+        .as_table_like()
+        .and_then(|dependency| dependency.get("package"))
+        .and_then(toml_edit::Item::as_str)
+        .unwrap_or(dependency_key)
+}
+
 /// Dependency tables Cargo can use for local package edges.
 const CARGO_DEPENDENCY_TABLES: &[&str] =
     &["dependencies", "dev-dependencies", "build-dependencies"];
@@ -75,7 +91,7 @@ fn collect_workspace_dep_names_from_table<'a>(
 ) {
     for (dep_name, value) in deps.iter() {
         if crate::is_workspace_marker(value) || is_local_path_dep(value) {
-            dep_names.push(dep_name);
+            dep_names.push(effective_dependency_name(dep_name, value));
         }
     }
 }
@@ -120,10 +136,29 @@ fn workspace_dep_names(doc: &toml_edit::DocumentMut) -> Vec<&str> {
     dep_names
 }
 
+fn workspace_dependency_aliases(doc: &toml_edit::DocumentMut) -> HashMap<String, String> {
+    doc.get("workspace")
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(toml_edit::Item::as_table_like)
+        .map(|dependencies| {
+            dependencies
+                .iter()
+                .filter(|(_, dependency)| is_local_path_dep(dependency))
+                .filter_map(|(dependency_key, dependency)| {
+                    let package_name = effective_dependency_name(dependency_key, dependency);
+                    (package_name != dependency_key)
+                        .then(|| (dependency_key.to_string(), package_name.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Default)]
 pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
     workspace_package_versions: HashMap<PathBuf, String>,
+    workspace_dependency_aliases: HashMap<PathBuf, HashMap<String, String>>,
     pending_workspace_packages: Vec<PendingWorkspacePackage>,
 }
 
@@ -145,6 +180,62 @@ impl RustProjectFinder {
             .map(|(root_path, version)| (version.clone(), root_path.clone()))
     }
 
+    fn nearest_workspace_dependency_aliases(
+        &self,
+        member_path: &Path,
+    ) -> Option<&HashMap<String, String>> {
+        self.workspace_dependency_aliases
+            .iter()
+            .filter(|(root_path, _)| {
+                root_path
+                    .parent()
+                    .is_some_and(|root_dir| member_path.starts_with(root_dir))
+            })
+            .max_by_key(|(root_path, _)| root_path.components().count())
+            .map(|(_, aliases)| aliases)
+    }
+
+    async fn discover_workspace_dependency_aliases_for_member(
+        &mut self,
+        member_path: &Path,
+        relative_path: &Path,
+    ) {
+        let repository_root = member_path
+            .ancestors()
+            .nth(relative_path.components().count())
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| member_path.to_path_buf());
+        let Some(mut ancestor) = member_path
+            .parent()
+            .and_then(Path::parent)
+            .map(Path::to_path_buf)
+        else {
+            return;
+        };
+
+        loop {
+            if !ancestor.starts_with(&repository_root) {
+                return;
+            }
+            let candidate = ancestor.join("Cargo.toml");
+            if self.workspace_dependency_aliases.contains_key(&candidate) {
+                return;
+            }
+            if is_regular_file(&candidate).await
+                && let Ok((_, parsed)) = crate::read_and_parse_cargo_toml(&candidate).await
+                && parsed.get("workspace").is_some()
+            {
+                self.workspace_dependency_aliases
+                    .insert(candidate, workspace_dependency_aliases(&parsed));
+                return;
+            }
+            let Some(parent) = ancestor.parent() else {
+                return;
+            };
+            ancestor = parent.to_path_buf();
+        }
+    }
+
     fn insert_workspace_member(
         &mut self,
         package: PendingWorkspacePackage,
@@ -155,8 +246,17 @@ impl RustProjectFinder {
             name,
             abs_path,
             relative_path,
-            dependencies,
+            mut dependencies,
         } = package;
+        if let Some(root_path) = workspace_root_path.as_ref()
+            && let Some(aliases) = self.workspace_dependency_aliases.get(root_path)
+        {
+            for dependency in &mut dependencies {
+                if let Some(package_name) = aliases.get(dependency) {
+                    dependency.clone_from(package_name);
+                }
+            }
+        }
         let mut pkg = RustPackage::new_with_workspace_version(
             name,
             workspace_package_version,
@@ -216,14 +316,30 @@ impl ProjectFinder for RustProjectFinder {
         // read Cargo.toml
         let (_cargo_toml_raw, cargo_toml) = crate::read_and_parse_cargo_toml(path).await?;
 
+        if cargo_toml.get("workspace").is_none() {
+            self.discover_workspace_dependency_aliases_for_member(path, relative_path)
+                .await;
+        }
+
         // Collect workspace dependencies for this file — the same
         // `dep_names` list feeds every branch below (workspace /
         // inherits-workspace-version / plain-package).
-        let dep_names = workspace_dep_names(&cargo_toml);
+        let workspace_aliases = self.nearest_workspace_dependency_aliases(path);
+        let dep_names: Vec<String> = workspace_dep_names(&cargo_toml)
+            .into_iter()
+            .map(|dependency_name| {
+                workspace_aliases
+                    .and_then(|aliases| aliases.get(dependency_name))
+                    .map_or_else(|| dependency_name.to_string(), Clone::clone)
+            })
+            .collect();
 
         // if workspace
         if cargo_toml.get("workspace").is_some() {
             let path_key = path.to_path_buf();
+
+            self.workspace_dependency_aliases
+                .insert(path_key.clone(), workspace_dependency_aliases(&cargo_toml));
 
             // Read [workspace.package].version if present
             let ws_pkg_version = workspace_package_str(&cargo_toml, "version");
@@ -259,7 +375,7 @@ impl ProjectFinder for RustProjectFinder {
                 path_key.clone(),
                 relative_path.to_path_buf(),
             )));
-            for &dep_name in &dep_names {
+            for dep_name in &dep_names {
                 project.add_dependency(dep_name);
             }
             self.projects.insert(path_key.clone(), project);
@@ -300,7 +416,7 @@ impl ProjectFinder for RustProjectFinder {
                     name,
                     abs_path: path_key,
                     relative_path: relative_path_key,
-                    dependencies: dep_names.iter().map(|dep| (*dep).to_string()).collect(),
+                    dependencies: dep_names,
                 };
                 if let Some((version, root_path)) =
                     self.nearest_workspace_package(&package.abs_path)
@@ -317,7 +433,7 @@ impl ProjectFinder for RustProjectFinder {
                     path_key.clone(),
                     relative_path_key,
                 )));
-                for &dep_name in &dep_names {
+                for dep_name in &dep_names {
                     project.add_dependency(dep_name);
                 }
                 self.projects.insert(path_key, project);
@@ -358,6 +474,8 @@ impl ProjectFinder for RustProjectFinder {
                     let root_path = candidate;
                     self.workspace_package_versions
                         .insert(root_path.clone(), workspace_version.clone());
+                    self.workspace_dependency_aliases
+                        .insert(root_path.clone(), workspace_dependency_aliases(&parsed));
 
                     // Insert synthetic workspace project so apply_updates() can find it
                     let ws_name = package_str(&parsed, "name");
@@ -389,8 +507,9 @@ impl ProjectFinder for RustProjectFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use changepacks_core::Project;
+    use changepacks_core::{ChangePackResultLog, Project, UpdateType};
     use rstest::rstest;
+    use std::collections::HashMap;
     use std::fs;
     use tempfile::TempDir;
 
@@ -802,6 +921,254 @@ external = "1.0"
             }
             _ => panic!("Expected Package"),
         }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_resolves_inline_and_target_table_path_aliases() {
+        let temp_dir = TempDir::new().unwrap();
+        let core_dir = temp_dir.path().join("crates/core");
+        let target_core_dir = temp_dir.path().join("crates/target-core");
+        let app_dir = temp_dir.path().join("crates/app");
+        fs::create_dir_all(&core_dir).unwrap();
+        fs::create_dir_all(&target_core_dir).unwrap();
+        fs::create_dir_all(&app_dir).unwrap();
+
+        let core_toml = core_dir.join("Cargo.toml");
+        let target_core_toml = target_core_dir.join("Cargo.toml");
+        let app_toml = app_dir.join("Cargo.toml");
+        fs::write(
+            &core_toml,
+            "[package]\nname = \"core\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            &target_core_toml,
+            "[package]\nname = \"target-core\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            &app_toml,
+            r#"[package]
+name = "app"
+version = "1.0.0"
+
+[dependencies]
+renamed-core = { package = "core", path = "../core", version = "1.0.0" }
+
+[target.'cfg(unix)'.dependencies.renamed-target-core]
+package = "target-core"
+path = "../target-core"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&app_toml, &PathBuf::from("crates/app/Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&core_toml, &PathBuf::from("crates/core/Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(
+                &target_core_toml,
+                &PathBuf::from("crates/target-core/Cargo.toml"),
+            )
+            .await
+            .unwrap();
+
+        let app = finder
+            .projects()
+            .into_iter()
+            .find(|project| project.name() == Some("app"))
+            .unwrap();
+        assert_eq!(app.dependencies().len(), 2);
+        assert!(app.dependencies().contains("core"));
+        assert!(app.dependencies().contains("target-core"));
+        assert!(!app.dependencies().contains("renamed-core"));
+        assert!(!app.dependencies().contains("renamed-target-core"));
+
+        let projects = finder.projects();
+        let sorted = changepacks_utils::sort_by_dependencies(projects.clone())
+            .expect("fixture graph is a DAG");
+        let app_index = sorted
+            .iter()
+            .position(|project| project.name() == Some("app"))
+            .unwrap();
+        assert!(
+            sorted
+                .iter()
+                .position(|project| project.name() == Some("core"))
+                .unwrap()
+                < app_index
+        );
+        assert!(
+            sorted
+                .iter()
+                .position(|project| project.name() == Some("target-core"))
+                .unwrap()
+                < app_index
+        );
+
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("crates/core/Cargo.toml"),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "Update core".to_string(),
+                )],
+            ),
+        );
+        changepacks_utils::apply_reverse_dependencies(&mut update_map, &projects, temp_dir.path());
+        assert_eq!(
+            update_map[&PathBuf::from("crates/app/Cargo.toml")].0,
+            UpdateType::Patch
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_resolves_workspace_inherited_alias_from_root_definition() {
+        let temp_dir = TempDir::new().unwrap();
+        let core_dir = temp_dir.path().join("crates/core");
+        let app_dir = temp_dir.path().join("crates/app");
+        fs::create_dir_all(&core_dir).unwrap();
+        fs::create_dir_all(&app_dir).unwrap();
+
+        let workspace_toml = temp_dir.path().join("Cargo.toml");
+        let core_toml = core_dir.join("Cargo.toml");
+        let app_toml = app_dir.join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+renamed-core = { package = "core", path = "crates/core" }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &core_toml,
+            "[package]\nname = \"core\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            &app_toml,
+            r#"[package]
+name = "app"
+version = "1.0.0"
+
+[dependencies]
+renamed-core = { workspace = true }
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&app_toml, Path::new("crates/app/Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&workspace_toml, Path::new("Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&core_toml, Path::new("crates/core/Cargo.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        let app = projects
+            .iter()
+            .find(|project| project.name() == Some("app"))
+            .unwrap();
+        assert!(app.dependencies().contains("core"));
+        assert!(!app.dependencies().contains("renamed-core"));
+
+        let sorted = changepacks_utils::sort_by_dependencies(projects.clone())
+            .expect("fixture graph is a DAG");
+        let core_index = sorted
+            .iter()
+            .position(|project| project.name() == Some("core"))
+            .unwrap();
+        let app_index = sorted
+            .iter()
+            .position(|project| project.name() == Some("app"))
+            .unwrap();
+        assert!(core_index < app_index);
+
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("crates/core/Cargo.toml"),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "Update core".to_string(),
+                )],
+            ),
+        );
+        changepacks_utils::apply_reverse_dependencies(&mut update_map, &projects, temp_dir.path());
+        assert_eq!(
+            update_map[&PathBuf::from("crates/app/Cargo.toml")].0,
+            UpdateType::Patch
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_does_not_resolve_alias_above_repository_boundary() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_dir = temp_dir.path().join("repo");
+        fs::create_dir_all(&repo_dir).unwrap();
+
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["repo"]
+
+[workspace.dependencies]
+renamed-core = { package = "core", path = "outside-core" }
+"#,
+        )
+        .unwrap();
+        let member_toml = repo_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            r#"[package]
+name = "app"
+version = "1.0.0"
+
+[dependencies]
+renamed-core = { workspace = true }
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&member_toml, Path::new("Cargo.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        let app = projects
+            .iter()
+            .find(|project| project.name() == Some("app"))
+            .unwrap();
+        assert!(app.dependencies().contains("renamed-core"));
+        assert!(!app.dependencies().contains("core"));
 
         temp_dir.close().unwrap();
     }

@@ -1,19 +1,70 @@
 use changepacks_core::Project;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
+use std::path::{Path, PathBuf};
+
+/// A project participating in a dependency cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyCycleMember {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+/// Deterministic details for every project that participates in a dependency cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyCycleError {
+    members: Vec<DependencyCycleMember>,
+}
+
+impl DependencyCycleError {
+    #[must_use]
+    pub fn members(&self) -> &[DependencyCycleMember] {
+        &self.members
+    }
+}
+
+impl fmt::Display for DependencyCycleError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "dependency cycle detected: ")?;
+        for (index, member) in self.members.iter().enumerate() {
+            if index > 0 {
+                write!(formatter, ", ")?;
+            }
+            write!(formatter, "{} ({})", member.name, member.path.display())?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for DependencyCycleError {}
+
+fn is_cycle_member(start: usize, adj: &[usize], offsets: &[usize]) -> bool {
+    let mut visited = vec![false; offsets.len() - 1];
+    let mut stack = adj[offsets[start]..offsets[start + 1]].to_vec();
+
+    while let Some(index) = stack.pop() {
+        if index == start {
+            return true;
+        }
+        if visited[index] {
+            continue;
+        }
+        visited[index] = true;
+        stack.extend_from_slice(&adj[offsets[index]..offsets[index + 1]]);
+    }
+
+    false
+}
 
 /// Sort projects by their dependencies using topological sort.
 /// Projects with no dependencies or whose dependencies are already published will come first.
-/// Returns a sorted vector of project references (no cloning, just reordering).
-#[must_use]
-pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
-    // For 0 or 1 projects the topological ordering is provably identical to
-    // the input slice, and Kahn's machinery would only allocate a HashMap,
-    // two Vecs, a VecDeque, and two more Vecs to arrive at the same answer.
-    // Widen the historical empty-check to skip that work on single-project
-    // repos too (a common shape: monopackage crates with one Cargo.toml).
-    if projects.len() <= 1 {
-        return projects;
+/// Returns project references in dependency order, or deterministic cycle details.
+pub fn sort_by_dependencies(
+    projects: Vec<&Project>,
+) -> Result<Vec<&Project>, DependencyCycleError> {
+    if projects.is_empty() {
+        return Ok(projects);
     }
 
     // Dependencies are stored as package names, so name lookup is the ordering key.
@@ -85,9 +136,8 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
         }
     }
 
-    // Kahn's traversal + the trailing cyclic-fallback loop below together
-    // push every index in `0..projects.len()` at most once, so the final
-    // length is bounded by `projects.len()`. Preallocating up front removes
+    // Kahn's traversal pushes every index in `0..projects.len()` at most once,
+    // so the final length is bounded by `projects.len()`. Preallocating up front removes
     // the ~log2(N) geometric-doubling reallocations `Vec::new()` would
     // otherwise incur on every `publish` / `check --tree` invocation.
     let mut sorted_indices: Vec<usize> = Vec::with_capacity(projects.len());
@@ -99,13 +149,6 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     // edges, and `name_to_index.get(dep)` resolves each dep to a single
     // index), so every `in_degree` decrement is unique and the `== 0`
     // push happens at most once per node.
-    // After the loop drains, `in_degree[idx] == 0` iff `idx` was popped and
-    // its outgoing edges walked — i.e. it is on the acyclic frontier and
-    // already in `sorted_indices`. Any `in_degree[idx] > 0` node is exactly
-    // a cyclic node whose remaining dependency was never decremented to 0;
-    // the trailing cyclic-fallback loop appends those. This makes the
-    // dedicated `visited: Vec<bool>` redundant with `in_degree`, so we drop
-    // its allocation + per-pop write and reuse Kahn's canonical marker.
     while let Some(idx) = queue.pop_front() {
         sorted_indices.push(idx);
 
@@ -118,26 +161,22 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
         }
     }
 
-    // Add any remaining projects that weren't part of the dependency graph.
-    // Cyclic nodes are exactly those whose `in_degree` never reached 0.
-    //
-    // Fast-path: on an acyclic DAG (the always-taken case for well-formed
-    // monorepos on `changepacks publish` / `check --tree`), Kahn's loop
-    // above already drained every node into `sorted_indices`, so
-    // `sorted_indices.len() == projects.len()`. In that case the walk
-    // below would iterate all N indices only to find `degree == 0`
-    // everywhere and push nothing. Guarding on the length check skips the
-    // N-length walk on the common path — cyclic runs (rare, and hit at
-    // most once per invocation) still fall through and pick up any nodes
-    // whose `in_degree` never reached 0. Byte-identical output: Kahn's
-    // invariant guarantees `sorted_indices.len() < projects.len()` iff
-    // at least one node has `in_degree > 0`.
     if sorted_indices.len() < projects.len() {
-        for (idx, &degree) in in_degree.iter().enumerate() {
-            if degree > 0 {
-                sorted_indices.push(idx);
-            }
-        }
+        let mut members: Vec<_> = in_degree
+            .iter()
+            .enumerate()
+            .filter(|(index, degree)| **degree > 0 && is_cycle_member(*index, &adj, &offsets))
+            .map(|(index, _)| DependencyCycleMember {
+                name: projects[index].name().unwrap_or("<unnamed>").to_string(),
+                path: projects[index].relative_path().to_path_buf(),
+            })
+            .collect();
+        members.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| path_sort_key(&left.path).cmp(&path_sort_key(&right.path)))
+        });
+        return Err(DependencyCycleError { members });
     }
 
     // Reorder projects based on sorted indices (no cloning, just reordering references).
@@ -146,10 +185,14 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
     // and drops the `|&idx|` pattern. Zero perf change (compiler already
     // elides), but the intent — "consume the vector" — reads clearer than
     // "borrow every element then drop the borrow".
-    sorted_indices
+    Ok(sorted_indices
         .into_iter()
         .map(|idx| projects[idx])
-        .collect()
+        .collect())
+}
+
+fn path_sort_key(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 #[cfg(test)]
@@ -161,7 +204,7 @@ mod tests {
     #[test]
     fn test_sort_empty() {
         let projects: Vec<&Project> = vec![];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
         assert_eq!(sorted.len(), 0);
     }
 
@@ -172,7 +215,7 @@ mod tests {
         let p3 = create_project("p3", vec![]);
 
         let projects = vec![&p3, &p1, &p2];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 3);
         // All have no dependencies, so order should be preserved or stable
@@ -190,7 +233,7 @@ mod tests {
         let p1 = create_project("p1", vec!["p2"]);
 
         let projects = vec![&p1, &p2, &p3];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 3);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -211,7 +254,7 @@ mod tests {
         let p1 = create_project("p1", vec!["p2"]);
 
         let projects = vec![&p3, &p2, &p1];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 3);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -235,7 +278,7 @@ mod tests {
         let p1 = create_project("p1", vec!["p2", "p3"]);
 
         let projects = vec![&p1, &p2, &p3, &p4];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 4);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -258,7 +301,7 @@ mod tests {
         let p4 = create_project("p4", vec!["p2"]);
 
         let projects = vec![&p4, &p3, &p2, &p1];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 4);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -281,7 +324,7 @@ mod tests {
         let p2 = create_project("p2", vec![]);
 
         let projects = vec![&p1, &p2];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 2);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -299,7 +342,7 @@ mod tests {
         let app = create_project("app", vec!["core"]);
 
         let projects = vec![&app, &core_a, &core_b];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
         assert_eq!(names, vec![Some("app"), Some("core"), Some("core")]);
@@ -310,7 +353,7 @@ mod tests {
         let p1 = create_project("p1", vec![]);
 
         let projects = vec![&p1];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 1);
         assert_eq!(sorted[0].name(), Some("p1"));
@@ -326,13 +369,9 @@ mod tests {
         let p2 = create_project("p2", vec![]);
 
         let projects = vec![&p1, &p2];
-        let sorted = sort_by_dependencies(projects);
+        let error = sort_by_dependencies(projects).expect_err("self-cycle must fail");
 
-        assert_eq!(sorted.len(), 2);
-        // Both should be in the result, order may vary but both should be present
-        let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
-        assert!(names.contains(&Some("p1")));
-        assert!(names.contains(&Some("p2")));
+        assert_eq!(error.members()[0].name, "p1");
     }
 
     #[test]
@@ -343,14 +382,9 @@ mod tests {
         let p3 = create_project("p3", vec!["p2"]);
 
         let projects = vec![&p1, &p2, &p3];
-        let sorted = sort_by_dependencies(projects);
+        let error = sort_by_dependencies(projects).expect_err("cycle must fail");
 
-        // All projects should still be in the result even with cyclic deps
-        assert_eq!(sorted.len(), 3);
-        let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
-        assert!(names.contains(&Some("p1")));
-        assert!(names.contains(&Some("p2")));
-        assert!(names.contains(&Some("p3")));
+        assert_eq!(error.members().len(), 3);
     }
 
     #[test]
@@ -369,7 +403,7 @@ mod tests {
         let p1 = create_project("p1", vec!["p2", "p3"]);
 
         let projects = vec![&p1, &p2, &p3, &p4, &p5];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 5);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -382,5 +416,78 @@ mod tests {
         assert!(p4_idx > p5_idx);
         // p1 should come last
         assert_eq!(names[4], Some("p1"));
+    }
+
+    #[test]
+    fn test_sort_dag_returns_dependency_order() {
+        let leaf = create_project("leaf", vec![]);
+        let middle = create_project("middle", vec!["leaf"]);
+        let root = create_project("root", vec!["middle"]);
+
+        let sorted = sort_by_dependencies(vec![&root, &leaf, &middle])
+            .expect("a DAG must have a topological ordering");
+        let names: Vec<_> = sorted.iter().map(|project| project.name()).collect();
+
+        assert_eq!(names, vec![Some("leaf"), Some("middle"), Some("root")]);
+    }
+
+    #[test]
+    fn test_sort_rejects_self_cycle() {
+        let project = create_project("self", vec!["self"]);
+
+        let error = sort_by_dependencies(vec![&project]).expect_err("self-cycle must fail");
+
+        assert_eq!(error.members().len(), 1);
+        assert_eq!(error.members()[0].name, "self");
+        assert_eq!(
+            error.members()[0].path,
+            std::path::Path::new("self/package.json")
+        );
+    }
+
+    #[test]
+    fn test_sort_rejects_multi_node_cycle() {
+        let alpha = create_project("alpha", vec!["beta"]);
+        let beta = create_project("beta", vec!["gamma"]);
+        let gamma = create_project("gamma", vec!["alpha"]);
+
+        let error = sort_by_dependencies(vec![&alpha, &beta, &gamma])
+            .expect_err("multi-node cycle must fail");
+
+        assert_eq!(
+            error
+                .members()
+                .iter()
+                .map(|member| member.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta", "gamma"]
+        );
+    }
+
+    #[test]
+    fn test_cycle_details_are_deterministic_and_exclude_blocked_dependents() {
+        let zeta = create_project("zeta", vec!["alpha"]);
+        let alpha = create_project("alpha", vec!["zeta"]);
+        let blocked = create_project("blocked", vec!["zeta"]);
+
+        let error =
+            sort_by_dependencies(vec![&zeta, &blocked, &alpha]).expect_err("cycle must fail");
+
+        let details: Vec<_> = error
+            .members()
+            .iter()
+            .map(|member| (member.name.as_str(), member.path.as_path()))
+            .collect();
+        assert_eq!(
+            details,
+            vec![
+                ("alpha", std::path::Path::new("alpha/package.json")),
+                ("zeta", std::path::Path::new("zeta/package.json")),
+            ]
+        );
+        assert_eq!(
+            error.to_string(),
+            "dependency cycle detected: alpha (alpha/package.json), zeta (zeta/package.json)"
+        );
     }
 }

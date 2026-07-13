@@ -1,6 +1,5 @@
 use anyhow::Result;
 use async_trait::async_trait;
-#[cfg(not(tarpaulin_include))]
 use changepacks_core::Config;
 use changepacks_core::{Language, UpdateType, Workspace};
 use std::collections::HashSet;
@@ -64,7 +63,6 @@ impl Workspace for GradleWorkspace {
         crate::DRY_RUN_PUBLISH_COMMAND
     );
 
-    #[cfg(not(tarpaulin_include))]
     async fn publish(&self, config: &Config) -> Result<changepacks_core::publish::PublishOutput> {
         crate::run_publish_for_path(
             self.path(),
@@ -75,7 +73,6 @@ impl Workspace for GradleWorkspace {
         .await
     }
 
-    #[cfg(not(tarpaulin_include))]
     async fn dry_run_publish(
         &self,
         config: &Config,

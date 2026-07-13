@@ -22,9 +22,6 @@ const PACKAGE_JSON_DEPENDENCY_SECTIONS: &[&str] = &[
     "optionalDependencies",
 ];
 
-/// Version-specifier prefixes that mark a dependency as a local in-repo project.
-const LOCAL_DEP_PREFIXES: &[&str] = &["workspace:", "file:", "link:", "portal:"];
-
 /// Look up a field in the `package.json` manifest as an owned string, mirroring the
 /// `doc.get(field).and_then(|v| v.as_str()).map(ToString::to_string)` chain that
 /// used to be open-coded twice inside `visit` (once for `version`, once for `name`).
@@ -54,13 +51,8 @@ fn add_workspace_dependencies(project: &mut Project, package_json: &serde_json::
         let Some(deps) = package_json.get(*section).and_then(|deps| deps.as_object()) else {
             continue;
         };
-        for (dep_name, value) in deps {
-            if value
-                .as_str()
-                .is_some_and(|version| LOCAL_DEP_PREFIXES.iter().any(|p| version.starts_with(p)))
-            {
-                project.add_dependency(dep_name);
-            }
+        for dep_name in deps.keys() {
+            project.add_dependency(dep_name);
         }
     }
 }
@@ -478,7 +470,7 @@ mod tests {
 
         let project = projects.first().unwrap();
         let deps = project.dependencies();
-        assert_eq!(deps.len(), 7);
+        assert_eq!(deps.len(), 9);
         assert!(deps.contains("core"));
         assert!(deps.contains("utils"));
         assert!(deps.contains("cli"));
@@ -486,8 +478,8 @@ mod tests {
         assert!(deps.contains("test-utils"));
         assert!(deps.contains("plugin-api"));
         assert!(deps.contains("native-addon"));
-        assert!(!deps.contains("external"));
-        assert!(!deps.contains("native-external"));
+        assert!(deps.contains("external"));
+        assert!(deps.contains("native-external"));
 
         temp_dir.close().unwrap();
     }
@@ -520,9 +512,9 @@ mod tests {
         assert_eq!(projects.len(), 1);
 
         let deps = projects.first().unwrap().dependencies();
-        assert_eq!(deps.len(), 1);
+        assert_eq!(deps.len(), 2);
         assert!(deps.contains("foo"));
-        assert!(!deps.contains("bar"));
+        assert!(deps.contains("bar"));
 
         temp_dir.close().unwrap();
     }
@@ -556,10 +548,88 @@ mod tests {
         assert_eq!(projects.len(), 1);
 
         let deps = projects.first().unwrap().dependencies();
-        assert_eq!(deps.len(), 2);
+        assert_eq!(deps.len(), 3);
         assert!(deps.contains("linked-pkg"));
         assert!(deps.contains("portaled-pkg"));
-        assert!(!deps.contains("lodash"));
+        assert!(deps.contains("lodash"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_semver_dependencies_feed_local_graphs_and_ignore_unmatched_names() {
+        use changepacks_core::{ChangePackResultLog, UpdateType};
+        use changepacks_utils::{apply_reverse_dependencies, sort_by_dependencies};
+        use std::collections::HashMap;
+
+        let temp_dir = TempDir::new().unwrap();
+        let manifests = [
+            (
+                "core",
+                r#"{
+  "name": "core",
+  "version": "1.0.0"
+}
+"#,
+            ),
+            (
+                "app",
+                r#"{
+  "name": "app",
+  "version": "1.0.0",
+  "dependencies": {
+    "core": "^1.0.0",
+    "unmatched-external": "^9.0.0"
+  }
+}
+"#,
+            ),
+        ];
+
+        let mut finder = NodeProjectFinder::new();
+        for (directory, contents) in manifests {
+            let path = temp_dir.path().join(directory).join("package.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, contents).unwrap();
+            finder
+                .visit(&path, &PathBuf::from(directory).join("package.json"))
+                .await
+                .unwrap();
+        }
+
+        let projects = finder.projects();
+        let by_name = |name: &str| {
+            *projects
+                .iter()
+                .find(|project| project.name() == Some(name))
+                .unwrap()
+        };
+        let app = by_name("app");
+        assert_eq!(app.dependencies().len(), 2);
+        assert!(app.dependencies().contains("core"));
+        assert!(app.dependencies().contains("unmatched-external"));
+
+        let sorted =
+            sort_by_dependencies(vec![app, by_name("core")]).expect("fixture graph is a DAG");
+        assert_eq!(sorted[0].name(), Some("core"));
+        assert_eq!(sorted[1].name(), Some("app"));
+
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("core").join("package.json"),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "Update core".to_string(),
+                )],
+            ),
+        );
+        apply_reverse_dependencies(&mut update_map, &projects, temp_dir.path());
+        assert_eq!(
+            update_map[&PathBuf::from("app").join("package.json")].0,
+            UpdateType::Patch
+        );
 
         temp_dir.close().unwrap();
     }

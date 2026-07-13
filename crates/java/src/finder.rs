@@ -94,7 +94,6 @@ async fn which_java_in(path_var: Option<&OsStr>) -> Option<PathBuf> {
     None
 }
 
-#[cfg(not(tarpaulin_include))]
 async fn java_home_has_java(java_home: Option<&OsStr>) -> bool {
     let Some(java_home) = java_home else {
         return false;
@@ -126,34 +125,27 @@ async fn java_home_has_java(java_home: Option<&OsStr>) -> bool {
 ///
 /// Returns `(gradlew_path, gradlew_dir)`, or `None` if not found within the bound.
 ///
-/// Excluded from coverage: the cross-platform `cfg!(windows)` arm only
-/// executes one branch per test host, leaving the other permanently
-/// uncovered. Real coverage requires running against both OS targets,
-/// which CI exercises via the matrix build but tarpaulin sees only on
-/// Linux.
-#[cfg(not(tarpaulin_include))]
-async fn find_gradlew(start_dir: &Path, max_depth: usize) -> Option<(PathBuf, PathBuf)> {
-    let gradlew_name = if cfg!(windows) {
-        "gradlew.bat"
-    } else {
-        "gradlew"
-    };
+fn gradle_wrapper_name(windows: bool) -> &'static str {
+    if windows { "gradlew.bat" } else { "gradlew" }
+}
 
+async fn find_gradlew(start_dir: &Path, max_depth: usize) -> Option<(PathBuf, PathBuf)> {
+    find_gradlew_named(start_dir, max_depth, gradle_wrapper_name(cfg!(windows))).await
+}
+
+async fn find_gradlew_named(
+    start_dir: &Path,
+    max_depth: usize,
+    gradlew_name: &str,
+) -> Option<(PathBuf, PathBuf)> {
     // `Path::ancestors()` yields `[start_dir, parent, …, root]`; `take(max_depth)`
     // caps the climb at the repository root so the walk never leaves the repo
     // and can never adopt an out-of-repo wrapper.
     for current in start_dir.ancestors().take(max_depth) {
         let gradlew = current.join(gradlew_name);
-        // Probe with the shared `changepacks_core::is_regular_file` (a
-        // `tokio::fs::metadata().is_file()` check) so this file-vs-dir question
-        // matches the sibling `java_home_has_java` probe above. Its internal
-        // `unwrap_or(false)` preserves the previous "stat error (permission
-        // denied, broken symlink) → treat as not found, keep walking up"
-        // semantics, and it additionally rejects a *directory* named
-        // `gradlew`/`gradlew.bat` — which `try_exists` would accept and which
-        // would then fail confusingly at execution time.
-        let exists = changepacks_core::is_regular_file(&gradlew).await;
-        if exists {
+        // Reject directories and inaccessible paths while continuing the
+        // bounded search for the selected platform wrapper filename.
+        if changepacks_core::is_regular_file(&gradlew).await {
             return Some((gradlew, current.to_path_buf()));
         }
     }
@@ -166,7 +158,6 @@ async fn find_gradlew(start_dir: &Path, max_depth: usize) -> Option<(PathBuf, Pa
 /// into a shell command, so paths containing spaces or shell metacharacters
 /// remain intact. Configured publish commands do not use this path; their
 /// existing shell semantics are preserved by the package/workspace callers.
-#[cfg(not(tarpaulin_include))]
 pub(crate) async fn run_gradle_publish(
     manifest_path: &Path,
     relative_path: &Path,
@@ -246,7 +237,6 @@ fn extract_gradle_project_dependencies(content: &str) -> Vec<&str> {
 }
 
 /// Returns true when a Java runtime is available via JAVA_HOME or PATH.
-#[cfg(not(tarpaulin_include))]
 async fn java_is_available() -> bool {
     let java_home = std::env::var_os("JAVA_HOME");
     if java_home_has_java(java_home.as_deref()).await {
@@ -264,10 +254,6 @@ async fn java_is_available() -> bool {
 ///
 /// Returns `Err` when `gradlew` is not found or Java is not available.
 ///
-/// Excluded from coverage: requires a real Gradle wrapper + Java runtime
-/// to exercise; tarpaulin's Linux-only container cannot guarantee both
-/// platform arms (sh vs cmd) get hit.
-#[cfg(not(tarpaulin_include))]
 async fn get_gradle_properties(
     project_dir: &Path,
     java_available: bool,
@@ -321,28 +307,28 @@ async fn get_gradle_properties(
         ));
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut props = GradleProperties::default();
+    Ok(parse_gradle_properties_output(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
 
-    // Parse properties output. Regexes are cached via module-level
-    // `LazyLock<Regex>` (see `NAME_PATTERN` et al. above) so this hot path
-    // no longer re-compiles the three patterns on every visit.
-    // Format: "propertyName: value"
-    if let Some(caps) = NAME_PATTERN.captures(&stdout) {
-        props.name = gradle_property_value(&caps);
+fn parse_gradle_properties_output(output: &str) -> GradleProperties {
+    let name = NAME_PATTERN
+        .captures(output)
+        .and_then(|caps| gradle_property_value(&caps));
+    let version = VERSION_PATTERN
+        .captures(output)
+        .and_then(|caps| gradle_property_value(&caps));
+    let has_subprojects = SUBPROJECTS_PATTERN
+        .captures(output)
+        .and_then(|caps| caps.get(1))
+        .is_some_and(|value| value.as_str().trim() != "[]");
+
+    GradleProperties {
+        name,
+        version,
+        has_subprojects,
     }
-
-    if let Some(caps) = VERSION_PATTERN.captures(&stdout) {
-        props.version = gradle_property_value(&caps);
-    }
-
-    // Detect workspace: subprojects is non-empty (e.g. "[project ':sub1', project ':sub2']")
-    if let Some(caps) = SUBPROJECTS_PATTERN.captures(&stdout) {
-        let value = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-        props.has_subprojects = value != "[]";
-    }
-
-    Ok(props)
 }
 
 fn gradle_properties_args(project_dir: &Path, gradlew_dir: &Path) -> Result<Vec<OsString>> {
@@ -498,6 +484,61 @@ mod tests {
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
+
+    fn finder_with_java_available() -> GradleProjectFinder {
+        GradleProjectFinder {
+            java_available: Some(true),
+            ..GradleProjectFinder::default()
+        }
+    }
+
+    #[test]
+    fn test_gradle_wrapper_name_selects_platform_variant() {
+        assert_eq!(gradle_wrapper_name(false), "gradlew");
+        assert_eq!(gradle_wrapper_name(true), "gradlew.bat");
+    }
+
+    #[tokio::test]
+    async fn test_find_gradlew_accepts_both_wrapper_filenames_and_respects_bound() {
+        for wrapper_name in ["gradlew", "gradlew.bat"] {
+            let temp_dir = TempDir::new().unwrap();
+            let repo = temp_dir.path().join("repo");
+            let project = repo.join("nested");
+            fs::create_dir_all(&project).unwrap();
+            fs::write(repo.join(wrapper_name), "wrapper").unwrap();
+            fs::write(
+                temp_dir.path().join(if wrapper_name == "gradlew" {
+                    "gradlew.bat"
+                } else {
+                    "gradlew"
+                }),
+                "out-of-repo decoy",
+            )
+            .unwrap();
+
+            let found = find_gradlew_named(&project, 2, wrapper_name).await.unwrap();
+
+            assert_eq!(found.0, repo.join(wrapper_name));
+            assert_eq!(found.1, repo);
+        }
+    }
+
+    #[test]
+    fn test_parse_gradle_properties_output_handles_values_and_unspecified() {
+        let props = parse_gradle_properties_output(
+            "name: demo\nversion: unspecified\nsubprojects: [project ':app']\n",
+        );
+
+        assert_eq!(props.name.as_deref(), Some("demo"));
+        assert_eq!(props.version, None);
+        assert!(props.has_subprojects);
+
+        let empty =
+            parse_gradle_properties_output("name: unspecified\nversion: 1.2.3\nsubprojects: []\n");
+        assert_eq!(empty.name, None);
+        assert_eq!(empty.version.as_deref(), Some("1.2.3"));
+        assert!(!empty.has_subprojects);
+    }
 
     // Both `GradleProjectFinder::new()` and `GradleProjectFinder::default()`
     // must yield the same empty finder that recognizes both Kotlin and
@@ -668,7 +709,7 @@ version = "1.0.0"
 
         create_mock_gradlew(&project_dir, MockGradlew::package("myproject", "1.0.0"));
 
-        let mut finder = GradleProjectFinder::new();
+        let mut finder = finder_with_java_available();
         finder
             .visit(&build_gradle, &PathBuf::from("myproject/build.gradle.kts"))
             .await
@@ -709,7 +750,7 @@ version = '2.0.0'
 
         create_mock_gradlew(&project_dir, MockGradlew::package("groovyproject", "2.0.0"));
 
-        let mut finder = GradleProjectFinder::new();
+        let mut finder = finder_with_java_available();
         finder
             .visit(&build_gradle, &PathBuf::from("groovyproject/build.gradle"))
             .await
@@ -758,7 +799,7 @@ version = "1.0.0"
             ),
         );
 
-        let mut finder = GradleProjectFinder::new();
+        let mut finder = finder_with_java_available();
         finder
             .visit(
                 &build_gradle,
@@ -800,7 +841,7 @@ version = "1.0.0"
 
         create_mock_gradlew(&project_dir, MockGradlew::package("myproject", "1.0.0"));
 
-        let mut finder = GradleProjectFinder::new();
+        let mut finder = finder_with_java_available();
         finder
             .visit(&build_gradle, &PathBuf::from("myproject/build.gradle.kts"))
             .await
@@ -828,7 +869,7 @@ version = "1.0.0"
 
         create_mock_gradlew(&project_dir, MockGradlew::package("standalone", "1.0.0"));
 
-        let mut finder = GradleProjectFinder::new();
+        let mut finder = finder_with_java_available();
         finder
             .visit(&build_gradle, &PathBuf::from("standalone/build.gradle.kts"))
             .await
@@ -852,7 +893,7 @@ version = "1.0.0"
         let other_file = temp_dir.path().join("other.txt");
         fs::write(&other_file, "some content").unwrap();
 
-        let mut finder = GradleProjectFinder::new();
+        let mut finder = finder_with_java_available();
         finder
             .visit(&other_file, &PathBuf::from("other.txt"))
             .await
@@ -874,7 +915,7 @@ version = "1.0.0"
 
         create_mock_gradlew(&project_dir, MockGradlew::package("myproject", "1.0.0"));
 
-        let mut finder = GradleProjectFinder::new();
+        let mut finder = finder_with_java_available();
         finder
             .visit(&build_gradle, &PathBuf::from("myproject/build.gradle.kts"))
             .await
@@ -904,7 +945,7 @@ version = "1.0.0"
 
         create_mock_gradlew(&project_dir, MockGradlew::package("myproject", "1.0.0"));
 
-        let mut finder = GradleProjectFinder::new();
+        let mut finder = finder_with_java_available();
         finder
             .visit(&build_gradle, &PathBuf::from("myproject/build.gradle.kts"))
             .await
@@ -1318,7 +1359,7 @@ dependencies {
         // Mock gradlew that returns unspecified name (filtered to None)
         create_mock_gradlew(&project_dir, MockGradlew::package("unspecified", "1.0.0"));
 
-        let mut finder = GradleProjectFinder::new();
+        let mut finder = finder_with_java_available();
         finder
             .visit(
                 &build_gradle,
@@ -1352,7 +1393,7 @@ dependencies {
 
         create_failing_gradlew(&project_dir);
 
-        let mut finder = GradleProjectFinder::new();
+        let mut finder = finder_with_java_available();
         let result = finder
             .visit(&build_gradle, &PathBuf::from("my-project/build.gradle.kts"))
             .await;
