@@ -12,15 +12,8 @@ fn read_dir_context(dir: &Path) -> String {
     format!("Failed to read changepacks directory {}", dir.display())
 }
 
-/// Returns `true` iff `file_name` names a changepack log JSON file — i.e. it
-/// is NOT `config.json` and its extension matches `.json` case-insensitively.
-///
-/// Both comparisons are ASCII case-insensitive because Windows (NTFS) and
-/// macOS (default HFS+/APFS) surface the same on-disk config file to
-/// `read_dir` under mixed-case names like `Config.json` or `CONFIG.JSON`. A
-/// case-sensitive `file_name != "config.json"` guard would mistakenly treat
-/// those variants as changepack logs and let `clear_update_logs` silently
-/// delete the user's config file — a data-loss shape.
+/// Returns `true` iff `file_name` matches `changepack_log_*.json`, with a
+/// case-insensitive extension match.
 ///
 /// Consumed transitively by [`crate::clear_update_logs`] and
 /// [`crate::clear_applied_update_logs`] (the cleaners) and [`crate::gen_update_map`]
@@ -31,7 +24,7 @@ fn read_dir_context(dir: &Path) -> String {
 /// deleted — both silent-data-loss shapes.
 #[must_use]
 fn is_changepack_log_json_name(file_name: &str) -> bool {
-    !file_name.eq_ignore_ascii_case("config.json")
+    file_name.starts_with("changepack_log_")
         && has_extension_ignore_ascii_case(Path::new(file_name), "json")
 }
 
@@ -132,14 +125,15 @@ mod tests {
     #[case(".gitignore", false)]
     #[case("notes.txt", false)]
     #[case("randomfile", false)]
-    // Real changepack log names — both the auto-numbered and any custom
-    // JSON file — must be recognized as logs. Last two exercise the
-    // case-insensitive extension match (matches the historical filter).
-    #[case("update_log_1.json", true)]
+    // Only generated changepack-log names are logs. Arbitrary JSON files are
+    // user-owned and must not be read or deleted.
+    #[case("update_log_1.json", false)]
     #[case("changepack_log_2.json", true)]
-    #[case("2024-01-01.json", true)]
+    #[case("2024-01-01.json", false)]
     #[case("changepack_log_2.JSON", true)]
-    #[case("update.Json", true)]
+    #[case("update.Json", false)]
+    #[case("notes.json", false)]
+    #[case("changepack_log.json", false)]
     fn test_is_changepack_log_json_name(#[case] file_name: &str, #[case] expected: bool) {
         assert_eq!(is_changepack_log_json_name(file_name), expected);
     }

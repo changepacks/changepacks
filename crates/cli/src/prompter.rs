@@ -103,7 +103,6 @@ pub(crate) fn format_selected_projects<'a>(
 #[derive(Default)]
 pub struct InquirePrompter;
 
-#[cfg(not(tarpaulin_include))]
 impl Prompter for InquirePrompter {
     fn multi_select<'a>(
         &self,

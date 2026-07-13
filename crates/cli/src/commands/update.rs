@@ -56,12 +56,6 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
 
 /// # Errors
 /// Returns error if reading changepack logs, updating versions, or writing results fails.
-///
-/// Excluded from coverage: orchestrates `CommandContext::new` and
-/// `find_project_dirs` (real git tree walk) plus an interactive
-/// `prompter.confirm(...)`; underlying helpers (`apply_reverse_dependencies`,
-/// `gen_update_map`, `display_update`) are covered by their own tests.
-#[cfg(not(tarpaulin_include))]
 pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Prompter) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
     let mut update_map = gen_update_map(&ctx.changepacks_dir, &ctx.config).await?;
@@ -306,11 +300,6 @@ fn packages_of<'a>(
 /// two `handle_update_with_prompter` branches. Takes the `&mut Project`-pair
 /// slice directly and reborrows each project as shared (`&**project`) inside the
 /// display loop, so callers need no intermediate shared-reference vec.
-///
-/// Excluded from coverage: shares the interactive `prompter.confirm(...)` and
-/// stdout display loop of its sole caller `handle_update_with_prompter`, itself
-/// coverage-excluded for the same reason.
-#[cfg(not(tarpaulin_include))]
 fn preview_and_confirm(
     args: &UpdateArgs,
     prompter: &dyn Prompter,
@@ -428,7 +417,6 @@ fn collect_update_project_refs<'a>(
     ))
 }
 
-#[cfg(not(tarpaulin_include))]
 fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<WorkspaceRef<'a>> {
     let mut workspace_projects = Vec::with_capacity(total_project_count(finders));
 
@@ -647,8 +635,8 @@ fn merge_workspace_inherited_updates(
 mod tests {
     use super::{
         UpdateArgs, apply_updates, collect_projects, collect_update_project_muts,
-        collect_update_project_refs, merge_workspace_inherited_updates,
-        validate_update_project_paths,
+        collect_update_project_refs, collect_workspace_projects, merge_workspace_inherited_updates,
+        preview_and_confirm, validate_update_project_paths,
     };
     use anyhow::{Result, bail};
     use async_trait::async_trait;
@@ -664,7 +652,7 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    use crate::options::FormatOptions;
+    use crate::{options::FormatOptions, prompter::MockPrompter};
 
     #[derive(Parser)]
     struct TestCli {
@@ -912,6 +900,107 @@ mod tests {
 
     fn mock_log(note: &str) -> ChangePackResultLog {
         ChangePackResultLog::new(UpdateType::Patch, note.to_string())
+    }
+
+    fn update_args(dry_run: bool, yes: bool, format: FormatOptions) -> UpdateArgs {
+        UpdateArgs {
+            dry_run,
+            yes,
+            format,
+            remote: false,
+            language: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_preview_and_confirm_dry_run_stops_before_confirmation() -> Result<()> {
+        let mut project = mock_package_project("/repo/Cargo.toml", "Cargo.toml", false, None);
+        let projects = vec![(&mut project, UpdateType::Patch)];
+        let prompter = MockPrompter {
+            confirm_value: true,
+            ..Default::default()
+        };
+
+        assert!(!preview_and_confirm(
+            &update_args(true, false, FormatOptions::Json),
+            &prompter,
+            &projects,
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_preview_and_confirm_yes_bypasses_declining_prompter() -> Result<()> {
+        let mut project = mock_package_project("/repo/Cargo.toml", "Cargo.toml", false, None);
+        let projects = vec![(&mut project, UpdateType::Minor)];
+        let prompter = MockPrompter {
+            confirm_value: false,
+            ..Default::default()
+        };
+
+        assert!(preview_and_confirm(
+            &update_args(false, true, FormatOptions::Json),
+            &prompter,
+            &projects,
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_preview_and_confirm_decline_stops_update() -> Result<()> {
+        let mut project = mock_package_project("/repo/Cargo.toml", "Cargo.toml", false, None);
+        let projects = vec![(&mut project, UpdateType::Major)];
+        let prompter = MockPrompter {
+            confirm_value: false,
+            ..Default::default()
+        };
+
+        assert!(!preview_and_confirm(
+            &update_args(false, false, FormatOptions::Json),
+            &prompter,
+            &projects,
+        )?);
+        Ok(())
+    }
+
+    #[test]
+    fn test_preview_and_confirm_propagates_preview_error() {
+        let mut package = MockInheritPackage::new("/repo/Cargo.toml", "Cargo.toml", false, None);
+        package.version = Some("not-a-version".to_string());
+        let mut project = Project::Package(Box::new(package));
+        let projects = vec![(&mut project, UpdateType::Patch)];
+
+        let error = preview_and_confirm(
+            &update_args(false, false, FormatOptions::Stdout),
+            &MockPrompter::default(),
+            &projects,
+        )
+        .expect_err("invalid version should fail while rendering the preview");
+
+        assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn test_collect_workspace_projects_returns_only_workspaces() {
+        let workspace_path = PathBuf::from("/repo/Cargo.toml");
+        let finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(MockFinder::new(vec![
+            mock_package_project(
+                "/repo/crates/pkg/Cargo.toml",
+                "crates/pkg/Cargo.toml",
+                false,
+                None,
+            ),
+            Project::Workspace(Box::new(file_updating_workspace(
+                workspace_path.clone(),
+                b"updated",
+                false,
+            ))),
+        ]))];
+
+        let workspaces = collect_workspace_projects(&finders);
+
+        assert_eq!(workspaces.len(), 1);
+        assert_eq!(workspaces[0].path(), workspace_path);
     }
 
     fn summarize_update_map(

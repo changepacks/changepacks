@@ -1,4 +1,5 @@
-/// Return `"\n"` when `source` ends with a newline, `""` otherwise.
+/// Return the exact newline terminator when `source` ends with CRLF or LF,
+/// `""` otherwise.
 ///
 /// The language crates rewrite manifest files by dropping trailing whitespace
 /// from the serialized body and then re-appending exactly the terminator the
@@ -7,7 +8,10 @@
 /// in every `update_version` implementation.
 #[must_use]
 pub(crate) const fn trailing_newline(source: &str) -> &'static str {
-    if let Some(last) = source.as_bytes().last()
+    let bytes = source.as_bytes();
+    if bytes.len() >= 2 && bytes[bytes.len() - 2] == b'\r' && bytes[bytes.len() - 1] == b'\n' {
+        "\r\n"
+    } else if let Some(last) = bytes.last()
         && *last == b'\n'
     {
         "\n"
@@ -51,9 +55,9 @@ mod tests {
     // LF terminated: normal and lone-LF.
     #[case("hello\n", "\n")]
     #[case("\n", "\n")]
-    // CRLF also yields `\n` because the final byte is LF — matches the
-    // existing `raw.ends_with('\n')` behavior.
-    #[case("hello\r\n", "\n")]
+    // CRLF terminated: normal and lone-CRLF.
+    #[case("hello\r\n", "\r\n")]
+    #[case("\r\n", "\r\n")]
     fn test_trailing_newline(#[case] input: &str, #[case] expected: &str) {
         assert_eq!(trailing_newline(input), expected);
     }
@@ -68,15 +72,30 @@ mod tests {
     //     no terminator appended (matches pre-existing `""` branch).
     //   - `body` already has no trailing whitespace: still trimmed
     //     idempotently.
-    //   - `original` has CRLF: yields LF (matches `trailing_newline`'s
-    //     documented "final byte is LF wins" behavior).
+    //   - `original` has CRLF: its exact terminator is restored.
     #[rstest]
     #[case("hello  \n\n", "content\n", "hello\n")]
     #[case("hello\t\t", "content", "hello")]
     #[case("hello", "content\n", "hello\n")]
-    #[case("hello\n", "content\r\n", "hello\n")]
+    #[case("hello\n", "content\r\n", "hello\r\n")]
+    #[case("hello\r\n\r\n", "content\r\n", "hello\r\n")]
     #[case("", "content\n", "\n")]
     fn test_finalize_content(#[case] body: &str, #[case] original: &str, #[case] expected: &str) {
         assert_eq!(finalize_content(body.to_string(), original), expected);
+    }
+
+    #[rstest]
+    #[case("hello\r\n\r\n", "content\r\n", "hello\r\n")]
+    #[case("hello\n\n", "content\n", "hello\n")]
+    #[case("hello  ", "content", "hello")]
+    fn test_finalize_content_preserves_terminator_on_repeated_calls(
+        #[case] body: &str,
+        #[case] original: &str,
+        #[case] expected: &str,
+    ) {
+        let once = finalize_content(body.to_string(), original);
+        let twice = finalize_content(once, original);
+
+        assert_eq!(twice, expected);
     }
 }

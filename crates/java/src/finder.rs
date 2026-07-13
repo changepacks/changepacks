@@ -377,7 +377,10 @@ impl GradleCommandSpec {
 
     fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
-        command.args(&self.args).current_dir(&self.current_dir);
+        command
+            .args(&self.args)
+            .current_dir(&self.current_dir)
+            .kill_on_drop(true);
         command
     }
 }
@@ -678,6 +681,53 @@ mod tests {
             );
         }
         assert_eq!(spec.current_dir, PathBuf::from("repo"));
+    }
+
+    #[tokio::test]
+    async fn test_gradle_command_stops_wrapper_when_wait_future_is_dropped() {
+        let temp_dir = TempDir::new().unwrap();
+        let started = temp_dir.path().join("started.marker");
+        let completed = temp_dir.path().join("completed.marker");
+        let gradlew = temp_dir.path().join(gradle_wrapper_name(cfg!(windows)));
+
+        if cfg!(windows) {
+            fs::write(
+                &gradlew,
+                "@echo off\r\necho started>started.marker\r\npowershell -NoProfile -Command \"Start-Sleep -Milliseconds 400\"\r\necho completed>completed.marker\r\n",
+            )
+            .unwrap();
+        } else {
+            fs::write(
+                &gradlew,
+                "#!/bin/sh\nprintf started > started.marker\nsleep 0.4\nprintf completed > completed.marker\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            make_executable(&gradlew);
+        }
+
+        let spec = GradleCommandSpec::new(&gradlew, temp_dir.path(), Vec::new());
+        let mut command = spec.command();
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+        let mut child = command.spawn().unwrap();
+        let wait_task = tokio::spawn(async move { child.wait().await });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while !started.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("fake Gradle wrapper did not start");
+
+        wait_task.abort();
+        let _ = wait_task.await;
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+
+        assert!(
+            !completed.exists(),
+            "dropping a Gradle wait future left its wrapper running"
+        );
     }
 
     #[cfg(unix)]

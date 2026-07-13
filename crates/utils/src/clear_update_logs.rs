@@ -362,9 +362,9 @@ mod tests {
         fs::write(&config_file, r#"{"ignore": [], "baseBranch": "main"}"#).unwrap();
 
         // Create update log files
-        let log_file1 = changepacks_dir.join("update_log_1.json");
-        let log_file2 = changepacks_dir.join("update_log_2.json");
-        let log_file3 = changepacks_dir.join("update_log_3.json");
+        let log_file1 = changepacks_dir.join("changepack_log_1.json");
+        let log_file2 = changepacks_dir.join("changepack_log_2.json");
+        let log_file3 = changepacks_dir.join("changepack_log_3.json");
         fs::write(&log_file1, r#"{"changes": {}, "note": "test1"}"#).unwrap();
         fs::write(&log_file2, r#"{"changes": {}, "note": "test2"}"#).unwrap();
         fs::write(&log_file3, r#"{"changes": {}, "note": "test3"}"#).unwrap();
@@ -377,9 +377,18 @@ mod tests {
         assert!(config_file.exists(), "config.json should not be deleted");
 
         // All update log files should be deleted
-        assert!(!log_file1.exists(), "update_log_1.json should be deleted");
-        assert!(!log_file2.exists(), "update_log_2.json should be deleted");
-        assert!(!log_file3.exists(), "update_log_3.json should be deleted");
+        assert!(
+            !log_file1.exists(),
+            "changepack_log_1.json should be deleted"
+        );
+        assert!(
+            !log_file2.exists(),
+            "changepack_log_2.json should be deleted"
+        );
+        assert!(
+            !log_file3.exists(),
+            "changepack_log_3.json should be deleted"
+        );
     }
 
     #[tokio::test]
@@ -399,7 +408,7 @@ mod tests {
         let config_file = changepacks_dir.join("config.json");
         fs::write(&config_file, r#"{"ignore": [], "baseBranch": "main"}"#).unwrap();
 
-        // Create various update log files with different names
+        // Create arbitrary JSON files with names that are not changepack logs.
         let log_file1 = changepacks_dir.join("2024-01-01.json");
         let log_file2 = changepacks_dir.join("2024-01-02.json");
         let log_file3 = changepacks_dir.join("update.json");
@@ -416,11 +425,11 @@ mod tests {
         // config.json should remain
         assert!(config_file.exists(), "config.json should not be deleted");
 
-        // All update log files should be deleted
-        assert!(!log_file1.exists(), "2024-01-01.json should be deleted");
-        assert!(!log_file2.exists(), "2024-01-02.json should be deleted");
-        assert!(!log_file3.exists(), "update.json should be deleted");
-        assert!(!log_file4.exists(), "log.json should be deleted");
+        // Arbitrary JSON files should be preserved.
+        assert!(log_file1.exists(), "2024-01-01.json should be preserved");
+        assert!(log_file2.exists(), "2024-01-02.json should be preserved");
+        assert!(log_file3.exists(), "update.json should be preserved");
+        assert!(log_file4.exists(), "log.json should be preserved");
     }
 
     #[tokio::test]
@@ -437,8 +446,8 @@ mod tests {
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         // Create update log files without config.json
-        let log_file1 = changepacks_dir.join("update_log_1.json");
-        let log_file2 = changepacks_dir.join("update_log_2.json");
+        let log_file1 = changepacks_dir.join("changepack_log_1.json");
+        let log_file2 = changepacks_dir.join("changepack_log_2.json");
         fs::write(&log_file1, r#"{"changes": {}, "note": "test1"}"#).unwrap();
         fs::write(&log_file2, r#"{"changes": {}, "note": "test2"}"#).unwrap();
 
@@ -447,8 +456,14 @@ mod tests {
         assert!(result.is_ok());
 
         // All update log files should be deleted
-        assert!(!log_file1.exists(), "update_log_1.json should be deleted");
-        assert!(!log_file2.exists(), "update_log_2.json should be deleted");
+        assert!(
+            !log_file1.exists(),
+            "changepack_log_1.json should be deleted"
+        );
+        assert!(
+            !log_file2.exists(),
+            "changepack_log_2.json should be deleted"
+        );
     }
 
     #[tokio::test]
@@ -473,7 +488,7 @@ mod tests {
         fs::write(&readme, "notes about changepacks").unwrap();
 
         // A legitimate JSON update log that SHOULD be deleted.
-        let log_file = changepacks_dir.join("update_log_1.json");
+        let log_file = changepacks_dir.join("changepack_log_1.json");
         fs::write(&log_file, r#"{"changes": {}, "note": "test"}"#).unwrap();
 
         // config.json is always preserved.
@@ -489,7 +504,37 @@ mod tests {
         // config.json must SURVIVE.
         assert!(config_file.exists(), "config.json must not be deleted");
         // JSON update log must be DELETED.
-        assert!(!log_file.exists(), "update_log_1.json must be deleted");
+        assert!(!log_file.exists(), "changepack_log_1.json must be deleted");
+    }
+
+    #[tokio::test]
+    async fn test_full_and_selective_cleanup_preserve_notes_json_bytes() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        let notes_file = changepacks_dir.join("notes.json");
+        let notes_bytes = b"{\n  \"changes\": {\"user/notes\": \"Major\"},\n  \"note\": \"keep byte-for-byte\"\n}\n";
+        fs::write(&notes_file, notes_bytes).unwrap();
+
+        let full_log = changepacks_dir.join("changepack_log_full.json");
+        fs::write(&full_log, r#"{"changes":{},"note":"full"}"#).unwrap();
+        clear_update_logs(&changepacks_dir).await.unwrap();
+        assert!(!full_log.exists());
+        assert_eq!(fs::read(&notes_file).unwrap(), notes_bytes);
+
+        let selective_log = changepacks_dir.join("changepack_log_selective.JSON");
+        fs::write(
+            &selective_log,
+            r#"{"changes":{"packages/a/package.json":"Patch"},"note":"selective"}"#,
+        )
+        .unwrap();
+        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        clear_applied_update_logs(&changepacks_dir, &applied_paths)
+            .await
+            .unwrap();
+        assert!(!selective_log.exists());
+        assert_eq!(fs::read(&notes_file).unwrap(), notes_bytes);
     }
 
     #[tokio::test]

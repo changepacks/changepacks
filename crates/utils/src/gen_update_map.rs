@@ -511,6 +511,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_gen_update_map_reads_only_named_changepack_logs() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        let changepacks_dir = temp_path.join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).await.unwrap();
+
+        let valid_path = temp_path.join("packages/valid");
+        let ignored_path = temp_path.join("packages/notes");
+        let valid_log = ChangePackLog::new(
+            BTreeMap::from([(valid_path.clone(), UpdateType::Minor)]),
+            "valid".to_string(),
+        );
+        let notes = ChangePackLog::new(
+            BTreeMap::from([(ignored_path.clone(), UpdateType::Major)]),
+            "user notes".to_string(),
+        );
+        fs::write(
+            changepacks_dir.join("changepack_log_valid.JSON"),
+            serde_json::to_vec(&valid_log).unwrap(),
+        )
+        .await
+        .unwrap();
+        fs::write(
+            changepacks_dir.join("notes.json"),
+            serde_json::to_vec(&notes).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let update_map = gen_update_map(&changepacks_dir, &Config::default())
+            .await
+            .unwrap();
+
+        assert_eq!(update_map.len(), 1);
+        assert_eq!(update_map[&valid_path].0, UpdateType::Minor);
+        assert!(!update_map.contains_key(&ignored_path));
+    }
+
+    #[tokio::test]
     async fn test_gen_update_map_ignores_json_directory() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
@@ -565,7 +604,7 @@ mod tests {
         let changepack_log = ChangePackLog::new(map, "Update core".to_string());
 
         fs::write(
-            changepacks_dir.join("changepack_log.json"),
+            changepacks_dir.join("changepack_log_update_on.json"),
             serde_json::to_string(&changepack_log).unwrap(),
         )
         .await

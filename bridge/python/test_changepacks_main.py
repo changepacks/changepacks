@@ -1,6 +1,10 @@
 import os
+import sys
+import tempfile
 import unittest
 from unittest import mock
+
+sys.path.insert(0, os.path.dirname(__file__))
 
 from changepacks import __main__ as launcher
 
@@ -96,6 +100,49 @@ class ChangepacksBinCandidatesTests(unittest.TestCase):
             ),
         ):
             self.assertEqual(launcher.changepacks_bin_candidates(), expected)
+
+
+class FindChangepacksBinTests(unittest.TestCase):
+    def test_posix_skips_non_executable_file_before_executable_file(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            non_executable = os.path.join(temp_dir, "non-executable")
+            executable = os.path.join(temp_dir, "executable")
+            open(non_executable, "w").close()
+            open(executable, "w").close()
+
+            with (
+                mock.patch.object(launcher.os, "name", "posix"),
+                mock.patch.object(
+                    launcher,
+                    "changepacks_bin_candidates",
+                    return_value=[non_executable, executable],
+                ),
+                mock.patch.object(
+                    launcher.os,
+                    "access",
+                    side_effect=lambda path, mode: path == executable
+                    and mode == os.X_OK,
+                ),
+            ):
+                self.assertEqual(launcher.find_changepacks_bin(), executable)
+
+    def test_windows_selects_file_without_executable_access_check(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            candidate = os.path.join(temp_dir, "changepacks.exe")
+            open(candidate, "w").close()
+
+            with (
+                mock.patch.object(launcher.os, "name", "nt"),
+                mock.patch.object(
+                    launcher,
+                    "changepacks_bin_candidates",
+                    return_value=[candidate],
+                ),
+                mock.patch.object(launcher.os, "access") as access,
+            ):
+                self.assertEqual(launcher.find_changepacks_bin(), candidate)
+
+            access.assert_not_called()
 
 
 if __name__ == "__main__":

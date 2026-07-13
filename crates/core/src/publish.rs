@@ -2,7 +2,7 @@ use crate::{Config, Language};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::{
-    ffi::OsStr,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
 
@@ -162,9 +162,9 @@ fn build_shell_command(command: &str) -> tokio::process::Command {
 /// #23594), so changepacks replicates it when it runs the publish command
 /// itself. Kept generic here; the list of directories is language-specific
 /// and supplied by the caller.
-fn prepend_path_dirs(extra_path_dirs: &[PathBuf]) -> Option<std::ffi::OsString> {
+fn prepend_path_dirs(extra_path_dirs: &[PathBuf]) -> Result<Option<OsString>> {
     if extra_path_dirs.is_empty() {
-        return None;
+        return Ok(None);
     }
     // Materialize the split-paths side into `Vec<PathBuf>` because
     // `std::env::split_paths` yields owned `PathBuf`s that must live for the
@@ -181,13 +181,14 @@ fn prepend_path_dirs(extra_path_dirs: &[PathBuf]) -> Option<std::ffi::OsString> 
         .as_ref()
         .map(|e| std::env::split_paths(e).collect())
         .unwrap_or_default();
-    std::env::join_paths(
+    let path = std::env::join_paths(
         extra_path_dirs
             .iter()
             .map(PathBuf::as_path)
             .chain(existing_paths.iter().map(PathBuf::as_path)),
     )
-    .ok()
+    .context("failed to construct PATH from injected and existing directories")?;
+    Ok(Some(path))
 }
 
 /// Execute a publish command in the given directory and return captured output.
@@ -210,7 +211,8 @@ pub async fn run_publish_command(command: &str, working_dir: &Path) -> Result<Pu
 /// this is behaviourally identical to [`run_publish_command`].
 ///
 /// # Errors
-/// Returns error if the command fails to spawn (e.g., binary not found).
+/// Returns error if the child `PATH` cannot be constructed or the command
+/// fails to spawn (e.g., binary not found).
 /// A non-zero exit code is reported via `PublishOutput::success = false`, not as an error.
 pub async fn run_publish_command_with_path_dirs(
     command: &str,
@@ -219,7 +221,7 @@ pub async fn run_publish_command_with_path_dirs(
 ) -> Result<PublishOutput> {
     let mut cmd = build_shell_command(command);
     cmd.current_dir(working_dir);
-    if let Some(path) = prepend_path_dirs(extra_path_dirs) {
+    if let Some(path) = prepend_path_dirs(extra_path_dirs)? {
         cmd.env("PATH", path);
     }
     cmd.kill_on_drop(true);
@@ -773,7 +775,7 @@ mod tests {
 
     #[test]
     fn test_prepend_path_dirs_empty_returns_none() {
-        assert!(prepend_path_dirs(&[]).is_none());
+        assert!(prepend_path_dirs(&[]).unwrap().is_none());
     }
 
     #[test]
@@ -786,9 +788,26 @@ mod tests {
         } else {
             "/changepacks-path-test-bin"
         });
-        let joined = prepend_path_dirs(std::slice::from_ref(&dir)).expect("some PATH");
+        let joined = prepend_path_dirs(std::slice::from_ref(&dir))
+            .expect("valid PATH construction")
+            .expect("some PATH");
         let parsed: Vec<PathBuf> = std::env::split_paths(&joined).collect();
         assert_eq!(parsed.first(), Some(&dir));
+    }
+
+    #[test]
+    fn test_prepend_path_dirs_reports_invalid_platform_separator() {
+        #[cfg(target_os = "windows")]
+        let invalid_dir = PathBuf::from("C:\\changepacks\"invalid");
+        #[cfg(not(target_os = "windows"))]
+        let invalid_dir = PathBuf::from("/changepacks:invalid");
+
+        let error = prepend_path_dirs(&[invalid_dir]).unwrap_err();
+
+        assert!(
+            error.to_string().contains("failed to construct PATH"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[test]

@@ -81,12 +81,17 @@ def changepacks_bin_candidates() -> list[str]:
     return paths
 
 
+def is_eligible_changepacks_bin(path: str) -> bool:
+    """Return whether a candidate is a runnable platform binary."""
+    return os.path.isfile(path) and (os.name == "nt" or os.access(path, os.X_OK))
+
+
 def find_changepacks_bin() -> str:
     """Return the changepacks binary path. (ruff code)"""
 
     candidates = changepacks_bin_candidates()
     for candidate_path in candidates:
-        if os.path.isfile(candidate_path):
+        if is_eligible_changepacks_bin(candidate_path):
             return candidate_path
 
     # Search for pip-specific build environments.
@@ -111,7 +116,7 @@ def find_changepacks_bin() -> str:
             for exe_name in changepacks_exe_names():
                 candidate = os.path.join(paths[0], exe_name)
                 candidates.append(candidate)
-                if os.path.isfile(candidate):
+                if is_eligible_changepacks_bin(candidate):
                     return candidate
 
     raise FileNotFoundError(
