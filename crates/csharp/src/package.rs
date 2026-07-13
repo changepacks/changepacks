@@ -58,7 +58,6 @@ impl Package for CSharpPackage {
     /// runs `dotnet pack` + `dotnet nuget push` against ephemeral
     /// `tempfile::TempDir` directories that are cleaned up via RAII — even
     /// on error, panic, or future cancellation.
-    #[cfg(not(tarpaulin_include))]
     async fn dry_run_publish(&self, config: &Config) -> Result<Option<PublishOutput>> {
         resolve_and_run_dry_run(
             self.path(),
@@ -117,6 +116,24 @@ mod tests {
         assert!(package.default_dry_run_publish_command().is_none());
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_publish_forwards_path_override_without_dotnet() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Test.csproj");
+        let relative_path = PathBuf::from("packages/Test.csproj");
+        let package = CSharpPackage::new(None, None, csproj_path, relative_path.clone());
+        let mut config = Config::default();
+        config.publish_dry_run.insert(
+            relative_path.to_string_lossy().into_owned(),
+            "echo package-forwarded".to_string(),
+        );
+
+        let output = package.dry_run_publish(&config).await.unwrap().unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains("package-forwarded"));
     }
 
     #[test]

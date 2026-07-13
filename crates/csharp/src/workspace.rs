@@ -65,7 +65,6 @@ impl Workspace for CSharpWorkspace {
     /// Managed dry-run for C#/.NET workspaces. See [`crate::package::CSharpPackage::dry_run_publish`]
     /// for the full rationale — workspace and package share identical
     /// semantics here.
-    #[cfg(not(tarpaulin_include))]
     async fn dry_run_publish(&self, config: &Config) -> Result<Option<PublishOutput>> {
         resolve_and_run_dry_run(
             self.path(),
@@ -159,6 +158,27 @@ mod tests {
         assert!(!workspace.is_changed());
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_publish_forwards_language_override_without_dotnet() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Test.csproj");
+        let workspace = CSharpWorkspace::new(
+            None,
+            None,
+            csproj_path,
+            PathBuf::from("workspaces/Test.csproj"),
+        );
+        let mut config = Config::default();
+        config
+            .publish_dry_run
+            .insert("csharp".to_string(), "echo workspace-forwarded".to_string());
+
+        let output = workspace.dry_run_publish(&config).await.unwrap().unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains("workspace-forwarded"));
     }
 
     #[test]

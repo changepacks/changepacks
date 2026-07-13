@@ -251,7 +251,6 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// Called once after all `visit()` calls complete.
     /// # Errors
     /// Returns error if finalization fails.
-    #[cfg(not(tarpaulin_include))]
     async fn finalize(&mut self) -> Result<()> {
         Ok(())
     }
@@ -436,19 +435,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_project_finder_finalize() {
+    async fn test_default_project_finder_finalize_is_covered_no_op() {
+        assert!(
+            !include_str!("project_finder.rs")
+                .contains(concat!("#[cfg(not(", "tarpaulin_include))]"))
+        );
+
         let mut finder = MockProjectFinder::new();
         let result = finder.finalize().await;
         assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_project_finder_finalize_with_projects() {
-        let package = MockPackage::same_path("pkg1", "/project/package.json");
-        let mut finder = MockProjectFinder::new().with_package(package);
-        let result = finder.finalize().await;
-        assert!(result.is_ok());
-        assert_eq!(finder.projects().len(), 1);
     }
 
     #[tokio::test]

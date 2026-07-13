@@ -1,4 +1,5 @@
 use changepacks_core::Config;
+use std::path::Path;
 use tokio::fs::{create_dir_all, write};
 
 use anyhow::{Context, Result};
@@ -17,15 +18,15 @@ pub struct InitArgs {
 ///
 /// # Errors
 /// Returns error if creating the .changepacks directory or config file fails.
-///
-/// Excluded from coverage: filesystem I/O orchestration; the argument
-/// parsing is covered separately by `test_init_args_*` tests.
-#[cfg(not(tarpaulin_include))]
 pub async fn handle_init(args: &InitArgs) -> Result<()> {
-    // create .changepacks directory
     let current_dir =
         std::env::current_dir().context("Failed to determine current working directory")?;
-    let changepacks_dir = get_changepacks_dir(&current_dir)?;
+    handle_init_at(args, &current_dir).await
+}
+
+async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
+    // create .changepacks directory
+    let changepacks_dir = get_changepacks_dir(current_dir)?;
     if !args.dry_run {
         create_dir_all(&changepacks_dir).await.with_context(|| {
             format!(
@@ -79,8 +80,10 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use changepacks_utils::test_support::init_git_repo;
     use clap::Parser;
     use rstest::rstest;
+    use tempfile::{TempDir, tempdir};
 
     #[derive(Parser)]
     struct TestCli {
@@ -101,5 +104,70 @@ mod tests {
     fn test_init_args_dry_run_flag(#[case] args: &[&str]) {
         let cli = TestCli::parse_from(args);
         assert!(cli.init.dry_run);
+    }
+
+    fn temporary_repository() -> TempDir {
+        let repository = tempdir().expect("create temporary repository");
+        init_git_repo(repository.path());
+        repository
+    }
+
+    #[tokio::test]
+    async fn test_init_dry_run_does_not_modify_repository() {
+        let repository = temporary_repository();
+        let args = InitArgs { dry_run: true };
+
+        handle_init_at(&args, repository.path())
+            .await
+            .expect("dry-run init succeeds");
+
+        assert!(!repository.path().join(".changepacks").exists());
+    }
+
+    #[tokio::test]
+    async fn test_init_creates_default_config() {
+        let repository = temporary_repository();
+        let args = InitArgs { dry_run: false };
+
+        handle_init_at(&args, repository.path())
+            .await
+            .expect("init succeeds");
+
+        let config = std::fs::read_to_string(repository.path().join(".changepacks/config.json"))
+            .expect("read generated config");
+        assert_eq!(
+            config,
+            concat!(
+                "{\n",
+                "  \"ignore\": [],\n",
+                "  \"baseBranch\": \"main\",\n",
+                "  \"latestPackage\": null,\n",
+                "  \"publish\": {},\n",
+                "  \"publishDryRun\": {},\n",
+                "  \"updateOn\": {}\n",
+                "}"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn test_init_refuses_and_preserves_existing_config() {
+        let repository = temporary_repository();
+        let changepacks_dir = repository.path().join(".changepacks");
+        std::fs::create_dir(&changepacks_dir).expect("create changepacks directory");
+        let config_file = changepacks_dir.join("config.json");
+        let existing_config = "{\n  \"existing\": true\n}\n";
+        std::fs::write(&config_file, existing_config).expect("write existing config");
+        let args = InitArgs { dry_run: false };
+
+        let error = handle_init_at(&args, repository.path())
+            .await
+            .expect_err("existing config must be refused");
+
+        assert_eq!(error.to_string(), "changepacks project already initialized");
+        assert_eq!(
+            std::fs::read_to_string(config_file).expect("read preserved config"),
+            existing_config
+        );
     }
 }

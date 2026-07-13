@@ -29,15 +29,13 @@
 //! child holds a directory open and silently defeats `remove_dir_all`.
 
 use std::{
-    ffi::OsStr,
     fmt::Write as _,
+    future::Future,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
-use changepacks_core::publish::{
-    resolve_dry_run_publish_command, run_publish_command, run_publish_command_os_args,
-};
+use changepacks_core::publish::{resolve_dry_run_publish_command, run_publish_command};
 use changepacks_core::{Config, Language, PublishOutput, has_extension_ignore_ascii_case};
 use tempfile::TempDir;
 use tokio::fs::read_dir;
@@ -58,13 +56,33 @@ use tokio::fs::read_dir;
 /// # Errors
 /// Returns error if the parent directory is missing, or if either the user
 /// override command or the managed dry-run fails to spawn / enumerate.
-#[cfg(not(tarpaulin_include))]
 pub(crate) async fn resolve_and_run_dry_run(
     path: &Path,
     relative_path: &Path,
     config: &Config,
     missing_dir_msg: &'static str,
 ) -> Result<Option<PublishOutput>> {
+    resolve_and_run_dry_run_with(
+        path,
+        relative_path,
+        config,
+        missing_dir_msg,
+        |dir| async move { run_managed_dry_run(&dir).await },
+    )
+    .await
+}
+
+async fn resolve_and_run_dry_run_with<F, Fut>(
+    path: &Path,
+    relative_path: &Path,
+    config: &Config,
+    missing_dir_msg: &'static str,
+    managed_runner: F,
+) -> Result<Option<PublishOutput>>
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: Future<Output = Result<PublishOutput>>,
+{
     let dir = path.parent().context(missing_dir_msg)?;
 
     if let Some(user_cmd) =
@@ -73,7 +91,7 @@ pub(crate) async fn resolve_and_run_dry_run(
         return Ok(Some(run_publish_command(&user_cmd, dir).await?));
     }
 
-    Ok(Some(run_managed_dry_run(dir).await?))
+    Ok(Some(managed_runner(dir.to_path_buf()).await?))
 }
 
 /// Run a managed dry-run for a C#/.NET package.
@@ -96,23 +114,23 @@ pub(crate) async fn resolve_and_run_dry_run(
 /// fails. A non-zero exit from `dotnet pack` or `dotnet nuget push` is
 /// reported via `PublishOutput::success = false`, not as `Err`.
 ///
-/// Excluded from coverage: this orchestration requires a real .NET SDK to
-/// exercise meaningfully; the building blocks (`collect_nupkgs`,
-/// `prefixed`, `run_publish_command_os_args`) are covered by their own tests.
-#[cfg(not(tarpaulin_include))]
+/// The command-resolution and orchestration paths are covered without a .NET
+/// SDK. Only the two statements that spawn and await `dotnet` are excluded
+/// from coverage; their command runner is covered in `changepacks-core`.
 pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
     let pack_dir =
         TempDir::new().context("Failed to create temporary directory for dotnet pack output")?;
     let feed_dir =
         TempDir::new().context("Failed to create temporary directory for local NuGet feed")?;
 
-    let pack_output = run_publish_command_os_args(
+    #[cfg(not(tarpaulin_include))]
+    let pack_output = changepacks_core::publish::run_publish_command_os_args(
         "dotnet",
         [
-            OsStr::new("pack"),
-            OsStr::new("-c"),
-            OsStr::new("Release"),
-            OsStr::new("-o"),
+            std::ffi::OsStr::new("pack"),
+            std::ffi::OsStr::new("-c"),
+            std::ffi::OsStr::new("Release"),
+            std::ffi::OsStr::new("-o"),
             pack_dir.path().as_os_str(),
         ],
         working_dir,
@@ -120,6 +138,8 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
     )
     .await
     .context("Failed to spawn `dotnet pack`")?;
+    #[cfg(tarpaulin_include)]
+    let pack_output = dotnet_unavailable_during_coverage()?;
 
     // If pack failed, surface its output verbatim — there's nothing to push.
     // TempDirs drop on return → cleanup runs.
@@ -151,21 +171,24 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
     }
 
     for nupkg in &nupkgs {
-        let push_output = run_publish_command_os_args(
+        #[cfg(not(tarpaulin_include))]
+        let push_output = changepacks_core::publish::run_publish_command_os_args(
             "dotnet",
             [
-                OsStr::new("nuget"),
-                OsStr::new("push"),
+                std::ffi::OsStr::new("nuget"),
+                std::ffi::OsStr::new("push"),
                 nupkg.as_os_str(),
-                OsStr::new("-s"),
+                std::ffi::OsStr::new("-s"),
                 feed_dir.path().as_os_str(),
-                OsStr::new("--skip-duplicate"),
+                std::ffi::OsStr::new("--skip-duplicate"),
             ],
             working_dir,
             true,
         )
         .await
         .with_context(|| format!("Failed to spawn `dotnet nuget push {}`", nupkg.display()))?;
+        #[cfg(tarpaulin_include)]
+        let push_output = dotnet_unavailable_during_coverage()?;
 
         let label = format!("dotnet nuget push {}", nupkg.display());
         let prefixed_output = prefixed(&label, push_output);
@@ -181,6 +204,13 @@ pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
     note_tempdir_close_error(feed_dir, "feed", &mut combined.stderr);
 
     Ok(combined)
+}
+
+#[cfg(tarpaulin_include)]
+fn dotnet_unavailable_during_coverage() -> Result<PublishOutput> {
+    Err(anyhow::anyhow!(
+        "the dotnet process is not spawned during coverage"
+    ))
 }
 
 /// Asynchronously enumerate `*.nupkg` files in `dir` (non-recursive).
@@ -244,6 +274,111 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    fn harmless_command(marker: &str) -> String {
+        format!("echo {marker}")
+    }
+
+    async fn run_harmless_managed(dir: PathBuf) -> Result<PublishOutput> {
+        run_publish_command(&harmless_command("managed-fallback"), &dir).await
+    }
+
+    #[tokio::test]
+    async fn test_resolve_dry_run_prefers_path_override() {
+        let dir = TempDir::new().unwrap();
+        let manifest = dir.path().join("Project.csproj");
+        let relative = Path::new("packages/Project.csproj");
+        let mut config = Config::default();
+        config
+            .publish_dry_run
+            .insert("csharp".to_string(), harmless_command("language-override"));
+        config.publish_dry_run.insert(
+            relative.to_string_lossy().into_owned(),
+            harmless_command("path-override"),
+        );
+
+        let output = resolve_and_run_dry_run_with(
+            &manifest,
+            relative,
+            &config,
+            "missing parent",
+            run_harmless_managed,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains("path-override"));
+        assert!(!output.stdout.contains("language-override"));
+        assert!(!output.stdout.contains("managed-fallback"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_dry_run_falls_back_to_language_override() {
+        let dir = TempDir::new().unwrap();
+        let manifest = dir.path().join("Project.csproj");
+        let mut config = Config::default();
+        config
+            .publish_dry_run
+            .insert("csharp".to_string(), harmless_command("language-override"));
+
+        let output = resolve_and_run_dry_run_with(
+            &manifest,
+            Path::new("packages/Project.csproj"),
+            &config,
+            "missing parent",
+            run_harmless_managed,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains("language-override"));
+        assert!(!output.stdout.contains("managed-fallback"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_dry_run_uses_injected_managed_fallback() {
+        let dir = TempDir::new().unwrap();
+        let manifest = dir.path().join("Project.csproj");
+
+        let output = resolve_and_run_dry_run_with(
+            &manifest,
+            Path::new("Project.csproj"),
+            &Config::default(),
+            "missing parent",
+            run_harmless_managed,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains("managed-fallback"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_dry_run_reports_missing_parent_before_running() {
+        let manifest = if cfg!(target_os = "windows") {
+            Path::new(r"C:\")
+        } else {
+            Path::new("/")
+        };
+
+        let error = resolve_and_run_dry_run_with(
+            manifest,
+            Path::new("Project.csproj"),
+            &Config::default(),
+            "test missing parent",
+            run_harmless_managed,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "test missing parent");
+    }
 
     #[test]
     fn test_prefixed_adds_header_to_stdout_and_stderr() {

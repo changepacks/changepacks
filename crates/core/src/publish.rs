@@ -236,7 +236,6 @@ pub async fn run_publish_command_with_path_dirs(
 /// # Errors
 /// Returns error if the command fails to spawn or `manifest_path` has no
 /// parent directory.
-#[cfg(not(tarpaulin_include))]
 pub async fn run_publish_flow(
     command: &str,
     manifest_path: &Path,
@@ -257,7 +256,6 @@ pub async fn run_publish_flow(
 /// # Errors
 /// Returns error if the command fails to spawn or `manifest_path` has no
 /// parent directory.
-#[cfg(not(tarpaulin_include))]
 pub async fn run_dry_run_publish_flow(
     command: Option<&str>,
     manifest_path: &Path,
@@ -571,6 +569,125 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
         assert!(output.success, "stderr: {}", output.stderr);
         assert!(output.stdout.contains("hook-ran"));
+    }
+
+    #[tokio::test]
+    async fn test_run_dry_run_publish_flow_without_command_returns_none() {
+        let output = run_dry_run_publish_flow(
+            None,
+            Path::new("manifest-without-a-parent"),
+            &[],
+            PACKAGE_DIR_NOT_FOUND,
+        )
+        .await
+        .unwrap();
+
+        assert!(output.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_run_publish_flow_reports_missing_manifest_parent() {
+        let manifest_path = if cfg!(target_os = "windows") {
+            Path::new(r"C:\")
+        } else {
+            Path::new("/")
+        };
+
+        let error = run_publish_flow(
+            "echo unreachable",
+            manifest_path,
+            &[],
+            WORKSPACE_DIR_NOT_FOUND,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), WORKSPACE_DIR_NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_run_dry_run_publish_flow_forwards_manifest_parent_and_extra_path() {
+        let base =
+            std::env::temp_dir().join(format!("changepacks_dry_flow_{}", std::process::id()));
+        let package_dir = base.join("package");
+        let bin_dir = base.join("bin");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&package_dir).unwrap();
+        std::fs::create_dir_all(&bin_dir).unwrap();
+
+        let hook = bin_dir.join(if cfg!(target_os = "windows") {
+            "cpflowhook.cmd"
+        } else {
+            "cpflowhook"
+        });
+        if cfg!(target_os = "windows") {
+            std::fs::write(&hook, "@echo %CD%\r\n").unwrap();
+        } else {
+            std::fs::write(&hook, "#!/bin/sh\npwd\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+
+        let output = run_dry_run_publish_flow(
+            Some("cpflowhook"),
+            &package_dir.join("package.json"),
+            std::slice::from_ref(&bin_dir),
+            PACKAGE_DIR_NOT_FOUND,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert_eq!(
+            normalize_path_separators(output.stdout.trim()),
+            normalize_path_separators(package_dir.to_string_lossy().as_ref())
+        );
+    }
+
+    #[tokio::test]
+    async fn test_run_publish_flow_returns_successful_output() {
+        let command = if cfg!(target_os = "windows") {
+            "echo flow-success"
+        } else {
+            "printf flow-success"
+        };
+
+        let output = run_publish_flow(
+            command,
+            &std::env::temp_dir().join("package.json"),
+            &[],
+            PACKAGE_DIR_NOT_FOUND,
+        )
+        .await
+        .unwrap();
+
+        assert!(output.success);
+        assert!(output.stdout.contains("flow-success"));
+    }
+
+    #[tokio::test]
+    async fn test_run_publish_flow_returns_non_zero_exit_status() {
+        let command = if cfg!(target_os = "windows") {
+            "exit /b 7"
+        } else {
+            "exit 7"
+        };
+
+        let output = run_publish_flow(
+            command,
+            &std::env::temp_dir().join("package.json"),
+            &[],
+            PACKAGE_DIR_NOT_FOUND,
+        )
+        .await
+        .unwrap();
+
+        assert!(!output.success);
     }
 
     #[test]

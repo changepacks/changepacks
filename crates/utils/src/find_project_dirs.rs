@@ -54,12 +54,6 @@ fn project_files_can_visit_path(project_files: &[&str], path: &Path, file_name: 
 /// # Errors
 /// Returns error if git operations fail, gitignore parsing fails, or project visiting fails.
 ///
-/// Excluded from coverage: orchestrates real `gix` operations (index walk,
-/// finalize, remote-origin name lookup); the inner helpers
-/// (`get_relative_path`, `gitignore matching`, finder visit) are covered by
-/// their own unit tests. End-to-end exercise happens via the cli integration
-/// tests.
-#[cfg(not(tarpaulin_include))]
 pub async fn discover_project_dirs(
     repo: &ThreadSafeRepository,
     project_finders: &mut [Box<dyn ProjectFinder>],
@@ -217,12 +211,6 @@ pub async fn discover_project_dirs(
 /// # Errors
 /// Returns error if git operations fail, gitignore parsing fails, or project visiting fails.
 ///
-/// Excluded from coverage: orchestrates real `gix` operations (index walk,
-/// status, diff against base branch, ref resolution); the inner helpers
-/// (`get_relative_path`, `gitignore matching`, finder visit/check_changed)
-/// are covered by their own unit tests. End-to-end exercise happens via
-/// the cli integration tests.
-#[cfg(not(tarpaulin_include))]
 pub async fn find_project_dirs(
     repo: &ThreadSafeRepository,
     project_finders: &mut [Box<dyn ProjectFinder>],
@@ -348,8 +336,211 @@ mod tests {
     use super::*;
     use crate::test_support::{discover_repo, git_add_and_commit, init_git_repo, run_git};
     use changepacks_node::finder::NodeProjectFinder;
+    use std::{
+        future::Future,
+        pin::Pin,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
     use tempfile::TempDir;
     use tokio::fs;
+
+    #[derive(Debug)]
+    struct RecordingNodeFinder {
+        inner: NodeProjectFinder,
+        visits: Arc<AtomicUsize>,
+        finalizations: Arc<AtomicUsize>,
+        changed_batches: Arc<Mutex<Vec<Vec<PathBuf>>>>,
+    }
+
+    impl RecordingNodeFinder {
+        fn new(
+            visits: Arc<AtomicUsize>,
+            finalizations: Arc<AtomicUsize>,
+            changed_batches: Arc<Mutex<Vec<Vec<PathBuf>>>>,
+        ) -> Self {
+            Self {
+                inner: NodeProjectFinder::new(),
+                visits,
+                finalizations,
+                changed_batches,
+            }
+        }
+    }
+
+    impl ProjectFinder for RecordingNodeFinder {
+        fn projects(&self) -> Vec<&Project> {
+            self.inner.projects()
+        }
+
+        fn projects_mut(&mut self) -> Vec<&mut Project> {
+            self.inner.projects_mut()
+        }
+
+        fn project_count(&self) -> usize {
+            self.inner.project_count()
+        }
+
+        fn project_files(&self) -> &[&str] {
+            self.inner.project_files()
+        }
+
+        fn visit<'life0, 'life1, 'life2, 'async_trait>(
+            &'life0 mut self,
+            path: &'life1 Path,
+            relative_path: &'life2 Path,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            'life2: 'async_trait,
+            Self: 'async_trait,
+        {
+            self.visits.fetch_add(1, Ordering::SeqCst);
+            Box::pin(self.inner.visit(path, relative_path))
+        }
+
+        fn check_changed_many(&mut self, paths: &[PathBuf]) -> Result<()> {
+            self.changed_batches.lock().unwrap().push(paths.to_vec());
+            self.inner.check_changed_many(paths)
+        }
+
+        fn finalize<'life0, 'async_trait>(
+            &'life0 mut self,
+        ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            self.finalizations.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn discovery_entry_points_are_included_in_coverage() {
+        let source = include_str!("find_project_dirs.rs");
+        let discover_marker = "#[cfg(not(tarpaulin_include))]\npub async fn discover_project_dirs";
+        let find_marker = "#[cfg(not(tarpaulin_include))]\npub async fn find_project_dirs";
+
+        assert!(!source.contains(discover_marker));
+        assert!(!source.contains(find_marker));
+    }
+
+    #[tokio::test]
+    async fn discover_dispatches_negated_manifest_and_invokes_finalizer() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        init_git_repo(temp_path);
+        fs::create_dir_all(temp_path.join("kept")).await.unwrap();
+        fs::create_dir_all(temp_path.join("ignored")).await.unwrap();
+        fs::write(
+            temp_path.join("kept/package.json"),
+            r#"{"name":"kept","version":"1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+        fs::write(
+            temp_path.join("ignored/package.json"),
+            r#"{"name":"ignored","version":"1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+        fs::write(temp_path.join("kept/index.js"), "export {};")
+            .await
+            .unwrap();
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let visits = Arc::new(AtomicUsize::new(0));
+        let finalizations = Arc::new(AtomicUsize::new(0));
+        let changed_batches = Arc::new(Mutex::new(Vec::new()));
+        let finder = RecordingNodeFinder::new(
+            Arc::clone(&visits),
+            Arc::clone(&finalizations),
+            changed_batches,
+        );
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(finder)];
+        let config = Config {
+            ignore: vec!["**/*".to_string(), "!kept/package.json".to_string()],
+            ..Config::default()
+        };
+
+        discover_project_dirs(&discover_repo(temp_path), &mut finders, &config)
+            .await
+            .unwrap();
+
+        assert_eq!(visits.load(Ordering::SeqCst), 1);
+        assert_eq!(finalizations.load(Ordering::SeqCst), 1);
+        let projects = finders[0].projects();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name(), Some("kept"));
+    }
+
+    #[tokio::test]
+    async fn discover_uses_directory_name_when_origin_is_absent() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        init_git_repo(temp_path);
+        fs::write(temp_path.join("package.json"), r#"{"version":"1.0.0"}"#)
+            .await
+            .unwrap();
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let expected = temp_path.file_name().unwrap().to_str().unwrap();
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+        discover_project_dirs(&discover_repo(temp_path), &mut finders, &Config::default())
+            .await
+            .unwrap();
+
+        assert_eq!(finders[0].projects()[0].name(), Some(expected));
+    }
+
+    #[tokio::test]
+    async fn find_deduplicates_base_diff_and_index_worktree_change() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        init_git_repo(temp_path);
+        fs::create_dir_all(temp_path.join("packages/core"))
+            .await
+            .unwrap();
+        fs::write(
+            temp_path.join("packages/core/package.json"),
+            r#"{"name":"core","version":"1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+        let source = temp_path.join("packages/core/index.js");
+        fs::write(&source, "export const value = 0;").await.unwrap();
+        git_add_and_commit(temp_path, "Initial commit");
+        run_git(temp_path, &["checkout", "-b", "feature"]);
+        fs::write(&source, "export const value = 1;").await.unwrap();
+        git_add_and_commit(temp_path, "Feature commit");
+        fs::write(&source, "export const value = 2;").await.unwrap();
+        run_git(temp_path, &["add", "packages/core/index.js"]);
+        fs::write(&source, "export const value = 3;").await.unwrap();
+
+        let visits = Arc::new(AtomicUsize::new(0));
+        let finalizations = Arc::new(AtomicUsize::new(0));
+        let changed_batches = Arc::new(Mutex::new(Vec::new()));
+        let finder = RecordingNodeFinder::new(visits, finalizations, Arc::clone(&changed_batches));
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(finder)];
+
+        find_project_dirs(
+            &discover_repo(temp_path),
+            &mut finders,
+            &Config::default(),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let batches = changed_batches.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].iter().filter(|path| *path == &source).count(), 1);
+        assert!(finders[0].projects()[0].is_changed());
+    }
 
     #[test]
     fn test_finder_can_visit_path_matches_manifest_name() {
