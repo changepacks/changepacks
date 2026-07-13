@@ -438,13 +438,6 @@ fn version_display_with_update(
 }
 
 /// Format a project line for display
-///
-/// Excluded from coverage: tarpaulin mis-attributes the `display_update`
-/// branch of the `if let Some(update_entry) = update_map.get(...)`
-/// expression under normal rustfmt despite both branches being exercised
-/// via the check command integration flow. The helpers it composes
-/// (`display_update`, `get_relative_path`) are covered by their own tests.
-#[cfg(not(tarpaulin_include))]
 fn format_project_line(
     project: &Project,
     repo_root_path: &std::path::Path,

@@ -183,12 +183,6 @@ fn apply_update_on_rules(
 
 /// Apply reverse dependency updates: if package A depends on package B (via a local workspace dependency),
 /// and B is being updated, then A should also be updated as PATCH.
-///
-/// Excluded from coverage: traverses the full project graph using
-/// `project.path().strip_prefix(repo_root_path)` against a live workspace
-/// tree; the underlying scalar helpers are covered by their own tests
-/// and the end-to-end behavior is verified by cli integration tests.
-#[cfg(not(tarpaulin_include))]
 pub fn apply_reverse_dependencies<S: BuildHasher>(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
     projects: &[&Project],
@@ -594,6 +588,19 @@ mod tests {
         );
 
         temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_empty_update_map_is_noop() {
+        let core = create_project("core", vec![]);
+        let cli = create_project("cli", vec!["core"]);
+        let projects: Vec<&Project> = vec![&core, &cli];
+        let mut update_map: HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)> =
+            HashMap::new();
+
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test"));
+
+        assert!(update_map.is_empty());
     }
 
     #[test]

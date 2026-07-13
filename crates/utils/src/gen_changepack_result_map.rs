@@ -13,13 +13,6 @@ use crate::{get_relative_path, next_version_or_default};
 ///
 /// # Errors
 /// Returns error if relative path calculation or version calculation fails.
-///
-/// Excluded from coverage: tarpaulin's llvm engine consistently
-/// mis-attributes the per-iteration variable bindings and `match` arms
-/// inside this loop despite both `Some(...)` and `None` branches being
-/// exercised by `test_gen_changepack_result_map_*`. The function is
-/// thoroughly covered by its tests; the gap is a reporting artifact.
-#[cfg(not(tarpaulin_include))]
 pub fn gen_changepack_result_map<S: BuildHasher>(
     projects: &[&Project],
     repo_root_path: &Path,

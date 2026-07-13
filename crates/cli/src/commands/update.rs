@@ -340,7 +340,6 @@ macro_rules! collect_update_projects {
     }};
 }
 
-#[cfg(not(tarpaulin_include))]
 fn collect_update_project_muts<'a>(
     project_finders: &'a mut [Box<dyn ProjectFinder>],
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
@@ -348,8 +347,6 @@ fn collect_update_project_muts<'a>(
 ) -> Result<Vec<UpdateProjectMut<'a>>> {
     let mut update_projects =
         collect_update_projects!(project_finders, update_map, repo_root_path, projects_mut);
-    // Sorted order is user-visible: it drives the preview loop in
-    // `preview_and_confirm`.
     update_projects.sort();
     Ok(update_projects)
 }
@@ -385,14 +382,11 @@ fn validate_update_project_paths(
     )
 }
 
-#[cfg(not(tarpaulin_include))]
 fn collect_update_project_refs<'a>(
     project_finders: &'a [Box<dyn ProjectFinder>],
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
 ) -> Result<Vec<UpdateProjectRef<'a>>> {
-    // Unsorted: sole consumer is `packages_of` → `apply_workspace_dependency_updates`,
-    // which looks up packages by name; order is irrelevant.
     Ok(collect_update_projects!(
         project_finders,
         update_map,
@@ -544,7 +538,7 @@ fn merge_workspace_inherited_updates(
 #[cfg(test)]
 mod tests {
     use super::{
-        UpdateArgs, collect_projects, collect_update_project_muts,
+        UpdateArgs, collect_projects, collect_update_project_muts, collect_update_project_refs,
         merge_workspace_inherited_updates, validate_update_project_paths,
     };
     use anyhow::Result;
@@ -705,6 +699,59 @@ mod tests {
             .iter()
             .map(|(path, (update_type, logs))| (path.clone(), (*update_type, logs.len())))
             .collect()
+    }
+
+    #[test]
+    fn test_collect_update_project_refs_matches_manifest_paths_in_finder_order() -> Result<()> {
+        let repo_root = Path::new("/repo");
+        let project_finders: Vec<Box<dyn ProjectFinder>> = vec![
+            Box::new(MockFinder::new(vec![
+                mock_package_project(
+                    "/repo/crates/z/Cargo.toml",
+                    "crates/z/Cargo.toml",
+                    false,
+                    None,
+                ),
+                mock_package_project(
+                    "/repo/crates/ignored/Cargo.toml",
+                    "crates/ignored/Cargo.toml",
+                    false,
+                    None,
+                ),
+            ])),
+            Box::new(MockFinder::new(vec![mock_package_project(
+                "/repo/crates/a/Cargo.toml",
+                "crates/a/Cargo.toml",
+                false,
+                None,
+            )])),
+        ];
+        let update_map = HashMap::from([
+            (
+                PathBuf::from("crates/a/Cargo.toml"),
+                (UpdateType::Minor, vec![mock_log("a update")]),
+            ),
+            (
+                PathBuf::from("crates/z/Cargo.toml"),
+                (UpdateType::Major, vec![mock_log("z update")]),
+            ),
+        ]);
+
+        let update_projects =
+            collect_update_project_refs(&project_finders, &update_map, repo_root)?;
+        let actual = update_projects
+            .iter()
+            .map(|(project, update_type)| (project.relative_path(), *update_type))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            actual,
+            vec![
+                (Path::new("crates/z/Cargo.toml"), UpdateType::Major),
+                (Path::new("crates/a/Cargo.toml"), UpdateType::Minor),
+            ]
+        );
+        Ok(())
     }
 
     #[test]

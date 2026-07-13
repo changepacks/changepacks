@@ -195,7 +195,6 @@ pub(crate) async fn run_gradle_publish(
     })
 }
 
-#[cfg(not(tarpaulin_include))]
 fn gradle_subproject_path(relative: &Path) -> Result<String> {
     // Preallocate against the source path's byte length: each `:` separator we
     // push is 1 byte and maps 1:1 to a path-separator byte already counted in
@@ -1122,10 +1121,23 @@ version = "1.0.0"
     }
 
     #[test]
-    fn test_gradle_subproject_path_nested_unicode() {
-        let relative = Path::new("libs").join("core");
+    fn test_gradle_subproject_path_root() {
+        assert_eq!(gradle_subproject_path(Path::new("")).unwrap(), "");
+    }
 
-        assert_eq!(gradle_subproject_path(&relative).unwrap(), "libs:core");
+    #[test]
+    fn test_gradle_subproject_path_single_component() {
+        assert_eq!(gradle_subproject_path(Path::new("app")).unwrap(), "app");
+    }
+
+    #[test]
+    fn test_gradle_subproject_path_nested_unicode() {
+        let relative = Path::new("라이브러리").join("핵심");
+
+        assert_eq!(
+            gradle_subproject_path(&relative).unwrap(),
+            "라이브러리:핵심"
+        );
     }
 
     #[test]

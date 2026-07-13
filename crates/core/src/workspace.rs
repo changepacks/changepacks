@@ -26,11 +26,6 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
 
     /// # Errors
     /// Returns error if the parent path cannot be determined.
-    // Default implementation for check_changed
-    ///
-    /// Excluded from coverage: see `Package::check_changed` for the same
-    /// tarpaulin attribution caveat on the multi-line `&&` condition.
-    #[cfg(not(tarpaulin_include))]
     fn check_changed(&mut self, path: &Path) -> Result<()> {
         if self.is_changed() {
             return Ok(());
@@ -143,7 +138,6 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     /// # Errors
     ///
     /// Returns an error only if a language override's dependency rewrite fails.
-    #[cfg(not(tarpaulin_include))]
     async fn update_workspace_dependencies(&self, _packages: &[&dyn Package]) -> Result<()> {
         Ok(())
     }
