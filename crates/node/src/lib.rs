@@ -65,17 +65,31 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
     } else {
         obj.insert("version".to_string(), new_value);
     }
-    let ind = indent_str.as_bytes();
-    let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);
-    let writer = Vec::with_capacity(package_json_raw.len());
-    let mut ser = serde_json::Serializer::with_formatter(writer, formatter);
-    package_json
-        .serialize(&mut ser)
-        .with_context(|| format!("Failed to serialize package.json {}", path.display()))?;
+    let compact = !package_json_raw
+        .trim_end_matches(['\r', '\n'])
+        .bytes()
+        .any(|byte| matches!(byte, b'\r' | b'\n'));
+    let serialized = if compact {
+        let writer = Vec::with_capacity(package_json_raw.len());
+        let mut ser =
+            serde_json::Serializer::with_formatter(writer, serde_json::ser::CompactFormatter);
+        package_json
+            .serialize(&mut ser)
+            .with_context(|| format!("Failed to serialize package.json {}", path.display()))?;
+        ser.into_inner()
+    } else {
+        let formatter = serde_json::ser::PrettyFormatter::with_indent(indent_str.as_bytes());
+        let writer = Vec::with_capacity(package_json_raw.len());
+        let mut ser = serde_json::Serializer::with_formatter(writer, formatter);
+        package_json
+            .serialize(&mut ser)
+            .with_context(|| format!("Failed to serialize package.json {}", path.display()))?;
+        ser.into_inner()
+    };
     write(
         path,
         finalize_content(
-            String::from_utf8(ser.into_inner())
+            String::from_utf8(serialized)
                 .with_context(|| format!("Failed to serialize package.json {}", path.display()))?,
             &package_json_raw,
         ),
@@ -743,6 +757,43 @@ mod tests {
             chain.contains("does not have a top-level JSON object"),
             "error chain should describe the problem, got: {chain}"
         );
+    }
+
+    #[rstest]
+    #[case(
+        r#"{"name":"example","version":"1.0.0","dependencies":{"alpha":"^1.0.0"}}"#,
+        r#"{"name":"example","version":"2.0.0","dependencies":{"alpha":"^1.0.0"}}"#
+    )]
+    #[case(
+        "{\"name\":\"example\",\"version\":\"1.0.0\",\"dependencies\":{\"alpha\":\"^1.0.0\"}}\n",
+        "{\"name\":\"example\",\"version\":\"2.0.0\",\"dependencies\":{\"alpha\":\"^1.0.0\"}}\n"
+    )]
+    #[case(
+        "{\n  \"name\": \"example\",\n  \"version\": \"1.0.0\",\n  \"dependencies\": {\n    \"alpha\": \"^1.0.0\"\n  }\n}\n",
+        "{\n  \"name\": \"example\",\n  \"version\": \"2.0.0\",\n  \"dependencies\": {\n    \"alpha\": \"^1.0.0\"\n  }\n}\n"
+    )]
+    #[case(
+        "{\n    \"name\": \"example\",\n    \"version\": \"1.0.0\",\n    \"dependencies\": {\n        \"alpha\": \"^1.0.0\"\n    }\n}",
+        "{\n    \"name\": \"example\",\n    \"version\": \"2.0.0\",\n    \"dependencies\": {\n        \"alpha\": \"^1.0.0\"\n    }\n}"
+    )]
+    #[case(
+        "{\n\t\"name\": \"example\",\n\t\"version\": \"1.0.0\",\n\t\"dependencies\": {\n\t\t\"alpha\": \"^1.0.0\"\n\t}\n}\n",
+        "{\n\t\"name\": \"example\",\n\t\"version\": \"2.0.0\",\n\t\"dependencies\": {\n\t\t\"alpha\": \"^1.0.0\"\n\t}\n}\n"
+    )]
+    #[tokio::test]
+    async fn test_write_package_json_version_preserves_exact_format(
+        #[case] input: &str,
+        #[case] expected: &str,
+    ) {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(&package_json, input).unwrap();
+
+        write_package_json_version(&package_json, "2.0.0")
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(&package_json).unwrap(), expected.as_bytes());
     }
 
     // Async parity tests: mirror the sync `test_detect_package_manager` rstest

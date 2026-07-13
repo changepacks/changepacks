@@ -7,6 +7,7 @@ use changepacks_utils::{
 };
 use clap::Args;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::{
@@ -55,13 +56,6 @@ pub struct CheckArgs {
 /// # Errors
 /// Returns error if command context creation or project checking fails.
 ///
-/// Excluded from coverage: orchestrates `CommandContext::new` (git I/O)
-/// and a deeply-nested multi-line `format!(...).replace(...)` expression
-/// where tarpaulin mis-attributes one branch of the inner `if let
-/// Some(update_type) = update_map.get(...)`. The underlying helpers
-/// (`display_update`, `gen_update_map`, `apply_reverse_dependencies`,
-/// `format_project_line`) are covered by their own tests.
-#[cfg(not(tarpaulin_include))]
 pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
 
@@ -81,7 +75,13 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
 
     if args.tree {
         // Tree mode: show dependencies as a tree
-        display_tree(&projects, &ctx.repo_root_path, &update_map)?;
+        let stdout = std::io::stdout();
+        display_tree(
+            &projects,
+            &ctx.repo_root_path,
+            &update_map,
+            &mut stdout.lock(),
+        )?;
     } else {
         match args.format {
             FormatOptions::Stdout => {
@@ -144,15 +144,11 @@ fn sorted_monorepo_deps<'a>(
 
 /// Display projects as a dependency tree
 ///
-/// Excluded from coverage: pure CLI display orchestration that emits
-/// formatted output via `println!`; the underlying helpers
-/// (`display_tree_node`, `format_project_line`) carry the testable logic
-/// and are covered separately.
-#[cfg(not(tarpaulin_include))]
 fn display_tree(
     projects: &[&Project],
     repo_root_path: &std::path::Path,
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    writer: &mut impl Write,
 ) -> Result<()> {
     // Create a map from project name (fallback "noname") to project.
     // Project names — not paths — key this map because both the graph and the
@@ -288,7 +284,7 @@ fn display_tree(
         // type (`HashMap<&str, _>::get` resolves via `&str: Borrow<str>`).
         if let Some(project) = name_to_project.get(*root) {
             let is_last = idx == sorted_roots.len() - 1;
-            display_tree_node(project, &mut ctx, "", is_last, &mut visited)?;
+            display_tree_node(project, &mut ctx, "", is_last, &mut visited, writer)?;
         }
     }
 
@@ -302,7 +298,7 @@ fn display_tree(
     // dropped twin as already shown and never print it.
     for project in projects {
         if !ctx.line_cache.contains_key(project.path()) {
-            println!("{}", cached_project_line(project, &mut ctx)?);
+            writeln!(writer, "{}", cached_project_line(project, &mut ctx)?)?;
         }
     }
 
@@ -348,6 +344,7 @@ fn display_tree_node<'a>(
     prefix: &str,
     is_last: bool,
     visited: &mut HashSet<&'a str>,
+    writer: &mut impl Write,
 ) -> Result<()> {
     // Borrow the name out of the project rather than allocating a fresh
     // `String` per visit — the `Project` outlives every downstream
@@ -363,12 +360,13 @@ fn display_tree_node<'a>(
     // Only print the project line if this is the first time visiting it
     if is_first_visit {
         let connector = tree_connector(is_last);
-        println!(
+        writeln!(
+            writer,
             "{}{}{}",
             prefix,
             connector,
             cached_project_line(project, ctx)?
-        );
+        )?;
     }
 
     // Always display dependencies, even if the node was already visited
@@ -395,14 +393,15 @@ fn display_tree_node<'a>(
                 if visited.contains(*dep_name) {
                     // If already visited, just print it without recursion to avoid loops
                     let dep_connector = tree_connector(is_last_dep);
-                    println!(
+                    writeln!(
+                        writer,
                         "{}{}{}",
                         new_prefix,
                         dep_connector,
                         cached_project_line(dep_project, ctx)?
-                    );
+                    )?;
                 } else {
-                    display_tree_node(dep_project, ctx, &new_prefix, is_last_dep, visited)?;
+                    display_tree_node(dep_project, ctx, &new_prefix, is_last_dep, visited, writer)?;
                 }
             }
         }
@@ -567,6 +566,101 @@ mod tests {
     use changepacks_core::Language;
 
     use changepacks_core::test_support::{MockPackage, MockWorkspace};
+
+    fn package(name: &'static str, dependencies: &[&str]) -> Project {
+        let relative_path = format!("packages/{name}/package.json");
+        let path = format!("/repo/{relative_path}");
+        let mut package = MockPackage::with_all(
+            Some(name),
+            Some("1.0.0"),
+            &path,
+            &relative_path,
+            Language::Node,
+        );
+        package
+            .dependencies
+            .extend(dependencies.iter().map(ToString::to_string));
+        Project::Package(Box::new(package))
+    }
+
+    fn render_tree(projects: &[&Project]) -> String {
+        let mut output = Vec::new();
+        display_tree(projects, Path::new("/repo"), &HashMap::new(), &mut output).unwrap();
+        String::from_utf8(output).unwrap()
+    }
+
+    #[test]
+    fn test_display_tree_renders_sorted_roots_with_both_connectors() {
+        let alpha = package("alpha", &[]);
+        let beta = package("beta", &[]);
+
+        assert_eq!(
+            render_tree(&[&beta, &alpha]),
+            concat!(
+                "├── [Node.js] alpha (v1.0.0) - packages/alpha/package.json\n",
+                "└── [Node.js] beta (v1.0.0) - packages/beta/package.json\n",
+            )
+        );
+    }
+
+    #[test]
+    fn test_display_tree_renders_shared_dependencies_and_visited_branches() {
+        let root_a = package("root-a", &["shared"]);
+        let root_b = package("root-b", &["shared", "z-last"]);
+        let shared = package("shared", &[]);
+        let z_last = package("z-last", &[]);
+
+        assert_eq!(
+            render_tree(&[&z_last, &shared, &root_b, &root_a]),
+            concat!(
+                "├── [Node.js] root-a (v1.0.0) - packages/root-a/package.json [deps:\n",
+                "        shared]\n",
+                "│   └── [Node.js] shared (v1.0.0) - packages/shared/package.json\n",
+                "└── [Node.js] root-b (v1.0.0) - packages/root-b/package.json [deps:\n",
+                "        shared\n",
+                "        z-last]\n",
+                "    ├── [Node.js] shared (v1.0.0) - packages/shared/package.json\n",
+                "    └── [Node.js] z-last (v1.0.0) - packages/z-last/package.json\n",
+            )
+        );
+    }
+
+    #[test]
+    fn test_display_tree_stops_at_cycle_visited_node() {
+        let root = package("root", &["a"]);
+        let a = package("a", &["b"]);
+        let b = package("b", &["a"]);
+
+        assert_eq!(
+            render_tree(&[&b, &root, &a]),
+            concat!(
+                "└── [Node.js] root (v1.0.0) - packages/root/package.json [deps:\n",
+                "        a]\n",
+                "    └── [Node.js] a (v1.0.0) - packages/a/package.json [deps:\n",
+                "        b]\n",
+                "        └── [Node.js] b (v1.0.0) - packages/b/package.json [deps:\n",
+                "        a]\n",
+                "            └── [Node.js] a (v1.0.0) - packages/a/package.json [deps:\n",
+                "        b]\n",
+            )
+        );
+    }
+
+    #[test]
+    fn test_display_tree_renders_rootless_cycle_as_orphans() {
+        let a = package("a", &["b"]);
+        let b = package("b", &["a"]);
+
+        assert_eq!(
+            render_tree(&[&a, &b]),
+            concat!(
+                "[Node.js] a (v1.0.0) - packages/a/package.json [deps:\n",
+                "        b]\n",
+                "[Node.js] b (v1.0.0) - packages/b/package.json [deps:\n",
+                "        a]\n",
+            )
+        );
+    }
 
     #[test]
     fn test_format_project_line_package() {

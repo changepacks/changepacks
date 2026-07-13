@@ -206,7 +206,7 @@ mod tests {
 
         let content = read_to_string(&package_json).await.unwrap();
         assert!(content.ends_with('\n'));
-        assert!(content.contains(r#""version": "1.0.1""#));
+        assert!(content.contains(r#""version":"1.0.1""#));
 
         temp_dir.close().unwrap();
     }

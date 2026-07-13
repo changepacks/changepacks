@@ -50,6 +50,7 @@ def changepacks_bin_candidates() -> list[str]:
     """Return executable paths supported by common wheel and target layouts."""
     package_dir = os.path.dirname(__file__)
     pkg_root = os.path.dirname(package_dir)
+    exe_names = changepacks_exe_names()
     search_dirs = [
         sysconfig.get_path("scripts"),
         user_scripts_path(),
@@ -59,19 +60,24 @@ def changepacks_bin_candidates() -> list[str]:
         os.path.join(pkg_root, "Scripts"),
     ]
 
+    resource_candidates: list[str] = []
     if __package__:
         package_files = resources.files(__package__)
-        for exe_name in changepacks_exe_names():
-            search_dirs.append(str(package_files.joinpath(exe_name)))
+        for exe_name in exe_names:
+            resource_candidates.append(str(package_files.joinpath(exe_name)))
 
     paths: list[str] = []
     seen: set[str] = set()
-    for candidate in search_dirs:
-        for exe_name in changepacks_exe_names():
-            path = candidate if candidate.endswith(exe_name) else os.path.join(candidate, exe_name)
-            if path not in seen:
-                seen.add(path)
-                paths.append(path)
+    candidates = [
+        os.path.join(directory, exe_name)
+        for directory in search_dirs
+        for exe_name in exe_names
+    ]
+    candidates.extend(resource_candidates)
+    for candidate in candidates:
+        if candidate not in seen:
+            seen.add(candidate)
+            paths.append(candidate)
     return paths
 
 

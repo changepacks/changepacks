@@ -29,22 +29,16 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     handle_changepack_with_prompter(args, &InquirePrompter).await
 }
 
-/// # Errors
-/// Returns error if project discovery, prompting, or changepack file creation fails.
+/// Select projects and resolve the changepack notes without performing git or file I/O.
 ///
-/// Excluded from coverage: orchestrates `CommandContext::new` (git I/O)
-/// and an interactive `prompter.multi_select(...)` flow that needs a real
-/// terminal; the underlying helpers are covered separately by their own
-/// unit tests.
-#[cfg(not(tarpaulin_include))]
-pub async fn handle_changepack_with_prompter(
+/// # Errors
+/// Returns an error if a project path is outside the repository root or prompting fails.
+fn select_changepack(
+    mut projects: Vec<&Project>,
+    repo_root_path: &std::path::Path,
     args: &ChangepackArgs,
     prompter: &dyn Prompter,
-) -> Result<()> {
-    let ctx = CommandContext::new(args.remote).await?;
-
-    let mut projects = collect_projects(&ctx.project_finders);
-
+) -> Result<(BTreeMap<PathBuf, UpdateType>, String)> {
     // Hide packages that inherit their version from workspace root.
     // They are updated automatically when the workspace version bumps.
     projects.retain(|p| !matches!(p, Project::Package(pkg) if pkg.inherits_workspace_version()));
@@ -73,7 +67,7 @@ pub async fn handle_changepack_with_prompter(
     // same message.
     let mut entries: Vec<(&Project, PathBuf)> = projects
         .into_iter()
-        .map(|p| Ok((p, get_relative_path(&ctx.repo_root_path, p.path())?)))
+        .map(|p| Ok((p, get_relative_path(repo_root_path, p.path())?)))
         .collect::<Result<_>>()?;
 
     let update_types: &[UpdateType] = if let Some(update_type) = args.update_type.as_ref() {
@@ -149,8 +143,7 @@ pub async fn handle_changepack_with_prompter(
     }
 
     if update_map.is_empty() {
-        println!("No projects selected");
-        return Ok(());
+        return Ok((update_map, String::new()));
     }
 
     let notes = if let Some(message) = &args.message {
@@ -158,6 +151,24 @@ pub async fn handle_changepack_with_prompter(
     } else {
         prompter.text("write notes here")?
     };
+
+    Ok((update_map, notes))
+}
+
+/// # Errors
+/// Returns error if project discovery, prompting, or changepack file creation fails.
+pub async fn handle_changepack_with_prompter(
+    args: &ChangepackArgs,
+    prompter: &dyn Prompter,
+) -> Result<()> {
+    let ctx = CommandContext::new(args.remote).await?;
+    let projects = collect_projects(&ctx.project_finders);
+    let (update_map, notes) = select_changepack(projects, &ctx.repo_root_path, args, prompter)?;
+
+    if update_map.is_empty() {
+        println!("No projects selected");
+        return Ok(());
+    }
 
     if notes.is_empty() {
         println!("Notes are empty");
@@ -195,6 +206,191 @@ pub async fn handle_changepack_with_prompter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prompter::MockPrompter;
+    use changepacks_core::{
+        Language,
+        test_support::{MockPackage, MockWorkspace},
+    };
+    use changepacks_rust::package::RustPackage;
+
+    fn args() -> ChangepackArgs {
+        ChangepackArgs {
+            filter: None,
+            remote: false,
+            yes: true,
+            message: Some("release note".to_string()),
+            update_type: Some(UpdateType::Patch),
+            language: vec![],
+        }
+    }
+
+    fn package(root: &str, name: &str, language: Language) -> Project {
+        let path = format!("{root}/{name}/manifest");
+        Project::Package(Box::new(MockPackage::with_all(
+            Some(name),
+            Some("1.0.0"),
+            &path,
+            &format!("{name}/manifest"),
+            language,
+        )))
+    }
+
+    fn workspace(root: &str, name: &str, language: Language) -> Project {
+        let path = format!("{root}/{name}/manifest");
+        Project::Workspace(Box::new(MockWorkspace::with_all(
+            Some(name),
+            Some("1.0.0"),
+            &path,
+            &format!("{name}/manifest"),
+            language,
+        )))
+    }
+
+    #[test]
+    fn select_changepack_applies_project_filter_with_mock_prompter() {
+        let root = PathBuf::from("repo");
+        let projects = [
+            workspace("repo", "workspace", Language::Node),
+            package("repo", "package", Language::Node),
+        ];
+        let mut args = args();
+        args.filter = Some(FilterOptions::Package);
+
+        let (updates, message) = select_changepack(
+            projects.iter().collect(),
+            &root,
+            &args,
+            &MockPrompter::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            updates,
+            BTreeMap::from([(PathBuf::from("package/manifest"), UpdateType::Patch)])
+        );
+        assert_eq!(message, "release note");
+    }
+
+    #[test]
+    fn select_changepack_applies_language_gate() {
+        let root = PathBuf::from("repo");
+        let projects = [
+            package("repo", "node", Language::Node),
+            package("repo", "rust", Language::Rust),
+        ];
+        let mut args = args();
+        args.language = vec![CliLanguage::Rust];
+
+        let (updates, _) = select_changepack(
+            projects.iter().collect(),
+            &root,
+            &args,
+            &MockPrompter::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            updates,
+            BTreeMap::from([(PathBuf::from("rust/manifest"), UpdateType::Patch)])
+        );
+    }
+
+    #[test]
+    fn select_changepack_excludes_rust_packages_with_inherited_versions() {
+        let root = PathBuf::from("repo");
+        let inherited = Project::Package(Box::new(RustPackage::new_with_workspace_version(
+            Some("inherited".to_string()),
+            Some("1.0.0".to_string()),
+            root.join("inherited/Cargo.toml"),
+            PathBuf::from("inherited/Cargo.toml"),
+            Some(root.join("Cargo.toml")),
+        )));
+        let projects = [inherited, package("repo", "owned", Language::Rust)];
+
+        let (updates, _) = select_changepack(
+            projects.iter().collect(),
+            &root,
+            &args(),
+            &MockPrompter::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            updates,
+            BTreeMap::from([(PathBuf::from("owned/manifest"), UpdateType::Patch)])
+        );
+    }
+
+    #[test]
+    fn select_changepack_uses_each_explicit_update_type() {
+        let root = PathBuf::from("repo");
+        for update_type in [UpdateType::Major, UpdateType::Minor, UpdateType::Patch] {
+            let projects = [package("repo", "package", Language::Node)];
+            let mut args = args();
+            args.update_type = Some(update_type);
+
+            let (updates, _) = select_changepack(
+                projects.iter().collect(),
+                &root,
+                &args,
+                &MockPrompter::default(),
+            )
+            .unwrap();
+
+            assert_eq!(updates.values().copied().collect::<Vec<_>>(), [update_type]);
+        }
+    }
+
+    #[test]
+    fn select_changepack_returns_empty_without_notes_when_nothing_is_selected() {
+        let root = PathBuf::from("repo");
+        let projects = [
+            package("repo", "alpha", Language::Node),
+            package("repo", "beta", Language::Node),
+        ];
+        let mut args = args();
+        args.yes = false;
+        args.update_type = None;
+        args.message = None;
+        let prompter = MockPrompter {
+            select_all: false,
+            text_value: "must not be used".to_string(),
+            ..Default::default()
+        };
+
+        let (updates, message) =
+            select_changepack(projects.iter().collect(), &root, &args, &prompter).unwrap();
+
+        assert!(updates.is_empty());
+        assert!(message.is_empty());
+    }
+
+    #[test]
+    fn select_changepack_returns_updates_in_deterministic_path_order() {
+        let root = PathBuf::from("repo");
+        let projects = [
+            package("repo", "zeta", Language::Node),
+            package("repo", "alpha", Language::Node),
+            package("repo", "middle", Language::Node),
+        ];
+
+        let (updates, _) = select_changepack(
+            projects.iter().collect(),
+            &root,
+            &args(),
+            &MockPrompter::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            updates.keys().cloned().collect::<Vec<_>>(),
+            [
+                PathBuf::from("alpha/manifest"),
+                PathBuf::from("middle/manifest"),
+                PathBuf::from("zeta/manifest"),
+            ]
+        );
+    }
 
     #[test]
     fn test_changepack_args_debug() {

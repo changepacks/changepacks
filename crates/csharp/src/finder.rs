@@ -125,6 +125,17 @@ impl CSharpProjectFinder {
                         }
                     }
                 }
+                Ok(Event::CData(e)) => {
+                    if in_version
+                        && version.is_none()
+                        && let Ok(text) = e.decode()
+                    {
+                        let candidate = text.trim();
+                        if !candidate.is_empty() {
+                            version = Some(candidate.to_string());
+                        }
+                    }
+                }
                 Ok(Event::Eof) => {
                     anyhow::ensure!(element_depth == 0, "unexpected end of XML document");
                     break;
@@ -431,6 +442,35 @@ mod tests {
                 assert_eq!(pkg.name(), Some("TestProject"));
                 assert_eq!(pkg.version(), Some("1.0.0"));
             }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_package_reads_version_from_cdata() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("TestProject.csproj");
+        fs::write(
+            &csproj_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version><![CDATA[1.2.3]]></Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&csproj_path, &PathBuf::from("TestProject.csproj"))
+            .await
+            .unwrap();
+
+        match finder.projects()[0] {
+            Project::Package(pkg) => assert_eq!(pkg.version(), Some("1.2.3")),
             _ => panic!("Expected Package"),
         }
 

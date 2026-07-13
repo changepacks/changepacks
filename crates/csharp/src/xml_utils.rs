@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
+use quick_xml::events::{BytesCData, BytesEnd, BytesStart, BytesText, Event};
 use quick_xml::{Reader, Writer};
 use std::io::Cursor;
 
@@ -101,7 +101,10 @@ pub fn update_version_in_xml(
                 writer.write_event(Event::End(e))?;
             }
             Ok(Event::Text(e)) => {
-                if in_version && !version_updated {
+                let is_whitespace = e
+                    .decode()
+                    .is_ok_and(|text| text.chars().all(char::is_whitespace));
+                if in_version && !version_updated && !is_whitespace {
                     // Replace version text
                     writer.write_event(Event::Text(BytesText::new(new_version)))?;
                     version_updated = true;
@@ -114,6 +117,14 @@ pub fn update_version_in_xml(
                             .then(|| decoded.into_owned());
                     }
                     writer.write_event(Event::Text(e))?;
+                }
+            }
+            Ok(Event::CData(e)) => {
+                if in_version && !version_updated {
+                    writer.write_event(Event::CData(BytesCData::new(new_version)))?;
+                    version_updated = true;
+                } else {
+                    writer.write_event(Event::CData(e))?;
                 }
             }
             Ok(Event::Empty(e)) => {
@@ -138,7 +149,7 @@ pub fn update_version_in_xml(
             Ok(Event::Eof) => break,
             Err(e) => return Err(anyhow::anyhow!("XML parsing error: {e}")),
             // Pass-through arms for every event that carries no state and
-            // does not need in-place rewriting: Comment, CData, Decl, PI,
+            // does not need in-place rewriting: Comment, Decl, PI,
             // DocType, GeneralRef. Any future variant with no customization
             // requirement falls into this arm automatically; a variant that
             // DOES need customization must be added above
@@ -169,6 +180,31 @@ mod tests {
 
         let result = update_version_in_xml(content, "2.0.0", true).unwrap();
         assert!(result.contains("<Version>2.0.0</Version>"));
+    }
+
+    #[test]
+    fn test_update_version_replaces_cdata_payload_in_place() {
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version><![CDATA[1.2.3]]></Version>\n  </PropertyGroup>\n</Project>";
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+
+        assert_eq!(
+            result,
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version><![CDATA[2.0.0]]></Version>\n  </PropertyGroup>\n</Project>"
+        );
+        assert_eq!(result.matches("<![CDATA[").count(), 1);
+        assert!(!result.contains("1.2.3"));
+        assert!(!result.contains("1.2.32.0.0"));
+    }
+
+    #[test]
+    fn test_update_version_preserves_whitespace_around_cdata() {
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version>\n      <![CDATA[1.2.3]]>\n    </Version>\n  </PropertyGroup>\n</Project>";
+        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+
+        assert_eq!(
+            result,
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version>\n      <![CDATA[2.0.0]]>\n    </Version>\n  </PropertyGroup>\n</Project>"
+        );
     }
 
     #[test]
