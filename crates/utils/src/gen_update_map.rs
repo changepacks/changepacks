@@ -187,7 +187,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
     projects: &[&Project],
     repo_root_path: &Path,
-) {
+) -> Result<()> {
     // Fast path for the dominant no-op case: with no scheduled updates the
     // seed set below is empty and the reverse-dep DFS discovers nothing, so
     // walking the full project graph to populate `path_to_name` /
@@ -195,7 +195,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // project). Semantic mirror of the existing guard in
     // `apply_update_on_rules` above.
     if update_map.is_empty() {
-        return;
+        return Ok(());
     }
 
     // Second fast path: with no scheduled updates carrying any local
@@ -208,7 +208,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // it's O(1) amortized when the rest of the function would have
     // fired anyway.
     if projects.iter().all(|p| p.dependencies().is_empty()) {
-        return;
+        return Ok(());
     }
 
     // Dependencies are resolved by project name, so record whether every name
@@ -235,9 +235,13 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     let mut reverse_deps: HashMap<&str, Vec<(PathBuf, Option<&str>)>> =
         HashMap::with_capacity(projects.len());
     for (idx, project) in projects.iter().enumerate() {
-        let Ok(rel_path_buf) = get_relative_path(repo_root_path, project.path()) else {
-            continue;
-        };
+        let rel_path_buf =
+            get_relative_path(repo_root_path, project.path()).with_context(|| {
+                format!(
+                    "failed to apply reverse dependencies for project '{}'",
+                    project.path().display()
+                )
+            })?;
 
         // Borrow the name from `projects`, which outlives both graph maps.
         // Only unique named projects can be initial or transitive worklist
@@ -330,13 +334,16 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
             )
         });
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 
-    use changepacks_core::Config;
+    use changepacks_core::{Config, Package};
+    use changepacks_node::package::NodePackage;
     use tempfile::TempDir;
     use tokio::fs;
 
@@ -598,9 +605,32 @@ mod tests {
         let mut update_map: HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)> =
             HashMap::new();
 
-        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test"));
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test")).unwrap();
 
         assert!(update_map.is_empty());
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_rejects_project_outside_repo_root() {
+        let core = create_project("core", vec![]);
+        let mut outside_package = NodePackage::new(
+            Some("outside".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/outside/package.json"),
+            PathBuf::from("outside/package.json"),
+        );
+        outside_package.add_dependency("core");
+        let outside = Project::Package(Box::new(outside_package));
+        let projects: Vec<&Project> = vec![&core, &outside];
+        let mut update_map = HashMap::from([(
+            PathBuf::from("core/package.json"),
+            (UpdateType::Minor, vec![]),
+        )]);
+
+        let error = apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test"))
+            .expect_err("an out-of-root project must fail reverse dependency traversal");
+
+        assert!(error.to_string().contains("/outside/package.json"));
     }
 
     #[test]
@@ -625,7 +655,7 @@ mod tests {
             ),
         );
 
-        apply_reverse_dependencies(&mut update_map, &projects, repo_root);
+        apply_reverse_dependencies(&mut update_map, &projects, repo_root).unwrap();
 
         // cli should be added as PATCH update
         assert_eq!(update_map.len(), 2);
@@ -665,7 +695,7 @@ mod tests {
             ),
         );
 
-        apply_reverse_dependencies(&mut update_map, &projects, repo_root);
+        apply_reverse_dependencies(&mut update_map, &projects, repo_root).unwrap();
 
         // Both utils and cli should be added as PATCH updates (transitive)
         assert_eq!(update_map.len(), 3);
@@ -703,7 +733,7 @@ mod tests {
             ),
         );
 
-        apply_reverse_dependencies(&mut update_map, &projects, repo_root);
+        apply_reverse_dependencies(&mut update_map, &projects, repo_root).unwrap();
 
         // utils should NOT be added (no dependency on core)
         assert_eq!(update_map.len(), 1);
@@ -742,7 +772,7 @@ mod tests {
             ),
         );
 
-        apply_reverse_dependencies(&mut update_map, &projects, repo_root);
+        apply_reverse_dependencies(&mut update_map, &projects, repo_root).unwrap();
 
         // cli should remain Major (not overwritten to Patch)
         assert_eq!(update_map.len(), 2);
@@ -777,7 +807,7 @@ mod tests {
             ),
         );
 
-        apply_reverse_dependencies(&mut update_map, &projects, repo_root);
+        apply_reverse_dependencies(&mut update_map, &projects, repo_root).unwrap();
 
         // All packages should be updated
         assert_eq!(update_map.len(), 4);
@@ -806,7 +836,7 @@ mod tests {
             ),
         );
 
-        apply_reverse_dependencies(&mut update_map, &projects, repo_root);
+        apply_reverse_dependencies(&mut update_map, &projects, repo_root).unwrap();
 
         // No changes, missing dependency is ignored
         assert_eq!(update_map.len(), 1);
@@ -828,7 +858,7 @@ mod tests {
             PathBuf::from("shared-a/package.json"),
             (UpdateType::Minor, vec![]),
         );
-        apply_reverse_dependencies(&mut duplicate_seed, &projects, repo_root);
+        apply_reverse_dependencies(&mut duplicate_seed, &projects, repo_root).unwrap();
         assert!(!duplicate_seed.contains_key(&PathBuf::from("app/package.json")));
 
         let mut unique_seed = HashMap::new();
@@ -836,7 +866,7 @@ mod tests {
             PathBuf::from("core/package.json"),
             (UpdateType::Minor, vec![]),
         );
-        apply_reverse_dependencies(&mut unique_seed, &projects, repo_root);
+        apply_reverse_dependencies(&mut unique_seed, &projects, repo_root).unwrap();
 
         assert!(unique_seed.contains_key(&PathBuf::from("shared-a/package.json")));
         assert!(unique_seed.contains_key(&PathBuf::from("shared-b/package.json")));
@@ -854,7 +884,7 @@ mod tests {
             (UpdateType::Minor, vec![]),
         );
 
-        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test"));
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test")).unwrap();
 
         assert_eq!(
             update_map[&PathBuf::from("cli/package.json")].0,
@@ -874,7 +904,7 @@ mod tests {
             (UpdateType::Minor, vec![]),
         );
 
-        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test"));
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test")).unwrap();
 
         assert_eq!(
             update_map[&PathBuf::from("utils/package.json")].0,

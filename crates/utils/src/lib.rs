@@ -91,6 +91,9 @@ pub use get_changepacks_dir::get_changepacks_dir;
 pub use get_relative_path::{get_relative_path, get_relative_path_ref};
 pub use is_workspace_by_sibling::is_workspace_by_sibling;
 pub use next_version::{next_version, next_version_or_default};
-pub use sort_by_dep::{DependencyCycleError, DependencyCycleMember, sort_by_dependencies};
+pub use sort_by_dep::{
+    DependencyAmbiguityError, DependencyCycleError, DependencyCycleMember, DependencySortError,
+    sort_by_dependencies,
+};
 pub use split_version::{replace_version_keep_prefix, split_version};
 pub use trailing_newline::finalize_content;

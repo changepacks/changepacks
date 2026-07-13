@@ -3,10 +3,192 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::fs::{remove_file, write};
 
 use crate::{collect_changepack_log_paths, read_log_bodies};
+
+struct JsonObjectMember {
+    prefix_start: usize,
+    key: String,
+    value_start: usize,
+    value_end: usize,
+    comma: Option<usize>,
+}
+
+fn skip_json_whitespace(bytes: &[u8], mut cursor: usize) -> usize {
+    while cursor < bytes.len() && matches!(bytes[cursor], b' ' | b'\t' | b'\r' | b'\n') {
+        cursor += 1;
+    }
+    cursor
+}
+
+fn scan_json_string_end(bytes: &[u8], start: usize) -> Result<usize> {
+    if bytes.get(start) != Some(&b'"') {
+        bail!("expected JSON string at byte {start}");
+    }
+
+    let mut cursor = start + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => cursor += 2,
+            b'"' => return Ok(cursor + 1),
+            _ => cursor += 1,
+        }
+    }
+    bail!("unterminated JSON string at byte {start}")
+}
+
+fn scan_json_value_end(bytes: &[u8], start: usize) -> Result<usize> {
+    let start = skip_json_whitespace(bytes, start);
+    match bytes.get(start) {
+        Some(b'"') => scan_json_string_end(bytes, start),
+        Some(b'{') | Some(b'[') => {
+            let mut closers = vec![if bytes[start] == b'{' { b'}' } else { b']' }];
+            let mut cursor = start + 1;
+            while cursor < bytes.len() {
+                match bytes[cursor] {
+                    b'"' => cursor = scan_json_string_end(bytes, cursor)?,
+                    b'{' => {
+                        closers.push(b'}');
+                        cursor += 1;
+                    }
+                    b'[' => {
+                        closers.push(b']');
+                        cursor += 1;
+                    }
+                    b'}' | b']' => {
+                        let expected =
+                            closers.pop().context("unexpected JSON closing delimiter")?;
+                        if bytes[cursor] != expected {
+                            bail!("mismatched JSON closing delimiter at byte {cursor}");
+                        }
+                        cursor += 1;
+                        if closers.is_empty() {
+                            return Ok(cursor);
+                        }
+                    }
+                    _ => cursor += 1,
+                }
+            }
+            bail!("unterminated JSON value at byte {start}")
+        }
+        Some(_) => {
+            let mut cursor = start;
+            while cursor < bytes.len()
+                && !matches!(
+                    bytes[cursor],
+                    b' ' | b'\t' | b'\r' | b'\n' | b',' | b'}' | b']'
+                )
+            {
+                cursor += 1;
+            }
+            Ok(cursor)
+        }
+        None => bail!("expected JSON value at end of input"),
+    }
+}
+
+fn parse_json_object_members(content: &str, open: usize) -> Result<Vec<JsonObjectMember>> {
+    let bytes = content.as_bytes();
+    if bytes.get(open) != Some(&b'{') {
+        bail!("expected JSON object at byte {open}");
+    }
+
+    let mut members = Vec::new();
+    let mut cursor = open + 1;
+    loop {
+        let prefix_start = cursor;
+        let key_start = skip_json_whitespace(bytes, cursor);
+        if bytes.get(key_start) == Some(&b'}') {
+            return Ok(members);
+        }
+
+        let key_end = scan_json_string_end(bytes, key_start)?;
+        let key: String = serde_json::from_str(&content[key_start..key_end])?;
+        cursor = skip_json_whitespace(bytes, key_end);
+        if bytes.get(cursor) != Some(&b':') {
+            bail!("expected ':' after JSON object key at byte {cursor}");
+        }
+
+        let value_start = skip_json_whitespace(bytes, cursor + 1);
+        let value_end = scan_json_value_end(bytes, value_start)?;
+        cursor = skip_json_whitespace(bytes, value_end);
+        let comma = if bytes.get(cursor) == Some(&b',') {
+            let comma = cursor;
+            cursor += 1;
+            Some(comma)
+        } else if bytes.get(cursor) == Some(&b'}') {
+            None
+        } else {
+            bail!("expected ',' or '}}' after JSON object member at byte {cursor}");
+        };
+
+        members.push(JsonObjectMember {
+            prefix_start,
+            key,
+            value_start,
+            value_end,
+            comma,
+        });
+        if comma.is_none() {
+            return Ok(members);
+        }
+    }
+}
+
+fn remove_applied_change_spans(content: &str, applied_paths: &HashSet<PathBuf>) -> Result<String> {
+    let root_open = skip_json_whitespace(content.as_bytes(), 0);
+    let root_members = parse_json_object_members(content, root_open)?;
+    let changes = root_members
+        .iter()
+        .rev()
+        .find(|member| member.key == "changes")
+        .context("parsed update log is missing its changes object")?;
+    let members = parse_json_object_members(content, changes.value_start)?;
+    let selected: Vec<bool> = members
+        .iter()
+        .map(|member| applied_paths.contains(Path::new(&member.key)))
+        .collect();
+
+    let mut removals = Vec::new();
+    let mut cursor = 0;
+    while cursor < members.len() {
+        if !selected[cursor] {
+            cursor += 1;
+            continue;
+        }
+
+        let run_start = cursor;
+        while cursor < members.len() && selected[cursor] {
+            cursor += 1;
+        }
+        let run_end = cursor;
+        if run_end < members.len() {
+            let comma = members[run_end - 1]
+                .comma
+                .context("selected non-final JSON member is missing its comma")?;
+            removals.push((members[run_start].prefix_start, comma + 1));
+        } else if run_start == 0 {
+            removals.push((members[0].prefix_start, members[run_end - 1].value_end));
+        } else {
+            let previous_comma = members[run_start - 1]
+                .comma
+                .context("JSON member before selected final run is missing its comma")?;
+            removals.push((previous_comma, members[run_end - 1].value_end));
+        }
+    }
+
+    let removed_len: usize = removals.iter().map(|(start, end)| end - start).sum();
+    let mut output = String::with_capacity(content.len() - removed_len);
+    let mut copied_through = 0;
+    for (start, end) in removals {
+        output.push_str(&content[copied_through..start]);
+        copied_through = end;
+    }
+    output.push_str(&content[copied_through..]);
+    Ok(output)
+}
 
 /// Remove all update logs without confirmation
 ///
@@ -87,8 +269,8 @@ pub async fn clear_applied_update_logs(
                 .await
                 .with_context(|| format!("Failed to remove update log {}", path.display()))?;
         } else {
-            let next_content = serde_json::to_string_pretty(&value)
-                .with_context(|| format!("Failed to serialize update log {}", path.display()))?;
+            let next_content = remove_applied_change_spans(&content, applied_paths)
+                .with_context(|| format!("Failed to rewrite update log {}", path.display()))?;
             write(path, next_content)
                 .await
                 .with_context(|| format!("Failed to rewrite update log {}", path.display()))?;
@@ -465,5 +647,98 @@ mod tests {
             note_pos,
             date_pos
         );
+    }
+
+    async fn assert_selective_clear_preserves_formatting(input: &str, expected: &str) {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        crate::test_support::init_git_repo(temp_path);
+
+        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        let log_file = changepacks_dir.join("changepack_log_1.json");
+        fs::write(&log_file, input.as_bytes()).unwrap();
+
+        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        clear_applied_update_logs(&changepacks_dir, &applied_paths)
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(log_file).unwrap(), expected.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_preserves_tab_indentation() {
+        let input = "{\n\t\"changes\": {\n\t\t\"packages/a/package.json\": \"Patch\",\n\t\t\"packages/b/package.json\": \"Minor\"\n\t},\n\t\"note\": \"keep\"\n}";
+        let expected = "{\n\t\"changes\": {\n\t\t\"packages/b/package.json\": \"Minor\"\n\t},\n\t\"note\": \"keep\"\n}";
+
+        assert_selective_clear_preserves_formatting(input, expected).await;
+    }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_preserves_four_space_indentation() {
+        let input = "{\n    \"changes\": {\n        \"packages/a/package.json\": \"Patch\",\n        \"packages/b/package.json\": \"Minor\"\n    },\n    \"note\": \"keep\"\n}";
+        let expected = "{\n    \"changes\": {\n        \"packages/b/package.json\": \"Minor\"\n    },\n    \"note\": \"keep\"\n}";
+
+        assert_selective_clear_preserves_formatting(input, expected).await;
+    }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_preserves_final_newline() {
+        let input = "{\n  \"changes\": {\n    \"packages/a/package.json\": \"Patch\",\n    \"packages/b/package.json\": \"Minor\"\n  },\n  \"note\": \"keep\"\n}\n";
+        let expected = "{\n  \"changes\": {\n    \"packages/b/package.json\": \"Minor\"\n  },\n  \"note\": \"keep\"\n}\n";
+
+        assert_selective_clear_preserves_formatting(input, expected).await;
+    }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_preserves_no_final_newline() {
+        let input = "{\n  \"changes\": {\n    \"packages/a/package.json\": \"Patch\",\n    \"packages/b/package.json\": \"Minor\"\n  },\n  \"note\": \"keep\"\n}";
+        let expected = "{\n  \"changes\": {\n    \"packages/b/package.json\": \"Minor\"\n  },\n  \"note\": \"keep\"\n}";
+
+        assert_selective_clear_preserves_formatting(input, expected).await;
+    }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_preserves_compact_json_bytes() {
+        let input = r#"{"changes":{"packages/a/package.json":"Patch","packages/b/package.json":"Minor, \"quoted\""},"note":"keep"}"#;
+        let expected =
+            r#"{"changes":{"packages/b/package.json":"Minor, \"quoted\""},"note":"keep"}"#;
+
+        assert_selective_clear_preserves_formatting(input, expected).await;
+    }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_preserves_irregular_json_bytes() {
+        let input = "{\n \"changes\" : {  \"packages/a/package.json\" : \"Patch\" ,\t\"packages/b/package.json\": [1,{\"text\":\"comma, and \\\"quote\\\"\"}]   }, \"note\"  :true\n}\n";
+        let expected = "{\n \"changes\" : {\t\"packages/b/package.json\": [1,{\"text\":\"comma, and \\\"quote\\\"\"}]   }, \"note\"  :true\n}\n";
+
+        assert_selective_clear_preserves_formatting(input, expected).await;
+    }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_removes_multiple_selected_entries() {
+        let input = r#"{"changes":{"packages/a/package.json":"Patch, one","packages/c/package.json":"Major, two","packages/b/package.json":"Minor, \"keep\""},"note":"keep"}"#;
+        let expected = r#"{"changes":{"packages/b/package.json":"Minor, \"keep\""},"note":"keep"}"#;
+
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        crate::test_support::init_git_repo(temp_path);
+        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        fs::create_dir_all(&changepacks_dir).unwrap();
+        let log_file = changepacks_dir.join("changepack_log_1.json");
+        fs::write(&log_file, input.as_bytes()).unwrap();
+
+        let applied_paths = HashSet::from([
+            PathBuf::from("packages/a/package.json"),
+            PathBuf::from("packages/c/package.json"),
+        ]);
+        clear_applied_update_logs(&changepacks_dir, &applied_paths)
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(log_file).unwrap(), expected.as_bytes());
     }
 }

@@ -58,7 +58,6 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     /// # Errors
     /// Returns error if the publish command fails to spawn or the workspace directory is missing.
     /// A non-zero exit code is reported via `PublishOutput::success = false`.
-    #[cfg(not(tarpaulin_include))]
     async fn publish(&self, config: &Config) -> Result<crate::publish::PublishOutput> {
         let command = self.get_publish_command(config);
         crate::publish::run_publish_flow(
@@ -81,7 +80,6 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     /// Returns error if the dry-run command fails to spawn or the workspace
     /// directory is missing. A non-zero exit code is reported via
     /// `PublishOutput::success = false`.
-    #[cfg(not(tarpaulin_include))]
     async fn dry_run_publish(
         &self,
         config: &Config,
@@ -148,7 +146,67 @@ mod tests {
     use super::*;
     use crate::test_support::MockWorkspace;
     use rstest::rstest;
-    use std::collections::BTreeMap;
+    use std::{
+        collections::{BTreeMap, HashSet},
+        path::PathBuf,
+    };
+
+    #[derive(Debug)]
+    struct UnsupportedDryRunWorkspace {
+        path: PathBuf,
+        dependencies: HashSet<String>,
+    }
+
+    #[async_trait]
+    impl Workspace for UnsupportedDryRunWorkspace {
+        fn name(&self) -> Option<&str> {
+            Some("unsupported-dry-run")
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn relative_path(&self) -> &Path {
+            Path::new("project.csproj")
+        }
+
+        fn version(&self) -> Option<&str> {
+            Some("1.0.0")
+        }
+
+        async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
+            Ok(())
+        }
+
+        fn language(&self) -> Language {
+            Language::CSharp
+        }
+
+        fn dependencies(&self) -> &HashSet<String> {
+            &self.dependencies
+        }
+
+        fn add_dependency(&mut self, dependency: &str) {
+            self.dependencies.insert(dependency.to_string());
+        }
+
+        fn is_changed(&self) -> bool {
+            false
+        }
+
+        fn set_changed(&mut self, _changed: bool) {}
+
+        fn set_name(&mut self, _name: String) {}
+
+        fn default_publish_command(&self) -> String {
+            "echo publish".to_string()
+        }
+
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            None
+        }
+    }
 
     #[test]
     fn test_check_changed_already_changed() {
@@ -299,6 +357,48 @@ mod tests {
         // This will run "echo publish" which should succeed
         let output = workspace.publish(&config).await.unwrap();
         assert!(output.success);
+        assert!(output.stdout.contains("publish"));
+    }
+
+    #[tokio::test]
+    async fn test_publish_uses_project_path_override() {
+        let path = std::env::temp_dir().join("package.json");
+        let workspace = MockWorkspace::with_paths(
+            Some("test"),
+            path.to_str().unwrap(),
+            "packages/core/package.json",
+        );
+        let config = Config {
+            publish: BTreeMap::from([(
+                "packages/core/package.json".to_string(),
+                "echo workspace-path-override".to_string(),
+            )]),
+            ..Default::default()
+        };
+
+        let output = workspace.publish(&config).await.unwrap();
+
+        assert!(output.success);
+        assert!(output.stdout.contains("workspace-path-override"));
+    }
+
+    #[tokio::test]
+    async fn test_publish_uses_language_override() {
+        let path = std::env::temp_dir().join("package.json");
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
+        let config = Config {
+            publish: BTreeMap::from([(
+                "node".to_string(),
+                "echo workspace-language-override".to_string(),
+            )]),
+            ..Default::default()
+        };
+
+        let output = workspace.publish(&config).await.unwrap();
+
+        assert!(output.success);
+        assert!(output.stdout.contains("workspace-language-override"));
     }
 
     #[tokio::test]
@@ -345,6 +445,91 @@ mod tests {
                 .to_string()
                 .contains("Workspace directory not found")
         );
+    }
+
+    #[tokio::test]
+    async fn test_publish_reports_missing_current_directory() {
+        let missing_dir = std::env::temp_dir().join(format!(
+            "changepacks_missing_workspace_dir_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&missing_dir);
+        let path = missing_dir.join("package.json");
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
+
+        let result = workspace.publish(&Config::default()).await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_publish_uses_project_path_override() {
+        let path = std::env::temp_dir().join("package.json");
+        let workspace = MockWorkspace::with_paths(
+            Some("test"),
+            path.to_str().unwrap(),
+            "packages/core/package.json",
+        );
+        let config = Config {
+            publish_dry_run: BTreeMap::from([(
+                "packages/core/package.json".to_string(),
+                "echo workspace-dry-path-override".to_string(),
+            )]),
+            ..Default::default()
+        };
+
+        let output = workspace.dry_run_publish(&config).await.unwrap().unwrap();
+
+        assert!(output.success);
+        assert!(output.stdout.contains("workspace-dry-path-override"));
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_publish_uses_language_override() {
+        let path = std::env::temp_dir().join("package.json");
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
+        let config = Config {
+            publish_dry_run: BTreeMap::from([(
+                "node".to_string(),
+                "echo workspace-dry-language-override".to_string(),
+            )]),
+            ..Default::default()
+        };
+
+        let output = workspace.dry_run_publish(&config).await.unwrap().unwrap();
+
+        assert!(output.success);
+        assert!(output.stdout.contains("workspace-dry-language-override"));
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_publish_uses_default_command() {
+        let path = std::env::temp_dir().join("package.json");
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
+
+        let output = workspace
+            .dry_run_publish(&Config::default())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(output.success);
+        assert!(output.stdout.contains("publish --dry-run"));
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_publish_returns_none_when_unsupported() {
+        let workspace = UnsupportedDryRunWorkspace {
+            path: std::env::temp_dir().join("project.csproj"),
+            dependencies: HashSet::new(),
+        };
+
+        let output = workspace.dry_run_publish(&Config::default()).await.unwrap();
+
+        assert!(output.is_none());
     }
 
     #[test]

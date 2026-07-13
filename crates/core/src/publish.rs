@@ -222,6 +222,7 @@ pub async fn run_publish_command_with_path_dirs(
     if let Some(path) = prepend_path_dirs(extra_path_dirs) {
         cmd.env("PATH", path);
     }
+    cmd.kill_on_drop(true);
     let output = cmd.output().await?;
     Ok(build_publish_output(output))
 }
@@ -303,6 +304,18 @@ where
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    async fn wait_for_file(path: &Path, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if tokio::fs::metadata(path).await.is_ok() {
+                return true;
+            }
+            tokio::task::yield_now().await;
+        }
+        false
+    }
 
     #[test]
     fn test_resolve_publish_command_by_path() {
@@ -516,6 +529,74 @@ mod tests {
         };
         let output = run_publish_command(command, &temp_dir).await.unwrap();
         assert!(!output.success);
+    }
+
+    #[tokio::test]
+    async fn test_run_publish_command_cancellation_kills_shell_child() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "changepacks_shell_cancel_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let started = base.join("started");
+        let completed = base.join("completed");
+
+        #[cfg(target_os = "windows")]
+        let command = "echo started>started & ping -n 3 127.0.0.1 >nul & echo completed>completed"
+            .to_string();
+        #[cfg(not(target_os = "windows"))]
+        let command =
+            "printf '%s' \"$$\" > pid; printf started > started; sleep 2; printf completed > completed"
+                .to_string();
+
+        let task_dir = base.clone();
+        let mut task = tokio::spawn(async move { run_publish_command(&command, &task_dir).await });
+        tokio::task::yield_now().await;
+        let started_written = wait_for_file(&started, Duration::from_secs(5)).await;
+        if !started_written && task.is_finished() {
+            panic!(
+                "shell command finished before readiness: {:?}",
+                (&mut task).await
+            );
+        }
+        assert!(started_written, "shell child never wrote its start marker");
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+
+        #[cfg(unix)]
+        {
+            let pid = std::fs::read_to_string(base.join("pid")).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut exited = false;
+            while Instant::now() < deadline {
+                let running = tokio::process::Command::new("kill")
+                    .args(["-0", pid.trim()])
+                    .status()
+                    .await
+                    .is_ok_and(|status| status.success());
+                if !running {
+                    exited = true;
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            assert!(exited, "cancelled shell child {pid} did not exit");
+        }
+
+        // The command writes `completed` after two seconds (roughly two seconds
+        // of ping on Windows). Polling for longer proves cancellation prevented
+        // that delayed side effect without racing the start of the child.
+        assert!(
+            !wait_for_file(&completed, Duration::from_secs(4)).await,
+            "cancelled shell child wrote its delayed completion marker"
+        );
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[tokio::test]

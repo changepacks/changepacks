@@ -662,7 +662,7 @@ dependency_overrides:
                 )],
             ),
         );
-        apply_reverse_dependencies(&mut update_map, &projects, temp_dir.path());
+        apply_reverse_dependencies(&mut update_map, &projects, temp_dir.path()).unwrap();
         assert_eq!(
             update_map[&PathBuf::from("app").join("pubspec.yaml")].0,
             UpdateType::Patch

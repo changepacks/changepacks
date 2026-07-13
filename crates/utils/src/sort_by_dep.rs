@@ -1,4 +1,5 @@
 use changepacks_core::Project;
+use std::cmp::Ordering;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
@@ -39,6 +40,88 @@ impl fmt::Display for DependencyCycleError {
 
 impl std::error::Error for DependencyCycleError {}
 
+/// Deterministic details for a dependency name that matches multiple projects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyAmbiguityError {
+    dependency: String,
+    candidates: Vec<PathBuf>,
+}
+
+impl DependencyAmbiguityError {
+    #[must_use]
+    pub fn dependency(&self) -> &str {
+        &self.dependency
+    }
+
+    #[must_use]
+    pub fn candidates(&self) -> &[PathBuf] {
+        &self.candidates
+    }
+}
+
+impl fmt::Display for DependencyAmbiguityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "ambiguous dependency `{}`: candidates: ",
+            self.dependency
+        )?;
+        for (index, candidate) in self.candidates.iter().enumerate() {
+            if index > 0 {
+                write!(formatter, ", ")?;
+            }
+            write!(formatter, "{}", candidate.display())?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for DependencyAmbiguityError {}
+
+/// An error that prevents projects from having a unique dependency ordering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencySortError {
+    Cycle(DependencyCycleError),
+    AmbiguousDependency(DependencyAmbiguityError),
+}
+
+impl DependencySortError {
+    /// Cycle members, or an empty slice when this is an ambiguity error.
+    #[must_use]
+    pub fn members(&self) -> &[DependencyCycleMember] {
+        match self {
+            Self::Cycle(error) => error.members(),
+            Self::AmbiguousDependency(_) => &[],
+        }
+    }
+
+    #[must_use]
+    pub fn ambiguity(&self) -> Option<&DependencyAmbiguityError> {
+        match self {
+            Self::Cycle(_) => None,
+            Self::AmbiguousDependency(error) => Some(error),
+        }
+    }
+}
+
+impl fmt::Display for DependencySortError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cycle(error) => error.fmt(formatter),
+            Self::AmbiguousDependency(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for DependencySortError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Cycle(error) => Some(error),
+            Self::AmbiguousDependency(error) => Some(error),
+        }
+    }
+}
+
 fn is_cycle_member(start: usize, adj: &[usize], offsets: &[usize]) -> bool {
     let mut visited = vec![false; offsets.len() - 1];
     let mut stack = adj[offsets[start]..offsets[start + 1]].to_vec();
@@ -59,17 +142,14 @@ fn is_cycle_member(start: usize, adj: &[usize], offsets: &[usize]) -> bool {
 
 /// Sort projects by their dependencies using topological sort.
 /// Projects with no dependencies or whose dependencies are already published will come first.
-/// Returns project references in dependency order, or deterministic cycle details.
-pub fn sort_by_dependencies(
-    projects: Vec<&Project>,
-) -> Result<Vec<&Project>, DependencyCycleError> {
+/// Returns project references in dependency order, or deterministic cycle/ambiguity details.
+pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, DependencySortError> {
     if projects.is_empty() {
         return Ok(projects);
     }
 
     // Dependencies are stored as package names, so name lookup is the ordering key.
     // name_to_index maps each name to Some(idx) if unique, or None if duplicate/ambiguous.
-    // Duplicate names cannot bind as dependency targets (the edge build below skips them).
     let mut name_to_index: HashMap<&str, Option<usize>> = HashMap::with_capacity(projects.len());
     for (idx, project) in projects.iter().enumerate() {
         if let Some(name) = project.name() {
@@ -86,7 +166,7 @@ pub fn sort_by_dependencies(
 
     // Build dependency graph: for each project, find which projects depend on it.
     // Duplicate names are ambiguous across polyglot publish sets and are marked None
-    // in name_to_index, so an ambiguous dependency cannot silently bind to any duplicate.
+    // in name_to_index. Only names actually referenced by an edge are errors.
     // in_degree[i] = number of dependencies that project i has
     let mut in_degree: Vec<usize> = vec![0; projects.len()];
     // Collect edges in the same order the old adjacency Vecs received pushes:
@@ -96,17 +176,39 @@ pub fn sort_by_dependencies(
         .map(|project| project.dependencies().len())
         .sum();
     let mut edges: Vec<(usize, usize)> = Vec::with_capacity(dependency_count);
+    let mut ambiguous_dependencies: Vec<&str> = Vec::new();
 
     for (idx, project) in projects.iter().enumerate() {
         let deps = project.dependencies();
         for dep in deps {
-            if let Some(&Some(dep_idx)) = name_to_index.get(dep.as_str()) {
-                // Project at idx depends on project at dep_idx
-                // So dep_idx should come before idx
-                edges.push((dep_idx, idx));
-                in_degree[idx] += 1;
+            match name_to_index.get(dep.as_str()) {
+                Some(Some(dep_idx)) => {
+                    // Project at idx depends on project at dep_idx
+                    // So dep_idx should come before idx
+                    edges.push((*dep_idx, idx));
+                    in_degree[idx] += 1;
+                }
+                Some(None) => ambiguous_dependencies.push(dep),
+                None => {}
             }
         }
+    }
+
+    if !ambiguous_dependencies.is_empty() {
+        ambiguous_dependencies.sort_unstable();
+        let dependency = ambiguous_dependencies[0];
+        let mut candidates: Vec<_> = projects
+            .iter()
+            .filter(|project| project.name() == Some(dependency))
+            .map(|project| project.relative_path().to_path_buf())
+            .collect();
+        candidates.sort_by(|left, right| compare_paths(left, right));
+        return Err(DependencySortError::AmbiguousDependency(
+            DependencyAmbiguityError {
+                dependency: dependency.to_string(),
+                candidates,
+            },
+        ));
     }
 
     // Store adjacency as CSR: adj[offsets[i]..offsets[i + 1]] contains the
@@ -174,9 +276,9 @@ pub fn sort_by_dependencies(
         members.sort_by(|left, right| {
             left.name
                 .cmp(&right.name)
-                .then_with(|| path_sort_key(&left.path).cmp(&path_sort_key(&right.path)))
+                .then_with(|| compare_paths(&left.path, &right.path))
         });
-        return Err(DependencyCycleError { members });
+        return Err(DependencySortError::Cycle(DependencyCycleError { members }));
     }
 
     // Reorder projects based on sorted indices (no cloning, just reordering references).
@@ -195,11 +297,27 @@ fn path_sort_key(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+fn compare_paths(left: &Path, right: &Path) -> Ordering {
+    path_sort_key(left)
+        .cmp(&path_sort_key(right))
+        .then_with(|| left.to_string_lossy().cmp(&right.to_string_lossy()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::test_support::create_project;
+    use changepacks_node::package::NodePackage;
+
+    fn create_project_at(name: &str, relative_path: &str) -> Project {
+        Project::Package(Box::new(NodePackage::new(
+            Some(name.to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test").join(relative_path),
+            PathBuf::from(relative_path),
+        )))
+    }
 
     #[test]
     fn test_sort_empty() {
@@ -336,16 +454,99 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_duplicate_dependency_name_is_ignored() {
-        let core_a = create_project("core", vec![]);
-        let core_b = create_project("core", vec![]);
+    fn test_sort_rejects_referenced_ambiguous_dependency() {
+        let core_a = create_project_at("core", "packages/core/package.json");
+        let core_b = create_project_at("core", "crates/core/Cargo.toml");
         let app = create_project("app", vec!["core"]);
 
         let projects = vec![&app, &core_a, &core_b];
-        let sorted = sort_by_dependencies(projects).unwrap();
+        let error = sort_by_dependencies(projects).expect_err("ambiguous edge must fail");
+        let ambiguity = error.ambiguity().expect("ambiguity details");
 
-        let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
-        assert_eq!(names, vec![Some("app"), Some("core"), Some("core")]);
+        assert_eq!(ambiguity.dependency(), "core");
+        assert_eq!(
+            ambiguity.candidates(),
+            [
+                PathBuf::from("crates/core/Cargo.toml"),
+                PathBuf::from("packages/core/package.json"),
+            ]
+        );
+        assert_eq!(
+            error.to_string(),
+            "ambiguous dependency `core`: candidates: crates/core/Cargo.toml, packages/core/package.json"
+        );
+    }
+
+    #[test]
+    fn test_ambiguous_dependency_diagnostic_is_deterministic() {
+        let zeta = create_project_at("shared", "zeta/package.json");
+        let alpha = create_project_at("shared", "alpha/package.json");
+        let app = create_project("app", vec!["shared"]);
+
+        let first = sort_by_dependencies(vec![&app, &zeta, &alpha])
+            .expect_err("ambiguous edge must fail")
+            .to_string();
+        let second = sort_by_dependencies(vec![&alpha, &app, &zeta])
+            .expect_err("ambiguous edge must fail")
+            .to_string();
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first,
+            "ambiguous dependency `shared`: candidates: alpha/package.json, zeta/package.json"
+        );
+    }
+
+    #[test]
+    fn test_ambiguous_dependency_diagnostic_breaks_normalized_path_ties() {
+        let slash = create_project_at("shared", "a/b/package.json");
+        let backslash = create_project_at("shared", "a\\b/package.json");
+        let app = create_project("app", vec!["shared"]);
+
+        let first = sort_by_dependencies(vec![&app, &slash, &backslash])
+            .expect_err("ambiguous edge must fail");
+        let second = sort_by_dependencies(vec![&app, &backslash, &slash])
+            .expect_err("ambiguous edge must fail");
+
+        let first_candidates: Vec<_> = first
+            .ambiguity()
+            .expect("ambiguity details")
+            .candidates()
+            .iter()
+            .map(|path| path.to_string_lossy())
+            .collect();
+        let second_candidates: Vec<_> = second
+            .ambiguity()
+            .expect("ambiguity details")
+            .candidates()
+            .iter()
+            .map(|path| path.to_string_lossy())
+            .collect();
+
+        assert_eq!(first_candidates, second_candidates);
+        assert_eq!(first.to_string(), second.to_string());
+    }
+
+    #[test]
+    fn test_sort_allows_unreferenced_duplicate_names() {
+        let core_a = create_project_at("core", "packages/core/package.json");
+        let core_b = create_project_at("core", "crates/core/Cargo.toml");
+        let app = create_project("app", vec![]);
+
+        let sorted = sort_by_dependencies(vec![&app, &core_a, &core_b]).unwrap();
+        let paths: Vec<_> = sorted
+            .iter()
+            .map(|project| project.relative_path())
+            .collect();
+
+        assert_eq!(
+            paths,
+            vec![
+                Path::new("app/package.json"),
+                Path::new("packages/core/package.json"),
+                Path::new("crates/core/Cargo.toml"),
+            ]
+        );
     }
 
     #[test]

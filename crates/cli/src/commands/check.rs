@@ -77,7 +77,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     let mut update_map = gen_update_map(&ctx.changepacks_dir, &ctx.config).await?;
 
     // Apply reverse dependency updates (workspace:* dependencies)
-    apply_reverse_dependencies(&mut update_map, &projects, &ctx.repo_root_path);
+    apply_reverse_dependencies(&mut update_map, &projects, &ctx.repo_root_path)?;
 
     if args.tree {
         // Tree mode: show dependencies as a tree

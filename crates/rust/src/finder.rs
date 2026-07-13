@@ -1,11 +1,11 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use changepacks_core::{Package, Project, ProjectFinder, is_regular_file};
+use changepacks_core::{Package, Project, ProjectFinder};
 use std::{
     collections::HashMap,
+    io::ErrorKind,
     path::{Path, PathBuf},
 };
-use tokio::fs::read_to_string;
 
 use crate::{package::RustPackage, workspace::RustWorkspace};
 
@@ -23,6 +23,14 @@ struct PendingWorkspacePackage {
 /// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["Cargo.toml"];
+
+fn cargo_toml_does_not_exist(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == ErrorKind::NotFound)
+    })
+}
 
 /// Look up `[package].<field>` as an owned string, mirroring the
 /// `doc.get("package").and_then(|p| p.get(field)).and_then(|v| v.as_str()).map(String::from)`
@@ -199,7 +207,7 @@ impl RustProjectFinder {
         &mut self,
         member_path: &Path,
         relative_path: &Path,
-    ) {
+    ) -> Result<()> {
         let repository_root = member_path
             .ancestors()
             .nth(relative_path.components().count())
@@ -210,27 +218,29 @@ impl RustProjectFinder {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
         else {
-            return;
+            return Ok(());
         };
 
         loop {
             if !ancestor.starts_with(&repository_root) {
-                return;
+                return Ok(());
             }
             let candidate = ancestor.join("Cargo.toml");
             if self.workspace_dependency_aliases.contains_key(&candidate) {
-                return;
+                return Ok(());
             }
-            if is_regular_file(&candidate).await
-                && let Ok((_, parsed)) = crate::read_and_parse_cargo_toml(&candidate).await
-                && parsed.get("workspace").is_some()
-            {
+            let parsed = match crate::read_and_parse_cargo_toml(&candidate).await {
+                Ok((_, parsed)) => Some(parsed),
+                Err(error) if cargo_toml_does_not_exist(&error) => None,
+                Err(error) => return Err(error),
+            };
+            if let Some(parsed) = parsed.filter(|parsed| parsed.get("workspace").is_some()) {
                 self.workspace_dependency_aliases
                     .insert(candidate, workspace_dependency_aliases(&parsed));
-                return;
+                return Ok(());
             }
             let Some(parent) = ancestor.parent() else {
-                return;
+                return Ok(());
             };
             ancestor = parent.to_path_buf();
         }
@@ -318,7 +328,7 @@ impl ProjectFinder for RustProjectFinder {
 
         if cargo_toml.get("workspace").is_none() {
             self.discover_workspace_dependency_aliases_for_member(path, relative_path)
-                .await;
+                .await?;
         }
 
         // Collect workspace dependencies for this file — the same
@@ -466,11 +476,15 @@ impl ProjectFinder for RustProjectFinder {
                 if self.workspace_package_versions.contains_key(&candidate) {
                     break;
                 }
-                if is_regular_file(&candidate).await
-                    && let Ok(content) = read_to_string(&candidate).await
-                    && let Ok(parsed) = content.parse::<toml_edit::DocumentMut>()
-                    && let Some(workspace_version) = workspace_package_str(&parsed, "version")
-                {
+                let parsed = match crate::read_and_parse_cargo_toml(&candidate).await {
+                    Ok((_, parsed)) => Some(parsed),
+                    Err(error) if cargo_toml_does_not_exist(&error) => None,
+                    Err(error) => return Err(error),
+                };
+                if let Some((parsed, workspace_version)) = parsed.and_then(|parsed| {
+                    workspace_package_str(&parsed, "version")
+                        .map(|workspace_version| (parsed, workspace_version))
+                }) {
                     let root_path = candidate;
                     self.workspace_package_versions
                         .insert(root_path.clone(), workspace_version.clone());
@@ -1026,7 +1040,8 @@ version = "1.0.0"
                 )],
             ),
         );
-        changepacks_utils::apply_reverse_dependencies(&mut update_map, &projects, temp_dir.path());
+        changepacks_utils::apply_reverse_dependencies(&mut update_map, &projects, temp_dir.path())
+            .unwrap();
         assert_eq!(
             update_map[&PathBuf::from("crates/app/Cargo.toml")].0,
             UpdateType::Patch
@@ -1118,7 +1133,8 @@ renamed-core = { workspace = true }
                 )],
             ),
         );
-        changepacks_utils::apply_reverse_dependencies(&mut update_map, &projects, temp_dir.path());
+        changepacks_utils::apply_reverse_dependencies(&mut update_map, &projects, temp_dir.path())
+            .unwrap();
         assert_eq!(
             update_map[&PathBuf::from("crates/app/Cargo.toml")].0,
             UpdateType::Patch
@@ -1752,6 +1768,259 @@ edition.workspace = true
         );
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_reports_malformed_ancestor_cargo_toml() {
+        let temp_dir = TempDir::new().unwrap();
+        let repository_root = temp_dir.path().join("repo");
+        let member_dir = repository_root.join("crates").join("app");
+        fs::create_dir_all(&member_dir).unwrap();
+
+        let malformed_ancestor = repository_root.join("crates").join("Cargo.toml");
+        fs::write(&malformed_ancestor, "invalid toml [[[").unwrap();
+        let member_toml = member_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            r#"[package]
+name = "app"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        let error = finder
+            .visit(&member_toml, Path::new("crates/app/Cargo.toml"))
+            .await
+            .expect_err("a malformed ancestor manifest must fail alias discovery");
+        let message = error.to_string();
+        assert!(message.contains("Failed to parse Cargo.toml"));
+        assert!(message.contains(malformed_ancestor.to_string_lossy().as_ref()));
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_reports_ancestor_cargo_toml_read_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let repository_root = temp_dir.path().join("repo");
+        let member_dir = repository_root.join("crates").join("app");
+        fs::create_dir_all(&member_dir).unwrap();
+
+        let unreadable_ancestor = repository_root.join("crates").join("Cargo.toml");
+        fs::create_dir(&unreadable_ancestor).unwrap();
+        let member_toml = member_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            r#"[package]
+name = "app"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        let error = finder
+            .visit(&member_toml, Path::new("crates/app/Cargo.toml"))
+            .await
+            .expect_err("an unreadable ancestor candidate must fail alias discovery");
+        let message = error.to_string();
+        assert!(message.contains("Failed to read Cargo.toml"));
+        assert!(message.contains(unreadable_ancestor.to_string_lossy().as_ref()));
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_uses_nearest_valid_nested_workspace() {
+        let temp_dir = TempDir::new().unwrap();
+        let nested_root = temp_dir.path().join("nested");
+        let member_dir = nested_root.join("crates").join("app");
+        fs::create_dir_all(&member_dir).unwrap();
+
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["nested"]
+
+[workspace.dependencies]
+shared = { package = "outer-core", path = "outer-core" }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            nested_root.join("Cargo.toml"),
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+shared = { package = "nested-core", path = "crates/core" }
+"#,
+        )
+        .unwrap();
+        let member_toml = member_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            r#"[package]
+name = "app"
+version = "1.0.0"
+
+[dependencies]
+shared = { workspace = true }
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&member_toml, Path::new("nested/crates/app/Cargo.toml"))
+            .await
+            .unwrap();
+
+        let app = finder
+            .projects()
+            .into_iter()
+            .find(|project| project.name() == Some("app"))
+            .unwrap();
+        assert!(app.dependencies().contains("nested-core"));
+        assert!(!app.dependencies().contains("outer-core"));
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_skips_valid_non_workspace_ancestor() {
+        let temp_dir = TempDir::new().unwrap();
+        let intermediate = temp_dir.path().join("tools");
+        let member_dir = intermediate.join("crates").join("app");
+        fs::create_dir_all(&member_dir).unwrap();
+
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["tools/crates/*"]
+
+[workspace.dependencies]
+shared = { package = "core", path = "core" }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            intermediate.join("Cargo.toml"),
+            r#"[package]
+name = "tools"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+        let member_toml = member_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            r#"[package]
+name = "app"
+version = "1.0.0"
+
+[dependencies]
+shared = { workspace = true }
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&member_toml, Path::new("tools/crates/app/Cargo.toml"))
+            .await
+            .unwrap();
+
+        let app = finder
+            .projects()
+            .into_iter()
+            .find(|project| project.name() == Some("app"))
+            .unwrap();
+        assert!(app.dependencies().contains("core"));
+        assert!(!app.dependencies().contains("shared"));
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_finalize_reports_malformed_ancestor_cargo_toml() {
+        let temp_dir = TempDir::new().unwrap();
+        let repository_root = temp_dir.path().join("repo");
+        let member_dir = repository_root.join("crates").join("app");
+        fs::create_dir_all(&member_dir).unwrap();
+
+        let ancestor_manifest = repository_root.join("crates").join("Cargo.toml");
+        fs::write(
+            &ancestor_manifest,
+            r#"[package]
+name = "container"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+        let member_toml = member_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            r#"[package]
+name = "app"
+version.workspace = true
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&member_toml, Path::new("crates/app/Cargo.toml"))
+            .await
+            .unwrap();
+
+        fs::write(&ancestor_manifest, "invalid toml [[[").unwrap();
+        let error = finder
+            .finalize()
+            .await
+            .expect_err("a malformed ancestor manifest must fail version discovery");
+        let message = error.to_string();
+        assert!(message.contains("Failed to parse Cargo.toml"));
+        assert!(message.contains(ancestor_manifest.to_string_lossy().as_ref()));
+        assert!(finder.projects().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_finalize_reports_ancestor_cargo_toml_read_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let repository_root = temp_dir.path().join("repo");
+        let member_dir = repository_root.join("crates").join("app");
+        fs::create_dir_all(&member_dir).unwrap();
+
+        let ancestor_manifest = repository_root.join("crates").join("Cargo.toml");
+        fs::write(
+            &ancestor_manifest,
+            r#"[package]
+name = "container"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+        let member_toml = member_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            r#"[package]
+name = "app"
+version.workspace = true
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&member_toml, Path::new("crates/app/Cargo.toml"))
+            .await
+            .unwrap();
+
+        fs::remove_file(&ancestor_manifest).unwrap();
+        fs::create_dir(&ancestor_manifest).unwrap();
+        let error = finder
+            .finalize()
+            .await
+            .expect_err("an unreadable ancestor candidate must fail version discovery");
+        let message = error.to_string();
+        assert!(message.contains("Failed to read Cargo.toml"));
+        assert!(message.contains(ancestor_manifest.to_string_lossy().as_ref()));
+        assert!(finder.projects().is_empty());
     }
 
     #[tokio::test]
