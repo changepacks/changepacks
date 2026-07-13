@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     hash::BuildHasher,
     path::{Path, PathBuf},
 };
@@ -217,30 +217,53 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         return;
     }
 
+    // Dependencies are resolved by project name, so record whether every name
+    // is unique before building either lookup. As in `sort_by_dependencies`,
+    // `Some(index)` means unique and `None` means duplicate/ambiguous.
+    let mut name_to_index: HashMap<&str, Option<usize>> = HashMap::with_capacity(projects.len());
+    for (idx, project) in projects.iter().enumerate() {
+        if let Some(name) = project.name() {
+            match name_to_index.entry(name) {
+                Entry::Occupied(entry) => {
+                    *entry.into_mut() = None;
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(Some(idx));
+                }
+            }
+        }
+    }
+
     // Single pass over projects to build:
     //   - path_to_name:   relative file path -> package name (for O(1) reverse lookup)
-    //   - reverse_deps:   dependency name -> [packages that depend on it]
+    //   - reverse_deps:   unique dependency name -> [packages that depend on it]
     let mut path_to_name: HashMap<PathBuf, &str> = HashMap::with_capacity(projects.len());
-    let mut reverse_deps: HashMap<&str, Vec<(PathBuf, &str)>> =
+    let mut reverse_deps: HashMap<&str, Vec<(PathBuf, Option<&str>)>> =
         HashMap::with_capacity(projects.len());
-    for project in projects {
+    for (idx, project) in projects.iter().enumerate() {
         let Ok(rel_path_buf) = get_relative_path(repo_root_path, project.path()) else {
             continue;
         };
 
-        // Hoist the name lookup ONCE per project and BORROW it: every name
-        // lives in `projects: &[&Project]`, which outlives both local maps,
-        // so `&str` values retire one `String` allocation per project (plus
-        // one per dependency edge below). Semantics stay byte-identical:
-        // the `name_opt.is_some()` gate preserves the "`path_to_name` only
-        // carries real names" invariant, and the "unknown" fallback still
-        // only surfaces in the reverse-dep log message text (never in
-        // `path_to_name`) — matching the pre-change behaviour.
+        // Borrow the name from `projects`, which outlives both graph maps.
+        // Only unique named projects can be initial or transitive worklist
+        // seeds. Nameless projects retain the historical "unknown" fallback
+        // when reached directly, while duplicate names stop at that direct
+        // PATCH and cannot propagate farther.
         let name_opt = project.name();
-        let project_name: &str = name_opt.unwrap_or("unknown");
+        let project_name = name_opt.unwrap_or("unknown");
+        let worklist_name = match name_opt {
+            Some(name) if name_to_index.get(name) == Some(&Some(idx)) => Some(name),
+            Some(_) => None,
+            None => Some(project_name),
+        };
 
         let dependencies = project.dependencies();
         for dep_name in dependencies {
+            if !matches!(name_to_index.get(dep_name.as_str()), Some(Some(_))) {
+                continue;
+            }
+
             // Fast-path: `HashMap::get_mut` on an existing key skips the
             // `entry` API's key move on hits — common when multiple
             // monorepo packages depend on the same core crate (e.g.
@@ -252,15 +275,15 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
             } else {
                 reverse_deps.entry(dep_name.as_str()).or_default()
             };
-            entry.push((rel_path_buf.clone(), project_name));
+            entry.push((rel_path_buf.clone(), worklist_name));
         }
 
         // Move `rel_path_buf` into its final consumer instead of cloning it:
         // the edge loop above only borrows it (one clone per edge), so once
         // the loop ends the buffer is free to move — the "move into the last
         // consumer" idiom from `find_project_dirs`'s repo-name fallback.
-        if name_opt.is_some() {
-            path_to_name.insert(rel_path_buf, project_name);
+        if let Some(unique_name) = worklist_name.filter(|_| name_opt.is_some()) {
+            path_to_name.insert(rel_path_buf, unique_name);
         }
     }
 
@@ -291,7 +314,9 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
                     && !packages_to_add.contains_key(dependent_path)
                 {
                     packages_to_add.insert(dependent_path.clone(), trigger_name);
-                    to_process.push(*dependent_name);
+                    if let Some(dependent_name) = dependent_name {
+                        to_process.push(*dependent_name);
+                    }
                 }
             }
         }
@@ -782,6 +807,80 @@ mod tests {
 
         // No changes, missing dependency is ignored
         assert_eq!(update_map.len(), 1);
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_duplicate_names_are_isolated() {
+        let core = create_project("core", vec![]);
+        let mut shared_a = create_project("shared-a", vec!["core"]);
+        shared_a.set_name("shared".to_string());
+        let mut shared_b = create_project("shared-b", vec!["core"]);
+        shared_b.set_name("shared".to_string());
+        let app = create_project("app", vec!["shared"]);
+        let projects: Vec<&Project> = vec![&core, &shared_a, &shared_b, &app];
+        let repo_root = Path::new("/test");
+
+        let mut duplicate_seed = HashMap::new();
+        duplicate_seed.insert(
+            PathBuf::from("shared-a/package.json"),
+            (UpdateType::Minor, vec![]),
+        );
+        apply_reverse_dependencies(&mut duplicate_seed, &projects, repo_root);
+        assert!(!duplicate_seed.contains_key(&PathBuf::from("app/package.json")));
+
+        let mut unique_seed = HashMap::new();
+        unique_seed.insert(
+            PathBuf::from("core/package.json"),
+            (UpdateType::Minor, vec![]),
+        );
+        apply_reverse_dependencies(&mut unique_seed, &projects, repo_root);
+
+        assert!(unique_seed.contains_key(&PathBuf::from("shared-a/package.json")));
+        assert!(unique_seed.contains_key(&PathBuf::from("shared-b/package.json")));
+        assert!(!unique_seed.contains_key(&PathBuf::from("app/package.json")));
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_unique_name_propagates_directly() {
+        let core = create_project("core", vec![]);
+        let cli = create_project("cli", vec!["core"]);
+        let projects: Vec<&Project> = vec![&core, &cli];
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("core/package.json"),
+            (UpdateType::Minor, vec![]),
+        );
+
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test"));
+
+        assert_eq!(
+            update_map[&PathBuf::from("cli/package.json")].0,
+            UpdateType::Patch
+        );
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_unique_names_propagate_transitively() {
+        let core = create_project("core", vec![]);
+        let utils = create_project("utils", vec!["core"]);
+        let cli = create_project("cli", vec!["utils"]);
+        let projects: Vec<&Project> = vec![&core, &utils, &cli];
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("core/package.json"),
+            (UpdateType::Minor, vec![]),
+        );
+
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test"));
+
+        assert_eq!(
+            update_map[&PathBuf::from("utils/package.json")].0,
+            UpdateType::Patch
+        );
+        assert_eq!(
+            update_map[&PathBuf::from("cli/package.json")].0,
+            UpdateType::Patch
+        );
     }
 
     // Locks in the fast-path added to `apply_update_on_rules`: an empty

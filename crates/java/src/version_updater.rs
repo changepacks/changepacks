@@ -7,11 +7,11 @@ use std::sync::LazyLock;
 use tokio::fs::{read_to_string, write};
 
 static KTS_SIMPLE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?m)^(version\s*=\s*)"[^"]+""#).expect("hardcoded regex must compile")
+    Regex::new(r#"(?m)^(\s*version\s*=\s*)"[^"]+""#).expect("hardcoded regex must compile")
 });
 
 static KTS_FALLBACK_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?m)^(version\s*=\s*project\.findProperty\([^)]+\)\s*\?:\s*)"[^"]+""#)
+    Regex::new(r#"(?m)^(\s*version\s*=\s*project\.findProperty\([^)]+\)\s*\?:\s*)"[^"]+""#)
         .expect("hardcoded regex must compile")
 });
 
@@ -129,6 +129,47 @@ version = project.findProperty("releaseVersion") ?: "1.0.11"
     }
 
     #[test]
+    fn test_update_version_in_kts_simple_preserves_space_indentation_byte_for_byte() {
+        let content = "plugins {\r\n    version = \"1.0.0\" // keep this comment\r\n}\r\n";
+        let updated = update_version_in_kts(content, "1.0.1");
+
+        assert_eq!(
+            updated,
+            "plugins {\r\n    version = \"1.0.1\" // keep this comment\r\n}\r\n"
+        );
+    }
+
+    #[test]
+    fn test_update_version_in_kts_simple_preserves_tab_indentation_byte_for_byte() {
+        let content = "plugins {\n\tversion\t=\t\"1.0.0\"\n}\n";
+        let updated = update_version_in_kts(content, "1.0.1");
+
+        assert_eq!(updated, "plugins {\n\tversion\t=\t\"1.0.1\"\n}\n");
+    }
+
+    #[test]
+    fn test_update_version_in_kts_fallback_preserves_space_indentation_byte_for_byte() {
+        let content = "allprojects {\r\n    version = project.findProperty(\"releaseVersion\") ?: \"1.0.11\" // fallback\r\n}\r\n";
+        let updated = update_version_in_kts(content, "1.0.12");
+
+        assert_eq!(
+            updated,
+            "allprojects {\r\n    version = project.findProperty(\"releaseVersion\") ?: \"1.0.12\" // fallback\r\n}\r\n"
+        );
+    }
+
+    #[test]
+    fn test_update_version_in_kts_fallback_preserves_tab_indentation_byte_for_byte() {
+        let content = "allprojects {\n\tversion\t=\tproject.findProperty(\"releaseVersion\")\t?:\t\"1.0.11\"\n}\n";
+        let updated = update_version_in_kts(content, "1.0.12");
+
+        assert_eq!(
+            updated,
+            "allprojects {\n\tversion\t=\tproject.findProperty(\"releaseVersion\")\t?:\t\"1.0.12\"\n}\n"
+        );
+    }
+
+    #[test]
     fn test_update_version_in_groovy_assign() {
         let content = r#"
 group = 'com.example'
@@ -229,5 +270,21 @@ group = "com.example"
         );
         assert!(error.to_string().contains(&path.display().to_string()));
         assert_eq!(bytes_after, bytes_before);
+    }
+
+    #[tokio::test]
+    async fn test_write_gradle_version_updates_indented_kts_declaration() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join("build.gradle.kts");
+        let content = b"plugins {\r\n\tversion = \"1.0.0\" // preserve\r\n}\r\n";
+        tokio::fs::write(&path, content).await.unwrap();
+
+        write_gradle_version(&path, "1.0.1").await.unwrap();
+
+        let updated = tokio::fs::read(&path).await.unwrap();
+        assert_eq!(
+            updated,
+            b"plugins {\r\n\tversion = \"1.0.1\" // preserve\r\n}\r\n"
+        );
     }
 }
