@@ -40,7 +40,7 @@ pub(crate) const PUBLISH_COMMAND: &str = "dotnet pack -c Release && dotnet nuget
 ///
 /// # Errors
 /// Returns error if the file cannot be read, the XML cannot be parsed, or
-/// the write fails.
+/// no supported version node can be mutated, or the write fails.
 pub(crate) async fn write_csproj_version(
     path: &Path,
     new_version: &str,
@@ -49,7 +49,8 @@ pub(crate) async fn write_csproj_version(
     let csproj_raw = read_to_string(path)
         .await
         .with_context(|| format!("Failed to read C# project {}", path.display()))?;
-    let updated = xml_utils::update_version_in_xml(&csproj_raw, new_version, has_version)?;
+    let updated = xml_utils::update_version_in_xml(&csproj_raw, new_version, has_version)
+        .with_context(|| format!("Failed to update version in C# project {}", path.display()))?;
     if updated != csproj_raw {
         write(path, updated)
             .await
@@ -62,26 +63,28 @@ pub(crate) async fn write_csproj_version(
 mod tests {
     use super::*;
     use changepacks_core::UpdateType;
-    use changepacks_utils::test_support;
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn test_write_csproj_version_skips_unchanged_readonly_file() {
+    async fn test_write_csproj_version_rejects_no_property_group_without_writing() {
         let temp_dir = TempDir::new().unwrap();
         let csproj_path = temp_dir.path().join("NoPropertyGroup.csproj");
-        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n";
+        let content = b"<Project Sdk=\"Microsoft.NET.Sdk\">\r\n</Project>\r\n";
         tokio::fs::write(&csproj_path, content).await.unwrap();
 
-        test_support::set_readonly(&csproj_path, true);
+        let err = write_csproj_version(&csproj_path, "1.2.3", false)
+            .await
+            .expect_err("XML without a PropertyGroup cannot be updated");
+        let chain = format!("{err:#}");
 
-        let result = write_csproj_version(&csproj_path, "1.2.3", false).await;
-
-        test_support::set_readonly(&csproj_path, false);
-
-        result.unwrap();
-        assert_eq!(
-            tokio::fs::read_to_string(&csproj_path).await.unwrap(),
-            content
+        assert_eq!(tokio::fs::read(&csproj_path).await.unwrap(), content);
+        assert!(
+            chain.contains(&csproj_path.display().to_string()),
+            "error chain should name the manifest path, got: {chain}",
+        );
+        assert!(
+            chain.contains("did not mutate any XML node"),
+            "error chain should explain the failed mutation, got: {chain}",
         );
         temp_dir.close().unwrap();
     }

@@ -20,6 +20,22 @@ use changepacks_utils::{detect_indent_str, finalize_content};
 use serde::Serialize;
 use tokio::fs::{read_to_string, write};
 
+#[cfg(test)]
+type MetadataProbe = fn(&Path) -> std::io::Result<bool>;
+
+#[cfg(test)]
+tokio::task_local! {
+    static TEST_METADATA_PROBE: MetadataProbe;
+}
+
+#[cfg(test)]
+pub(crate) async fn with_test_metadata_probe<F>(probe: MetadataProbe, future: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    TEST_METADATA_PROBE.scope(probe, future).await
+}
+
 /// Read and parse a `package.json` file, returning both the raw content and
 /// the parsed JSON value.
 ///
@@ -42,7 +58,7 @@ pub(crate) async fn read_and_parse_package_json(
 
 /// Update `package.json` at `path` to set its `version` field to `new_version`,
 /// preserving the file's original indent size (via `detect_indent`) and its
-/// trailing-newline shape (via `trailing_newline`).
+/// complete trailing-whitespace shape (via `finalize_content`).
 ///
 /// Shared by `NodePackage::update_version` and `NodeWorkspace::update_version`
 /// so both paths emit byte-identical output.
@@ -66,7 +82,7 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
         obj.insert("version".to_string(), new_value);
     }
     let compact = !package_json_raw
-        .trim_end_matches(['\r', '\n'])
+        .trim_end()
         .bytes()
         .any(|byte| matches!(byte, b'\r' | b'\n'));
     let serialized = if compact {
@@ -222,19 +238,43 @@ impl PackageManager {
 /// `run_dry_run_publish_for_path`) to prepend `node_modules/.bin` to `PATH`
 /// so lifecycle hooks such as `husky` resolve during `bun publish` / `bun pm
 /// pack` (oven-sh/bun#16071, #18055, #23594).
-pub async fn node_modules_bin_dirs_async(start_dir: &Path, max_depth: usize) -> Vec<PathBuf> {
+///
+/// # Errors
+/// Returns an error when a candidate directory cannot be inspected for a
+/// reason other than it not existing. The error includes the candidate path.
+pub async fn node_modules_bin_dirs_async(
+    start_dir: &Path,
+    max_depth: usize,
+) -> Result<Vec<PathBuf>> {
     let mut dirs = Vec::new();
     for dir in start_dir.ancestors().take(max_depth) {
         let bin = dir.join("node_modules").join(".bin");
-        if tokio::fs::metadata(&bin)
-            .await
-            .map(|metadata| metadata.is_dir())
-            .unwrap_or(false)
-        {
-            dirs.push(bin);
+        match metadata_is_directory(&bin).await {
+            Ok(true) => dirs.push(bin),
+            Ok(false) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to inspect Node lifecycle PATH directory {}",
+                        bin.display()
+                    )
+                });
+            }
         }
     }
-    dirs
+    Ok(dirs)
+}
+
+async fn metadata_is_directory(path: &Path) -> std::io::Result<bool> {
+    #[cfg(test)]
+    if let Ok(result) = TEST_METADATA_PROBE.try_with(|probe| probe(path)) {
+        return result;
+    }
+
+    tokio::fs::metadata(path)
+        .await
+        .map(|metadata| metadata.is_dir())
 }
 
 /// Select a package manager from async lockfile probe results.
@@ -351,12 +391,12 @@ pub(crate) async fn dry_run_publish_command_for_path(
     .await
 }
 
-async fn publish_path_dirs_for_path(path: &Path, relative_path: &Path) -> Vec<PathBuf> {
+async fn publish_path_dirs_for_path(path: &Path, relative_path: &Path) -> Result<Vec<PathBuf>> {
     match path.parent() {
         Some(parent) => {
             node_modules_bin_dirs_async(parent, relative_path.components().count()).await
         }
-        None => Vec::new(),
+        None => Ok(Vec::new()),
     }
 }
 
@@ -370,7 +410,7 @@ async fn run_flow_with_path_dirs(
     relative_path: &Path,
     missing_dir_message: &'static str,
 ) -> Result<changepacks_core::publish::PublishOutput> {
-    let path_dirs = publish_path_dirs_for_path(path, relative_path).await;
+    let path_dirs = publish_path_dirs_for_path(path, relative_path).await?;
     changepacks_core::publish::run_publish_flow(command, path, &path_dirs, missing_dir_message)
         .await
 }
@@ -409,6 +449,13 @@ mod tests {
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
+
+    fn denied_metadata(_path: &Path) -> std::io::Result<bool> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "deterministic metadata failure",
+        ))
+    }
 
     #[test]
     fn test_package_manager_from_lockfile_probes_uses_priority() {
@@ -463,7 +510,7 @@ mod tests {
 
         // depth 3 simulates the relative path `packages/app/package.json`
         // (3 components), covering `packages/app` .. `root` inclusive.
-        let dirs = node_modules_bin_dirs_async(&pkg_dir, 3).await;
+        let dirs = node_modules_bin_dirs_async(&pkg_dir, 3).await.unwrap();
         // Nearest (package-level) bin dir comes first, ancestor (root) after.
         assert_eq!(dirs.first(), Some(&pkg_bin));
         assert!(dirs.contains(&root_bin));
@@ -493,7 +540,7 @@ mod tests {
 
         // depth 2 == `pkg/package.json`.components().count(): scans `pkg` and
         // the repo root, never the parent that holds the decoy bin.
-        let dirs = node_modules_bin_dirs_async(&pkg_dir, 2).await;
+        let dirs = node_modules_bin_dirs_async(&pkg_dir, 2).await.unwrap();
         assert!(
             !dirs.contains(&outer_bin),
             "expected a node_modules/.bin above the repo root to be ignored"
@@ -510,7 +557,40 @@ mod tests {
         assert!(
             node_modules_bin_dirs_async(temp_dir.path(), 1)
                 .await
+                .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_node_modules_bin_dirs_skips_non_directory_candidate() {
+        let temp_dir = TempDir::new().unwrap();
+        let bin = temp_dir.path().join("node_modules").join(".bin");
+        fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        fs::write(&bin, "not a directory").unwrap();
+
+        assert!(
+            node_modules_bin_dirs_async(temp_dir.path(), 1)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_node_modules_bin_dirs_propagates_probe_error_with_candidate_path() {
+        let start = PathBuf::from("repo/packages/app");
+        let expected = start.join("node_modules").join(".bin");
+
+        let error =
+            with_test_metadata_probe(denied_metadata, node_modules_bin_dirs_async(&start, 1))
+                .await
+                .expect_err("permission errors must propagate");
+
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains(&expected.display().to_string()),
+            "error chain should name the candidate path, got: {chain}"
         );
     }
 
@@ -541,7 +621,9 @@ mod tests {
         }
 
         // depth 1 covers the package dir, where `node_modules/.bin` lives.
-        let dirs = node_modules_bin_dirs_async(temp_dir.path(), 1).await;
+        let dirs = node_modules_bin_dirs_async(temp_dir.path(), 1)
+            .await
+            .unwrap();
         assert!(dirs.contains(&bin));
 
         // Bare command name; resolvable only via the injected PATH entry.
@@ -648,6 +730,44 @@ mod tests {
             .unwrap();
 
         assert_eq!(fs::read(&package_json).unwrap(), expected.as_bytes());
+    }
+
+    #[tokio::test]
+    async fn test_write_package_json_version_preserves_complete_trailing_whitespace() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        let suffix = " \t\r\n \n";
+        fs::write(
+            &package_json,
+            format!("{{\n  \"version\": \"1.0.0\"\n}}{suffix}"),
+        )
+        .unwrap();
+
+        write_package_json_version(&package_json, "2.0.0")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&package_json).unwrap(),
+            format!("{{\n  \"version\": \"2.0.0\"\n}}{suffix}")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_compact_package_json_preserves_body_and_complete_trailing_whitespace() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        let suffix = " \t\r\n \n";
+        fs::write(&package_json, format!(r#"{{"version":"1.0.0"}}{suffix}"#)).unwrap();
+
+        write_package_json_version(&package_json, "2.0.0")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&package_json).unwrap(),
+            format!(r#"{{"version":"2.0.0"}}{suffix}"#)
+        );
     }
 
     // Lock-file priority and default behavior through the production async

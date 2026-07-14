@@ -43,13 +43,6 @@ static SUBPROJECTS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?m)^subprojects:\s*(.+)$").expect("hardcoded regex must compile")
 });
 
-static PROJECT_DEPENDENCY_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r#"project\(\s*(?:["'](:[^"']+)["']|path\s*=\s*["'](:[^"']+)["']|path\s*:\s*["'](:[^"']+)["'])\s*\)"#,
-    )
-        .expect("hardcoded regex must compile")
-});
-
 #[derive(Debug, Default)]
 pub struct GradleProjectFinder {
     projects: HashMap<PathBuf, Project>,
@@ -166,6 +159,7 @@ pub(crate) async fn run_gradle_publish(
     manifest_path: &Path,
     relative_path: &Path,
     task: &str,
+    additional_args: &[OsString],
     missing_dir_ctx: &'static str,
 ) -> Result<changepacks_core::publish::PublishOutput> {
     let project_dir = manifest_path.parent().context(missing_dir_ctx)?;
@@ -174,7 +168,9 @@ pub(crate) async fn run_gradle_publish(
         "Gradle wrapper (gradlew) not found. \
          Ensure the project root contains gradlew or gradlew.bat.",
     )?;
-    let args = vec![gradle_task_arg(project_dir, &gradlew_dir, task)?];
+    let mut args = Vec::with_capacity(additional_args.len() + 1);
+    args.push(gradle_task_arg(project_dir, &gradlew_dir, task)?);
+    args.extend_from_slice(additional_args);
     let output = GradleCommandSpec::new(&gradlew, &gradlew_dir, args)
         .command()
         .stdout(Stdio::piped())
@@ -228,16 +224,727 @@ fn gradle_dependency_name(project_path: &str) -> Option<&str> {
         .filter(|name| !name.is_empty())
 }
 
-fn extract_gradle_project_dependencies(content: &str) -> Vec<&str> {
-    PROJECT_DEPENDENCY_PATTERN
-        .captures_iter(content)
-        .filter_map(|caps| {
-            caps.get(1)
-                .or_else(|| caps.get(2))
-                .or_else(|| caps.get(3))
-                .and_then(|m| gradle_dependency_name(m.as_str()))
-        })
-        .collect()
+fn is_gradle_identifier_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$') || !byte.is_ascii()
+}
+
+fn is_gradle_identifier_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$') || !byte.is_ascii()
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct SignificantBytes {
+    before_last: Option<u8>,
+    last: Option<u8>,
+}
+
+impl SignificantBytes {
+    fn push(&mut self, byte: u8) {
+        self.before_last = self.last;
+        self.last = Some(byte);
+    }
+
+    fn is_member_access(self) -> bool {
+        self.last == Some(b'.')
+            || matches!(
+                (self.before_last, self.last),
+                (Some(b'.'), Some(b'&' | b'@')) | (Some(b':'), Some(b':'))
+            )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum GradlePreviousToken {
+    #[default]
+    StatementStart,
+    ExpressionStart,
+    ExpressionEnd,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct GradleLexState {
+    significant: SignificantBytes,
+    previous: GradlePreviousToken,
+}
+
+impl GradleLexState {
+    fn slashy_allowed(self) -> bool {
+        self.previous != GradlePreviousToken::ExpressionEnd
+    }
+
+    fn is_member_access(self) -> bool {
+        self.significant.is_member_access()
+    }
+
+    fn allows_recovery_candidate(self) -> bool {
+        self.previous == GradlePreviousToken::ExpressionEnd
+    }
+
+    fn mark_literal(&mut self) {
+        self.significant.push(b'v');
+        self.previous = GradlePreviousToken::ExpressionEnd;
+    }
+
+    fn mark_identifier(&mut self, identifier: &[u8]) {
+        if let Some(&last) = identifier.last() {
+            self.significant.push(last);
+        }
+        self.previous = if groovy_identifier_allows_expression(identifier) {
+            GradlePreviousToken::ExpressionStart
+        } else {
+            GradlePreviousToken::ExpressionEnd
+        };
+    }
+
+    fn mark_byte(&mut self, byte: u8) {
+        self.significant.push(byte);
+        self.previous = match byte {
+            b';' => GradlePreviousToken::StatementStart,
+            b'(' | b'[' | b'{' | b',' | b':' | b'=' | b'?' | b'+' | b'-' | b'*' | b'/' | b'%'
+            | b'!' | b'&' | b'|' | b'^' | b'<' | b'>' | b'~' => {
+                GradlePreviousToken::ExpressionStart
+            }
+            _ => GradlePreviousToken::ExpressionEnd,
+        };
+    }
+
+    fn mark_statement_start(&mut self) {
+        self.previous = GradlePreviousToken::StatementStart;
+    }
+}
+
+fn gradle_identifier_end(bytes: &[u8], start: usize) -> usize {
+    let mut end = start;
+    while bytes
+        .get(end)
+        .copied()
+        .is_some_and(is_gradle_identifier_byte)
+    {
+        end += 1;
+    }
+    end
+}
+
+fn groovy_identifier_allows_expression(identifier: &[u8]) -> bool {
+    matches!(
+        identifier,
+        b"assert" | b"case" | b"in" | b"instanceof" | b"new" | b"return" | b"throw" | b"yield"
+    )
+}
+
+fn quoted_gradle_literal_end(
+    bytes: &[u8],
+    start: usize,
+    triple: bool,
+    dialect: GradleDependencyDialect,
+) -> Option<usize> {
+    let quote = *bytes.get(start)?;
+    if !matches!(quote, b'\'' | b'"') {
+        return None;
+    }
+
+    let mut cursor = start + if triple { 3 } else { 1 };
+    while cursor < bytes.len() {
+        if triple && bytes[cursor] == quote {
+            let run_start = cursor;
+            while bytes.get(cursor) == Some(&quote) {
+                cursor += 1;
+            }
+            let quote_count = cursor - run_start;
+            if quote_count >= 3 {
+                let mut backslash_count = 0usize;
+                let mut previous = run_start;
+                while previous > start + 2 && bytes[previous - 1] == b'\\' {
+                    previous -= 1;
+                    backslash_count += 1;
+                }
+                if dialect == GradleDependencyDialect::Kotlin || backslash_count.is_multiple_of(2) {
+                    return Some(cursor);
+                }
+            }
+            continue;
+        }
+
+        match bytes[cursor] {
+            b'\\' if !triple || dialect == GradleDependencyDialect::Groovy => {
+                cursor = (cursor + 2).min(bytes.len());
+            }
+            byte if byte == quote => return Some(cursor + 1),
+            b'\r' | b'\n' if !triple => return None,
+            _ => cursor += 1,
+        }
+    }
+    None
+}
+
+fn slashy_gradle_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut cursor = start + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => cursor = (cursor + 2).min(bytes.len()),
+            b'/' => return Some(cursor + 1),
+            _ => cursor += 1,
+        }
+    }
+    None
+}
+
+fn dollar_slashy_gradle_literal_end(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut cursor = start + 2;
+    while cursor < bytes.len() {
+        if bytes.get(cursor..cursor + 2) == Some(b"/$") {
+            return Some(cursor + 2);
+        }
+        cursor += if bytes[cursor] == b'$' && cursor + 1 < bytes.len() {
+            2
+        } else {
+            1
+        };
+    }
+    None
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GradleLiteralScan {
+    NotLiteral,
+    Complete(usize),
+    Unterminated,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GradleDependencyDialect {
+    Kotlin,
+    Groovy,
+}
+
+fn gradle_dependency_dialect(manifest_path: &Path) -> GradleDependencyDialect {
+    if manifest_path
+        .file_name()
+        .is_some_and(|name| name == "build.gradle.kts")
+    {
+        GradleDependencyDialect::Kotlin
+    } else {
+        GradleDependencyDialect::Groovy
+    }
+}
+
+fn scan_gradle_literal(
+    bytes: &[u8],
+    start: usize,
+    dialect: GradleDependencyDialect,
+    slashy_allowed: bool,
+) -> GradleLiteralScan {
+    if dialect == GradleDependencyDialect::Groovy && bytes.get(start..start + 2) == Some(b"$/") {
+        return dollar_slashy_gradle_literal_end(bytes, start)
+            .map_or(GradleLiteralScan::Unterminated, GradleLiteralScan::Complete);
+    }
+
+    if let Some(quote @ (b'\'' | b'"')) = bytes.get(start).copied() {
+        let triple = bytes.get(start + 1) == Some(&quote) && bytes.get(start + 2) == Some(&quote);
+        return quoted_gradle_literal_end(bytes, start, triple, dialect)
+            .map_or(GradleLiteralScan::Unterminated, GradleLiteralScan::Complete);
+    }
+
+    if dialect == GradleDependencyDialect::Groovy
+        && slashy_allowed
+        && bytes.get(start) == Some(&b'/')
+    {
+        // Groovy `/` is slashy only where the bounded previous-token state
+        // allows an expression to start. A slash after a number, identifier,
+        // literal, or closing delimiter remains division.
+        return slashy_gradle_literal_end(bytes, start)
+            .map_or(GradleLiteralScan::NotLiteral, GradleLiteralScan::Complete);
+    }
+
+    GradleLiteralScan::NotLiteral
+}
+
+fn skip_gradle_comment(
+    bytes: &[u8],
+    start: usize,
+    dialect: GradleDependencyDialect,
+) -> Option<usize> {
+    match (bytes.get(start), bytes.get(start + 1)) {
+        (Some(b'/'), Some(b'/')) => {
+            let mut cursor = start + 2;
+            while cursor < bytes.len() && !matches!(bytes[cursor], b'\r' | b'\n') {
+                cursor += 1;
+            }
+            Some(cursor)
+        }
+        (Some(b'/'), Some(b'*')) => {
+            let mut cursor = start + 2;
+            let mut depth = 1usize;
+            while cursor + 1 < bytes.len() {
+                match (bytes[cursor], bytes[cursor + 1]) {
+                    (b'/', b'*') if dialect == GradleDependencyDialect::Kotlin => {
+                        depth += 1;
+                        cursor += 2;
+                    }
+                    (b'*', b'/') => {
+                        depth -= 1;
+                        cursor += 2;
+                        if depth == 0 {
+                            return Some(cursor);
+                        }
+                    }
+                    _ => cursor += 1,
+                }
+            }
+            Some(bytes.len())
+        }
+        _ => None,
+    }
+}
+
+fn skip_gradle_trivia(
+    bytes: &[u8],
+    mut cursor: usize,
+    end: usize,
+    dialect: GradleDependencyDialect,
+) -> usize {
+    loop {
+        while cursor < end && bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
+            cursor += 1;
+        }
+        if cursor >= end {
+            return end;
+        }
+        let Some(next) = skip_gradle_comment(bytes, cursor, dialect) else {
+            return cursor;
+        };
+        cursor = next.min(end);
+    }
+}
+
+fn looks_like_statement_call(bytes: &[u8], start: usize, dialect: GradleDependencyDialect) -> bool {
+    let mut cursor = skip_gradle_trivia(bytes, start, bytes.len(), dialect);
+    if !bytes
+        .get(cursor)
+        .copied()
+        .is_some_and(is_gradle_identifier_start)
+    {
+        return false;
+    }
+    while bytes
+        .get(cursor)
+        .copied()
+        .is_some_and(is_gradle_identifier_byte)
+    {
+        cursor += 1;
+    }
+    cursor = skip_gradle_trivia(bytes, cursor, bytes.len(), dialect);
+    bytes.get(cursor) == Some(&b'(')
+}
+
+fn gradle_line_break_end(bytes: &[u8], cursor: usize) -> Option<usize> {
+    match bytes.get(cursor) {
+        Some(b'\r') if bytes.get(cursor + 1) == Some(&b'\n') => Some(cursor + 2),
+        Some(b'\r' | b'\n') => Some(cursor + 1),
+        _ => None,
+    }
+}
+
+fn verified_blank_line_resume(
+    bytes: &[u8],
+    cursor: usize,
+    dialect: GradleDependencyDialect,
+) -> Option<usize> {
+    let mut next = gradle_line_break_end(bytes, cursor)?;
+    while matches!(bytes.get(next), Some(b' ' | b'\t')) {
+        next += 1;
+    }
+    next = gradle_line_break_end(bytes, next)?;
+    let resume = skip_gradle_trivia(bytes, next, bytes.len(), dialect);
+    looks_like_statement_call(bytes, resume, dialect).then_some(resume)
+}
+
+#[derive(Debug)]
+enum GradleCallScan {
+    Complete {
+        end: usize,
+        arguments: Vec<(usize, usize)>,
+    },
+    Malformed {
+        resume: usize,
+    },
+}
+
+fn gradle_quarantine_resume(
+    bytes: &[u8],
+    start: usize,
+    dialect: GradleDependencyDialect,
+    mut expected_closers: Vec<u8>,
+) -> usize {
+    let mut cursor = start;
+    let mut lexical = GradleLexState::default();
+
+    while cursor < bytes.len() {
+        if let Some(next) = skip_gradle_comment(bytes, cursor, dialect) {
+            cursor = next;
+            continue;
+        }
+
+        match scan_gradle_literal(bytes, cursor, dialect, lexical.slashy_allowed()) {
+            GradleLiteralScan::Complete(next) => {
+                cursor = next;
+                lexical.mark_literal();
+                continue;
+            }
+            GradleLiteralScan::Unterminated => return bytes.len(),
+            GradleLiteralScan::NotLiteral => {}
+        }
+
+        if bytes
+            .get(cursor)
+            .copied()
+            .is_some_and(is_gradle_identifier_start)
+        {
+            let end = gradle_identifier_end(bytes, cursor);
+            lexical.mark_identifier(&bytes[cursor..end]);
+            cursor = end;
+            continue;
+        }
+
+        match bytes[cursor] {
+            b'\r' | b'\n' => {
+                if expected_closers.is_empty()
+                    && let Some(resume) = verified_blank_line_resume(bytes, cursor, dialect)
+                {
+                    return resume;
+                }
+                cursor = gradle_line_break_end(bytes, cursor).unwrap_or(cursor + 1);
+                if !matches!(expected_closers.last(), Some(b')' | b']')) {
+                    lexical.mark_statement_start();
+                }
+            }
+            byte @ (b'(' | b'[' | b'{') => {
+                expected_closers.push(match byte {
+                    b'(' => b')',
+                    b'[' => b']',
+                    b'{' => b'}',
+                    _ => unreachable!(),
+                });
+                lexical.mark_byte(byte);
+                cursor += 1;
+            }
+            byte @ (b')' | b']' | b'}') => {
+                if expected_closers.last() == Some(&byte) {
+                    expected_closers.pop();
+                }
+                lexical.mark_byte(byte);
+                cursor += 1;
+            }
+            byte if byte.is_ascii_whitespace() => cursor += 1,
+            byte => {
+                lexical.mark_byte(byte);
+                cursor += 1;
+            }
+        }
+    }
+
+    bytes.len()
+}
+
+fn malformed_gradle_call(
+    bytes: &[u8],
+    quarantine_start: usize,
+    dialect: GradleDependencyDialect,
+    expected_closers: Vec<u8>,
+) -> GradleCallScan {
+    GradleCallScan::Malformed {
+        resume: gradle_quarantine_resume(bytes, quarantine_start, dialect, expected_closers),
+    }
+}
+
+fn scan_gradle_call(bytes: &[u8], open: usize, dialect: GradleDependencyDialect) -> GradleCallScan {
+    let mut cursor = open + 1;
+    let mut expected_closers = vec![b')'];
+    let mut arguments = Vec::new();
+    let mut argument_start = cursor;
+    let mut lexical = GradleLexState::default();
+    lexical.mark_byte(b'(');
+    let mut recovery_candidate = None;
+
+    while cursor < bytes.len() {
+        if let Some(next) = skip_gradle_comment(bytes, cursor, dialect) {
+            cursor = next;
+            continue;
+        }
+
+        match scan_gradle_literal(bytes, cursor, dialect, lexical.slashy_allowed()) {
+            GradleLiteralScan::Complete(next) => {
+                cursor = next;
+                lexical.mark_literal();
+                continue;
+            }
+            GradleLiteralScan::Unterminated => {
+                if let Some(resume) = recovery_candidate {
+                    return GradleCallScan::Malformed { resume };
+                }
+                return malformed_gradle_call(bytes, cursor, dialect, expected_closers);
+            }
+            GradleLiteralScan::NotLiteral => {}
+        }
+
+        if bytes
+            .get(cursor)
+            .copied()
+            .is_some_and(is_gradle_identifier_start)
+        {
+            let end = gradle_identifier_end(bytes, cursor);
+            lexical.mark_identifier(&bytes[cursor..end]);
+            cursor = end;
+            continue;
+        }
+
+        match bytes[cursor] {
+            b'\r' | b'\n' => {
+                if expected_closers.len() == 1
+                    && lexical.allows_recovery_candidate()
+                    && let Some(resume) = verified_blank_line_resume(bytes, cursor, dialect)
+                {
+                    recovery_candidate.get_or_insert(resume);
+                }
+                cursor = gradle_line_break_end(bytes, cursor).unwrap_or(cursor + 1);
+            }
+            byte @ (b'(' | b'[' | b'{') => {
+                expected_closers.push(match byte {
+                    b'(' => b')',
+                    b'[' => b']',
+                    b'{' => b'}',
+                    _ => unreachable!(),
+                });
+                lexical.mark_byte(byte);
+                cursor += 1;
+            }
+            byte @ (b')' | b']' | b'}') => {
+                if expected_closers.last() != Some(&byte) {
+                    if let Some(resume) = recovery_candidate {
+                        return GradleCallScan::Malformed { resume };
+                    }
+                    return malformed_gradle_call(bytes, cursor + 1, dialect, expected_closers);
+                }
+                if expected_closers.len() == 1 {
+                    arguments.push((argument_start, cursor));
+                    return GradleCallScan::Complete {
+                        end: cursor + 1,
+                        arguments,
+                    };
+                }
+                expected_closers.pop();
+                lexical.mark_byte(byte);
+                cursor += 1;
+            }
+            b',' if expected_closers.len() == 1 => {
+                arguments.push((argument_start, cursor));
+                argument_start = cursor + 1;
+                lexical.mark_byte(b',');
+                cursor += 1;
+            }
+            byte if byte.is_ascii_whitespace() => cursor += 1,
+            byte => {
+                lexical.mark_byte(byte);
+                cursor += 1;
+            }
+        }
+    }
+
+    if let Some(resume) = recovery_candidate {
+        return GradleCallScan::Malformed { resume };
+    }
+    malformed_gradle_call(bytes, bytes.len(), dialect, expected_closers)
+}
+
+fn gradle_assignment(
+    content: &str,
+    start: usize,
+    end: usize,
+    dialect: GradleDependencyDialect,
+) -> Option<(&str, usize)> {
+    let bytes = content.as_bytes();
+    let mut cursor = skip_gradle_trivia(bytes, start, end, dialect);
+    let identifier_start = cursor;
+    if !bytes
+        .get(cursor)
+        .copied()
+        .is_some_and(is_gradle_identifier_start)
+    {
+        return None;
+    }
+    while cursor < end && is_gradle_identifier_byte(bytes[cursor]) {
+        cursor += 1;
+    }
+    let identifier = content.get(identifier_start..cursor)?;
+    cursor = skip_gradle_trivia(bytes, cursor, end, dialect);
+    if !matches!(bytes.get(cursor), Some(b'=' | b':')) {
+        return None;
+    }
+    cursor = skip_gradle_trivia(bytes, cursor + 1, end, dialect);
+    Some((identifier, cursor))
+}
+
+fn plain_gradle_project_path(
+    content: &str,
+    start: usize,
+    end: usize,
+    dialect: GradleDependencyDialect,
+) -> Option<&str> {
+    let bytes = content.as_bytes();
+    let string_start = skip_gradle_trivia(bytes, start, end, dialect);
+    let quote = *bytes.get(string_start)?;
+    if !matches!(quote, b'\'' | b'"')
+        || (bytes.get(string_start + 1) == Some(&quote)
+            && bytes.get(string_start + 2) == Some(&quote))
+    {
+        return None;
+    }
+
+    let string_end = quoted_gradle_literal_end(bytes, string_start, false, dialect)?;
+    if string_end > end || skip_gradle_trivia(bytes, string_end, end, dialect) != end {
+        return None;
+    }
+
+    let project_path = content.get(string_start + 1..string_end - 1)?;
+    (!project_path.contains(['\\', '$']) && project_path.starts_with(':')).then_some(project_path)
+}
+
+fn gradle_dependency_from_arguments<'a>(
+    content: &'a str,
+    arguments: &[(usize, usize)],
+    dialect: GradleDependencyDialect,
+) -> Option<&'a str> {
+    let bytes = content.as_bytes();
+    let mut candidate_count = 0usize;
+    let mut project_path = None;
+
+    for (index, &(start, end)) in arguments.iter().enumerate() {
+        let argument_start = skip_gradle_trivia(bytes, start, end, dialect);
+        if argument_start == end {
+            continue;
+        }
+
+        if let Some((name, value_start)) = gradle_assignment(content, start, end, dialect) {
+            if name != "path" {
+                continue;
+            }
+            candidate_count += 1;
+            if candidate_count > 1 {
+                return None;
+            }
+            project_path = plain_gradle_project_path(content, value_start, end, dialect);
+            continue;
+        }
+
+        let looks_positional =
+            index == 0 || matches!(bytes.get(argument_start), Some(b'\'' | b'"' | b'/' | b'$'));
+        if looks_positional {
+            candidate_count += 1;
+            if candidate_count > 1 || index != 0 {
+                return None;
+            }
+            project_path = plain_gradle_project_path(content, argument_start, end, dialect);
+        }
+    }
+
+    (candidate_count == 1)
+        .then_some(project_path)
+        .flatten()
+        .and_then(gradle_dependency_name)
+}
+
+fn extract_gradle_project_dependencies(
+    content: &str,
+    dialect: GradleDependencyDialect,
+) -> Vec<&str> {
+    const PROJECT_CALL: &[u8] = b"project";
+
+    let bytes = content.as_bytes();
+    let mut dependencies = Vec::new();
+    let mut cursor = 0usize;
+    let mut lexical = GradleLexState::default();
+    let mut continuation_group_depth = 0usize;
+
+    while cursor < bytes.len() {
+        if let Some(next) = skip_gradle_comment(bytes, cursor, dialect) {
+            cursor = next;
+            continue;
+        }
+
+        match scan_gradle_literal(bytes, cursor, dialect, lexical.slashy_allowed()) {
+            GradleLiteralScan::Complete(next) => {
+                cursor = next;
+                lexical.mark_literal();
+                continue;
+            }
+            GradleLiteralScan::Unterminated => break,
+            GradleLiteralScan::NotLiteral => {}
+        }
+
+        let token_end = cursor + PROJECT_CALL.len();
+        let is_project_call = bytes
+            .get(cursor..)
+            .is_some_and(|rest| rest.starts_with(PROJECT_CALL))
+            && cursor
+                .checked_sub(1)
+                .and_then(|previous| bytes.get(previous))
+                .is_none_or(|byte| !is_gradle_identifier_byte(*byte))
+            && bytes
+                .get(token_end)
+                .is_none_or(|byte| !is_gradle_identifier_byte(*byte));
+
+        if is_project_call {
+            let open = skip_gradle_trivia(bytes, token_end, bytes.len(), dialect);
+            if bytes.get(open) == Some(&b'(') {
+                let qualified = lexical.is_member_access();
+                match scan_gradle_call(bytes, open, dialect) {
+                    GradleCallScan::Complete { end, arguments } => {
+                        if !qualified
+                            && let Some(dependency) =
+                                gradle_dependency_from_arguments(content, &arguments, dialect)
+                        {
+                            dependencies.push(dependency);
+                        }
+                        cursor = end;
+                        lexical.mark_byte(b')');
+                    }
+                    GradleCallScan::Malformed { resume } => {
+                        cursor = resume.max(open + 1);
+                        lexical = GradleLexState::default();
+                    }
+                }
+                continue;
+            }
+        }
+
+        if bytes
+            .get(cursor)
+            .copied()
+            .is_some_and(is_gradle_identifier_start)
+        {
+            let end = gradle_identifier_end(bytes, cursor);
+            lexical.mark_identifier(&bytes[cursor..end]);
+            cursor = end;
+            continue;
+        }
+
+        match bytes[cursor] {
+            b'(' | b'[' => {
+                continuation_group_depth += 1;
+                lexical.mark_byte(bytes[cursor]);
+            }
+            b')' | b']' => {
+                continuation_group_depth = continuation_group_depth.saturating_sub(1);
+                lexical.mark_byte(bytes[cursor]);
+            }
+            b'\r' | b'\n' if continuation_group_depth == 0 => lexical.mark_statement_start(),
+            byte if byte.is_ascii_whitespace() => {}
+            byte => lexical.mark_byte(byte),
+        }
+        cursor += 1;
+    }
+
+    dependencies
 }
 
 /// Returns true when a Java runtime is available via JAVA_HOME or PATH.
@@ -423,7 +1130,8 @@ impl ProjectFinder for GradleProjectFinder {
         let content = read_to_string(path)
             .await
             .with_context(|| format!("Failed to read Gradle build file {}", path.display()))?;
-        let dependencies = extract_gradle_project_dependencies(&content);
+        let dependencies =
+            extract_gradle_project_dependencies(&content, gradle_dependency_dialect(path));
 
         // Bound the gradlew search to the repository root: `relative_path` is
         // the build file's path relative to the git repo root, so its component
@@ -487,8 +1195,10 @@ impl ProjectFinder for GradleProjectFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use changepacks_core::Project;
+    use changepacks_core::{Project, UpdateType};
+    use changepacks_utils::{apply_reverse_dependencies, sort_by_dependencies};
     use rstest::rstest;
+    use std::collections::HashSet;
     use std::fs;
     use tempfile::TempDir;
 
@@ -497,6 +1207,29 @@ mod tests {
             java_available: Some(true),
             ..GradleProjectFinder::default()
         }
+    }
+
+    fn extract_gradle_project_dependencies(content: &str) -> Vec<&str> {
+        super::extract_gradle_project_dependencies(content, GradleDependencyDialect::Groovy)
+    }
+
+    async fn dependencies_for_manifest(manifest_name: &str, content: &str) -> HashSet<String> {
+        let temp_dir = TempDir::new().unwrap();
+        let project_dir = temp_dir.path().join("project");
+        fs::create_dir_all(&project_dir).unwrap();
+        let manifest = project_dir.join(manifest_name);
+        fs::write(&manifest, content).unwrap();
+        create_mock_gradlew(&project_dir, MockGradlew::package("project", "1.0.0"));
+
+        let mut finder = finder_with_java_available();
+        finder
+            .visit(&manifest, &PathBuf::from("project").join(manifest_name))
+            .await
+            .unwrap();
+        let dependencies = finder.projects()[0].dependencies().clone();
+
+        temp_dir.close().unwrap();
+        dependencies
     }
 
     #[test]
@@ -1257,6 +1990,412 @@ dependencies {
             dependencies,
             vec!["lib", "fixtures", "core", "cli", "shared"]
         );
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_with_additional_arguments() {
+        let content = r#"
+dependencies {
+    implementation(project(":libraries:공통", configuration = "shadow"))
+    api(project(
+        path = ":services:인증",
+        configuration = "default",
+    ))
+    runtimeOnly(project(
+        path: ':도구:cli',
+        configuration: 'runtimeElements'
+    ))
+}
+"#;
+
+        let dependencies = extract_gradle_project_dependencies(content);
+
+        assert_eq!(dependencies, vec!["공통", "인증", "cli"]);
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_ignores_nested_and_unrelated_expressions() {
+        let content = r#"
+dependencies {
+    implementation(project(findProject(":nested-expression"), configuration = "default"))
+    api(project(path = resolvePath(":computed-path"), configuration = "default"))
+    runtimeOnly(project(path: choosePath(':computed-groovy'), configuration: 'default'))
+    implementation(project(":real", configuration = provider(project(":nested-decoy"))))
+    implementation(notproject(":identifier-suffix"))
+    implementation(projectFactory(":factory"))
+    implementation("org.example:external:1.0.0")
+}
+
+val rendered = "project(\":string-decoy\", configuration = \"default\")"
+// project(":line-comment-decoy", configuration = "default")
+/* project(path = ":block-comment-decoy", configuration = "default") */
+"#;
+
+        let dependencies = extract_gradle_project_dependencies(content);
+
+        assert_eq!(dependencies, vec!["real"]);
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_skips_gradle_literals_and_dynamic_paths() {
+        let content = r##"
+val kotlinRaw = """quoted " text project(":triple-double-decoy") """
+def groovyTriple = '''quoted ' text project(':triple-single-decoy') '''
+def groovySlashy = /text project(":slashy-decoy") text/
+def groovyDollarSlashy = $/text project(":dollar-slashy-decoy") text/$
+
+dependencies {
+    implementation(project(":plain:유니코드"))
+    api(project(":escaped\\path"))
+    runtimeOnly(project(":$interpolated"))
+    testImplementation(project(":${computed}"))
+}
+"##;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec!["유니코드"]
+        );
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_skips_comments_after_division() {
+        let content = r#"
+val first = numerator / denominator // project(":line-comment-decoy")
+val second = numerator / denominator /* project(":block-comment-decoy") */
+dependencies {
+    implementation(project(":real"))
+}
+"#;
+
+        assert_eq!(extract_gradle_project_dependencies(content), vec!["real"]);
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_uses_dialect_block_comment_nesting() {
+        let groovy = r#"
+/* Groovy closes this comment at the first terminator.
+   /* project(":groovy-comment-decoy") */
+dependencies { implementation(project(":real-groovy")) }
+"#;
+        assert_eq!(
+            super::extract_gradle_project_dependencies(groovy, GradleDependencyDialect::Groovy),
+            vec!["real-groovy"]
+        );
+
+        let kotlin = r#"
+/* Kotlin keeps the outer comment open.
+   /* project(":kotlin-nested-comment-decoy") */
+   project(":kotlin-outer-comment-decoy")
+*/
+dependencies { implementation(project(":real-kotlin")) }
+"#;
+        assert_eq!(
+            super::extract_gradle_project_dependencies(kotlin, GradleDependencyDialect::Kotlin),
+            vec!["real-kotlin"]
+        );
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_uses_dialect_triple_quote_escapes() {
+        let kotlin = r####"
+val ordinary = "project(\":ordinary-string-decoy\")"
+val raw = """project(":kotlin-raw-decoy") \"""
+dependencies { implementation(project(":real-kotlin")) }
+"####;
+        let raw_start = kotlin.find("\"\"\"").unwrap();
+        let raw_end = quoted_gradle_literal_end(
+            kotlin.as_bytes(),
+            raw_start,
+            true,
+            GradleDependencyDialect::Kotlin,
+        )
+        .unwrap();
+        assert!(kotlin[raw_end..].starts_with("\ndependencies"));
+        assert_eq!(
+            super::extract_gradle_project_dependencies(kotlin, GradleDependencyDialect::Kotlin),
+            vec!["real-kotlin"]
+        );
+
+        let groovy = r####"
+def triple = """before \""" project(":groovy-triple-decoy") after"""
+dependencies { implementation(project(":real-groovy")) }
+"####;
+        assert_eq!(
+            super::extract_gradle_project_dependencies(groovy, GradleDependencyDialect::Groovy),
+            vec!["real-groovy"]
+        );
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_keeps_grouped_multiline_division_state() {
+        let content = r#"
+def quotient = (
+    numerator
+    / project(":grouped-division")
+    / denominator
+)
+dependencies { implementation(project(":real")) }
+"#;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec!["grouped-division", "real"]
+        );
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_skips_contextual_groovy_slashy_strings() {
+        let content = r#"
+return /project(":return-decoy")/
+throw /project(":throw-decoy")/
+switch (value) {
+    case /project(":case-decoy")/: break
+}
+assert /project(":assert-decoy")/
+yield /project(":yield-decoy")/
+consume pattern: /project(":command-expression-decoy")/
+
+def identifierQuotient = numerator / denominator
+def numericQuotient = 12 / 3
+dependencies {
+    implementation(project(":real"))
+}
+"#;
+
+        assert_eq!(extract_gradle_project_dependencies(content), vec!["real"]);
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_rejects_qualified_calls() {
+        let content = r#"
+dependencies {
+    implementation(receiver.project(":dot"))
+    api(receiver?. /* trivia */ project(":safe-navigation"))
+    runtimeOnly(receiver*. /* trivia */ project(":spread"))
+    testImplementation(receiver.&project(":method-pointer"))
+    compileOnly(receiver.@project(":direct-field"))
+    implementation(project(":free"))
+}
+"#;
+
+        assert_eq!(extract_gradle_project_dependencies(content), vec!["free"]);
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_splits_top_level_arguments() {
+        let content = r#"
+dependencies {
+    implementation(project(configuration = "default", path = ":late-kotlin"))
+    api(project(configuration: 'default', path: ':late-groovy'))
+    runtimeOnly(project(
+        options = mapOf("nested" to listOf(1, 2), "array" to [3, 4]),
+        action = { value -> consume(value, mapOf("inner" to listOf(5, 6))) },
+        path = ":balanced:stacked",
+    ))
+    implementation(project(":first", path = ":duplicate"))
+    implementation(project(path = ":one", path = ":two"))
+    implementation(project(path = resolvePath(":computed")))
+    implementation(project(configuration = "no-path"))
+    implementation(project(configuration = "default", ":late-positional"))
+}
+"#;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec!["late-kotlin", "late-groovy", "stacked"]
+        );
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_keeps_balanced_blank_line_continuations() {
+        let content = r#"
+dependencies {
+    implementation(project(":real",
+
+        selectConfiguration(project(":comma-decoy"))
+    ))
+    implementation(project(path = choosePath(":computed") +
+
+        selectConfiguration(project(":operator-decoy"))
+    ))
+    implementation(project(":after-balanced-calls"))
+}
+"#;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec!["real", "after-balanced-calls"]
+        );
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_recovers_after_malformed_calls() {
+        let content = r#"
+dependencies {
+    implementation(project(":unclosed"
+
+    implementation(project(":after-unclosed"))
+    implementation(project(path = ":mismatched"])
+
+    implementation(project(":after-mismatch"))
+    implementation(project(":another-unclosed"
+        project(":nested-malformed-decoy")
+
+    implementation(project(":after-nested-malformed"))
+}
+"#;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec!["after-unclosed", "after-mismatch", "after-nested-malformed"]
+        );
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_quarantines_malformed_spans() {
+        let content = r#"
+dependencies {
+    implementation(project(":bad"] + project(":nested-decoy"))
+
+    implementation(project(":after-blank-line"))
+    implementation(project(action = run(); ":bad"] + project(":pre-mismatch-boundary-decoy"))
+
+    implementation(project(":after-pre-mismatch-boundary"))
+    implementation(project(":unclosed"
+    project(":same-indent-nested-decoy")
+
+    implementation(project(":after-second-blank-line"))
+}
+"#;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec![
+                "after-blank-line",
+                "after-pre-mismatch-boundary",
+                "after-second-blank-line"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_keeps_nested_malformed_remainders_quarantined() {
+        let content = r#"
+dependencies {
+    implementation(project(":bad-provider"] + provider({
+
+        project(":nested-provider-decoy")
+    }))
+
+    implementation(project(":after-provider"))
+    implementation(project(":bad-closure"] + ({
+
+        project(":nested-closure-decoy")
+    }))
+
+    implementation(project(":after-closure"))
+}
+"#;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec!["after-provider", "after-closure"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_uses_manifest_dialect_for_slashes() {
+        let kotlin = dependencies_for_manifest(
+            "build.gradle.kts",
+            r#"
+val first = 12 / 3
+dependencies { implementation(project(":real-kotlin")) }
+val second = 20 / 4
+"#,
+        )
+        .await;
+        assert_eq!(kotlin, HashSet::from(["real-kotlin".to_string()]));
+
+        let groovy = dependencies_for_manifest(
+            "build.gradle",
+            r#"
+def decoy = /project(":slashy-decoy")/
+def first = 12 / 3
+dependencies { implementation(project(":real-groovy")) }
+def second = 20 / 4
+"#,
+        )
+        .await;
+        assert_eq!(groovy, HashSet::from(["real-groovy".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_dependencies_drive_topological_and_reverse_edges() {
+        let temp_dir = TempDir::new().unwrap();
+        let core_dir = temp_dir.path().join("core");
+        let app_dir = temp_dir.path().join("app");
+        fs::create_dir_all(&core_dir).unwrap();
+        fs::create_dir_all(&app_dir).unwrap();
+
+        let core_manifest = core_dir.join("build.gradle.kts");
+        let app_manifest = app_dir.join("build.gradle.kts");
+        fs::write(&core_manifest, "plugins { java }\n").unwrap();
+        fs::write(
+            &app_manifest,
+            r#"dependencies {
+    implementation(project(configuration = "default", path = ":modules:core"))
+}
+"#,
+        )
+        .unwrap();
+        create_mock_gradlew(&core_dir, MockGradlew::package("core", "1.0.0"));
+        create_mock_gradlew(&app_dir, MockGradlew::package("app", "1.0.0"));
+
+        let mut finder = finder_with_java_available();
+        finder
+            .visit(&core_manifest, Path::new("core/build.gradle.kts"))
+            .await
+            .unwrap();
+        finder
+            .visit(&app_manifest, Path::new("app/build.gradle.kts"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        let core = projects
+            .iter()
+            .copied()
+            .find(|project| project.name() == Some("core"))
+            .unwrap();
+        let app = projects
+            .iter()
+            .copied()
+            .find(|project| project.name() == Some("app"))
+            .unwrap();
+        assert_eq!(app.dependencies().len(), 1);
+        assert!(app.dependencies().contains("core"));
+
+        let sorted = sort_by_dependencies(vec![app, core]).unwrap();
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|project| project.name().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["core", "app"]
+        );
+
+        let mut update_map = HashMap::from([(
+            PathBuf::from("core/build.gradle.kts"),
+            (UpdateType::Minor, Vec::new()),
+        )]);
+        apply_reverse_dependencies(&mut update_map, &[core, app], temp_dir.path()).unwrap();
+        assert_eq!(
+            update_map[&PathBuf::from("app/build.gradle.kts")].0,
+            UpdateType::Patch
+        );
+
+        temp_dir.close().unwrap();
     }
 
     #[cfg(unix)]

@@ -51,7 +51,8 @@ pub(crate) const WORKSPACE_DRY_RUN_PUBLISH_COMMAND: &str = "cargo publish --work
 /// Read and parse a Cargo.toml file, preserving the raw content for format finalization.
 ///
 /// Returns both the raw file content and the parsed `DocumentMut` to enable
-/// [`finalize_content`] to preserve formatting, comments, and trailing newlines.
+/// [`finalize_content`] to preserve formatting, comments, and the complete
+/// trailing-whitespace suffix.
 ///
 /// # Errors
 /// Returns error if the file cannot be read or the TOML cannot be parsed.

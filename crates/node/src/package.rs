@@ -107,6 +107,65 @@ mod tests {
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 
+    fn marker_command(marker_name: &str) -> String {
+        if cfg!(target_os = "windows") {
+            format!("echo invoked>{marker_name}")
+        } else {
+            format!("printf invoked > {marker_name}")
+        }
+    }
+
+    fn denied_metadata(_path: &std::path::Path) -> std::io::Result<bool> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "deterministic metadata failure",
+        ))
+    }
+
+    async fn assert_collection_failure_prevents_command(dry_run: bool) {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(&package_json, "{}").unwrap();
+
+        let package = NodePackage::new(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            package_json,
+            PathBuf::from("package.json"),
+        );
+        let marker_name = if dry_run {
+            "dry-run-command-invoked"
+        } else {
+            "publish-command-invoked"
+        };
+        let marker = temp_dir.path().join(marker_name);
+        let mut config = Config::default();
+        let commands = if dry_run {
+            &mut config.publish_dry_run
+        } else {
+            &mut config.publish
+        };
+        commands.insert("package.json".to_string(), marker_command(marker_name));
+
+        let result = if dry_run {
+            crate::with_test_metadata_probe(denied_metadata, package.dry_run_publish(&config))
+                .await
+                .map(|_| ())
+        } else {
+            crate::with_test_metadata_probe(denied_metadata, package.publish(&config))
+                .await
+                .map(|_| ())
+        };
+        let error = result.expect_err("PATH collection must fail before command execution");
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains("node_modules\\.bin") || chain.contains("node_modules/.bin"),
+            "error should name the candidate .bin path, got: {chain}"
+        );
+        assert!(chain.contains("deterministic metadata failure"));
+        assert!(!marker.exists(), "configured command must not be invoked");
+    }
+
     #[tokio::test]
     async fn test_node_package_new() {
         let package = NodePackage::new(
@@ -268,7 +327,19 @@ mod tests {
         // dry-run. NodePackage / NodeWorkspace route PATH wiring through this
         // async collector; the core trait defaults pass no extra PATH dirs.
         // depth 1 covers the package dir itself, where `node_modules/.bin` lives.
-        let dirs = crate::node_modules_bin_dirs_async(temp_dir.path(), 1).await;
+        let dirs = crate::node_modules_bin_dirs_async(temp_dir.path(), 1)
+            .await
+            .unwrap();
         assert!(dirs.contains(&bin));
+    }
+
+    #[tokio::test]
+    async fn test_publish_stops_when_path_collection_fails() {
+        assert_collection_failure_prevents_command(false).await;
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_publish_stops_when_path_collection_fails() {
+        assert_collection_failure_prevents_command(true).await;
     }
 }

@@ -74,12 +74,22 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     // the `.`-check must run on the numeric base ONLY — running it on the
     // raw patch component would wrongly reject a valid `"1.2.3+4.5"`
     // (patch component `"3+4.5"`) and abort the whole `update`.
-    // `Some((base, ext))` when the marker is present, `None` otherwise;
-    // multi-`+` inputs (`"1.0.0++"`) route the trailing `+` into `ext`,
-    // matching the pre-existing round-trip. The extension keeps its own
-    // dots and is re-appended verbatim below.
+    // `Some((base, ext))` when the marker is present, `None` otherwise.
+    // Validate the extension in place so malformed or repeated `+` markers,
+    // empty identifiers, and characters outside SemVer's ASCII
+    // alphanumeric/hyphen alphabet never reach the round-trip below.
     let (patch, plus_part) = match patch.split_once('+') {
-        Some((base, ext)) => (base, Some(ext)),
+        Some((base, ext))
+            if ext.split('.').all(|identifier| {
+                !identifier.is_empty()
+                    && identifier
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            }) =>
+        {
+            (base, Some(ext))
+        }
+        Some(_) => return Err(invalid_version(version)),
         None => (patch, None),
     };
 
@@ -89,6 +99,19 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     // metadata was already peeled off, its dots (`+4.5`) no longer reach
     // here.
     if patch.contains('.') {
+        return Err(invalid_version(version));
+    }
+
+    // SemVer numeric identifiers must be nonempty ASCII decimal digits in
+    // their canonical spelling: zero is valid by itself, while every
+    // multi-digit component must start with a non-zero digit. Do not rely on
+    // `u64::from_str` for the lexical rule because it accepts a leading `+`.
+    // Parsing below remains responsible for the numeric overflow boundary.
+    if [major, minor, patch].into_iter().any(|component| {
+        component.is_empty()
+            || !component.bytes().all(|byte| byte.is_ascii_digit())
+            || (component.len() > 1 && component.starts_with('0'))
+    }) {
         return Err(invalid_version(version));
     }
 
@@ -158,11 +181,7 @@ mod tests {
     #[case("1.2.3+4.5", UpdateType::Patch, "1.2.4+4.5")]
     #[case("1.2.3+4.5", UpdateType::Major, "2.0.0+4.5")]
     #[case("1.2.3+build.7", UpdateType::Minor, "1.3.0+build.7")]
-    // Multi-`+` inputs: the FIRST `+` is the metadata marker, so any later
-    // `+` characters belong to the extension and round-trip verbatim —
-    // locks the documented `split_once('+')` placement.
-    #[case("1.0.0++", UpdateType::Patch, "1.0.1++")]
-    #[case("1.2.3+a+b", UpdateType::Minor, "1.3.0+a+b")]
+    #[case("1.2.3+build-7.alpha9", UpdateType::Patch, "1.2.4+build-7.alpha9")]
     fn test_next_version(
         #[case] version: &str,
         #[case] update_type: UpdateType,
@@ -183,12 +202,36 @@ mod tests {
     #[case("1.y.3", UpdateType::Minor)]
     #[case("1.2.wrong", UpdateType::Major)]
     #[case("1.2.wrong", UpdateType::Minor)]
+    // The supported SemVer subset requires canonical numeric components.
+    #[case("01.2.3", UpdateType::Patch)]
+    #[case("1.02.3", UpdateType::Patch)]
+    #[case("1.2.03", UpdateType::Patch)]
+    #[case("+1.2.3", UpdateType::Patch)]
+    #[case("1.+2.3", UpdateType::Patch)]
+    // Pre-release versions remain intentionally unsupported.
+    #[case("1.2.3-alpha", UpdateType::Patch)]
+    // Build metadata is one nonempty, dot-separated list of identifiers.
+    #[case("1.2.3+", UpdateType::Patch)]
+    #[case("1.2.3++", UpdateType::Patch)]
+    #[case("1.2.3+a+b", UpdateType::Patch)]
+    #[case("1.2.3+.build", UpdateType::Patch)]
+    #[case("1.2.3+build.", UpdateType::Patch)]
+    #[case("1.2.3+build..7", UpdateType::Patch)]
+    #[case("1.2.3+build_7", UpdateType::Patch)]
+    #[case("1.2.3+build/7", UpdateType::Patch)]
+    #[case("1.2.3+build 7", UpdateType::Patch)]
+    #[case("1.2.3+béta", UpdateType::Patch)]
     // Empty input has no `.` to split on, so it errors at the first
     // `split_once('.')` miss — pin that boundary against future parser rewrites.
     #[case("", UpdateType::Patch)]
     fn test_next_version_invalid_input(#[case] version: &str, #[case] update_type: UpdateType) {
-        let result = next_version(version, update_type);
-        assert!(result.is_err());
+        let err = next_version(version, update_type).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Invalid version format: {version} (expected MAJOR.MINOR.PATCH, optionally with +build metadata)"
+            )
+        );
     }
 
     // A component of exactly `u64::MAX` (18446744073709551615) parses cleanly

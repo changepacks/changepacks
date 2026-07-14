@@ -30,7 +30,12 @@ impl Package for GradlePackage {
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let path = &self.path;
         changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
-            crate::write_gradle_version(path, new).await
+            crate::write_gradle_version(
+                path,
+                new,
+                crate::version_updater::GradleVersionScope::ScriptOnly,
+            )
+            .await
         })
         .await
     }
@@ -322,6 +327,7 @@ version = "1.0.0"
 
         let content = read_to_string(&build_gradle).await.unwrap();
         assert!(content.contains(&format!(r#"version = "{expected}""#)));
+        assert_eq!(package.version(), Some(expected));
 
         temp_dir.close().unwrap();
     }
@@ -357,6 +363,7 @@ version = '1.0.0'
 
         let content = read_to_string(&build_gradle).await.unwrap();
         assert!(content.contains("version = '1.0.1'"));
+        assert_eq!(package.version(), Some("1.0.1"));
 
         temp_dir.close().unwrap();
     }
@@ -397,6 +404,48 @@ version = project.findProperty("releaseVersion") ?: "1.0.11"
         let temp_dir = TempDir::new().unwrap();
         let build_gradle = temp_dir.path().join("build.gradle.kts");
         let content = "plugins { id(\"java\") }\ngroup = \"com.example\"\n";
+        fs::write(&build_gradle, content).unwrap();
+        let bytes_before = fs::read(&build_gradle).unwrap();
+        let mut package = GradlePackage::new(
+            Some("myproject".to_string()),
+            Some("1.0.0".to_string()),
+            build_gradle.clone(),
+            PathBuf::from("build.gradle.kts"),
+        );
+
+        let result = package.update_version(UpdateType::Patch).await;
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&build_gradle).unwrap(), bytes_before);
+        assert_eq!(package.version(), Some("1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn test_gradle_package_ambiguous_version_keeps_file_and_state_unchanged() {
+        let temp_dir = TempDir::new().unwrap();
+        let build_gradle = temp_dir.path().join("build.gradle.kts");
+        let content = "version = \"1.0.0\"\nversion = \"duplicate\"\n";
+        fs::write(&build_gradle, content).unwrap();
+        let bytes_before = fs::read(&build_gradle).unwrap();
+        let mut package = GradlePackage::new(
+            Some("myproject".to_string()),
+            Some("1.0.0".to_string()),
+            build_gradle.clone(),
+            PathBuf::from("build.gradle.kts"),
+        );
+
+        let result = package.update_version(UpdateType::Patch).await;
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&build_gradle).unwrap(), bytes_before);
+        assert_eq!(package.version(), Some("1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn test_gradle_package_rejects_allprojects_only_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let build_gradle = temp_dir.path().join("build.gradle.kts");
+        let content = "allprojects {\n    version = \"1.0.0\"\n}\n";
         fs::write(&build_gradle, content).unwrap();
         let bytes_before = fs::read(&build_gradle).unwrap();
         let mut package = GradlePackage::new(

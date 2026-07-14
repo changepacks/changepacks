@@ -274,7 +274,7 @@ You can edit `.changepacks/config.json` to customize:
 - Custom dry-run publish commands (`publishDryRun`):
   - Overrides the dry-run command used by `changepacks publish --dry-run`.
   - Same keying rules as `publish` (language key or relative project path).
-  - If not specified, each language uses its built-in dry-run command (e.g., `npm publish --dry-run`, `uv publish --dry-run`, `cargo publish --dry-run`, `dart pub publish --dry-run`; Java runs `./gradlew publishToMavenLocal`; C# runs a managed `dotnet pack` + push to a temporary local feed).
+  - If not specified, each language uses its built-in dry-run command (e.g., `npm publish --dry-run`, `uv publish --dry-run`, `cargo publish --dry-run`, `dart pub publish --dry-run`; Java runs `./gradlew publishToMavenLocal` against an isolated temporary Maven local repository that is removed afterward; C# runs a managed `dotnet pack` + push to a temporary local feed).
   - A custom `publish` command does not change the dry-run command — set `publishDryRun` to override what `changepacks publish --dry-run` executes.
 - Dependency rules for forced updates (`updateOn`):
   - Key: glob pattern for trigger packages (e.g., `"crates/*/Cargo.toml"`).

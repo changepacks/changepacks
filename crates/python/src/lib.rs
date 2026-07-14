@@ -45,8 +45,8 @@ pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String
 }
 
 /// Update `pyproject.toml` at `path` to set `[project].version` to
-/// `new_version`, preserving the file's trailing-newline shape (via
-/// `trailing_newline`) and its TOML formatting (via `toml_edit`).
+/// `new_version`, preserving the file's complete trailing-whitespace shape
+/// (via `finalize_content`) and its TOML formatting (via `toml_edit`).
 ///
 /// Shared by `PythonPackage::update_version` and
 /// `PythonWorkspace::update_version` so both paths emit byte-identical output.
@@ -101,6 +101,27 @@ mod tests {
     use changepacks_utils::test_support;
     use std::fs;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_write_pyproject_version_preserves_complete_trailing_whitespace() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        let suffix = " \t\r\n \n";
+        fs::write(
+            &pyproject_toml,
+            format!("[project]\nversion = \"1.0.0\"{suffix}"),
+        )
+        .unwrap();
+
+        write_pyproject_version(&pyproject_toml, "2.0.0")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&pyproject_toml).unwrap(),
+            format!("[project]\nversion = \"2.0.0\"{suffix}")
+        );
+    }
 
     #[tokio::test]
     async fn test_write_pyproject_version_error_includes_path() {

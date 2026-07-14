@@ -6,7 +6,28 @@ use changepacks_utils::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tokio::fs::write;
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct InheritedWorkspaceMemberIdentities {
+    package_names: HashSet<String>,
+    dependency_aliases: HashSet<String>,
+}
+
+impl InheritedWorkspaceMemberIdentities {
+    pub(crate) fn record(&mut self, package_name: &str, aliases: impl IntoIterator<Item = String>) {
+        self.package_names.insert(package_name.to_string());
+        self.dependency_aliases.extend(aliases);
+    }
+
+    fn contains_dependency(&self, dependency_key: &str, package_name: &str) -> bool {
+        self.package_names.contains(package_name)
+            && (dependency_key == package_name || self.dependency_aliases.contains(dependency_key))
+    }
+}
+
+pub(crate) type InheritedWorkspaceMembers = Arc<Mutex<InheritedWorkspaceMemberIdentities>>;
 
 #[derive(Debug)]
 pub struct RustWorkspace {
@@ -16,15 +37,50 @@ pub struct RustWorkspace {
     name: Option<String>,
     is_changed: bool,
     dependencies: HashSet<String>,
+    inherited_workspace_members: InheritedWorkspaceMembers,
 }
 
 impl RustWorkspace {
-    // Byte-identical `#[must_use] pub fn new(name, version, path,
-    // relative_path)` constructor body shared with every other
-    // "plain 5-basic-field" language crate's `Package` / `Workspace`.
-    // Consolidated via `impl_default_new!()` in `changepacks-core` — see
-    // that macro's doc for the exact struct-field contract.
-    changepacks_core::impl_default_new!();
+    /// Construct a Rust workspace without discovered inherited-member metadata.
+    ///
+    /// Version updates still update the workspace/root package version, but do
+    /// not perform the special inherited-member fan-out in
+    /// `[workspace.dependencies]`. `RustProjectFinder` uses the internal
+    /// member-aware constructor after discovery.
+    #[must_use]
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
+        Self::new_with_inherited_workspace_members(
+            name,
+            version,
+            path,
+            relative_path,
+            InheritedWorkspaceMembers::default(),
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn new_with_inherited_workspace_members(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        inherited_workspace_members: InheritedWorkspaceMembers,
+    ) -> Self {
+        Self {
+            name,
+            version,
+            path,
+            relative_path,
+            is_changed: false,
+            dependencies: HashSet::new(),
+            inherited_workspace_members,
+        }
+    }
 }
 
 #[async_trait]
@@ -113,8 +169,15 @@ impl Workspace for RustWorkspace {
             *ws_pkg_version = toml_edit::value(new_version.as_str());
         }
 
-        // Sync [workspace.dependencies] for local path deps whose version matched
-        // the old workspace version (these are workspace members bumped together)
+        let inherited_workspace_members = self
+            .inherited_workspace_members
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+
+        // Sync [workspace.dependencies] only for discovered members that inherit
+        // the workspace package version and whose local dependency version matched
+        // the old workspace version.
         if let Some(ws_deps) = cargo_toml
             .get_mut("workspace")
             .and_then(|w| w.get_mut("dependencies"))
@@ -123,7 +186,12 @@ impl Workspace for RustWorkspace {
             // `old_version` hoisted to the top of this function so both the
             // `next_version_or_default` fallback and this workspace-deps
             // sync share the same "reserve 0.0.0 when unversioned" source.
-            for (_, value) in ws_deps.iter_mut() {
+            for (dependency_key, value) in ws_deps.iter_mut() {
+                let dependency_key = dependency_key.get();
+                let package_name = crate::finder::effective_dependency_name(dependency_key, value);
+                if !inherited_workspace_members.contains_dependency(dependency_key, package_name) {
+                    continue;
+                }
                 // `split_version` no longer returns `Result` (it was total —
                 // both match arms returned `Ok`), so the destructure moves
                 // out of the `&&`-let-chain into a plain irrefutable `let`
@@ -297,6 +365,19 @@ mod tests {
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 
+    fn inherited_members(names: &[&str]) -> InheritedWorkspaceMembers {
+        let members = InheritedWorkspaceMembers::default();
+        {
+            let mut identities = members
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for name in names {
+                identities.record(name, std::iter::empty());
+            }
+        }
+        members
+    }
+
     #[tokio::test]
     async fn test_rust_workspace_new() {
         let workspace = RustWorkspace::new(
@@ -333,6 +414,44 @@ mod tests {
 
         assert_eq!(workspace.name(), None);
         assert_eq!(workspace.version(), None);
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_new_has_no_inherited_member_fanout_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0"
+
+[workspace.dependencies]
+same-version-local = { path = "crates/same-version-local", version = "1.0.0" }
+"#,
+        )
+        .unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            None,
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let document: toml_edit::DocumentMut = content.parse().unwrap();
+        assert_eq!(
+            document["workspace"]["package"]["version"].as_str(),
+            Some("1.0.1")
+        );
+        assert_eq!(
+            document["workspace"]["dependencies"]["same-version-local"]["version"].as_str(),
+            Some("1.0.0")
+        );
     }
 
     #[tokio::test]
@@ -992,11 +1111,12 @@ other_local = { path = "crates/other", version = "0.5.0" }
         )
         .unwrap();
 
-        let mut workspace = RustWorkspace::new(
+        let mut workspace = RustWorkspace::new_with_inherited_workspace_members(
             None,
             Some("0.1.33".to_string()),
             cargo_toml.clone(),
             PathBuf::from("Cargo.toml"),
+            inherited_members(&["vespera_core", "vespera_macro"]),
         );
 
         workspace.update_version(UpdateType::Patch).await.unwrap();
@@ -1085,11 +1205,12 @@ version = "0.5.0"
         )
         .unwrap();
 
-        let mut workspace = RustWorkspace::new(
+        let mut workspace = RustWorkspace::new_with_inherited_workspace_members(
             None,
             Some("0.1.33".to_string()),
             cargo_toml.clone(),
             PathBuf::from("Cargo.toml"),
+            inherited_members(&["vespera_core", "vespera_macro"]),
         );
 
         workspace.update_version(UpdateType::Patch).await.unwrap();

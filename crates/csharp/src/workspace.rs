@@ -270,6 +270,38 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    #[tokio::test]
+    async fn test_update_version_in_unsupported_location_preserves_file_and_memory_on_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("UnsupportedVersion.csproj");
+        let original_content = b"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Version>1.2.3</Version>\n  </ItemGroup>\n</Project>\n";
+        fs::write(&csproj_path, original_content).unwrap();
+        let mut workspace = CSharpWorkspace::new(
+            Some("Test".to_string()),
+            Some("1.2.3".to_string()),
+            csproj_path.clone(),
+            PathBuf::from("UnsupportedVersion.csproj"),
+        );
+
+        let err = workspace
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("Version outside PropertyGroup cannot be updated");
+
+        assert_eq!(fs::read(&csproj_path).unwrap(), original_content);
+        assert_eq!(workspace.version(), Some("1.2.3"));
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&csproj_path.display().to_string()),
+            "error chain should name the manifest path, got: {chain}",
+        );
+        assert!(
+            chain.contains("did not mutate any XML node"),
+            "error chain should explain the failed mutation, got: {chain}",
+        );
+        temp_dir.close().unwrap();
+    }
+
     #[test]
     fn test_dependencies() {
         let mut workspace = CSharpWorkspace::new(

@@ -38,7 +38,12 @@ impl Workspace for GradleWorkspace {
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let path = &self.path;
         changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
-            crate::write_gradle_version(path, new).await
+            crate::write_gradle_version(
+                path,
+                new,
+                crate::version_updater::GradleVersionScope::ScriptAndAllProjects,
+            )
+            .await
         })
         .await
     }
@@ -270,6 +275,7 @@ version = "1.0.0"
 
         let content = read_to_string(&build_gradle).await.unwrap();
         assert!(content.contains(&format!(r#"version = "{expected}""#)));
+        assert_eq!(workspace.version(), Some(expected));
 
         temp_dir.close().unwrap();
     }
@@ -305,6 +311,7 @@ version = '1.0.0'
 
         let content = read_to_string(&build_gradle).await.unwrap();
         assert!(content.contains("version = '1.0.1'"));
+        assert_eq!(workspace.version(), Some("1.0.1"));
 
         temp_dir.close().unwrap();
     }
@@ -363,6 +370,49 @@ version = "0.0.0"
         assert!(result.is_err());
         assert_eq!(fs::read(&build_gradle).unwrap(), bytes_before);
         assert_eq!(workspace.version(), Some("1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn test_gradle_workspace_ambiguous_version_keeps_file_and_state_unchanged() {
+        let temp_dir = TempDir::new().unwrap();
+        let build_gradle = temp_dir.path().join("build.gradle");
+        let content = "version = '1.0.0'\nallprojects {\n    version = 'duplicate'\n}\n";
+        fs::write(&build_gradle, content).unwrap();
+        let bytes_before = fs::read(&build_gradle).unwrap();
+        let mut workspace = GradleWorkspace::new(
+            Some("multiproject".to_string()),
+            Some("1.0.0".to_string()),
+            build_gradle.clone(),
+            PathBuf::from("build.gradle"),
+        );
+
+        let result = workspace.update_version(UpdateType::Patch).await;
+
+        assert!(result.is_err());
+        assert_eq!(fs::read(&build_gradle).unwrap(), bytes_before);
+        assert_eq!(workspace.version(), Some("1.0.0"));
+    }
+
+    #[tokio::test]
+    async fn test_gradle_workspace_updates_allprojects_version_with_exact_formatting() {
+        let temp_dir = TempDir::new().unwrap();
+        let build_gradle = temp_dir.path().join("build.gradle");
+        let content = "plugins {\r\n    version = 'plugin-version'\r\n}\r\nallprojects {\r\n\tversion  =  \"1.0.0\" // project-wide\r\n}\r\n";
+        fs::write(&build_gradle, content).unwrap();
+        let mut workspace = GradleWorkspace::new(
+            Some("multiproject".to_string()),
+            Some("1.0.0".to_string()),
+            build_gradle.clone(),
+            PathBuf::from("build.gradle"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&build_gradle).unwrap(),
+            "plugins {\r\n    version = 'plugin-version'\r\n}\r\nallprojects {\r\n\tversion  =  \"1.0.1\" // project-wide\r\n}\r\n"
+        );
+        assert_eq!(workspace.version(), Some("1.0.1"));
     }
 
     #[test]

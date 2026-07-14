@@ -1,6 +1,5 @@
 use std::{
-    borrow::Cow,
-    collections::{HashMap, hash_map::Entry},
+    collections::{HashMap, VecDeque, hash_map::Entry},
     hash::BuildHasher,
     path::{Path, PathBuf},
 };
@@ -14,7 +13,7 @@ use crate::{collect_changepack_log_paths, get_relative_path, read_log_bodies};
 /// Generate update map from changepack logs
 ///
 /// # Errors
-/// Returns error if reading changepacks directory or parsing JSON fails.
+/// Returns error if reading changepacks, parsing JSON, or validating `updateOn` rules fails.
 pub async fn gen_update_map(
     changepacks_dir: &Path,
     config: &Config,
@@ -81,7 +80,7 @@ pub async fn gen_update_map(
 
     // Apply updateOn rules: if any updated package matches a trigger pattern,
     // add dependent packages as PATCH updates
-    apply_update_on_rules(&mut update_map, config);
+    apply_update_on_rules(&mut update_map, config)?;
 
     Ok(update_map)
 }
@@ -89,96 +88,81 @@ pub async fn gen_update_map(
 fn apply_update_on_rules(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     config: &Config,
-) {
-    // Fast path #1: with no pending updates the `updated_paths` snapshot
-    // below collects into an empty `Vec<Cow<str>>` and every trigger
-    // closure runs `.any(|s| ...)` over an empty iterator — pure setup
-    // waste. Semantic mirror of the existing `update_map.is_empty()`
-    // guard in `apply_reverse_dependencies` below, and byte-identical to
-    // the old behavior (an empty input can only produce an empty output
-    // because `.entry(dependent_path).or_insert_with(...)` only fires
-    // inside the trigger loop, which needs at least one matched trigger,
-    // which needs at least one path in `updated_paths`).
-    if update_map.is_empty() {
-        return;
-    }
-
-    // Fast path #2: `.changepacks/config.json` declares no `updateOn`
-    // rules, so the trigger loop below has nothing to iterate and the
-    // `updated_paths` snapshot is pure waste. Skip both up front.
+) -> Result<()> {
     if config.update_on.is_empty() {
-        return;
+        return Ok(());
     }
 
-    // Two-phase design so the immutable borrow of `update_map` (via the
-    // path snapshot) ends before we mutate `update_map` below:
-    //
-    // Phase 1 (inside the block): snapshot updated paths ONCE and evaluate
-    // every trigger against them. The inner `.any(...)` runs `N × M` times
-    // (N updated paths × M `updateOn` triggers), so precomputing collapses
-    // `N × M` `to_string_lossy()` calls down to `N`. We keep the snapshot
-    // as `Cow<'_, str>` so on the common UTF-8-path case each entry stays
-    // `Cow::Borrowed(&str)` with zero allocation; non-UTF-8 paths degrade
-    // to `Cow::Owned(String)` automatically, preserving the lossy-
-    // replacement semantics of the previous code.
-    //
-    // Phase 2 (below): the snapshot has been dropped, so we own the
-    // matched trigger references outright and can safely mutate
-    // `update_map`. `trigger_matches` borrows from `config`, not from
-    // `update_map`, so there is no borrow conflict here.
-    let trigger_matches: Vec<(&str, &[String])> = {
-        // Preallocate: `HashMap::keys()` yields an `ExactSizeIterator`
-        // whose `size_hint = (len, Some(len))`, and `Vec::from_iter` DOES
-        // reserve against the exact upper bound in that case — so the
-        // previous `.collect()` was already zero-realloc. Switch to the
-        // explicit `Vec::with_capacity(update_map.len()) + .extend(...)`
-        // form purely for visual consistency with the `trigger_matches`
-        // preallocation a few lines below and the identical policy
-        // applied to `path_to_name` / `reverse_deps` / `packages_to_add`
-        // in the sibling `apply_reverse_dependencies`. Byte-identical
-        // output; the goal is a uniform preallocation idiom across this
-        // module so a future maintainer can trust every `Vec::from_iter`
-        // is deliberate.
-        let mut updated_paths: Vec<Cow<'_, str>> = Vec::with_capacity(update_map.len());
-        updated_paths.extend(update_map.keys().map(|p| p.to_string_lossy()));
+    // Compile every pattern once and validate configuration even when there
+    // are no pending updates.
+    let rules: Vec<(&str, Pattern, &[String])> = config
+        .update_on
+        .iter()
+        .map(|(trigger_pattern, dependents)| {
+            let pattern = Pattern::new(trigger_pattern).with_context(|| {
+                format!("invalid glob pattern in updateOn config: {trigger_pattern}")
+            })?;
+            Ok((trigger_pattern.as_str(), pattern, dependents.as_slice()))
+        })
+        .collect::<Result<_>>()?;
 
-        let mut out = Vec::with_capacity(config.update_on.len());
-        for (trigger_pattern, dependents) in &config.update_on {
-            match Pattern::new(trigger_pattern) {
-                Ok(pattern) => {
-                    if updated_paths.iter().any(|s| pattern.matches(s.as_ref())) {
-                        out.push((trigger_pattern.as_str(), dependents.as_slice()));
+    if update_map.is_empty() {
+        return Ok(());
+    }
+
+    let mut initial_paths: Vec<_> = update_map.keys().cloned().collect();
+    initial_paths.sort_by(|left, right| compare_diagnostic_paths(left, right));
+    let mut queued_paths: VecDeque<PathBuf> = initial_paths.into();
+
+    while !queued_paths.is_empty() {
+        // Preserve BTreeMap rule precedence within each breadth-first batch so
+        // the lexicographically first matching trigger owns an inserted note.
+        let batch_len = queued_paths.len();
+        let mut batch = Vec::with_capacity(batch_len);
+        for _ in 0..batch_len {
+            let path = queued_paths
+                .pop_front()
+                .expect("the queued path batch length is exact");
+            let display_path = path.to_string_lossy().into_owned();
+            batch.push((path, display_path));
+        }
+        batch.sort_by(|left, right| compare_diagnostic_paths(&left.0, &right.0));
+
+        // Initial map keys are unique, and later paths are queued only through
+        // `Entry::Vacant`, so every queued path reaches every rule exactly once.
+        for (trigger_pattern, pattern, dependents) in &rules {
+            for (_, display_path) in &batch {
+                if !pattern.matches(display_path) {
+                    continue;
+                }
+
+                for dependent in *dependents {
+                    let dependent_path = PathBuf::from(dependent);
+                    if let Entry::Vacant(entry) = update_map.entry(dependent_path.clone()) {
+                        entry.insert((
+                            UpdateType::Patch,
+                            vec![ChangePackResultLog::new(
+                                UpdateType::Patch,
+                                format!(
+                                    "Auto-update triggered by updateOn rule: {trigger_pattern}"
+                                ),
+                            )],
+                        ));
+                        queued_paths.push_back(dependent_path);
                     }
                 }
-                Err(_) => {
-                    eprintln!(
-                        "warning: invalid glob pattern in updateOn config: {trigger_pattern}"
-                    );
-                }
-            }
-        }
-        out
-    };
-
-    for (trigger_pattern, dependents) in trigger_matches {
-        // Add dependent packages as PATCH updates if not already in update_map
-        for dependent in dependents {
-            // Guard with a borrowed `Path` lookup so the `PathBuf` key is only
-            // allocated on the insert (cache-miss) path.
-            if !update_map.contains_key(Path::new(dependent)) {
-                update_map.insert(
-                    PathBuf::from(dependent),
-                    (
-                        UpdateType::Patch,
-                        vec![ChangePackResultLog::new(
-                            UpdateType::Patch,
-                            format!("Auto-update triggered by updateOn rule: {trigger_pattern}"),
-                        )],
-                    ),
-                );
             }
         }
     }
+
+    Ok(())
+}
+
+fn compare_diagnostic_paths(left: &Path, right: &Path) -> std::cmp::Ordering {
+    left.to_string_lossy()
+        .replace('\\', "/")
+        .cmp(&right.to_string_lossy().replace('\\', "/"))
+        .then_with(|| left.to_string_lossy().cmp(&right.to_string_lossy()))
 }
 
 /// Apply reverse dependency updates: if package A depends on package B (via a local workspace dependency),
@@ -188,17 +172,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     projects: &[&Project],
     repo_root_path: &Path,
 ) -> Result<()> {
-    // Fast path for the dominant no-op case: with no scheduled updates the
-    // seed set below is empty and the reverse-dep DFS discovers nothing, so
-    // walking the full project graph to populate `path_to_name` /
-    // `reverse_deps` is pure waste (N `String` + N `PathBuf` allocations per
-    // project). Semantic mirror of the existing guard in
-    // `apply_update_on_rules` above.
-    if update_map.is_empty() {
-        return Ok(());
-    }
-
-    // Second fast path: with no scheduled updates carrying any local
+    // Fast path: with no project carrying any local
     // (monorepo) dependency edge, the DFS discovers nothing and the
     // full `path_to_name` / `reverse_deps` construction below is pure
     // waste (N `PathBuf` + N `String` allocs per project). Common on
@@ -226,6 +200,43 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
                 }
             }
         }
+    }
+
+    // Match `sort_by_dependencies`: duplicate names are harmless until a
+    // dependency edge references one. Report the lexicographically first
+    // ambiguous dependency with candidate paths sorted independently of
+    // project discovery order.
+    let mut ambiguous_dependencies = Vec::new();
+    for project in projects {
+        for dependency in project.dependencies() {
+            if name_to_index.get(dependency.as_str()) == Some(&None) {
+                ambiguous_dependencies.push(dependency.as_str());
+            }
+        }
+    }
+    if !ambiguous_dependencies.is_empty() {
+        ambiguous_dependencies.sort_unstable();
+        let dependency = ambiguous_dependencies[0];
+        let mut candidates: Vec<_> = projects
+            .iter()
+            .filter(|project| project.name() == Some(dependency))
+            .map(|project| project.relative_path().to_path_buf())
+            .collect();
+        candidates.sort_by(|left, right| compare_diagnostic_paths(left, right));
+        let candidate_paths = candidates
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(anyhow::anyhow!(
+            "ambiguous dependency `{dependency}`: candidates: {candidate_paths}"
+        ));
+    }
+
+    // Ambiguity validation is unconditional. Once it succeeds, an empty map
+    // cannot seed reverse-dependency traversal and is safe to return early.
+    if update_map.is_empty() {
+        return Ok(());
     }
 
     // Single pass over projects to build:
@@ -882,34 +893,72 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_reverse_dependencies_duplicate_names_are_isolated() {
-        let core = create_project("core", vec![]);
-        let mut shared_a = create_project("shared-a", vec!["core"]);
+    fn test_apply_reverse_dependencies_rejects_referenced_duplicate_names() {
+        let mut shared_a = create_project("zeta", vec![]);
         shared_a.set_name("shared".to_string());
-        let mut shared_b = create_project("shared-b", vec!["core"]);
+        let mut shared_b = create_project("alpha", vec![]);
         shared_b.set_name("shared".to_string());
         let app = create_project("app", vec!["shared"]);
-        let projects: Vec<&Project> = vec![&core, &shared_a, &shared_b, &app];
+        let projects: Vec<&Project> = vec![&shared_a, &app, &shared_b];
         let repo_root = Path::new("/test");
 
-        let mut duplicate_seed = HashMap::new();
-        duplicate_seed.insert(
-            PathBuf::from("shared-a/package.json"),
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("alpha/package.json"),
             (UpdateType::Minor, vec![]),
         );
-        apply_reverse_dependencies(&mut duplicate_seed, &projects, repo_root).unwrap();
-        assert!(!duplicate_seed.contains_key(&PathBuf::from("app/package.json")));
+        let error = apply_reverse_dependencies(&mut update_map, &projects, repo_root)
+            .expect_err("a referenced duplicate project name must be ambiguous");
 
-        let mut unique_seed = HashMap::new();
-        unique_seed.insert(
-            PathBuf::from("core/package.json"),
-            (UpdateType::Minor, vec![]),
+        assert_eq!(
+            error.to_string(),
+            "ambiguous dependency `shared`: candidates: alpha/package.json, zeta/package.json"
         );
-        apply_reverse_dependencies(&mut unique_seed, &projects, repo_root).unwrap();
+    }
 
-        assert!(unique_seed.contains_key(&PathBuf::from("shared-a/package.json")));
-        assert!(unique_seed.contains_key(&PathBuf::from("shared-b/package.json")));
-        assert!(!unique_seed.contains_key(&PathBuf::from("app/package.json")));
+    #[test]
+    fn test_apply_reverse_dependencies_empty_map_reports_ambiguity_deterministically() {
+        let mut shared_zeta = create_project("zeta", vec![]);
+        shared_zeta.set_name("shared".to_string());
+        let mut shared_alpha = create_project("alpha", vec![]);
+        shared_alpha.set_name("shared".to_string());
+        let app = create_project("app", vec!["shared"]);
+        let permutations = [
+            vec![&shared_zeta, &app, &shared_alpha],
+            vec![&shared_alpha, &shared_zeta, &app],
+            vec![&app, &shared_alpha, &shared_zeta],
+        ];
+        let expected =
+            "ambiguous dependency `shared`: candidates: alpha/package.json, zeta/package.json";
+
+        let mut messages = Vec::new();
+        for projects in permutations {
+            let mut update_map = HashMap::new();
+            let error = apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test"))
+                .expect_err("referenced duplicate names must be ambiguous for an empty map");
+            messages.push(error.to_string());
+        }
+
+        assert!(messages.iter().all(|message| message == expected));
+        assert!(messages.windows(2).all(|pair| pair[0] == pair[1]));
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_allows_unreferenced_duplicate_names() {
+        let mut shared_a = create_project("zeta", vec![]);
+        shared_a.set_name("shared".to_string());
+        let mut shared_b = create_project("alpha", vec![]);
+        shared_b.set_name("shared".to_string());
+        let app = create_project("app", vec![]);
+        let projects: Vec<&Project> = vec![&shared_a, &app, &shared_b];
+        let mut update_map = HashMap::from([(
+            PathBuf::from("alpha/package.json"),
+            (UpdateType::Minor, vec![]),
+        )]);
+
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test")).unwrap();
+
+        assert_eq!(update_map.len(), 1);
     }
 
     #[test]
@@ -973,7 +1022,7 @@ mod tests {
         let mut update_map: HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)> =
             HashMap::new();
 
-        apply_update_on_rules(&mut update_map, &config);
+        apply_update_on_rules(&mut update_map, &config).unwrap();
 
         assert!(
             update_map.is_empty(),
@@ -981,35 +1030,27 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_apply_update_on_rules_invalid_pattern() {
-        // Test with invalid glob pattern
+    #[tokio::test]
+    async fn test_gen_update_map_invalid_update_on_pattern_is_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).await.unwrap();
         let mut update_on = BTreeMap::new();
-        update_on.insert(
-            "[invalid".to_string(), // Invalid glob pattern
-            vec!["bridge/node".to_string()],
-        );
+        update_on.insert("[invalid".to_string(), vec!["bridge/node".to_string()]);
         let config = Config {
             update_on,
             ..Default::default()
         };
 
-        let mut update_map = HashMap::new();
-        update_map.insert(
-            PathBuf::from("crates/core"),
-            (
-                UpdateType::Minor,
-                vec![ChangePackResultLog::new(
-                    UpdateType::Minor,
-                    "Update core".to_string(),
-                )],
-            ),
+        let error = gen_update_map(&changepacks_dir, &config)
+            .await
+            .expect_err("invalid updateOn patterns must be rejected");
+
+        assert!(
+            error
+                .to_string()
+                .contains("invalid glob pattern in updateOn config: [invalid")
         );
-
-        apply_update_on_rules(&mut update_map, &config);
-
-        // Should still have only the original entry (invalid pattern is skipped)
-        assert_eq!(update_map.len(), 1);
     }
 
     #[test]
@@ -1034,7 +1075,7 @@ mod tests {
             ),
         );
 
-        apply_update_on_rules(&mut update_map, &config);
+        apply_update_on_rules(&mut update_map, &config).unwrap();
 
         // Should still have only the original entry (no match)
         assert_eq!(update_map.len(), 1);
@@ -1072,7 +1113,7 @@ mod tests {
             ),
         );
 
-        apply_update_on_rules(&mut update_map, &config);
+        apply_update_on_rules(&mut update_map, &config).unwrap();
 
         // bridge/node should remain Major (not overwritten to Patch)
         assert_eq!(update_map.len(), 2);
@@ -1114,7 +1155,7 @@ mod tests {
             ),
         );
 
-        apply_update_on_rules(&mut update_map, &config);
+        apply_update_on_rules(&mut update_map, &config).unwrap();
 
         // The dependent is added exactly once despite two matching triggers.
         assert_eq!(update_map.len(), 2);
@@ -1131,5 +1172,91 @@ mod tests {
             note_json["note"],
             format!("Auto-update triggered by updateOn rule: {first_trigger}")
         );
+    }
+
+    #[test]
+    fn test_apply_update_on_rules_reaches_chained_rules() {
+        let config = Config {
+            update_on: BTreeMap::from([
+                ("packages/a".to_string(), vec!["packages/b".to_string()]),
+                ("packages/b".to_string(), vec!["packages/c".to_string()]),
+            ]),
+            ..Default::default()
+        };
+        let mut update_map =
+            HashMap::from([(PathBuf::from("packages/a"), (UpdateType::Minor, vec![]))]);
+
+        apply_update_on_rules(&mut update_map, &config).unwrap();
+
+        assert_eq!(update_map.len(), 3);
+        assert_eq!(update_map[Path::new("packages/b")].0, UpdateType::Patch);
+        assert_eq!(update_map[Path::new("packages/c")].0, UpdateType::Patch);
+    }
+
+    #[test]
+    fn test_apply_update_on_rules_reaches_diamond_once() {
+        let config = Config {
+            update_on: BTreeMap::from([
+                (
+                    "packages/a".to_string(),
+                    vec!["packages/b".to_string(), "packages/c".to_string()],
+                ),
+                ("packages/b".to_string(), vec!["packages/d".to_string()]),
+                ("packages/c".to_string(), vec!["packages/d".to_string()]),
+            ]),
+            ..Default::default()
+        };
+        let mut update_map =
+            HashMap::from([(PathBuf::from("packages/a"), (UpdateType::Minor, vec![]))]);
+
+        apply_update_on_rules(&mut update_map, &config).unwrap();
+
+        assert_eq!(update_map.len(), 4);
+        let diamond = &update_map[Path::new("packages/d")];
+        assert_eq!(diamond.1.len(), 1);
+        assert_eq!(
+            serde_json::to_value(&diamond.1[0]).unwrap()["note"],
+            "Auto-update triggered by updateOn rule: packages/b"
+        );
+    }
+
+    #[test]
+    fn test_apply_update_on_rules_terminates_cycles() {
+        let config = Config {
+            update_on: BTreeMap::from([
+                ("packages/a".to_string(), vec!["packages/b".to_string()]),
+                ("packages/b".to_string(), vec!["packages/a".to_string()]),
+            ]),
+            ..Default::default()
+        };
+        let mut update_map =
+            HashMap::from([(PathBuf::from("packages/a"), (UpdateType::Minor, vec![]))]);
+
+        apply_update_on_rules(&mut update_map, &config).unwrap();
+
+        assert_eq!(update_map.len(), 2);
+        assert_eq!(update_map[Path::new("packages/a")].0, UpdateType::Minor);
+        assert_eq!(update_map[Path::new("packages/b")].0, UpdateType::Patch);
+    }
+
+    #[test]
+    fn test_apply_update_on_rules_propagates_from_already_present_dependent() {
+        let config = Config {
+            update_on: BTreeMap::from([
+                ("packages/a".to_string(), vec!["packages/b".to_string()]),
+                ("packages/b".to_string(), vec!["packages/c".to_string()]),
+            ]),
+            ..Default::default()
+        };
+        let mut update_map = HashMap::from([
+            (PathBuf::from("packages/a"), (UpdateType::Minor, vec![])),
+            (PathBuf::from("packages/b"), (UpdateType::Major, vec![])),
+        ]);
+
+        apply_update_on_rules(&mut update_map, &config).unwrap();
+
+        assert_eq!(update_map.len(), 3);
+        assert_eq!(update_map[Path::new("packages/b")].0, UpdateType::Major);
+        assert_eq!(update_map[Path::new("packages/c")].0, UpdateType::Patch);
     }
 }

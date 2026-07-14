@@ -30,7 +30,7 @@ use tokio::fs::{read_to_string, write};
 
 /// Update `pubspec.yaml` at `path` to set its `version` field to `new_version`,
 /// preserving the file's YAML formatting (via `yamlpatch`/`yamlpath`) and its
-/// trailing-newline shape (via `trailing_newline`).
+/// complete trailing-whitespace shape (via `finalize_content`).
 ///
 /// Shared by `DartPackage::update_version` and `DartWorkspace::update_version`
 /// so both paths emit byte-identical output. When `existing_version` is
@@ -84,6 +84,23 @@ mod tests {
     use changepacks_utils::test_support;
     use std::fs;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_write_pubspec_version_preserves_complete_trailing_whitespace() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_yaml = temp_dir.path().join("pubspec.yaml");
+        let suffix = " \r\n  \n";
+        fs::write(&pubspec_yaml, format!("name: test\nversion: 1.0.0{suffix}")).unwrap();
+
+        write_pubspec_version(&pubspec_yaml, "2.0.0", true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&pubspec_yaml).unwrap(),
+            format!("name: test\nversion: 2.0.0{suffix}")
+        );
+    }
 
     #[tokio::test]
     async fn test_write_pubspec_version_error_includes_path() {

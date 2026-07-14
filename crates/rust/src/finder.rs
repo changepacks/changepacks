@@ -7,7 +7,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::{package::RustPackage, workspace::RustWorkspace};
+use crate::{
+    package::RustPackage,
+    workspace::{InheritedWorkspaceMembers, RustWorkspace},
+};
 
 /// Package info deferred for workspace version resolution
 #[derive(Debug)]
@@ -167,6 +170,7 @@ pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
     workspace_package_versions: HashMap<PathBuf, String>,
     workspace_dependency_aliases: HashMap<PathBuf, HashMap<String, String>>,
+    inherited_workspace_members: HashMap<PathBuf, InheritedWorkspaceMembers>,
     pending_workspace_packages: Vec<PendingWorkspacePackage>,
 }
 
@@ -258,6 +262,25 @@ impl RustProjectFinder {
             relative_path,
             mut dependencies,
         } = package;
+        if let (Some(root_path), Some(package_name)) = (workspace_root_path.as_ref(), name.as_ref())
+        {
+            let aliases = self
+                .workspace_dependency_aliases
+                .get(root_path)
+                .into_iter()
+                .flat_map(|aliases| aliases.iter())
+                .filter(|(_, aliased_package_name)| *aliased_package_name == package_name)
+                .map(|(alias, _)| alias.clone())
+                .collect::<Vec<_>>();
+            let inherited_members = self
+                .inherited_workspace_members
+                .entry(root_path.clone())
+                .or_default();
+            let mut inherited_members = inherited_members
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            inherited_members.record(package_name, aliases);
+        }
         if let Some(root_path) = workspace_root_path.as_ref()
             && let Some(aliases) = self.workspace_dependency_aliases.get(root_path)
         {
@@ -279,20 +302,6 @@ impl RustProjectFinder {
         }
         self.projects
             .insert(abs_path, Project::Package(Box::new(pkg)));
-    }
-
-    fn resolve_pending_workspace_packages_for_root(&mut self, workspace_root_path: &Path) {
-        let pending = std::mem::take(&mut self.pending_workspace_packages);
-        for package in pending {
-            let workspace_package = self.nearest_workspace_package(&package.abs_path);
-            if let Some((version, root_path)) = workspace_package
-                && root_path == workspace_root_path
-            {
-                self.insert_workspace_member(package, Some(version), Some(root_path));
-            } else {
-                self.pending_workspace_packages.push(package);
-            }
-        }
     }
 
     fn resolve_pending_workspace_packages(&mut self) {
@@ -320,7 +329,12 @@ impl ProjectFinder for RustProjectFinder {
         if !self.matches_project_file(path).await? {
             return Ok(());
         }
-        if self.projects.contains_key(path) {
+        if self.projects.contains_key(path)
+            || self
+                .pending_workspace_packages
+                .iter()
+                .any(|package| package.abs_path == path)
+        {
             return Ok(());
         }
         // read Cargo.toml
@@ -369,6 +383,11 @@ impl ProjectFinder for RustProjectFinder {
             let version = package_str(&cargo_toml, "version")
                 .or_else(|| workspace_package_str(&cargo_toml, "version"));
             let name = package_str(&cargo_toml, "name");
+            let inherited_workspace_members = self
+                .inherited_workspace_members
+                .entry(path_key.clone())
+                .or_default()
+                .clone();
             // Hoist the shared `PathBuf` into one binding: `path_key` seeds
             // both the `RustWorkspace::new(...)` constructor slot and the
             // `self.projects.insert(...)` map key. Mirror of the same
@@ -379,19 +398,19 @@ impl ProjectFinder for RustProjectFinder {
             // semantics — the same `PathBuf` bytes flow into
             // `RustWorkspace::new` and the map key, just materialized
             // once up front.
-            let mut project = Project::Workspace(Box::new(RustWorkspace::new(
-                name,
-                version,
-                path_key.clone(),
-                relative_path.to_path_buf(),
-            )));
+            let mut project = Project::Workspace(Box::new(
+                RustWorkspace::new_with_inherited_workspace_members(
+                    name,
+                    version,
+                    path_key.clone(),
+                    relative_path.to_path_buf(),
+                    inherited_workspace_members,
+                ),
+            ));
             for dep_name in &dep_names {
                 project.add_dependency(dep_name);
             }
             self.projects.insert(path_key.clone(), project);
-
-            // Resolve only members contained by this workspace root.
-            self.resolve_pending_workspace_packages_for_root(&path_key);
         } else {
             // Check if version.workspace = true — same table-like +
             // `workspace = true` shape as `workspace_dep_names`
@@ -422,19 +441,13 @@ impl ProjectFinder for RustProjectFinder {
             let relative_path_key = relative_path.to_path_buf();
 
             if inherits_workspace {
-                let package = PendingWorkspacePackage {
-                    name,
-                    abs_path: path_key,
-                    relative_path: relative_path_key,
-                    dependencies: dep_names,
-                };
-                if let Some((version, root_path)) =
-                    self.nearest_workspace_package(&package.abs_path)
-                {
-                    self.insert_workspace_member(package, Some(version), Some(root_path));
-                } else {
-                    self.pending_workspace_packages.push(package);
-                }
+                self.pending_workspace_packages
+                    .push(PendingWorkspacePackage {
+                        name,
+                        abs_path: path_key,
+                        relative_path: relative_path_key,
+                        dependencies: dep_names,
+                    });
             } else {
                 let version = package_str(&cargo_toml, "version");
                 let mut project = Project::Package(Box::new(RustPackage::new(
@@ -499,12 +512,18 @@ impl ProjectFinder for RustProjectFinder {
                         .unwrap_or(Path::new("Cargo.toml"))
                         .to_path_buf();
 
-                    let workspace = RustWorkspace::new(
+                    let inherited_workspace_members = self
+                        .inherited_workspace_members
+                        .entry(root_path.clone())
+                        .or_default()
+                        .clone();
+                    let workspace = RustWorkspace::new_with_inherited_workspace_members(
                         ws_name,
                         // For virtual workspaces (no [package]), use [workspace.package].version
                         ws_pkg_version.or(Some(workspace_version)),
                         root_path.clone(),
                         ws_relative_path,
+                        inherited_workspace_members,
                     );
                     self.projects
                         .insert(root_path, Project::Workspace(Box::new(workspace)));
@@ -562,6 +581,57 @@ version.workspace = true
         .unwrap();
 
         (workspace_toml, package_toml)
+    }
+
+    fn write_inherited_version_fanout_workspace(
+        root: &Path,
+        package_name: &str,
+        version: &str,
+    ) -> (PathBuf, PathBuf) {
+        fs::create_dir_all(root).unwrap();
+        let workspace_toml = root.join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            format!(
+                r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "{version}"
+
+[workspace.dependencies]
+{package_name} = {{ path = "crates/{package_name}", version = "{version}" }}
+"#
+            ),
+        )
+        .unwrap();
+
+        let package_dir = root.join("crates").join(package_name);
+        fs::create_dir_all(&package_dir).unwrap();
+        let package_toml = package_dir.join("Cargo.toml");
+        fs::write(
+            &package_toml,
+            format!(
+                r#"[package]
+name = "{package_name}"
+version.workspace = true
+"#
+            ),
+        )
+        .unwrap();
+
+        (workspace_toml, package_toml)
+    }
+
+    async fn bump_workspace(finder: &mut RustProjectFinder, relative_path: &Path) {
+        let workspace = finder
+            .projects_mut()
+            .into_iter()
+            .find(|project| {
+                matches!(project, Project::Workspace(_)) && project.relative_path() == relative_path
+            })
+            .expect("workspace project should be discovered");
+        workspace.update_version(UpdateType::Patch).await.unwrap();
     }
 
     // Both `RustProjectFinder::new()` and `RustProjectFinder::default()` must
@@ -2021,6 +2091,294 @@ version.workspace = true
         assert!(message.contains("Failed to read Cargo.toml"));
         assert!(message.contains(ancestor_manifest.to_string_lossy().as_ref()));
         assert!(finder.projects().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_workspace_version_bump_only_fans_out_to_inheriting_members() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.2.3"
+
+[workspace.dependencies]
+inline-inherited = { path = "crates/inline-inherited", version = "1.2.3" }
+fixed-member = { path = "crates/fixed-member", version = "1.2.3" } # fixed bytes stay unchanged
+
+[workspace.dependencies.subtable-inherited]
+path = "crates/subtable-inherited"
+version = "1.2.3"
+features = ["derive"]
+"#,
+        )
+        .unwrap();
+
+        let members = [
+            ("inline-inherited", "version.workspace = true"),
+            ("subtable-inherited", "version = { workspace = true }"),
+            ("fixed-member", "version = \"1.2.3\""),
+        ];
+        let mut member_tomls = Vec::new();
+        for (name, version) in members {
+            let member_dir = temp_dir.path().join("crates").join(name);
+            fs::create_dir_all(&member_dir).unwrap();
+            let member_toml = member_dir.join("Cargo.toml");
+            fs::write(
+                &member_toml,
+                format!("[package]\nname = \"{name}\"\n{version}\n"),
+            )
+            .unwrap();
+            member_tomls.push((name, member_toml));
+        }
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&workspace_toml, Path::new("Cargo.toml"))
+            .await
+            .unwrap();
+        for (name, member_toml) in &member_tomls {
+            finder
+                .visit(member_toml, Path::new(&format!("crates/{name}/Cargo.toml")))
+                .await
+                .unwrap();
+        }
+        finder.finalize().await.unwrap();
+
+        let workspace = finder
+            .projects_mut()
+            .into_iter()
+            .find(|project| matches!(project, Project::Workspace(_)))
+            .expect("workspace project should be discovered");
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = fs::read_to_string(&workspace_toml).unwrap();
+        let document: toml_edit::DocumentMut = content.parse().unwrap();
+        let dependencies = document["workspace"]["dependencies"].as_table().unwrap();
+        assert_eq!(
+            dependencies["inline-inherited"]["version"].as_str(),
+            Some("1.2.4")
+        );
+        assert_eq!(
+            dependencies["subtable-inherited"]["version"].as_str(),
+            Some("1.2.4")
+        );
+        assert_eq!(
+            dependencies["subtable-inherited"]["features"]
+                .as_array()
+                .map(toml_edit::Array::len),
+            Some(1)
+        );
+        assert_eq!(
+            dependencies["fixed-member"]["version"].as_str(),
+            Some("1.2.3")
+        );
+        assert!(content.contains(
+            "fixed-member = { path = \"crates/fixed-member\", version = \"1.2.3\" } # fixed bytes stay unchanged"
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_workspace_version_bump_fanout_when_member_is_visited_first() {
+        let temp_dir = TempDir::new().unwrap();
+        let (workspace_toml, member_toml) =
+            write_inherited_version_fanout_workspace(temp_dir.path(), "member-first", "1.0.0");
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&member_toml, Path::new("crates/member-first/Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&workspace_toml, Path::new("Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        bump_workspace(&mut finder, Path::new("Cargo.toml")).await;
+
+        let content = fs::read_to_string(&workspace_toml).unwrap();
+        let document: toml_edit::DocumentMut = content.parse().unwrap();
+        assert_eq!(
+            document["workspace"]["dependencies"]["member-first"]["version"].as_str(),
+            Some("1.0.1")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_workspace_version_bump_fanout_when_root_is_visited_first() {
+        let temp_dir = TempDir::new().unwrap();
+        let (workspace_toml, member_toml) =
+            write_inherited_version_fanout_workspace(temp_dir.path(), "root-first", "1.1.0");
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&workspace_toml, Path::new("Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&member_toml, Path::new("crates/root-first/Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        bump_workspace(&mut finder, Path::new("Cargo.toml")).await;
+
+        let content = fs::read_to_string(&workspace_toml).unwrap();
+        let document: toml_edit::DocumentMut = content.parse().unwrap();
+        assert_eq!(
+            document["workspace"]["dependencies"]["root-first"]["version"].as_str(),
+            Some("1.1.1")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_workspace_version_bump_fanout_for_synthetic_ignored_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let (workspace_toml, member_toml) =
+            write_inherited_version_fanout_workspace(temp_dir.path(), "synthetic-member", "1.2.0");
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(
+                &member_toml,
+                Path::new("crates/synthetic-member/Cargo.toml"),
+            )
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        bump_workspace(&mut finder, Path::new("Cargo.toml")).await;
+
+        let content = fs::read_to_string(&workspace_toml).unwrap();
+        let document: toml_edit::DocumentMut = content.parse().unwrap();
+        assert_eq!(
+            document["workspace"]["dependencies"]["synthetic-member"]["version"].as_str(),
+            Some("1.2.1")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_workspace_version_bump_fanout_uses_nearest_interleaved_nested_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let (outer_workspace, outer_member) =
+            write_inherited_version_fanout_workspace(temp_dir.path(), "outer-member", "3.0.0");
+        let nested_root = temp_dir.path().join("nested");
+        let (nested_workspace, nested_member) =
+            write_inherited_version_fanout_workspace(&nested_root, "nested-member", "4.0.0");
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&outer_workspace, Path::new("Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(
+                &nested_member,
+                Path::new("nested/crates/nested-member/Cargo.toml"),
+            )
+            .await
+            .unwrap();
+        finder
+            .visit(&outer_member, Path::new("crates/outer-member/Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&nested_workspace, Path::new("nested/Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        bump_workspace(&mut finder, Path::new("Cargo.toml")).await;
+        bump_workspace(&mut finder, Path::new("nested/Cargo.toml")).await;
+
+        let outer_content = fs::read_to_string(&outer_workspace).unwrap();
+        let outer_document: toml_edit::DocumentMut = outer_content.parse().unwrap();
+        assert_eq!(
+            outer_document["workspace"]["dependencies"]["outer-member"]["version"].as_str(),
+            Some("3.0.1")
+        );
+        let nested_content = fs::read_to_string(&nested_workspace).unwrap();
+        let nested_document: toml_edit::DocumentMut = nested_content.parse().unwrap();
+        assert_eq!(
+            nested_document["workspace"]["dependencies"]["nested-member"]["version"].as_str(),
+            Some("4.0.1")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_workspace_version_bump_handles_aliases_without_key_name_collisions() {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "2.3.4"
+
+[workspace.dependencies]
+inline-core = { package = "core", path = "crates/core", version = "^2.3.4" }
+core = { package = "fixed-real", path = "crates/fixed-real", version = "2.3.4" } # alias collision stays fixed
+
+[workspace.dependencies.subtable-renamed]
+package = "subtable-real"
+path = "crates/subtable-real"
+version = "~2.3.4"
+"#,
+        )
+        .unwrap();
+
+        let members = [
+            ("core", "version.workspace = true"),
+            ("subtable-real", "version = { workspace = true }"),
+            ("fixed-real", "version = \"2.3.4\""),
+        ];
+        let mut member_tomls = Vec::new();
+        for (name, version) in members {
+            let member_dir = temp_dir.path().join("crates").join(name);
+            fs::create_dir_all(&member_dir).unwrap();
+            let member_toml = member_dir.join("Cargo.toml");
+            fs::write(
+                &member_toml,
+                format!("[package]\nname = \"{name}\"\n{version}\n"),
+            )
+            .unwrap();
+            member_tomls.push((name, member_toml));
+        }
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&workspace_toml, Path::new("Cargo.toml"))
+            .await
+            .unwrap();
+        for (name, member_toml) in &member_tomls {
+            finder
+                .visit(member_toml, Path::new(&format!("crates/{name}/Cargo.toml")))
+                .await
+                .unwrap();
+        }
+        finder.finalize().await.unwrap();
+
+        bump_workspace(&mut finder, Path::new("Cargo.toml")).await;
+
+        let content = fs::read_to_string(&workspace_toml).unwrap();
+        let document: toml_edit::DocumentMut = content.parse().unwrap();
+        let dependencies = document["workspace"]["dependencies"].as_table().unwrap();
+        assert_eq!(
+            dependencies["inline-core"]["version"].as_str(),
+            Some("^2.3.5")
+        );
+        assert_eq!(
+            dependencies["subtable-renamed"]["version"].as_str(),
+            Some("~2.3.5")
+        );
+        assert_eq!(dependencies["core"]["version"].as_str(), Some("2.3.4"));
+        assert!(content.contains(
+            "core = { package = \"fixed-real\", path = \"crates/fixed-real\", version = \"2.3.4\" } # alias collision stays fixed"
+        ));
+        assert!(content.contains("[workspace.dependencies.subtable-renamed]"));
     }
 
     #[tokio::test]

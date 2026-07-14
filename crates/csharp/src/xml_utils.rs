@@ -4,7 +4,8 @@ use quick_xml::{Reader, Writer};
 use std::io::Cursor;
 
 /// Update version in csproj XML content using quick-xml
-/// Returns the updated XML content or adds Version if it doesn't exist
+/// Returns the updated XML content or adds Version if it doesn't exist.
+/// Errors when no supported XML node can be updated.
 pub fn update_version_in_xml(
     content: &str,
     new_version: &str,
@@ -161,6 +162,12 @@ pub fn update_version_in_xml(
             }
         }
         buf.clear();
+    }
+
+    if !version_updated {
+        return Err(anyhow::anyhow!(
+            "C# version update did not mutate any XML node"
+        ));
     }
 
     let result = writer.into_inner().into_inner();
@@ -465,9 +472,14 @@ mod tests {
     }
 
     #[test]
-    fn test_update_version_without_property_group_returns_input() {
+    fn test_update_version_without_property_group_returns_error() {
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n";
-        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
-        assert_eq!(result, content);
+        let err = update_version_in_xml(content, "0.0.1", false)
+            .expect_err("XML without a PropertyGroup cannot be updated");
+
+        assert!(
+            err.to_string().contains("did not mutate any XML node"),
+            "unexpected error: {err:#}",
+        );
     }
 }

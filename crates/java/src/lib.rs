@@ -14,10 +14,12 @@ pub mod workspace;
 pub use finder::GradleProjectFinder;
 pub use version_updater::{update_version_in_groovy, update_version_in_kts, write_gradle_version};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use changepacks_core::Config;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::ffi::OsString;
+use std::future::Future;
+use std::path::{Path, PathBuf};
 
 // Per-OS Gradle wrapper commands. Windows uses `gradlew.bat` and backslash;
 // every other target uses the POSIX `./gradlew` shell script. These consts
@@ -25,8 +27,8 @@ use std::path::Path;
 // updates both trait impls without drift.
 //
 // Gradle's built-in `--dry-run` only previews the task graph, so we run the
-// full publish pipeline against the local Maven cache
-// (`publishToMavenLocal` → `~/.m2/repository`) instead for dry-runs.
+// full publish pipeline against an isolated temporary Maven local repository
+// via `publishToMavenLocal` instead for dry-runs.
 #[cfg(windows)]
 pub(crate) const PUBLISH_COMMAND: &str = ".\\gradlew.bat publish";
 #[cfg(not(windows))]
@@ -36,6 +38,51 @@ pub(crate) const PUBLISH_COMMAND: &str = "./gradlew publish";
 pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = ".\\gradlew.bat publishToMavenLocal";
 #[cfg(not(windows))]
 pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "./gradlew publishToMavenLocal";
+
+fn finish_isolated_gradle_dry_run(
+    publish_result: Result<changepacks_core::publish::PublishOutput>,
+    cleanup_result: Result<()>,
+) -> Result<changepacks_core::publish::PublishOutput> {
+    match (publish_result, cleanup_result) {
+        (Ok(output), Ok(())) => Ok(output),
+        (Err(publish_error), Ok(())) => Err(publish_error),
+        (Ok(output), Err(cleanup_error)) => {
+            let outcome = if output.success {
+                "succeeded"
+            } else {
+                "reported failure"
+            };
+            Err(anyhow::anyhow!(
+                "Gradle dry run {outcome}; stdout: {}; stderr: {}; failed to remove isolated temporary Maven local repository: {cleanup_error:#}",
+                output.stdout,
+                output.stderr,
+            ))
+        }
+        (Err(publish_error), Err(cleanup_error)) => Err(anyhow::anyhow!(
+            "Gradle dry run failed: {publish_error:#}; failed to remove isolated temporary Maven local repository: {cleanup_error:#}"
+        )),
+    }
+}
+
+async fn run_built_in_gradle_dry_run_with<Run, RunFuture>(
+    run_gradle: Run,
+) -> Result<changepacks_core::publish::PublishOutput>
+where
+    Run: FnOnce(PathBuf) -> RunFuture,
+    RunFuture: Future<Output = Result<changepacks_core::publish::PublishOutput>>,
+{
+    let maven_local = tempfile::Builder::new()
+        .prefix("changepacks-maven-local-")
+        .tempdir()
+        .context("Failed to create isolated temporary Maven local repository")?;
+    let repository = maven_local.path().to_path_buf();
+    let publish_result = run_gradle(repository).await;
+    let cleanup_result = maven_local
+        .close()
+        .context("Failed to remove isolated temporary Maven local repository");
+
+    finish_isolated_gradle_dry_run(publish_result, cleanup_result)
+}
 
 pub(crate) async fn run_publish_for_path(
     path: &Path,
@@ -53,7 +100,7 @@ pub(crate) async fn run_publish_for_path(
         .await;
     }
 
-    finder::run_gradle_publish(path, relative_path, "publish", missing_dir_message).await
+    finder::run_gradle_publish(path, relative_path, "publish", &[], missing_dir_message).await
 }
 
 pub(crate) async fn run_dry_run_publish_for_path(
@@ -72,12 +119,18 @@ pub(crate) async fn run_dry_run_publish_for_path(
         .await;
     }
 
-    finder::run_gradle_publish(
-        path,
-        relative_path,
-        "publishToMavenLocal",
-        missing_dir_message,
-    )
+    run_built_in_gradle_dry_run_with(|maven_local| async move {
+        let mut repository_argument = OsString::from("-Dmaven.repo.local=");
+        repository_argument.push(maven_local);
+        finder::run_gradle_publish(
+            path,
+            relative_path,
+            "publishToMavenLocal",
+            &[repository_argument],
+            missing_dir_message,
+        )
+        .await
+    })
     .await
     .map(Some)
 }
@@ -97,6 +150,136 @@ fn resolve_publish_override(
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    fn create_isolation_asserting_wrapper(root: &Path, exit_code: i32) {
+        #[cfg(windows)]
+        fs::write(
+            root.join("gradlew.bat"),
+            format!(
+                "@echo off\n\
+                 if not \"%~1\"==\":libs:core:publishToMavenLocal\" (\n\
+                   echo unexpected task: %~1 1>&2\n\
+                   exit /b 41\n\
+                 )\n\
+                 if not \"%~3\"==\"\" (\n\
+                   echo unexpected additional argument: %~3 1>&2\n\
+                   exit /b 44\n\
+                 )\n\
+                 set \"repo_argument=%~2\"\n\
+                 if not \"%repo_argument:~0,19%\"==\"-Dmaven.repo.local=\" (\n\
+                   echo missing isolated Maven repository argument 1>&2\n\
+                   exit /b 42\n\
+                 )\n\
+                 set \"repo=%repo_argument:~19%\"\n\
+                 if not exist \"%repo%\" (\n\
+                   echo isolated Maven repository did not exist during execution 1>&2\n\
+                   exit /b 43\n\
+                 )\n\
+                 echo isolated_repo=%repo%\n\
+                 exit /b {exit_code}\n"
+            ),
+        )
+        .unwrap();
+
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let wrapper = root.join("gradlew");
+            fs::write(
+                &wrapper,
+                format!(
+                    "#!/bin/sh\n\
+                     if [ \"$#\" -ne 2 ]; then\n\
+                       printf 'expected exactly two arguments, received %s\\n' \"$#\" >&2\n\
+                       exit 44\n\
+                     fi\n\
+                     if [ \"$1\" != ':libs:core:publishToMavenLocal' ]; then\n\
+                       printf 'unexpected task: %s\\n' \"$1\" >&2\n\
+                       exit 41\n\
+                     fi\n\
+                     repo_argument=$2\n\
+                     case $repo_argument in\n\
+                       -Dmaven.repo.local=*) repo=${{repo_argument#-Dmaven.repo.local=}} ;;\n\
+                       *) printf 'missing isolated Maven repository argument\\n' >&2; exit 42 ;;\n\
+                     esac\n\
+                     if [ ! -d \"$repo\" ]; then\n\
+                       printf 'isolated Maven repository did not exist during execution\\n' >&2\n\
+                       exit 43\n\
+                     fi\n\
+                     printf 'isolated_repo=%s\\n' \"$repo\"\n\
+                     exit {exit_code}\n"
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn nested_gradle_manifest(temp_dir: &TempDir) -> (PathBuf, PathBuf) {
+        let root = temp_dir.path().join("repo with spaces");
+        let project_dir = root.join("libs").join("core");
+        fs::create_dir_all(&project_dir).unwrap();
+        let manifest = project_dir.join("build.gradle.kts");
+        fs::write(&manifest, "version = \"1.0.0\"\n").unwrap();
+        (root, manifest)
+    }
+
+    fn isolated_repository_from(output: &changepacks_core::publish::PublishOutput) -> PathBuf {
+        output
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("isolated_repo="))
+            .map(PathBuf::from)
+            .expect("fake Gradle wrapper did not report its isolated Maven repository")
+    }
+
+    fn captured_publish_output(success: bool) -> changepacks_core::publish::PublishOutput {
+        changepacks_core::publish::PublishOutput {
+            success,
+            stdout: "captured Gradle stdout".to_string(),
+            stderr: "captured Gradle stderr".to_string(),
+        }
+    }
+
+    fn create_no_args_override(project_dir: &Path) -> String {
+        #[cfg(windows)]
+        {
+            fs::write(
+                project_dir.join("override-check.bat"),
+                "@echo off\n\
+                 if not \"%~1\"==\"\" (\n\
+                   echo unexpected argument: %~1 1>&2\n\
+                   exit /b 51\n\
+                 )\n\
+                 echo override-without-injected-args\n",
+            )
+            .unwrap();
+            "call override-check.bat".to_string()
+        }
+
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let script = project_dir.join("override-check.sh");
+            fs::write(
+                &script,
+                "#!/bin/sh\n\
+                 if [ \"$#\" -ne 0 ]; then\n\
+                   printf 'unexpected argument: %s\\n' \"$1\" >&2\n\
+                   exit 51\n\
+                 fi\n\
+                 printf 'override-without-injected-args\\n'\n",
+            )
+            .unwrap();
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+            "./override-check.sh".to_string()
+        }
+    }
 
     #[test]
     fn test_resolve_publish_override_prefers_path_then_language() {
@@ -119,5 +302,195 @@ mod tests {
         );
         commands.clear();
         assert_eq!(resolve_publish_override(&commands, relative_path), None);
+    }
+
+    #[test]
+    fn finish_isolated_dry_run_returns_output_when_cleanup_succeeds() {
+        let result =
+            finish_isolated_gradle_dry_run(Ok(captured_publish_output(true)), Ok(())).unwrap();
+
+        assert!(result.success);
+        assert_eq!(result.stdout, "captured Gradle stdout");
+        assert_eq!(result.stderr, "captured Gradle stderr");
+    }
+
+    #[test]
+    fn finish_isolated_dry_run_returns_execution_error_when_cleanup_succeeds() {
+        let error = finish_isolated_gradle_dry_run(
+            Err(anyhow::anyhow!("wrapper execution failed")),
+            Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.to_string(), "wrapper execution failed");
+    }
+
+    #[test]
+    fn finish_isolated_dry_run_reports_cleanup_error_after_successful_output() {
+        let error = finish_isolated_gradle_dry_run(
+            Ok(captured_publish_output(true)),
+            Err(anyhow::anyhow!("injected cleanup failure")),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("Gradle dry run succeeded"), "{error}");
+        assert!(error.contains("captured Gradle stdout"), "{error}");
+        assert!(error.contains("captured Gradle stderr"), "{error}");
+        assert!(error.contains("injected cleanup failure"), "{error}");
+    }
+
+    #[test]
+    fn finish_isolated_dry_run_retains_nonzero_output_when_cleanup_fails() {
+        let error = finish_isolated_gradle_dry_run(
+            Ok(captured_publish_output(false)),
+            Err(anyhow::anyhow!("injected cleanup failure")),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("Gradle dry run reported failure"), "{error}");
+        assert!(error.contains("captured Gradle stdout"), "{error}");
+        assert!(error.contains("captured Gradle stderr"), "{error}");
+        assert!(error.contains("injected cleanup failure"), "{error}");
+    }
+
+    #[test]
+    fn finish_isolated_dry_run_reports_execution_and_cleanup_errors() {
+        let error = finish_isolated_gradle_dry_run(
+            Err(anyhow::anyhow!("wrapper execution failed")),
+            Err(anyhow::anyhow!("injected cleanup failure")),
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("wrapper execution failed"), "{error}");
+        assert!(error.contains("injected cleanup failure"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn built_in_dry_run_cleans_isolated_repository_when_wrapper_is_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("build.gradle.kts");
+        fs::write(&manifest, "version = \"1.0.0\"\n").unwrap();
+        let mut observed_repository = None;
+
+        let result = run_built_in_gradle_dry_run_with(|maven_local| {
+            observed_repository = Some(maven_local.clone());
+            async move {
+                let mut repository_argument = OsString::from("-Dmaven.repo.local=");
+                repository_argument.push(maven_local);
+                finder::run_gradle_publish(
+                    &manifest,
+                    Path::new("build.gradle.kts"),
+                    "publishToMavenLocal",
+                    &[repository_argument],
+                    "Package directory not found",
+                )
+                .await
+            }
+        })
+        .await;
+
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("Gradle wrapper (gradlew) not found"),
+            "{error}"
+        );
+        let observed_repository = observed_repository.unwrap();
+        assert!(
+            !observed_repository.exists(),
+            "temporary Maven repository survived wrapper lookup failure: {}",
+            observed_repository.display()
+        );
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn built_in_dry_run_uses_exact_subproject_task_and_removes_isolated_repository() {
+        let temp_dir = TempDir::new().unwrap();
+        let (root, manifest) = nested_gradle_manifest(&temp_dir);
+        create_isolation_asserting_wrapper(&root, 0);
+        let relative_path = Path::new("libs/core/build.gradle.kts");
+
+        let output = run_dry_run_publish_for_path(
+            &manifest,
+            relative_path,
+            &Config::default(),
+            "Package directory not found",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        let isolated_repository = isolated_repository_from(&output);
+        assert!(
+            isolated_repository.file_name().is_some_and(|name| name
+                .to_string_lossy()
+                .starts_with("changepacks-maven-local-")),
+            "Gradle did not receive a changepacks-owned temporary repository: {}",
+            isolated_repository.display()
+        );
+        assert!(
+            !isolated_repository.exists(),
+            "temporary Maven repository was not cleaned up: {}",
+            isolated_repository.display()
+        );
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn built_in_dry_run_removes_isolated_repository_after_gradle_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let (root, manifest) = nested_gradle_manifest(&temp_dir);
+        create_isolation_asserting_wrapper(&root, 29);
+        let relative_path = Path::new("libs/core/build.gradle.kts");
+
+        let output = run_dry_run_publish_for_path(
+            &manifest,
+            relative_path,
+            &Config::default(),
+            "Package directory not found",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(!output.success);
+        let isolated_repository = isolated_repository_from(&output);
+        assert!(
+            !isolated_repository.exists(),
+            "temporary Maven repository was not cleaned up after failure: {}",
+            isolated_repository.display()
+        );
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn configured_dry_run_override_receives_no_injected_argument() {
+        let temp_dir = TempDir::new().unwrap();
+        let (_root, manifest) = nested_gradle_manifest(&temp_dir);
+        let project_dir = manifest.parent().unwrap();
+        let mut publish_dry_run = BTreeMap::new();
+        publish_dry_run.insert("java".to_string(), create_no_args_override(project_dir));
+        let config = Config {
+            publish_dry_run,
+            ..Default::default()
+        };
+
+        let output = run_dry_run_publish_for_path(
+            &manifest,
+            Path::new("libs/core/build.gradle.kts"),
+            &config,
+            "Package directory not found",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert_eq!(output.stdout.trim(), "override-without-injected-args");
+        temp_dir.close().unwrap();
     }
 }

@@ -15,9 +15,9 @@ async-trait = "0.1"
 anyhow = "1.0"
 tokio = { version = "1.52", features = ["fs", "process"] }
 regex = "1"
+tempfile = "3.27"
 
 [dev-dependencies]
-tempfile = "3.27"
 tokio = { version = "1.52", features = ["test-util", "macros"] }
 rstest = "0.26"
 
