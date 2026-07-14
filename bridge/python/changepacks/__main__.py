@@ -19,6 +19,7 @@ def get_last_three_path_parts(path: str) -> list[str]:
             parts.append(path)
             break
 
+    parts.reverse()
     return parts
 
 
@@ -100,24 +101,41 @@ def find_changepacks_bin() -> str:
     # Expect to find a "normal" folder at <prefix>/pip-build-env-<rand>/normal
     #
     # See: https://github.com/pypa/pip/blob/102d8187a1f5a4cd5de7a549fd8a9af34e89a54f/src/pip/_internal/build_env.py#L87
-    paths = os.environ.get("PATH", "").split(os.pathsep)
-    if len(paths) >= 2:
-        maybe_overlay = get_last_three_path_parts(paths[0])
-        maybe_normal = get_last_three_path_parts(paths[1])
+    scripts_name = "Scripts" if os.name == "nt" else "bin"
+    build_env_entries: list[tuple[str, str, str]] = []
+    for path in os.environ.get("PATH", "").split(os.pathsep):
+        scripts_path = os.path.normpath(path)
+        parts = get_last_three_path_parts(scripts_path)
+        if len(parts) != 3:
+            continue
+
+        build_env_name, layer, maybe_scripts_name = parts
         if (
-            len(maybe_normal) >= 3
-            and maybe_normal[0] == "normal"
-            and maybe_normal[1].startswith("pip-build-env-")
-            and len(maybe_overlay) >= 3
-            and maybe_overlay[0] == "overlay"
-            and maybe_overlay[1].startswith("pip-build-env-")
+            maybe_scripts_name != scripts_name
+            or layer not in ("overlay", "normal")
+            or not build_env_name.startswith("pip-build-env-")
         ):
-            # The overlay must contain the changepacks binary.
-            for exe_name in changepacks_exe_names():
-                candidate = os.path.join(paths[0], exe_name)
-                candidates.append(candidate)
-                if is_eligible_changepacks_bin(candidate):
-                    return candidate
+            continue
+
+        build_env_path = os.path.normcase(
+            os.path.abspath(os.path.dirname(os.path.dirname(scripts_path)))
+        )
+        build_env_entries.append((scripts_path, layer, build_env_path))
+
+    layers_by_build_env: dict[str, set[str]] = {}
+    for _, layer, build_env_path in build_env_entries:
+        layers_by_build_env.setdefault(build_env_path, set()).add(layer)
+
+    for scripts_path, layer, build_env_path in build_env_entries:
+        if layer != "overlay" or "normal" not in layers_by_build_env[build_env_path]:
+            continue
+
+        # The overlay must contain the changepacks binary.
+        for exe_name in changepacks_exe_names():
+            candidate = os.path.join(scripts_path, exe_name)
+            candidates.append(candidate)
+            if is_eligible_changepacks_bin(candidate):
+                return candidate
 
     raise FileNotFoundError(
         "Could not find the changepacks executable. Searched: "

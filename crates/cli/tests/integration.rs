@@ -369,6 +369,53 @@ async fn test_cli_check_tree() {
 
 #[tokio::test]
 #[serial]
+async fn test_cli_check_tree_json_is_rejected_without_stdout() {
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "package.json",
+            r#"{"name": "root-pkg", "version": "1.0.0", "dependencies": {"child-pkg": "workspace:*"}}"#,
+        ),
+        ("pnpm-workspace.yaml", "packages:\n  - packages/*"),
+        (
+            "packages/child/package.json",
+            r#"{"name": "child-pkg", "version": "1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/cli has a workspace root two levels up")
+        .join("Cargo.toml");
+
+    let output = std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"))
+        .args(["run", "--quiet", "-p", "changepacks", "--manifest-path"])
+        .arg(&workspace_manifest)
+        .args(["--", "check", "--tree", "--format", "json"])
+        .current_dir(&temp_path)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("failed to run the changepacks binary");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "check --tree --format json should fail; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.is_empty(),
+        "invalid tree/JSON output must not emit a text tree on stdout; got:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("`--tree` currently supports stdout output only"),
+        "error should explain the supported tree format; got:\n{stderr}"
+    );
+}
+
+#[tokio::test]
+#[serial]
 async fn test_cli_check_filter_package() {
     let temp_dir = setup_repo_canonical(&[(
         "package.json",

@@ -116,22 +116,26 @@ impl ProjectFinder for DartProjectFinder {
         // unchanged.
         let version = pubspec_str(&pubspec, "version");
         let name = pubspec_str(&pubspec, "name");
+        let publishable_by_default = pubspec_str(&pubspec, "publish_to")
+            .is_none_or(|publish_to| publish_to.trim() != "none");
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();
 
         let mut project = if is_workspace {
-            Project::Workspace(Box::new(DartWorkspace::new(
+            Project::Workspace(Box::new(DartWorkspace::new_discovered(
                 name,
                 version,
                 path_key.clone(),
                 relative_path_key,
+                publishable_by_default,
             )))
         } else {
-            Project::Package(Box::new(DartPackage::new(
+            Project::Package(Box::new(DartPackage::new_discovered(
                 name,
                 version,
                 path_key.clone(),
                 relative_path_key,
+                publishable_by_default,
             )))
         };
 
@@ -170,6 +174,61 @@ mod tests {
     async fn test_construction(#[case] finder: DartProjectFinder) {
         assert_eq!(finder.project_files(), &["pubspec.yaml"]);
         assert_eq!(finder.projects().len(), 0);
+    }
+
+    async fn discover_single_pubspec(contents: &str) -> (TempDir, DartProjectFinder) {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(&pubspec_path, contents).unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+
+        (temp_dir, finder)
+    }
+
+    #[rstest]
+    #[case("publish_to: none\n", false)]
+    #[case("publish_to: 'none'\n", false)]
+    #[case("publish_to: \" none \"\n", false)]
+    #[case("publish_to: https://packages.example.com\n", true)]
+    #[case("", true)]
+    #[case("publish_to: false\n", true)]
+    #[tokio::test]
+    async fn test_package_publish_to_controls_default_publishability(
+        #[case] publish_to: &str,
+        #[case] expected: bool,
+    ) {
+        let pubspec = format!("name: test_package\nversion: 1.0.0\n{publish_to}");
+        let (_temp_dir, finder) = discover_single_pubspec(&pubspec).await;
+        let projects = finder.projects();
+
+        assert_eq!(projects.len(), 1);
+        assert!(matches!(projects[0], Project::Package(_)));
+        assert_eq!(projects[0].is_publishable_by_default(), expected);
+    }
+
+    #[rstest]
+    #[case("publish_to: none\n", false)]
+    #[case("publish_to: \"none\"\n", false)]
+    #[case("publish_to: https://packages.example.com\n", true)]
+    #[case("", true)]
+    #[case("publish_to:\n  registry: private\n", true)]
+    #[tokio::test]
+    async fn test_workspace_publish_to_controls_default_publishability(
+        #[case] publish_to: &str,
+        #[case] expected: bool,
+    ) {
+        let pubspec = format!("name: test_workspace\nversion: 1.0.0\nworkspace: []\n{publish_to}");
+        let (_temp_dir, finder) = discover_single_pubspec(&pubspec).await;
+        let projects = finder.projects();
+
+        assert_eq!(projects.len(), 1);
+        assert!(matches!(projects[0], Project::Workspace(_)));
+        assert_eq!(projects[0].is_publishable_by_default(), expected);
     }
 
     #[tokio::test]

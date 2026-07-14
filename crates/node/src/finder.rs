@@ -84,6 +84,10 @@ impl ProjectFinder for NodeProjectFinder {
         }
         // read package.json
         let (_package_json_raw, package_json) = read_and_parse_package_json(path).await?;
+        let publishable_by_default = !matches!(
+            package_json.get("private"),
+            Some(serde_json::Value::Bool(true))
+        );
         // Both branches use the same name/version and the same path;
         // hoist so each branch collapses to a single constructor call.
         let version = package_json_str(&package_json, "version");
@@ -116,20 +120,22 @@ impl ProjectFinder for NodeProjectFinder {
         )
         .await?;
         let mut project = if is_workspace {
-            Project::Workspace(Box::new(NodeWorkspace::new_with_package_manager(
+            Project::Workspace(Box::new(NodeWorkspace::new_discovered(
                 name,
                 version,
                 path_key.clone(),
                 relative_path_key,
                 package_manager,
+                publishable_by_default,
             )))
         } else {
-            Project::Package(Box::new(NodePackage::new_with_package_manager(
+            Project::Package(Box::new(NodePackage::new_discovered(
                 name,
                 version,
                 path_key.clone(),
                 relative_path_key,
                 package_manager,
+                publishable_by_default,
             )))
         };
 
@@ -147,6 +153,16 @@ mod tests {
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
+
+    fn package_json_with_private(name: &str, private: Option<&str>, workspace: bool) -> String {
+        let workspaces = if workspace {
+            r#", "workspaces": []"#
+        } else {
+            ""
+        };
+        let private = private.map_or_else(String::new, |value| format!(r#", "private": {value}"#));
+        format!(r#"{{"name": "{name}", "version": "1.0.0"{workspaces}{private}}}"#)
+    }
 
     // Both `NodeProjectFinder::new()` and `NodeProjectFinder::default()` must
     // yield the same empty, `package.json`-scoped finder.
@@ -189,6 +205,40 @@ mod tests {
         }
 
         temp_dir.close().unwrap();
+    }
+
+    #[rstest]
+    #[case(Some("true"), false)]
+    #[case(Some("false"), true)]
+    #[case(None, true)]
+    #[case(Some(r#""true""#), true)]
+    #[tokio::test]
+    async fn test_node_package_private_field_controls_default_publishability(
+        #[case] private: Option<&str>,
+        #[case] expected: bool,
+    ) {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            package_json_with_private("test-package", private, false),
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Package(package) => {
+                assert_eq!(package.is_publishable_by_default(), expected);
+            }
+            _ => panic!("Expected Package"),
+        }
     }
 
     #[tokio::test]
@@ -263,6 +313,40 @@ mod tests {
         }
 
         temp_dir.close().unwrap();
+    }
+
+    #[rstest]
+    #[case(Some("true"), false)]
+    #[case(Some("false"), true)]
+    #[case(None, true)]
+    #[case(Some(r#""true""#), true)]
+    #[tokio::test]
+    async fn test_node_workspace_private_field_controls_default_publishability(
+        #[case] private: Option<&str>,
+        #[case] expected: bool,
+    ) {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            package_json_with_private("test-workspace", private, true),
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        match projects[0] {
+            Project::Workspace(workspace) => {
+                assert_eq!(workspace.is_publishable_by_default(), expected);
+            }
+            _ => panic!("Expected Workspace"),
+        }
     }
 
     #[rstest]

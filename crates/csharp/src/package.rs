@@ -17,12 +17,39 @@ pub struct CSharpPackage {
     path: PathBuf,
     relative_path: PathBuf,
     is_changed: bool,
+    publishable_by_default: bool,
     dependencies: HashSet<String>,
 }
 
 impl CSharpPackage {
-    // Standard package/workspace constructor.
-    changepacks_core::impl_default_new!();
+    #[must_use]
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
+        Self::new_discovered(name, version, path, relative_path, true)
+    }
+
+    #[must_use]
+    pub(crate) fn new_discovered(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        publishable_by_default: bool,
+    ) -> Self {
+        Self {
+            name,
+            version,
+            path,
+            relative_path,
+            is_changed: false,
+            publishable_by_default,
+            dependencies: HashSet::new(),
+        }
+    }
 
     async fn publish_with_command_runner<F, Fut>(
         &self,
@@ -67,6 +94,10 @@ impl CSharpPackage {
 impl Package for CSharpPackage {
     // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
+
+    fn is_publishable_by_default(&self) -> bool {
+        self.publishable_by_default
+    }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let path = &self.path;
@@ -146,6 +177,7 @@ mod tests {
         assert_eq!(package.relative_path(), PathBuf::from("Test.csproj"));
         assert!(!package.is_changed());
         assert_eq!(package.language(), Language::CSharp);
+        assert!(package.is_publishable_by_default());
         assert_eq!(
             package.default_publish_command(),
             "dotnet pack -c Release && dotnet nuget push"
@@ -155,6 +187,21 @@ mod tests {
         assert!(package.default_dry_run_publish_command().is_none());
 
         temp_dir.close().unwrap();
+    }
+
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn test_csharp_package_discovered_publishability(#[case] expected: bool) {
+        let package = CSharpPackage::new_discovered(
+            Some("Test".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/Test.csproj"),
+            PathBuf::from("Test.csproj"),
+            expected,
+        );
+
+        assert_eq!(package.is_publishable_by_default(), expected);
     }
 
     #[tokio::test]

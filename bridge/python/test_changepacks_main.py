@@ -17,6 +17,16 @@ class _ResourceDirectory:
         return self.paths[name]
 
 
+class LastThreePathPartsTests(unittest.TestCase):
+    def test_returns_path_tail_in_natural_order(self):
+        path = os.path.join("tmp", "pip-build-env-demo", "overlay", "bin")
+
+        self.assertEqual(
+            launcher.get_last_three_path_parts(path),
+            ["pip-build-env-demo", "overlay", "bin"],
+        )
+
+
 class ChangepacksBinCandidatesTests(unittest.TestCase):
     def test_windows_executable_suffix_variants(self):
         with (
@@ -143,6 +153,131 @@ class FindChangepacksBinTests(unittest.TestCase):
                 self.assertEqual(launcher.find_changepacks_bin(), candidate)
 
             access.assert_not_called()
+
+    def test_posix_finds_executable_in_pip_overlay_bin(self):
+        build_env = os.path.join("tmp", "pip-build-env-posix")
+        overlay_scripts = os.path.join(build_env, "overlay", "bin")
+        normal_scripts = os.path.join(build_env, "normal", "bin")
+        executable = os.path.join(overlay_scripts, "changepacks")
+
+        with (
+            mock.patch.object(launcher.os, "name", "posix"),
+            mock.patch.dict(
+                launcher.os.environ,
+                {"PATH": os.pathsep.join([overlay_scripts, normal_scripts])},
+            ),
+            mock.patch.object(
+                launcher, "changepacks_bin_candidates", return_value=[]
+            ),
+            mock.patch.object(
+                launcher, "changepacks_exe_names", return_value=["changepacks"]
+            ),
+            mock.patch.object(
+                launcher.os.path,
+                "isfile",
+                side_effect=lambda path: path == executable,
+            ),
+            mock.patch.object(
+                launcher.os,
+                "access",
+                side_effect=lambda path, mode: path == executable
+                and mode == os.X_OK,
+            ) as access,
+        ):
+            self.assertEqual(launcher.find_changepacks_bin(), executable)
+
+        access.assert_called_once_with(executable, os.X_OK)
+
+    def test_windows_finds_file_in_pip_overlay_scripts(self):
+        build_env = os.path.join("tmp", "pip-build-env-windows")
+        overlay_scripts = os.path.join(build_env, "overlay", "Scripts")
+        normal_scripts = os.path.join(build_env, "normal", "Scripts")
+        executable = os.path.join(overlay_scripts, "changepacks.exe")
+
+        with (
+            mock.patch.object(launcher.os, "name", "nt"),
+            mock.patch.dict(
+                launcher.os.environ,
+                {"PATH": os.pathsep.join([overlay_scripts, normal_scripts])},
+            ),
+            mock.patch.object(
+                launcher, "changepacks_bin_candidates", return_value=[]
+            ),
+            mock.patch.object(
+                launcher,
+                "changepacks_exe_names",
+                return_value=["changepacks.exe"],
+            ),
+            mock.patch.object(
+                launcher.os.path,
+                "isfile",
+                side_effect=lambda path: path == executable,
+            ),
+            mock.patch.object(launcher.os, "access") as access,
+        ):
+            self.assertEqual(launcher.find_changepacks_bin(), executable)
+
+        access.assert_not_called()
+
+    def test_rejects_overlay_and_normal_from_different_build_environments(self):
+        env_name = "pip-build-env-shared-name"
+        overlay_scripts = os.path.join("tmp", "one", env_name, "overlay", "bin")
+        normal_scripts = os.path.join("tmp", "two", env_name, "normal", "bin")
+
+        with (
+            mock.patch.object(launcher.os, "name", "posix"),
+            mock.patch.dict(
+                launcher.os.environ,
+                {"PATH": os.pathsep.join([overlay_scripts, normal_scripts])},
+            ),
+            mock.patch.object(
+                launcher, "changepacks_bin_candidates", return_value=[]
+            ),
+            mock.patch.object(
+                launcher, "changepacks_exe_names", return_value=["changepacks"]
+            ),
+            mock.patch.object(launcher.os.path, "isfile", return_value=True) as isfile,
+            mock.patch.object(launcher.os, "access", return_value=True),
+        ):
+            with self.assertRaises(FileNotFoundError):
+                launcher.find_changepacks_bin()
+
+        isfile.assert_not_called()
+
+    def test_rejects_reversed_or_missing_build_environment_prefix(self):
+        for env_name in ("demo-pip-build-env-", "pip-build-env"):
+            with self.subTest(env_name=env_name):
+                build_env = os.path.join("tmp", env_name)
+                overlay_scripts = os.path.join(build_env, "overlay", "bin")
+                normal_scripts = os.path.join(build_env, "normal", "bin")
+
+                with (
+                    mock.patch.object(launcher.os, "name", "posix"),
+                    mock.patch.dict(
+                        launcher.os.environ,
+                        {
+                            "PATH": os.pathsep.join(
+                                [overlay_scripts, normal_scripts]
+                            )
+                        },
+                    ),
+                    mock.patch.object(
+                        launcher, "changepacks_bin_candidates", return_value=[]
+                    ),
+                    mock.patch.object(
+                        launcher,
+                        "changepacks_exe_names",
+                        return_value=["changepacks"],
+                    ),
+                    mock.patch.object(
+                        launcher.os.path, "isfile", return_value=True
+                    ) as isfile,
+                    mock.patch.object(launcher.os, "access", return_value=True),
+                ):
+                    with self.assertRaises(FileNotFoundError):
+                        launcher.find_changepacks_bin()
+
+                isfile.assert_not_called()
 
 
 if __name__ == "__main__":

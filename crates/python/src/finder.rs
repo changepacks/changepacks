@@ -85,6 +85,7 @@ impl ProjectFinder for PythonProjectFinder {
         // hoist so each branch collapses to a single constructor call.
         let version = project_str(project_table, "version");
         let name = project_str(project_table, "name");
+        let publishable_by_default = name.is_some();
         // Rename `path_buf` → `path_key` to align with the Java and
         // CSharp finders' local naming convention: the value is used
         // once as the `HashMap` insert key (the "key" role), while
@@ -119,11 +120,12 @@ impl ProjectFinder for PythonProjectFinder {
         };
 
         let mut project = if has_workspace_declaration {
-            Project::Workspace(Box::new(PythonWorkspace::new(
+            Project::Workspace(Box::new(PythonWorkspace::new_discovered(
                 name,
                 version,
                 path_key.clone(),
                 relative_path_key,
+                publishable_by_default,
             )))
         } else {
             Project::Package(Box::new(PythonPackage::new(
@@ -253,6 +255,7 @@ version = "1.0.0"
             Project::Workspace(ws) => {
                 assert_eq!(ws.name(), Some("test-workspace"));
                 assert_eq!(ws.version(), Some("1.0.0"));
+                assert!(ws.is_publishable_by_default());
             }
             _ => panic!("Expected Workspace"),
         }
@@ -549,9 +552,41 @@ members = ["packages/*"]
             Project::Workspace(ws) => {
                 assert_eq!(ws.name(), None);
                 assert_eq!(ws.version(), None);
+                assert!(!ws.is_publishable_by_default());
             }
             _ => panic!("Expected Workspace"),
         }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_workspace_only_root_fallback_name_does_not_enable_default_publish() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+
+        let mut projects = finder.projects_mut();
+        assert_eq!(projects.len(), 1);
+        let project = projects.pop().unwrap();
+        assert!(!project.is_publishable_by_default());
+
+        project.set_name("repository-name".to_string());
+
+        assert_eq!(project.name(), Some("repository-name"));
+        assert!(!project.is_publishable_by_default());
 
         temp_dir.close().unwrap();
     }

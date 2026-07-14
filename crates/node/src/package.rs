@@ -11,6 +11,7 @@ pub struct NodePackage {
     path: PathBuf,
     relative_path: PathBuf,
     is_changed: bool,
+    publishable_by_default: bool,
     dependencies: HashSet<String>,
     pub(crate) package_manager: crate::PackageManager,
 }
@@ -40,12 +41,25 @@ impl NodePackage {
         relative_path: PathBuf,
         package_manager: crate::PackageManager,
     ) -> Self {
+        Self::new_discovered(name, version, path, relative_path, package_manager, true)
+    }
+
+    #[must_use]
+    pub(crate) fn new_discovered(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        package_manager: crate::PackageManager,
+        publishable_by_default: bool,
+    ) -> Self {
         Self {
             name,
             version,
             path,
             relative_path,
             is_changed: false,
+            publishable_by_default,
             dependencies: HashSet::new(),
             package_manager,
         }
@@ -56,6 +70,10 @@ impl NodePackage {
 impl Package for NodePackage {
     // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
+
+    fn is_publishable_by_default(&self) -> bool {
+        self.publishable_by_default
+    }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let path = &self.path;
@@ -181,11 +199,28 @@ mod tests {
         assert_eq!(package.relative_path(), PathBuf::from("test/package.json"));
         assert_eq!(package.language(), Language::Node);
         assert!(!package.is_changed());
+        assert!(package.is_publishable_by_default());
         assert_eq!(package.default_publish_command(), "npm publish");
         assert_eq!(
             package.default_dry_run_publish_command().as_deref(),
             Some("npm publish --dry-run")
         );
+    }
+
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn test_node_package_discovered_publishability(#[case] expected: bool) {
+        let package = NodePackage::new_discovered(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/package.json"),
+            PathBuf::from("test/package.json"),
+            crate::PackageManager::Npm,
+            expected,
+        );
+
+        assert_eq!(package.is_publishable_by_default(), expected);
     }
 
     #[tokio::test]

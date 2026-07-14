@@ -300,6 +300,12 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         }
     }
 
+    for dependents in reverse_deps.values_mut() {
+        dependents.sort_by(|left, right| {
+            compare_diagnostic_paths(&left.0, &right.0).then_with(|| left.1.cmp(&right.1))
+        });
+    }
+
     // Find all packages that need to be updated due to dependencies.
     // `packages_to_add` serves BOTH purposes: the "already scheduled" gate
     // (via `contains_key`) and the final insertion queue (drained into
@@ -310,34 +316,48 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // insert and once again for the vec push in the old shape).
     let mut packages_to_add: HashMap<PathBuf, &str> = HashMap::with_capacity(projects.len());
 
-    // Seed the DFS with names already scheduled for update. The DFS guards
-    // against reprocessing through `update_map` and `packages_to_add`.
-    // Names stay borrowed `&str` end to end — through the worklist and into
-    // `packages_to_add` — so the `PathBuf` keys are the only thing cloned.
-    let mut to_process: Vec<&str> = Vec::with_capacity(update_map.len());
-    to_process.extend(
-        update_map
-            .keys()
-            .filter_map(|path| path_to_name.get(path).copied()),
-    );
-    while let Some(trigger_name) = to_process.pop() {
+    // Seed a breadth-first worklist in path/name order. Keeping every initial
+    // update ahead of generated dependents lets independently bumped direct
+    // triggers settle the note winner before transitive propagation begins.
+    let mut initial_paths: Vec<_> = update_map
+        .keys()
+        .filter_map(|path| path_to_name.get(path).map(|name| (path, *name)))
+        .collect();
+    initial_paths.sort_by(|left, right| {
+        compare_diagnostic_paths(left.0, right.0).then_with(|| left.1.cmp(right.1))
+    });
+    let mut to_process: VecDeque<&str> = initial_paths.into_iter().map(|(_, name)| name).collect();
+    while let Some(trigger_name) = to_process.pop_front() {
         if let Some(dependents) = reverse_deps.get(trigger_name) {
             for (dependent_path, dependent_name) in dependents {
-                if !update_map.contains_key(dependent_path)
-                    && !packages_to_add.contains_key(dependent_path)
-                {
-                    packages_to_add.insert(dependent_path.clone(), trigger_name);
-                    if let Some(dependent_name) = dependent_name {
-                        to_process.push(*dependent_name);
+                if update_map.contains_key(dependent_path) {
+                    continue;
+                }
+
+                match packages_to_add.entry(dependent_path.clone()) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(trigger_name);
+                        if let Some(dependent_name) = dependent_name {
+                            to_process.push_back(*dependent_name);
+                        }
+                    }
+                    Entry::Occupied(mut entry) => {
+                        if trigger_name < *entry.get() {
+                            entry.insert(trigger_name);
+                        }
                     }
                 }
             }
         }
     }
 
-    // Add the dependent packages to update_map
-    for (path, dependency_name) in packages_to_add {
-        update_map.entry(path).or_insert_with(|| {
+    // Reinsert every entry in canonical path order. `HashMap` does not promise
+    // ordered iteration, but this gives deterministic insertion/serialization
+    // whenever the map's chosen hasher supports it.
+    let mut ordered_entries: Vec<_> = update_map.drain().collect();
+    ordered_entries.extend(packages_to_add.into_iter().map(|(path, dependency_name)| {
+        (
+            path,
             (
                 UpdateType::Patch,
                 vec![ChangePackResultLog::new(
@@ -346,16 +366,21 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
                         "Auto-update: depends on '{dependency_name}' via a local workspace dependency"
                     ),
                 )],
-            )
-        });
-    }
+            ),
+        )
+    }));
+    ordered_entries.sort_by(|left, right| compare_diagnostic_paths(&left.0, &right.0));
+    update_map.extend(ordered_entries);
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, HashMap};
+    use std::{
+        collections::{BTreeMap, HashMap},
+        hash::{BuildHasherDefault, Hasher},
+    };
 
     use changepacks_core::{Config, Package};
     use changepacks_node::package::NodePackage;
@@ -365,6 +390,95 @@ mod tests {
     use super::*;
 
     use crate::test_support::create_project;
+
+    #[derive(Default)]
+    struct CollisionHasher;
+
+    impl Hasher for CollisionHasher {
+        fn finish(&self) -> u64 {
+            0
+        }
+
+        fn write(&mut self, _bytes: &[u8]) {}
+    }
+
+    type DeterministicUpdateMap = HashMap<
+        PathBuf,
+        (UpdateType, Vec<ChangePackResultLog>),
+        BuildHasherDefault<CollisionHasher>,
+    >;
+
+    fn insert_reverse_dependency_seed(
+        update_map: &mut DeterministicUpdateMap,
+        name: &str,
+        update_type: UpdateType,
+    ) {
+        update_map.insert(
+            PathBuf::from(format!("{name}/package.json")),
+            (
+                update_type,
+                vec![ChangePackResultLog::new(
+                    update_type,
+                    format!("Update {name}"),
+                )],
+            ),
+        );
+    }
+
+    fn reverse_dependency_order_variant(variant: usize) -> DeterministicUpdateMap {
+        let alpha = create_project("alpha", vec![]);
+        let zeta = create_project("zeta", vec![]);
+        let bridge_a = create_project(
+            "bridge-a",
+            if matches!(variant, 0 | 2) {
+                vec!["zeta", "alpha"]
+            } else {
+                vec!["alpha", "zeta"]
+            },
+        );
+        let bridge_z = create_project(
+            "bridge-z",
+            if matches!(variant, 0 | 3) {
+                vec!["alpha", "zeta"]
+            } else {
+                vec!["zeta", "alpha"]
+            },
+        );
+        let app = create_project(
+            "app",
+            if matches!(variant, 0 | 1) {
+                vec!["bridge-z", "bridge-a"]
+            } else {
+                vec!["bridge-a", "bridge-z"]
+            },
+        );
+        let projects: Vec<&Project> = match variant {
+            0 => vec![&zeta, &bridge_z, &alpha, &app, &bridge_a],
+            1 => vec![&bridge_a, &alpha, &app, &zeta, &bridge_z],
+            2 => vec![&app, &bridge_z, &zeta, &bridge_a, &alpha],
+            3 => vec![&alpha, &bridge_a, &zeta, &bridge_z, &app],
+            _ => unreachable!("test variant is in range"),
+        };
+
+        let mut update_map = HashMap::with_hasher(BuildHasherDefault::default());
+        if matches!(variant, 0 | 2) {
+            insert_reverse_dependency_seed(&mut update_map, "alpha", UpdateType::Minor);
+            insert_reverse_dependency_seed(&mut update_map, "zeta", UpdateType::Major);
+        } else {
+            insert_reverse_dependency_seed(&mut update_map, "zeta", UpdateType::Major);
+            insert_reverse_dependency_seed(&mut update_map, "alpha", UpdateType::Minor);
+        }
+
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test")).unwrap();
+        update_map
+    }
+
+    fn result_note(update_map: &DeterministicUpdateMap, path: &str) -> String {
+        serde_json::to_value(&update_map[Path::new(path)].1[0]).unwrap()["note"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
 
     #[tokio::test]
     async fn test_gen_update_map() {
@@ -1005,6 +1119,63 @@ mod tests {
         assert_eq!(
             update_map[&PathBuf::from("cli/package.json")].0,
             UpdateType::Patch
+        );
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_chooses_smallest_trigger_deterministically() {
+        let expected_alpha_note =
+            "Auto-update: depends on 'alpha' via a local workspace dependency";
+        let expected_bridge_note =
+            "Auto-update: depends on 'bridge-a' via a local workspace dependency";
+
+        for variant in 0..4 {
+            let update_map = reverse_dependency_order_variant(variant);
+
+            assert_eq!(
+                update_map[Path::new("alpha/package.json")].0,
+                UpdateType::Minor,
+                "variant {variant}"
+            );
+            assert_eq!(
+                update_map[Path::new("zeta/package.json")].0,
+                UpdateType::Major,
+                "variant {variant}"
+            );
+            for path in ["bridge-a/package.json", "bridge-z/package.json"] {
+                assert_eq!(
+                    update_map[Path::new(path)].0,
+                    UpdateType::Patch,
+                    "variant {variant}, path {path}"
+                );
+                assert_eq!(
+                    result_note(&update_map, path),
+                    expected_alpha_note,
+                    "variant {variant}, path {path}"
+                );
+            }
+            assert_eq!(
+                update_map[Path::new("app/package.json")].0,
+                UpdateType::Patch,
+                "variant {variant}"
+            );
+            assert_eq!(
+                result_note(&update_map, "app/package.json"),
+                expected_bridge_note,
+                "variant {variant}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_serializes_equivalent_orders_identically() {
+        let serialized: Vec<_> = (0..4)
+            .map(|variant| serde_json::to_vec(&reverse_dependency_order_variant(variant)).unwrap())
+            .collect();
+
+        assert!(
+            serialized.windows(2).all(|pair| pair[0] == pair[1]),
+            "equivalent update maps must have byte-identical update types, notes, and ordering"
         );
     }
 

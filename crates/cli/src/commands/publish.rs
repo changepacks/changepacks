@@ -151,13 +151,16 @@ fn sort_publishable_projects<'a>(
         &config.publish
     };
     projects.retain(|project| {
-        project.is_publishable_by_default()
-            || changepacks_core::publish::lookup_by_path_or_language(
-                configured_commands,
-                project.relative_path(),
-                project.language(),
-            )
-            .is_some()
+        (if dry_run {
+            project.is_dry_run_publishable_by_default()
+        } else {
+            project.is_publishable_by_default()
+        }) || changepacks_core::publish::lookup_by_path_or_language(
+            configured_commands,
+            project.relative_path(),
+            project.language(),
+        )
+        .is_some()
     });
     Ok(sort_by_dependencies(projects)?)
 }
@@ -640,13 +643,20 @@ async fn execute_publish_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use changepacks_core::{Language, Package, UpdateType, Workspace};
+    use changepacks_core::{Language, Package, ProjectFinder, UpdateType, Workspace};
+    use changepacks_csharp::CSharpProjectFinder;
+    use changepacks_dart::DartProjectFinder;
+    use changepacks_java::package::GradlePackage;
+    use changepacks_node::NodeProjectFinder;
+    use changepacks_python::PythonProjectFinder;
+    use changepacks_rust::RustProjectFinder;
     use changepacks_utils::test_support::{git_add_and_commit, init_git_repo};
     use clap::Parser;
     use rstest::rstest;
     use serial_test::serial;
     use std::{
         collections::HashSet,
+        path::Path,
         sync::{Arc, Mutex},
     };
     use tempfile::tempdir;
@@ -1319,6 +1329,322 @@ mod tests {
 
     fn recorded_publishes(publish_log: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
         publish_log.lock().expect("publish log mutex").clone()
+    }
+
+    async fn discover_cargo_publish_false_project(root: &std::path::Path) -> RustProjectFinder {
+        let cargo_toml = root.join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            r#"[package]
+name = "private-package"
+version = "1.0.0"
+publish = false
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+    }
+
+    #[tokio::test]
+    async fn test_cargo_publish_false_project_is_excluded_by_default() {
+        let temp_dir = tempdir().unwrap();
+        let finder = discover_cargo_publish_false_project(temp_dir.path()).await;
+        let discovered = finder.projects();
+        assert_eq!(discovered.len(), 1);
+        assert!(!discovered[0].is_publishable_by_default());
+
+        let selected = sort_publishable_projects(discovered, &Config::default(), false).unwrap();
+        assert!(selected.is_empty());
+    }
+
+    #[rstest]
+    #[case("Cargo.toml")]
+    #[case("rust")]
+    #[tokio::test]
+    async fn test_cargo_publish_false_configured_command_forces_inclusion(#[case] key: &str) {
+        let temp_dir = tempdir().unwrap();
+        let finder = discover_cargo_publish_false_project(temp_dir.path()).await;
+        let discovered = finder.projects();
+        assert_eq!(discovered.len(), 1);
+        assert!(!discovered[0].is_publishable_by_default());
+        let config = Config {
+            publish: BTreeMap::from([(key.to_string(), "custom publish".to_string())]),
+            ..Config::default()
+        };
+
+        let selected = sort_publishable_projects(discovered, &config, false).unwrap();
+        assert_eq!(selected.len(), 1, "override key {key}");
+    }
+
+    async fn discover_node_private_project(root: &std::path::Path) -> NodeProjectFinder {
+        let package_json = root.join("package.json");
+        std::fs::write(
+            &package_json,
+            r#"{"name":"private-package","version":"1.0.0","private":true}"#,
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+        finder
+    }
+
+    async fn discover_uv_workspace_only_root(root: &Path) -> PythonProjectFinder {
+        let pyproject_toml = root.join("pyproject.toml");
+        std::fs::write(
+            &pyproject_toml,
+            r#"[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+        finder
+    }
+
+    #[tokio::test]
+    async fn test_uv_workspace_only_root_is_excluded_by_default() {
+        let temp_dir = tempdir().unwrap();
+        let finder = discover_uv_workspace_only_root(temp_dir.path()).await;
+        let discovered = finder.projects();
+        assert_eq!(discovered.len(), 1);
+        assert!(matches!(discovered[0], Project::Workspace(_)));
+        assert!(!discovered[0].is_publishable_by_default());
+
+        let selected = sort_publishable_projects(discovered, &Config::default(), false).unwrap();
+        assert!(selected.is_empty());
+    }
+
+    #[rstest]
+    #[case("pyproject.toml")]
+    #[case("python")]
+    #[tokio::test]
+    async fn test_uv_workspace_only_root_configured_command_forces_inclusion(#[case] key: &str) {
+        let temp_dir = tempdir().unwrap();
+        let finder = discover_uv_workspace_only_root(temp_dir.path()).await;
+        let discovered = finder.projects();
+        assert_eq!(discovered.len(), 1);
+        assert!(!discovered[0].is_publishable_by_default());
+        let config = Config {
+            publish: BTreeMap::from([(key.to_string(), "custom publish".to_string())]),
+            ..Config::default()
+        };
+
+        let selected = sort_publishable_projects(discovered, &config, false).unwrap();
+        assert_eq!(selected.len(), 1, "override key {key}");
+    }
+
+    #[tokio::test]
+    async fn test_node_private_project_is_excluded_by_default() {
+        let temp_dir = tempdir().unwrap();
+        let finder = discover_node_private_project(temp_dir.path()).await;
+        let discovered = finder.projects();
+        assert_eq!(discovered.len(), 1);
+        assert!(!discovered[0].is_publishable_by_default());
+
+        let selected = sort_publishable_projects(discovered, &Config::default(), false).unwrap();
+        assert!(selected.is_empty());
+    }
+
+    #[rstest]
+    #[case("package.json")]
+    #[case("node")]
+    #[tokio::test]
+    async fn test_node_private_configured_command_forces_inclusion(#[case] key: &str) {
+        let temp_dir = tempdir().unwrap();
+        let finder = discover_node_private_project(temp_dir.path()).await;
+        let discovered = finder.projects();
+        assert_eq!(discovered.len(), 1);
+        assert!(!discovered[0].is_publishable_by_default());
+        let config = Config {
+            publish: BTreeMap::from([(key.to_string(), "custom publish".to_string())]),
+            ..Config::default()
+        };
+
+        let selected = sort_publishable_projects(discovered, &config, false).unwrap();
+        assert_eq!(selected.len(), 1, "override key {key}");
+    }
+
+    async fn discover_csharp_is_packable_false_project(
+        root: &std::path::Path,
+    ) -> CSharpProjectFinder {
+        let csproj = root.join("Private.csproj");
+        std::fs::write(
+            &csproj,
+            "<Project><PropertyGroup><IsPackable>false</IsPackable></PropertyGroup></Project>",
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&csproj, &PathBuf::from("Private.csproj"))
+            .await
+            .unwrap();
+        finder
+    }
+
+    #[tokio::test]
+    async fn test_csharp_is_packable_false_project_is_excluded_by_default() {
+        let temp_dir = tempdir().unwrap();
+        let finder = discover_csharp_is_packable_false_project(temp_dir.path()).await;
+        let discovered = finder.projects();
+        assert_eq!(discovered.len(), 1);
+        assert!(!discovered[0].is_publishable_by_default());
+
+        let selected = sort_publishable_projects(discovered, &Config::default(), false).unwrap();
+        assert!(selected.is_empty());
+    }
+
+    #[rstest]
+    #[case("Private.csproj")]
+    #[case("csharp")]
+    #[tokio::test]
+    async fn test_csharp_is_packable_false_configured_command_forces_inclusion(#[case] key: &str) {
+        let temp_dir = tempdir().unwrap();
+        let finder = discover_csharp_is_packable_false_project(temp_dir.path()).await;
+        let discovered = finder.projects();
+        assert_eq!(discovered.len(), 1);
+        assert!(!discovered[0].is_publishable_by_default());
+        let config = Config {
+            publish: BTreeMap::from([(key.to_string(), "custom publish".to_string())]),
+            ..Config::default()
+        };
+
+        let selected = sort_publishable_projects(discovered, &config, false).unwrap();
+        assert_eq!(selected.len(), 1, "override key {key}");
+    }
+
+    async fn discover_dart_publish_to_none_project(root: &std::path::Path) -> DartProjectFinder {
+        let pubspec = root.join("pubspec.yaml");
+        std::fs::write(
+            &pubspec,
+            "name: private_package\nversion: 1.0.0\npublish_to: none\n",
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        finder
+            .visit(&pubspec, &PathBuf::from("pubspec.yaml"))
+            .await
+            .unwrap();
+        finder
+    }
+
+    #[tokio::test]
+    async fn test_dart_publish_to_none_project_is_excluded_by_default() {
+        let temp_dir = tempdir().unwrap();
+        let finder = discover_dart_publish_to_none_project(temp_dir.path()).await;
+        let discovered = finder.projects();
+        assert_eq!(discovered.len(), 1);
+        assert!(!discovered[0].is_publishable_by_default());
+
+        let selected = sort_publishable_projects(discovered, &Config::default(), false).unwrap();
+        assert!(selected.is_empty());
+    }
+
+    #[rstest]
+    #[case("pubspec.yaml")]
+    #[case("dart")]
+    #[tokio::test]
+    async fn test_dart_publish_to_none_configured_command_forces_inclusion(#[case] key: &str) {
+        let temp_dir = tempdir().unwrap();
+        let finder = discover_dart_publish_to_none_project(temp_dir.path()).await;
+        let discovered = finder.projects();
+        assert_eq!(discovered.len(), 1);
+        assert!(!discovered[0].is_publishable_by_default());
+        let config = Config {
+            publish: BTreeMap::from([(key.to_string(), "custom publish".to_string())]),
+            ..Config::default()
+        };
+
+        let selected = sort_publishable_projects(discovered, &config, false).unwrap();
+        assert_eq!(selected.len(), 1, "override key {key}");
+        match selected[0] {
+            Project::Package(package) => {
+                assert_eq!(package.get_publish_command(&config), "custom publish");
+            }
+            Project::Workspace(_) => panic!("expected Dart package"),
+        }
+    }
+
+    fn gradle_project(
+        relative_path: &str,
+        has_publish_task: bool,
+        has_publish_to_maven_local_task: bool,
+    ) -> Project {
+        Project::Package(Box::new(GradlePackage::new_with_publish_tasks(
+            Some("gradle-project".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from(relative_path),
+            PathBuf::from(relative_path),
+            has_publish_task,
+            has_publish_to_maven_local_task,
+        )))
+    }
+
+    #[test]
+    fn test_gradle_task_availability_selects_normal_vs_dry_run_default() {
+        let remote_only = gradle_project("remote/build.gradle.kts", true, false);
+        let local_only = gradle_project("local/build.gradle.kts", false, true);
+        let projects = vec![&remote_only, &local_only];
+
+        let normal = sort_publishable_projects(projects.clone(), &Config::default(), false)
+            .expect("normal Gradle selection should sort");
+        let dry_run = sort_publishable_projects(projects, &Config::default(), true)
+            .expect("dry-run Gradle selection should sort");
+
+        assert_eq!(
+            normal
+                .iter()
+                .map(|project| project.relative_path())
+                .collect::<Vec<_>>(),
+            [Path::new("remote/build.gradle.kts")]
+        );
+        assert_eq!(
+            dry_run
+                .iter()
+                .map(|project| project.relative_path())
+                .collect::<Vec<_>>(),
+            [Path::new("local/build.gradle.kts")]
+        );
+    }
+
+    #[rstest]
+    #[case(false, "missing/build.gradle.kts")]
+    #[case(false, "java")]
+    #[case(true, "missing/build.gradle.kts")]
+    #[case(true, "java")]
+    fn test_gradle_task_availability_configured_overrides_force_inclusion(
+        #[case] dry_run: bool,
+        #[case] key: &str,
+    ) {
+        let project = gradle_project("missing/build.gradle.kts", false, false);
+        let mut config = Config::default();
+        let commands = if dry_run {
+            &mut config.publish_dry_run
+        } else {
+            &mut config.publish
+        };
+        commands.insert(key.to_string(), "custom publish".to_string());
+
+        let selected = sort_publishable_projects(vec![&project], &config, dry_run)
+            .expect("configured Gradle selection should sort");
+
+        assert_eq!(selected.len(), 1, "override key {key}, dry_run={dry_run}");
     }
 
     #[tokio::test]

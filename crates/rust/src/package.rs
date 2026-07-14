@@ -12,6 +12,7 @@ pub struct RustPackage {
     relative_path: PathBuf,
     is_changed: bool,
     dependencies: HashSet<String>,
+    publishable_by_default: bool,
     workspace_version_inherited: bool,
     workspace_root: Option<PathBuf>,
 }
@@ -31,6 +32,7 @@ impl RustPackage {
             relative_path,
             is_changed: false,
             dependencies: HashSet::new(),
+            publishable_by_default: true,
             workspace_version_inherited: false,
             workspace_root: None,
         }
@@ -51,9 +53,16 @@ impl RustPackage {
             relative_path,
             is_changed: false,
             dependencies: HashSet::new(),
+            publishable_by_default: true,
             workspace_version_inherited: true,
             workspace_root,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn with_publishable_by_default(mut self, publishable_by_default: bool) -> Self {
+        self.publishable_by_default = publishable_by_default;
+        self
     }
 }
 
@@ -64,8 +73,9 @@ impl Package for RustPackage {
     // bodies with every other language crate's `Package` / `Workspace`
     // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
     // — expansion is byte-identical to the previous hand-rolled bodies.
-    // Rust-specific overrides (`inherits_workspace_version`,
-    // `workspace_root_path`) stay hand-rolled below.
+    // Rust-specific overrides (`is_publishable_by_default`,
+    // `inherits_workspace_version`, `workspace_root_path`) stay hand-rolled
+    // below.
     changepacks_core::impl_basic_accessors!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
@@ -93,6 +103,10 @@ impl Package for RustPackage {
     // `Workspace` impl. Consolidated via `impl_language!()` in
     // `changepacks-core` alongside the other accessor macros.
     changepacks_core::impl_language!(Language::Rust);
+
+    fn is_publishable_by_default(&self) -> bool {
+        self.publishable_by_default
+    }
 
     // `default_publish_command` / `default_dry_run_publish_command` share
     // their const-based shape with every other const-driven language

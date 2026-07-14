@@ -13,11 +13,41 @@ pub struct GradlePackage {
     relative_path: PathBuf,
     is_changed: bool,
     dependencies: HashSet<String>,
+    has_publish_task: bool,
+    has_publish_to_maven_local_task: bool,
 }
 
 impl GradlePackage {
-    // Standard package/workspace constructor.
-    changepacks_core::impl_default_new!();
+    #[must_use]
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
+        Self::new_with_publish_tasks(name, version, path, relative_path, true, true)
+    }
+
+    #[must_use]
+    pub fn new_with_publish_tasks(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        has_publish_task: bool,
+        has_publish_to_maven_local_task: bool,
+    ) -> Self {
+        Self {
+            name,
+            version,
+            path,
+            relative_path,
+            is_changed: false,
+            dependencies: HashSet::new(),
+            has_publish_task,
+            has_publish_to_maven_local_task,
+        }
+    }
 }
 
 #[async_trait]
@@ -54,6 +84,14 @@ impl Package for GradlePackage {
         crate::PUBLISH_COMMAND,
         crate::DRY_RUN_PUBLISH_COMMAND
     );
+
+    fn is_publishable_by_default(&self) -> bool {
+        self.has_publish_task
+    }
+
+    fn is_dry_run_publishable_by_default(&self) -> bool {
+        self.has_publish_to_maven_local_task
+    }
 
     async fn publish(&self, config: &Config) -> Result<changepacks_core::publish::PublishOutput> {
         crate::run_publish_for_path(
@@ -133,6 +171,8 @@ mod tests {
         );
         assert_eq!(package.language(), Language::Java);
         assert!(!package.is_changed());
+        assert!(package.is_publishable_by_default());
+        assert!(package.is_dry_run_publishable_by_default());
         #[cfg(windows)]
         {
             assert_eq!(package.default_publish_command(), ".\\gradlew.bat publish");
@@ -161,6 +201,31 @@ mod tests {
         );
 
         assert_gradle_package_defaults(&package);
+    }
+
+    #[test]
+    fn test_gradle_package_publishability_tracks_available_tasks() {
+        let remote_only = GradlePackage::new_with_publish_tasks(
+            Some("remote-only".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/build.gradle.kts"),
+            PathBuf::from("test/build.gradle.kts"),
+            true,
+            false,
+        );
+        let local_only = GradlePackage::new_with_publish_tasks(
+            Some("local-only".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/build.gradle.kts"),
+            PathBuf::from("test/build.gradle.kts"),
+            false,
+            true,
+        );
+
+        assert!(remote_only.is_publishable_by_default());
+        assert!(!remote_only.is_dry_run_publishable_by_default());
+        assert!(!local_only.is_publishable_by_default());
+        assert!(local_only.is_dry_run_publishable_by_default());
     }
 
     #[tokio::test]

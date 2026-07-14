@@ -11,16 +11,39 @@ pub struct DartWorkspace {
     version: Option<String>,
     name: Option<String>,
     is_changed: bool,
+    publishable_by_default: bool,
     dependencies: HashSet<String>,
 }
 
 impl DartWorkspace {
-    // Byte-identical `#[must_use] pub fn new(name, version, path,
-    // relative_path)` constructor body shared with every other
-    // "plain 5-basic-field" language crate's `Package` / `Workspace`.
-    // Consolidated via `impl_default_new!()` in `changepacks-core` — see
-    // that macro's doc for the exact struct-field contract.
-    changepacks_core::impl_default_new!();
+    #[must_use]
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
+        Self::new_discovered(name, version, path, relative_path, true)
+    }
+
+    #[must_use]
+    pub(crate) fn new_discovered(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        publishable_by_default: bool,
+    ) -> Self {
+        Self {
+            path,
+            relative_path,
+            version,
+            name,
+            is_changed: false,
+            publishable_by_default,
+            dependencies: HashSet::new(),
+        }
+    }
 }
 
 #[async_trait]
@@ -31,6 +54,10 @@ impl Workspace for DartWorkspace {
     // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
     // — expansion is byte-identical to the previous hand-rolled bodies.
     changepacks_core::impl_basic_accessors!();
+
+    fn is_publishable_by_default(&self) -> bool {
+        self.publishable_by_default
+    }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let path = &self.path;
@@ -101,6 +128,7 @@ workspace:
         assert_eq!(workspace.path(), pubspec_path);
         assert_eq!(workspace.relative_path(), PathBuf::from("pubspec.yaml"));
         assert!(!workspace.is_changed());
+        assert!(workspace.is_publishable_by_default());
         assert_eq!(workspace.language(), Language::Dart);
         assert_eq!(workspace.default_publish_command(), "dart pub publish");
         assert_eq!(
@@ -109,6 +137,19 @@ workspace:
         );
 
         temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_new_discovered_carries_default_publishability() {
+        let workspace = DartWorkspace::new_discovered(
+            Some("test_workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pubspec.yaml"),
+            PathBuf::from("pubspec.yaml"),
+            false,
+        );
+
+        assert!(!workspace.is_publishable_by_default());
     }
 
     #[tokio::test]

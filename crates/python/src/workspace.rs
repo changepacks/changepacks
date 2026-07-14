@@ -11,18 +11,49 @@ pub struct PythonWorkspace {
     version: Option<String>,
     name: Option<String>,
     is_changed: bool,
+    publishable_by_default: bool,
     dependencies: HashSet<String>,
 }
 
 impl PythonWorkspace {
-    // Standard package/workspace constructor.
-    changepacks_core::impl_default_new!();
+    #[must_use]
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
+        Self::new_discovered(name, version, path, relative_path, true)
+    }
+
+    #[must_use]
+    pub(crate) fn new_discovered(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        publishable_by_default: bool,
+    ) -> Self {
+        Self {
+            path,
+            relative_path,
+            version,
+            name,
+            is_changed: false,
+            publishable_by_default,
+            dependencies: HashSet::new(),
+        }
+    }
 }
 
 #[async_trait]
 impl Workspace for PythonWorkspace {
     // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
+
+    fn is_publishable_by_default(&self) -> bool {
+        self.publishable_by_default
+    }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let path = &self.path;
@@ -64,6 +95,7 @@ mod tests {
         );
         assert_eq!(workspace.language(), Language::Python);
         assert!(!workspace.is_changed());
+        assert!(workspace.is_publishable_by_default());
         assert_eq!(workspace.default_publish_command(), "uv publish");
         assert_eq!(
             workspace.default_dry_run_publish_command().as_deref(),
@@ -94,6 +126,27 @@ mod tests {
 
         assert_eq!(workspace.name(), None);
         assert_eq!(workspace.version(), None);
+        assert!(workspace.is_publishable_by_default());
+    }
+
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn test_python_workspace_discovered_publishability_survives_fallback_name(
+        #[case] expected: bool,
+    ) {
+        let mut workspace = PythonWorkspace::new_discovered(
+            None,
+            None,
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("pyproject.toml"),
+            expected,
+        );
+
+        assert_eq!(workspace.is_publishable_by_default(), expected);
+        workspace.set_name("repository-name".to_string());
+        assert_eq!(workspace.name(), Some("repository-name"));
+        assert_eq!(workspace.is_publishable_by_default(), expected);
     }
 
     #[tokio::test]

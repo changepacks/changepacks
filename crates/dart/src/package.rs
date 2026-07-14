@@ -12,18 +12,49 @@ pub struct DartPackage {
     path: PathBuf,
     relative_path: PathBuf,
     is_changed: bool,
+    publishable_by_default: bool,
     dependencies: HashSet<String>,
 }
 
 impl DartPackage {
-    // Standard package/workspace constructor.
-    changepacks_core::impl_default_new!();
+    #[must_use]
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
+        Self::new_discovered(name, version, path, relative_path, true)
+    }
+
+    #[must_use]
+    pub(crate) fn new_discovered(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        publishable_by_default: bool,
+    ) -> Self {
+        Self {
+            name,
+            version,
+            path,
+            relative_path,
+            is_changed: false,
+            publishable_by_default,
+            dependencies: HashSet::new(),
+        }
+    }
 }
 
 #[async_trait]
 impl Package for DartPackage {
     // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
+
+    fn is_publishable_by_default(&self) -> bool {
+        self.publishable_by_default
+    }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let path = &self.path;
@@ -78,6 +109,7 @@ version: 1.0.0
         assert_eq!(package.path(), pubspec_path);
         assert_eq!(package.relative_path(), PathBuf::from("pubspec.yaml"));
         assert!(!package.is_changed());
+        assert!(package.is_publishable_by_default());
         assert_eq!(package.language(), Language::Dart);
         assert_eq!(package.default_publish_command(), "dart pub publish");
         assert_eq!(
@@ -86,6 +118,19 @@ version: 1.0.0
         );
 
         temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_new_discovered_carries_default_publishability() {
+        let package = DartPackage::new_discovered(
+            Some("test_package".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pubspec.yaml"),
+            PathBuf::from("pubspec.yaml"),
+            false,
+        );
+
+        assert!(!package.is_publishable_by_default());
     }
 
     #[test]

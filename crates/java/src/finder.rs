@@ -33,7 +33,9 @@ gradle.projectsEvaluated { evaluatedGradle ->
             projectPath: project.path,
             name: project.name,
             version: project.version == null ? null : project.version.toString(),
-            aggregate: !project.childProjects.isEmpty()
+            aggregate: !project.childProjects.isEmpty(),
+            hasPublishTask: project.tasks.findByName("publish") != null,
+            hasPublishToMavenLocalTask: project.tasks.findByName("publishToMavenLocal") != null
         ]
         println("__CHANGEPACKS_GRADLE_METADATA_V1__" + JsonOutput.toJson(record))
     }
@@ -86,6 +88,8 @@ struct GradleProperties {
     name: Option<String>,
     version: Option<String>,
     has_subprojects: bool,
+    has_publish_task: bool,
+    has_publish_to_maven_local_task: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -367,6 +371,9 @@ fn parse_gradle_metadata_record(json: &str) -> Result<GradleMetadataRecord> {
     let name = required_metadata_string(&mut fields, "name")?;
     let version = optional_metadata_string(&mut fields, "version")?;
     let has_subprojects = required_metadata_bool(&mut fields, "aggregate")?;
+    let has_publish_task = required_metadata_bool(&mut fields, "hasPublishTask")?;
+    let has_publish_to_maven_local_task =
+        required_metadata_bool(&mut fields, "hasPublishToMavenLocalTask")?;
 
     Ok(GradleMetadataRecord {
         project_dir: PathBuf::from(project_dir),
@@ -375,6 +382,8 @@ fn parse_gradle_metadata_record(json: &str) -> Result<GradleMetadataRecord> {
             name: normalized_gradle_property(Some(name)),
             version: normalized_gradle_property(version),
             has_subprojects,
+            has_publish_task,
+            has_publish_to_maven_local_task,
         },
     })
 }
@@ -1499,6 +1508,7 @@ fn parse_gradle_properties_output(output: &str) -> GradleProperties {
         name,
         version,
         has_subprojects,
+        ..GradleProperties::default()
     }
 }
 
@@ -1650,22 +1660,26 @@ impl ProjectFinder for GradleProjectFinder {
                     gradlew.display()
                 )
             })?;
-        let props = metadata.properties;
+        let GradleProperties {
+            name,
+            version,
+            has_subprojects,
+            has_publish_task,
+            has_publish_to_maven_local_task,
+        } = metadata.properties;
 
         // Use directory name as fallback for project name
-        let name = props.name.or_else(|| {
+        let name = name.or_else(|| {
             project_dir
                 .file_name()
                 .and_then(|n| n.to_str())
                 .map(std::string::ToString::to_string)
         });
 
-        let version = props.version;
-
         // Workspace detection: gradlew reports non-empty subprojects list.
         // Previous approach (checking for settings.gradle.kts existence) caused
         // false positives in composite builds and subprojects with IDE-generated files.
-        let is_workspace = props.has_subprojects;
+        let is_workspace = has_subprojects;
 
         // Hoist the map key allocation out of both arms: the old shape
         // built a `(PathBuf, Project)` tuple, which forced each branch
@@ -1675,18 +1689,22 @@ impl ProjectFinder for GradleProjectFinder {
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();
         let mut project = if is_workspace {
-            Project::Workspace(Box::new(GradleWorkspace::new(
+            Project::Workspace(Box::new(GradleWorkspace::new_with_publish_tasks(
                 name,
                 version,
                 path_key.clone(),
                 relative_path_key,
+                has_publish_task,
+                has_publish_to_maven_local_task,
             )))
         } else {
-            Project::Package(Box::new(GradlePackage::new(
+            Project::Package(Box::new(GradlePackage::new_with_publish_tasks(
                 name,
                 version,
                 path_key.clone(),
                 relative_path_key,
+                has_publish_task,
+                has_publish_to_maven_local_task,
             )))
         };
 
@@ -1809,6 +1827,8 @@ mod tests {
         name: &'a str,
         version: &'a str,
         subprojects: &'a str,
+        has_publish_task: bool,
+        has_publish_to_maven_local_task: bool,
     }
 
     impl<'a> MockGradlew<'a> {
@@ -1817,6 +1837,8 @@ mod tests {
                 name,
                 version,
                 subprojects: "[]",
+                has_publish_task: true,
+                has_publish_to_maven_local_task: true,
             }
         }
 
@@ -1825,18 +1847,32 @@ mod tests {
                 name,
                 version,
                 subprojects,
+                has_publish_task: true,
+                has_publish_to_maven_local_task: true,
             }
+        }
+
+        fn with_publish_tasks(
+            mut self,
+            has_publish_task: bool,
+            has_publish_to_maven_local_task: bool,
+        ) -> Self {
+            self.has_publish_task = has_publish_task;
+            self.has_publish_to_maven_local_task = has_publish_to_maven_local_task;
+            self
         }
     }
 
     /// Create a mock gradlew in the given directory that outputs Gradle properties.
     fn create_mock_gradlew(dir: &Path, mock: MockGradlew<'_>) {
         let record = format!(
-            "{GRADLE_METADATA_PREFIX}{{\"projectDir\":{},\"projectPath\":\":\",\"name\":{},\"version\":{},\"aggregate\":{}}}",
+            "{GRADLE_METADATA_PREFIX}{{\"projectDir\":{},\"projectPath\":\":\",\"name\":{},\"version\":{},\"aggregate\":{},\"hasPublishTask\":{},\"hasPublishToMavenLocalTask\":{}}}",
             json_string(dir.to_string_lossy().as_ref()),
             json_string(mock.name),
             json_string(mock.version),
-            mock.subprojects != "[]"
+            mock.subprojects != "[]",
+            mock.has_publish_task,
+            mock.has_publish_to_maven_local_task,
         );
         if cfg!(windows) {
             fs::write(
@@ -1919,11 +1955,11 @@ mod tests {
         let invocation_count = dir.join("wrapper-invocations.txt");
         let prefix = "__CHANGEPACKS_GRADLE_METADATA_V1__";
         let root_record = format!(
-            "{prefix}{{\"projectDir\":{},\"projectPath\":\":\",\"name\":\"root project\",\"version\":\"1.2.3\",\"aggregate\":true}}",
+            "{prefix}{{\"projectDir\":{},\"projectPath\":\":\",\"name\":\"root project\",\"version\":\"1.2.3\",\"aggregate\":true,\"hasPublishTask\":true,\"hasPublishToMavenLocalTask\":true}}",
             json_string(root_project_dir.to_string_lossy().as_ref())
         );
         let child_record = format!(
-            "{prefix}{{\"projectDir\":{},\"projectPath\":\":module one\",\"name\":\"child project\",\"version\":\"2.3.4\",\"aggregate\":false}}",
+            "{prefix}{{\"projectDir\":{},\"projectPath\":\":module one\",\"name\":\"child project\",\"version\":\"2.3.4\",\"aggregate\":false,\"hasPublishTask\":true,\"hasPublishToMavenLocalTask\":true}}",
             json_string(child_project_dir.to_string_lossy().as_ref())
         );
         let batch_records = if emit_child_record {
@@ -2042,13 +2078,25 @@ mod tests {
     }
 
     #[test]
+    fn test_gradle_metadata_init_script_reports_publish_task_availability() {
+        assert!(
+            GRADLE_METADATA_INIT_SCRIPT
+                .contains("hasPublishTask: project.tasks.findByName(\"publish\") != null")
+        );
+        assert!(GRADLE_METADATA_INIT_SCRIPT.contains(
+            "hasPublishToMavenLocalTask: project.tasks.findByName(\"publishToMavenLocal\") != null"
+        ));
+    }
+
+    #[test]
     fn test_parse_gradle_metadata_records_handles_spaces_unicode_and_unrelated_output() {
         let output = concat!(
             "Gradle configuration output\n",
             "unrelated __CHANGEPACKS_GRADLE_METADATA_V1__{not a record}\n",
             "__CHANGEPACKS_GRADLE_METADATA_V1__{\"projectDir\":\"C:\\\\repo with spaces\\\\모듈\",",
             "\"projectPath\":\":module one:유니코드\",\"name\":\"이름 with spaces\",",
-            "\"version\":\"1.2.3-β\",\"aggregate\":false}\n",
+            "\"version\":\"1.2.3-β\",\"aggregate\":false,",
+            "\"hasPublishTask\":true,\"hasPublishToMavenLocalTask\":false}\n",
             "> Task :help\n",
         );
 
@@ -2064,6 +2112,49 @@ mod tests {
         assert_eq!(record.properties.name.as_deref(), Some("이름 with spaces"));
         assert_eq!(record.properties.version.as_deref(), Some("1.2.3-β"));
         assert!(!record.properties.has_subprojects);
+        assert!(record.properties.has_publish_task);
+        assert!(!record.properties.has_publish_to_maven_local_task);
+    }
+
+    #[test]
+    fn test_parse_gradle_metadata_records_ignores_unknown_protocol_versions() {
+        let output = concat!(
+            "__CHANGEPACKS_GRADLE_METADATA_V0__{not current metadata}\n",
+            "__CHANGEPACKS_GRADLE_METADATA_V2__{not current metadata}\n",
+            "ordinary __CHANGEPACKS_GRADLE_METADATA_V1__{not line-prefixed metadata}\n",
+        );
+
+        assert!(parse_gradle_metadata_records(output).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_gradle_metadata_records_rejects_missing_publish_task_field() {
+        let output = concat!(
+            "__CHANGEPACKS_GRADLE_METADATA_V1__{\"projectDir\":\"/repo\",",
+            "\"projectPath\":\":\",\"name\":\"root\",\"version\":\"1.0.0\",",
+            "\"aggregate\":false,\"hasPublishToMavenLocalTask\":true}\n",
+        );
+
+        let error = parse_gradle_metadata_records(output).unwrap_err();
+
+        assert!(error.to_string().contains("line 1"));
+        assert!(error.to_string().contains("hasPublishTask"));
+    }
+
+    #[test]
+    fn test_parse_gradle_metadata_records_rejects_non_boolean_local_publish_task_field() {
+        let output = concat!(
+            "__CHANGEPACKS_GRADLE_METADATA_V1__{\"projectDir\":\"/repo\",",
+            "\"projectPath\":\":\",\"name\":\"root\",\"version\":\"1.0.0\",",
+            "\"aggregate\":false,\"hasPublishTask\":true,",
+            "\"hasPublishToMavenLocalTask\":\"yes\"}\n",
+        );
+
+        let error = parse_gradle_metadata_records(output).unwrap_err();
+
+        assert!(error.to_string().contains("line 1"));
+        assert!(error.to_string().contains("hasPublishToMavenLocalTask"));
+        assert!(error.to_string().contains("must be a boolean"));
     }
 
     #[test]
@@ -2128,6 +2219,51 @@ mod tests {
         assert_eq!(fs::read_to_string(invocation_count).unwrap().trim(), "1");
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_carries_package_publish_task_availability() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("build.gradle.kts");
+        fs::write(&manifest, "plugins { java }\n").unwrap();
+        create_mock_gradlew(
+            temp_dir.path(),
+            MockGradlew::package("remote-only", "1.0.0").with_publish_tasks(true, false),
+        );
+
+        let mut finder = finder_with_java_available();
+        finder
+            .visit(&manifest, Path::new("build.gradle.kts"))
+            .await
+            .unwrap();
+
+        let project = finder.projects()[0];
+        assert!(matches!(project, Project::Package(_)));
+        assert!(project.is_publishable_by_default());
+        assert!(!project.is_dry_run_publishable_by_default());
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_carries_workspace_publish_task_availability() {
+        let temp_dir = TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("build.gradle.kts");
+        fs::write(&manifest, "plugins { java }\n").unwrap();
+        create_mock_gradlew(
+            temp_dir.path(),
+            MockGradlew::workspace("local-only", "1.0.0", "[project ':child']")
+                .with_publish_tasks(false, true),
+        );
+
+        let mut finder = finder_with_java_available();
+        finder
+            .visit(&manifest, Path::new("build.gradle.kts"))
+            .await
+            .unwrap();
+
+        let project = finder.projects()[0];
+        assert!(matches!(project, Project::Workspace(_)));
+        assert!(!project.is_publishable_by_default());
+        assert!(project.is_dry_run_publishable_by_default());
     }
 
     #[tokio::test]

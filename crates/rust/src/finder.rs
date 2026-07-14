@@ -19,6 +19,7 @@ struct PendingWorkspacePackage {
     abs_path: PathBuf,
     relative_path: PathBuf,
     dependencies: Vec<String>,
+    publishable_by_default: bool,
 }
 
 /// Manifest filenames this finder recognizes. Static because the list is
@@ -47,6 +48,15 @@ fn package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<String> {
         .and_then(|p| p.get(field))
         .and_then(|v| v.as_str())
         .map(String::from)
+}
+
+/// Cargo accepts either a boolean or a registry allow-list for
+/// `[package].publish`; only the exact boolean `false` disables publishing.
+fn package_publishable_by_default(doc: &toml_edit::DocumentMut) -> bool {
+    doc.get("package")
+        .and_then(|package| package.get("publish"))
+        .and_then(toml_edit::Item::as_bool)
+        != Some(false)
 }
 
 /// Look up `[workspace.package].<field>` as an owned string, mirroring the
@@ -261,6 +271,7 @@ impl RustProjectFinder {
             abs_path,
             relative_path,
             mut dependencies,
+            publishable_by_default,
         } = package;
         if let (Some(root_path), Some(package_name)) = (workspace_root_path.as_ref(), name.as_ref())
         {
@@ -296,7 +307,8 @@ impl RustProjectFinder {
             abs_path.clone(),
             relative_path,
             workspace_root_path,
-        );
+        )
+        .with_publishable_by_default(publishable_by_default);
         for dependency in dependencies {
             pkg.add_dependency(&dependency);
         }
@@ -339,6 +351,7 @@ impl ProjectFinder for RustProjectFinder {
         }
         // read Cargo.toml
         let (_cargo_toml_raw, cargo_toml) = crate::read_and_parse_cargo_toml(path).await?;
+        let publishable_by_default = package_publishable_by_default(&cargo_toml);
 
         if cargo_toml.get("workspace").is_none() {
             self.discover_workspace_dependency_aliases_for_member(path, relative_path)
@@ -405,6 +418,7 @@ impl ProjectFinder for RustProjectFinder {
                     path_key.clone(),
                     relative_path.to_path_buf(),
                     inherited_workspace_members,
+                    publishable_by_default,
                 ),
             ));
             for dep_name in &dep_names {
@@ -447,15 +461,14 @@ impl ProjectFinder for RustProjectFinder {
                         abs_path: path_key,
                         relative_path: relative_path_key,
                         dependencies: dep_names,
+                        publishable_by_default,
                     });
             } else {
                 let version = package_str(&cargo_toml, "version");
-                let mut project = Project::Package(Box::new(RustPackage::new(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path_key,
-                )));
+                let mut project = Project::Package(Box::new(
+                    RustPackage::new(name, version, path_key.clone(), relative_path_key)
+                        .with_publishable_by_default(publishable_by_default),
+                ));
                 for dep_name in &dep_names {
                     project.add_dependency(dep_name);
                 }
@@ -507,6 +520,7 @@ impl ProjectFinder for RustProjectFinder {
                     // Insert synthetic workspace project so apply_updates() can find it
                     let ws_name = package_str(&parsed, "name");
                     let ws_pkg_version = package_str(&parsed, "version");
+                    let publishable_by_default = package_publishable_by_default(&parsed);
                     let ws_relative_path = root_path
                         .strip_prefix(&git_root)
                         .unwrap_or(Path::new("Cargo.toml"))
@@ -524,6 +538,7 @@ impl ProjectFinder for RustProjectFinder {
                         root_path.clone(),
                         ws_relative_path,
                         inherited_workspace_members,
+                        publishable_by_default,
                     );
                     self.projects
                         .insert(root_path, Project::Workspace(Box::new(workspace)));
@@ -634,6 +649,18 @@ version.workspace = true
         workspace.update_version(UpdateType::Patch).await.unwrap();
     }
 
+    async fn visit_single_manifest(content: &str) -> (TempDir, RustProjectFinder) {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, content).unwrap();
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+        (temp_dir, finder)
+    }
+
     // Both `RustProjectFinder::new()` and `RustProjectFinder::default()` must
     // yield the same empty, `Cargo.toml`-scoped finder.
     #[rstest]
@@ -669,11 +696,44 @@ version = "1.0.0"
             Project::Package(pkg) => {
                 assert_eq!(pkg.name(), Some("test-package"));
                 assert_eq!(pkg.version(), Some("1.0.0"));
+                assert!(pkg.is_publishable_by_default());
             }
             _ => panic!("Expected Package"),
         }
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_standalone_publish_false_is_not_publishable_by_default() {
+        let (_temp_dir, finder) = visit_single_manifest(
+            r#"[package]
+name = "private-package"
+version = "1.0.0"
+publish = false
+"#,
+        )
+        .await;
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(!projects[0].is_publishable_by_default());
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_publish_registry_list_remains_publishable_by_default() {
+        let (_temp_dir, finder) = visit_single_manifest(
+            r#"[package]
+name = "registry-package"
+version = "1.0.0"
+publish = ["internal"]
+"#,
+        )
+        .await;
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(projects[0].is_publishable_by_default());
     }
 
     #[tokio::test]
@@ -712,6 +772,26 @@ version = "1.0.0"
     }
 
     #[tokio::test]
+    async fn test_rust_project_finder_hybrid_root_publish_false_is_not_publishable_by_default() {
+        let (_temp_dir, finder) = visit_single_manifest(
+            r#"[workspace]
+members = ["crates/*"]
+
+[package]
+name = "private-workspace"
+version = "1.0.0"
+publish = false
+"#,
+        )
+        .await;
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(matches!(projects[0], Project::Workspace(_)));
+        assert!(!projects[0].is_publishable_by_default());
+    }
+
+    #[tokio::test]
     async fn test_rust_project_finder_visit_workspace_without_package() {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");
@@ -735,11 +815,51 @@ members = ["crates/*"]
             Project::Workspace(ws) => {
                 assert_eq!(ws.name(), None);
                 assert_eq!(ws.version(), None);
+                assert!(!ws.is_publishable_by_default());
             }
             _ => panic!("Expected Workspace"),
         }
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_inherited_version_member_publish_false_is_not_publishable_by_default() {
+        let temp_dir = TempDir::new().unwrap();
+        let (workspace_toml, package_toml) =
+            write_inherited_version_workspace(temp_dir.path(), "private-member", "1.0.0");
+        fs::write(
+            &package_toml,
+            r#"[package]
+name = "private-member"
+version.workspace = true
+publish = false
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&workspace_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(
+                &package_toml,
+                &PathBuf::from("crates/private-member/Cargo.toml"),
+            )
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        let member = finder
+            .projects()
+            .into_iter()
+            .find(|project| project.name() == Some("private-member"))
+            .expect("inherited-version member should be discovered");
+        assert!(matches!(member, Project::Package(_)));
+        assert_eq!(member.version(), Some("1.0.0"));
+        assert!(!member.is_publishable_by_default());
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@ use changepacks_core::{
     Config, Project, ProjectFinder, contains_changepacks_component, has_extension_ignore_ascii_case,
 };
 use gix::{ThreadSafeRepository, bstr::ByteSlice, features::progress};
-use ignore::gitignore::GitignoreBuilder;
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -40,6 +40,31 @@ fn project_files_can_visit_path(project_files: &[&str], path: &Path, file_name: 
     })
 }
 
+fn build_config_gitignore(git_root_path: &Path, config: &Config) -> Result<Option<Gitignore>> {
+    if config.ignore.is_empty() {
+        return Ok(None);
+    }
+
+    let mut builder = GitignoreBuilder::new(git_root_path);
+    for pattern in &config.ignore {
+        builder
+            .add_line(None, pattern)
+            .with_context(|| format!("Invalid ignore pattern in config: {pattern}"))?;
+    }
+
+    Ok(Some(builder.build().context(
+        "Failed to build ignore matcher from config patterns",
+    )?))
+}
+
+fn config_ignores_path(gitignore: Option<&Gitignore>, path: &Path) -> bool {
+    gitignore.is_some_and(|gitignore| gitignore.matched(path, false).is_ignore())
+}
+
+fn should_dispatch_change(gitignore: Option<&Gitignore>, path: &Path) -> bool {
+    !contains_changepacks_component(path) && !config_ignores_path(gitignore, path)
+}
+
 /// Discover project directories containing specific files from git tracked
 /// files — the discovery-only walk, with NO git change detection.
 ///
@@ -59,26 +84,19 @@ pub async fn discover_project_dirs(
     project_finders: &mut [Box<dyn ProjectFinder>],
     config: &Config,
 ) -> Result<()> {
-    // Get git root for relative path conversion
     let git_root_path = repo.work_dir().context("Not a working directory")?;
+    let gitignore = build_config_gitignore(git_root_path, config)?;
 
-    // Build gitignore from config patterns (supports ! negation patterns)
-    let gitignore = if config.ignore.is_empty() {
-        None
-    } else {
-        let mut builder = GitignoreBuilder::new(git_root_path);
-        for pattern in &config.ignore {
-            builder
-                .add_line(None, pattern)
-                .with_context(|| format!("Invalid ignore pattern in config: {pattern}"))?;
-        }
-        Some(
-            builder
-                .build()
-                .context("Failed to build ignore matcher from config patterns")?,
-        )
-    };
+    discover_project_dirs_with_gitignore(repo, project_finders, git_root_path, gitignore.as_ref())
+        .await
+}
 
+async fn discover_project_dirs_with_gitignore(
+    repo: &ThreadSafeRepository,
+    project_finders: &mut [Box<dyn ProjectFinder>],
+    git_root_path: &Path,
+    gitignore: Option<&Gitignore>,
+) -> Result<()> {
     let repo = repo.to_thread_local();
     let index = repo
         .index()
@@ -114,9 +132,7 @@ pub async fn discover_project_dirs(
         // Joining after the guard skips one `PathBuf::join` allocation per
         // ignored file — byte-identical semantics because `abs_path` is only
         // computed (lazily) for the finder `visit` calls below.
-        if let Some(ref gitignore) = gitignore
-            && gitignore.matched(path, false).is_ignore()
-        {
+        if config_ignores_path(gitignore, path) {
             continue;
         }
 
@@ -217,13 +233,13 @@ pub async fn find_project_dirs(
     config: &Config,
     remote: bool,
 ) -> Result<()> {
-    discover_project_dirs(repo, project_finders, config).await?;
-
-    // The change-detection tail re-establishes the git root and a thread-local
-    // repo handle that `discover_project_dirs` scoped to its own discovery
-    // walk, then runs the base-branch diff + worktree-status pass that actually
-    // populates `is_changed`.
     let git_root_path = repo.work_dir().context("Not a working directory")?;
+    let gitignore = build_config_gitignore(git_root_path, config)?;
+    discover_project_dirs_with_gitignore(repo, project_finders, git_root_path, gitignore.as_ref())
+        .await?;
+
+    // Reuse the discovery matcher for the base-branch diff and worktree-status
+    // paths that populate `is_changed`.
     let repo = repo.to_thread_local();
 
     // diff from main branch — compute FIRST so `diff.len()` can seed the
@@ -263,6 +279,12 @@ pub async fn find_project_dirs(
             gix::diff::Options::default(),
         )?
         .into_iter()
+        // gix reports ancestor tree entries alongside their changed leaves.
+        // Dispatch only changes with a leaf on either side so file-specific
+        // ignore patterns cannot be bypassed by an unmatched parent directory.
+        .filter(|change| {
+            change.entry_mode().is_no_tree() || change.source_entry_mode_and_id().0.is_no_tree()
+        })
         .filter_map(|change| {
             change
                 .location()
@@ -270,7 +292,7 @@ pub async fn find_project_dirs(
                 .ok()
                 .map(std::path::Path::to_path_buf)
         })
-        .filter(|path| !contains_changepacks_component(path))
+        .filter(|path| should_dispatch_change(gitignore.as_ref(), path))
         .collect::<Vec<_>>();
 
     // Dedupe status ∪ diff before dispatching to `check_changed`.
@@ -306,7 +328,7 @@ pub async fn find_project_dirs(
                         .to_path()
                         .ok()
                         .map(std::path::Path::to_path_buf)
-                        .filter(|path| !contains_changepacks_component(path))
+                        .filter(|path| should_dispatch_change(gitignore.as_ref(), path))
                 })
             }),
     );
@@ -417,6 +439,17 @@ mod tests {
             self.finalizations.fetch_add(1, Ordering::SeqCst);
             Box::pin(async { Ok(()) })
         }
+    }
+
+    fn recording_node_finders() -> (Vec<Box<dyn ProjectFinder>>, Arc<Mutex<Vec<Vec<PathBuf>>>>) {
+        let changed_batches = Arc::new(Mutex::new(Vec::new()));
+        let finder = RecordingNodeFinder::new(
+            Arc::new(AtomicUsize::new(0)),
+            Arc::new(AtomicUsize::new(0)),
+            Arc::clone(&changed_batches),
+        );
+
+        (vec![Box::new(finder)], changed_batches)
     }
 
     #[test]
@@ -539,6 +572,191 @@ mod tests {
         let batches = changed_batches.lock().unwrap();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].iter().filter(|path| *path == &source).count(), 1);
+        assert!(finders[0].projects()[0].is_changed());
+    }
+
+    #[tokio::test]
+    async fn find_project_dirs_honors_ignore_for_tracked_base_branch_diff() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        init_git_repo(temp_path);
+        fs::create_dir_all(temp_path.join("packages/core"))
+            .await
+            .unwrap();
+        fs::write(
+            temp_path.join("packages/core/package.json"),
+            r#"{"name":"core","version":"1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+        let ignored = temp_path.join("packages/core/ignored.js");
+        fs::write(&ignored, "export const value = 0;")
+            .await
+            .unwrap();
+        git_add_and_commit(temp_path, "Initial commit");
+        run_git(temp_path, &["checkout", "-b", "feature"]);
+        fs::write(&ignored, "export const value = 1;")
+            .await
+            .unwrap();
+        git_add_and_commit(temp_path, "Ignored feature change");
+
+        let (mut finders, changed_batches) = recording_node_finders();
+        let config = Config {
+            ignore: vec!["packages/core/ignored*.js".to_string()],
+            ..Config::default()
+        };
+
+        find_project_dirs(&discover_repo(temp_path), &mut finders, &config, false)
+            .await
+            .unwrap();
+
+        let batches = changed_batches.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert!(
+            batches[0].is_empty(),
+            "ignored base diff was dispatched: {:?}",
+            batches[0]
+        );
+        assert!(!finders[0].projects()[0].is_changed());
+    }
+
+    #[tokio::test]
+    async fn find_project_dirs_honors_ignore_for_staged_and_unstaged_status() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        init_git_repo(temp_path);
+        fs::create_dir_all(temp_path.join("packages/core"))
+            .await
+            .unwrap();
+        fs::write(
+            temp_path.join("packages/core/package.json"),
+            r#"{"name":"core","version":"1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+        let staged = temp_path.join("packages/core/staged.js");
+        let unstaged = temp_path.join("packages/core/unstaged.js");
+        fs::write(&staged, "export const staged = 0;")
+            .await
+            .unwrap();
+        fs::write(&unstaged, "export const unstaged = 0;")
+            .await
+            .unwrap();
+        git_add_and_commit(temp_path, "Initial commit");
+        fs::write(&staged, "export const staged = 1;")
+            .await
+            .unwrap();
+        run_git(temp_path, &["add", "packages/core/staged.js"]);
+        fs::write(&unstaged, "export const unstaged = 1;")
+            .await
+            .unwrap();
+
+        let (mut finders, changed_batches) = recording_node_finders();
+        let config = Config {
+            ignore: vec!["packages/core/*.js".to_string()],
+            ..Config::default()
+        };
+
+        find_project_dirs(&discover_repo(temp_path), &mut finders, &config, false)
+            .await
+            .unwrap();
+
+        let batches = changed_batches.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert!(
+            batches[0].is_empty(),
+            "ignored staged or unstaged path was dispatched"
+        );
+        assert!(!finders[0].projects()[0].is_changed());
+    }
+
+    #[tokio::test]
+    async fn find_project_dirs_honors_ignore_for_untracked_status() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        init_git_repo(temp_path);
+        fs::create_dir_all(temp_path.join("packages/core"))
+            .await
+            .unwrap();
+        fs::write(
+            temp_path.join("packages/core/package.json"),
+            r#"{"name":"core","version":"1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+        git_add_and_commit(temp_path, "Initial commit");
+        fs::write(
+            temp_path.join("packages/core/ignored-untracked.js"),
+            "export const value = 1;",
+        )
+        .await
+        .unwrap();
+
+        let (mut finders, changed_batches) = recording_node_finders();
+        let config = Config {
+            ignore: vec!["packages/core/ignored-*.js".to_string()],
+            ..Config::default()
+        };
+
+        find_project_dirs(&discover_repo(temp_path), &mut finders, &config, false)
+            .await
+            .unwrap();
+
+        let batches = changed_batches.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert!(
+            batches[0].is_empty(),
+            "ignored untracked path was dispatched"
+        );
+        assert!(!finders[0].projects()[0].is_changed());
+    }
+
+    #[tokio::test]
+    async fn find_project_dirs_honors_ignore_negation_for_reincluded_child() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        init_git_repo(temp_path);
+        fs::create_dir_all(temp_path.join("packages/core/generated"))
+            .await
+            .unwrap();
+        fs::write(
+            temp_path.join("packages/core/package.json"),
+            r#"{"name":"core","version":"1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+        let ignored = temp_path.join("packages/core/generated/ignored.js");
+        let reincluded = temp_path.join("packages/core/generated/reincluded.js");
+        fs::write(&ignored, "export const ignored = 0;")
+            .await
+            .unwrap();
+        fs::write(&reincluded, "export const reincluded = 0;")
+            .await
+            .unwrap();
+        git_add_and_commit(temp_path, "Initial commit");
+        fs::write(&ignored, "export const ignored = 1;")
+            .await
+            .unwrap();
+        fs::write(&reincluded, "export const reincluded = 1;")
+            .await
+            .unwrap();
+
+        let (mut finders, changed_batches) = recording_node_finders();
+        let config = Config {
+            ignore: vec![
+                "packages/core/generated/**".to_string(),
+                "!packages/core/generated/reincluded.js".to_string(),
+            ],
+            ..Config::default()
+        };
+
+        find_project_dirs(&discover_repo(temp_path), &mut finders, &config, false)
+            .await
+            .unwrap();
+
+        let batches = changed_batches.lock().unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0], vec![reincluded]);
         assert!(finders[0].projects()[0].is_changed());
     }
 

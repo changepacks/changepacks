@@ -36,14 +36,15 @@ impl CSharpProjectFinder {
             .map(std::string::ToString::to_string)
     }
 
-    /// Walk the .csproj XML ONCE and extract both the project version and
-    /// its `ProjectReference` dependency names in a single pass. The
+    /// Walk the .csproj XML ONCE and extract the project version, its
+    /// `ProjectReference` dependency names, and default publishability in a
+    /// single pass. The
     /// previous shape (`extract_version` + `extract_project_references`)
     /// ran two independent `quick_xml::Reader` passes over the identical
     /// bytes; merging them halves the parse cost on repos with many
-    /// `.csproj` files (Unity / dotnet monorepos) with no behavior
-    /// change.
-    fn parse_csproj_metadata(content: &str) -> Result<(Option<String>, Vec<String>)> {
+    /// `.csproj` files (Unity / dotnet monorepos) while preserving existing
+    /// version and project-reference behavior.
+    fn parse_csproj_metadata(content: &str) -> Result<(Option<String>, Vec<String>, bool)> {
         let mut reader = Reader::from_str(content);
         // Preallocate the XML event buffer to skip the first few
         // geometric-doubling reallocations. Mirrors the
@@ -57,9 +58,12 @@ impl CSharpProjectFinder {
         // reserving on tiny `.csproj` files.
         let mut buf = Vec::with_capacity(256);
         let mut in_property_group = false;
+        let mut in_unconditional_top_level_property_group = false;
         let mut in_version = false;
+        let mut in_is_packable = false;
         let mut element_depth = 0usize;
         let mut version: Option<String> = None;
+        let mut publishable_by_default = true;
         // Preallocate against the typical `<ProjectReference>` fan-out
         // observed in test fixtures (2 refs in
         // `test_visit_package_with_project_references`,
@@ -80,8 +84,19 @@ impl CSharpProjectFinder {
                     let name = e.local_name();
                     if name.as_ref() == b"PropertyGroup" {
                         in_property_group = true;
+                        in_unconditional_top_level_property_group = element_depth == 2
+                            && e.attributes().all(|attribute| {
+                                attribute.is_ok_and(|attribute| {
+                                    !attribute.key.as_ref().eq_ignore_ascii_case(b"Condition")
+                                })
+                            });
                     } else if in_property_group && name.as_ref() == b"Version" {
                         in_version = true;
+                    } else if in_unconditional_top_level_property_group
+                        && element_depth == 3
+                        && name.as_ref() == b"IsPackable"
+                    {
+                        in_is_packable = true;
                     } else if name.as_ref() == b"ProjectReference" {
                         collect_project_reference(&e, &mut projects);
                     }
@@ -96,8 +111,11 @@ impl CSharpProjectFinder {
                     let name = e.local_name();
                     if name.as_ref() == b"PropertyGroup" {
                         in_property_group = false;
+                        in_unconditional_top_level_property_group = false;
                     } else if name.as_ref() == b"Version" {
                         in_version = false;
+                    } else if name.as_ref() == b"IsPackable" {
+                        in_is_packable = false;
                     }
                 }
                 Ok(Event::Text(e)) => {
@@ -114,6 +132,13 @@ impl CSharpProjectFinder {
                             version = Some(candidate.to_string());
                         }
                     }
+                    if in_is_packable
+                        && element_depth == 3
+                        && let Ok(text) = e.decode()
+                        && text.trim().eq_ignore_ascii_case("false")
+                    {
+                        publishable_by_default = false;
+                    }
                 }
                 Ok(Event::CData(e)) => {
                     if in_version
@@ -125,6 +150,13 @@ impl CSharpProjectFinder {
                             version = Some(candidate.to_string());
                         }
                     }
+                    if in_is_packable
+                        && element_depth == 3
+                        && let Ok(text) = e.decode()
+                        && text.trim().eq_ignore_ascii_case("false")
+                    {
+                        publishable_by_default = false;
+                    }
                 }
                 Ok(Event::Eof) => {
                     anyhow::ensure!(element_depth == 0, "unexpected end of XML document");
@@ -135,7 +167,7 @@ impl CSharpProjectFinder {
             }
             buf.clear();
         }
-        Ok((version, projects))
+        Ok((version, projects, publishable_by_default))
     }
 }
 
@@ -250,15 +282,17 @@ impl ProjectFinder for CSharpProjectFinder {
         // pair that each constructed its own `quick_xml::Reader` and
         // walked the identical XML bytes. Halves parse work per
         // `.csproj` (meaningful on Unity/dotnet monorepos).
-        let (version, project_refs) = Self::parse_csproj_metadata(&csproj_content)
-            .with_context(|| format!("Failed to parse C# project XML: {}", path.display()))?;
+        let (version, project_refs, publishable_by_default) =
+            Self::parse_csproj_metadata(&csproj_content)
+                .with_context(|| format!("Failed to parse C# project XML: {}", path.display()))?;
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();
-        let mut project = Project::Package(Box::new(CSharpPackage::new(
+        let mut project = Project::Package(Box::new(CSharpPackage::new_discovered(
             name,
             version,
             path_key.clone(),
             relative_path_key,
+            publishable_by_default,
         )));
 
         // Add ProjectReference dependencies (local project references)
@@ -825,6 +859,80 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_csproj_metadata_is_packable_publishability() {
+        let cases = [
+            (
+                "false",
+                "<Project><PropertyGroup><IsPackable>false</IsPackable></PropertyGroup></Project>",
+                false,
+            ),
+            (
+                "trimmed mixed case false",
+                "<Project><PropertyGroup><IsPackable>\n False\t </IsPackable></PropertyGroup></Project>",
+                false,
+            ),
+            (
+                "true",
+                "<Project><PropertyGroup><IsPackable>true</IsPackable></PropertyGroup></Project>",
+                true,
+            ),
+            (
+                "missing",
+                "<Project><PropertyGroup><Version>1.0.0</Version></PropertyGroup></Project>",
+                true,
+            ),
+            (
+                "self closing",
+                "<Project><PropertyGroup><IsPackable /></PropertyGroup></Project>",
+                true,
+            ),
+            (
+                "conditional property group",
+                r#"<Project><PropertyGroup Condition="'$(Configuration)' == 'Release'"><IsPackable>false</IsPackable></PropertyGroup></Project>"#,
+                true,
+            ),
+            (
+                "computed",
+                "<Project><PropertyGroup><IsPackable>$(Packable)</IsPackable></PropertyGroup></Project>",
+                true,
+            ),
+            (
+                "nested property group",
+                "<Project><Target><PropertyGroup><IsPackable>false</IsPackable></PropertyGroup></Target></Project>",
+                true,
+            ),
+        ];
+
+        for (label, content, expected) in cases {
+            let publishable_by_default = CSharpProjectFinder::parse_csproj_metadata(content)
+                .unwrap()
+                .2;
+            assert_eq!(publishable_by_default, expected, "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_visit_package_carries_is_packable_false_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Private.csproj");
+        fs::write(
+            &csproj_path,
+            "<Project><PropertyGroup><IsPackable>false</IsPackable></PropertyGroup></Project>",
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&csproj_path, Path::new("Private.csproj"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(!projects[0].is_publishable_by_default());
+    }
+
+    #[test]
     fn test_extract_version_malformed_xml() {
         let content = "<Project><PropertyGroup><Version>1.0.0";
         assert!(CSharpProjectFinder::parse_csproj_metadata(content).is_err());
@@ -900,11 +1008,13 @@ mod tests {
     <ProjectReference Include="..\Utils\Utils.csproj" />
   </ItemGroup>
 </Project>"#;
-        let (version, refs) = CSharpProjectFinder::parse_csproj_metadata(content).unwrap();
+        let (version, refs, publishable_by_default) =
+            CSharpProjectFinder::parse_csproj_metadata(content).unwrap();
         assert_eq!(version, Some("1.5.0".to_string()));
         assert_eq!(refs.len(), 2);
         assert!(refs.contains(&"CoreLib".to_string()));
         assert!(refs.contains(&"Utils".to_string()));
+        assert!(publishable_by_default);
     }
 
     #[rstest]

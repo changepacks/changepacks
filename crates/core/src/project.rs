@@ -148,6 +148,14 @@ impl Project {
         }
     }
 
+    #[must_use]
+    pub fn is_dry_run_publishable_by_default(&self) -> bool {
+        match self {
+            Self::Workspace(workspace) => workspace.is_dry_run_publishable_by_default(),
+            Self::Package(package) => package.is_dry_run_publishable_by_default(),
+        }
+    }
+
     /// # Errors
     /// Returns error if the underlying publish call fails to spawn.
     pub async fn publish(&self, config: &Config) -> Result<crate::publish::PublishOutput> {
@@ -466,6 +474,8 @@ mod tests {
 
         assert!(workspace.is_publishable_by_default());
         assert!(package.is_publishable_by_default());
+        assert!(workspace.is_dry_run_publishable_by_default());
+        assert!(package.is_dry_run_publishable_by_default());
     }
 
     #[tokio::test]

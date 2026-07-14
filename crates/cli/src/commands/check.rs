@@ -43,6 +43,7 @@ pub struct CheckArgs {
     #[arg(short, long)]
     remote: bool,
 
+    /// Display projects as a dependency tree (currently supports stdout output only).
     #[arg(long)]
     tree: bool,
 
@@ -51,12 +52,24 @@ pub struct CheckArgs {
     pub language: Vec<CliLanguage>,
 }
 
+fn validate_check_args(args: &CheckArgs) -> Result<()> {
+    if args.tree && matches!(args.format, FormatOptions::Json) {
+        anyhow::bail!(
+            "`--tree` currently supports stdout output only; remove `--format json` or use `--format stdout`"
+        );
+    }
+
+    Ok(())
+}
+
 /// Check project status
 ///
 /// # Errors
-/// Returns error if command context creation or project checking fails.
+/// Returns error if arguments are incompatible, command context creation, or project checking fails.
 ///
 pub async fn handle_check(args: &CheckArgs) -> Result<()> {
+    validate_check_args(args)?;
+
     let ctx = CommandContext::new(args.remote).await?;
 
     let mut projects = collect_projects(&ctx.project_finders);
@@ -418,6 +431,41 @@ mod tests {
     fn test_check_args_with_tree() {
         let cli = TestCli::parse_from(["test", "--tree"]);
         assert!(cli.check.tree);
+    }
+
+    #[test]
+    fn test_check_args_tree_with_stdout_is_valid() {
+        let cli = TestCli::parse_from(["test", "--tree", "--format", "stdout"]);
+
+        assert!(validate_check_args(&cli.check).is_ok());
+    }
+
+    #[test]
+    fn test_check_args_json_without_tree_is_valid() {
+        let cli = TestCli::parse_from(["test", "--format", "json"]);
+
+        assert!(validate_check_args(&cli.check).is_ok());
+    }
+
+    #[test]
+    fn test_check_args_tree_with_json_is_rejected() {
+        let cli = TestCli::parse_from(["test", "--tree", "--format", "json"]);
+
+        let error = validate_check_args(&cli.check).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "`--tree` currently supports stdout output only; remove `--format json` or use `--format stdout`"
+        );
+    }
+
+    #[test]
+    fn test_check_args_help_documents_tree_stdout_only() {
+        let help = TestCli::try_parse_from(["test", "--help"])
+            .err()
+            .expect("--help should stop argument parsing")
+            .to_string();
+
+        assert!(help.contains("currently supports stdout output only"));
     }
 
     // `--filter` (long) and `-f` (short) both parse into `Some(FilterOptions::X)`.

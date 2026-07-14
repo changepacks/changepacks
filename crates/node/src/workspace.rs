@@ -11,6 +11,7 @@ pub struct NodeWorkspace {
     version: Option<String>,
     name: Option<String>,
     is_changed: bool,
+    publishable_by_default: bool,
     dependencies: HashSet<String>,
     pub(crate) package_manager: crate::PackageManager,
 }
@@ -40,12 +41,25 @@ impl NodeWorkspace {
         relative_path: PathBuf,
         package_manager: crate::PackageManager,
     ) -> Self {
+        Self::new_discovered(name, version, path, relative_path, package_manager, true)
+    }
+
+    #[must_use]
+    pub(crate) fn new_discovered(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        package_manager: crate::PackageManager,
+        publishable_by_default: bool,
+    ) -> Self {
         Self {
             path,
             relative_path,
             version,
             name,
             is_changed: false,
+            publishable_by_default,
             dependencies: HashSet::new(),
             package_manager,
         }
@@ -56,6 +70,10 @@ impl NodeWorkspace {
 impl Workspace for NodeWorkspace {
     // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
+
+    fn is_publishable_by_default(&self) -> bool {
+        self.publishable_by_default
+    }
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let path = &self.path;
@@ -184,11 +202,28 @@ mod tests {
         );
         assert_eq!(workspace.language(), Language::Node);
         assert!(!workspace.is_changed());
+        assert!(workspace.is_publishable_by_default());
         assert_eq!(workspace.default_publish_command(), "npm publish");
         assert_eq!(
             workspace.default_dry_run_publish_command().as_deref(),
             Some("npm publish --dry-run")
         );
+    }
+
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn test_node_workspace_discovered_publishability(#[case] expected: bool) {
+        let workspace = NodeWorkspace::new_discovered(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/package.json"),
+            PathBuf::from("test/package.json"),
+            crate::PackageManager::Npm,
+            expected,
+        );
+
+        assert_eq!(workspace.is_publishable_by_default(), expected);
     }
 
     #[tokio::test]

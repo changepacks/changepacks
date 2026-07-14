@@ -61,6 +61,7 @@ impl RustWorkspace {
             path,
             relative_path,
             InheritedWorkspaceMembers::default(),
+            true,
         )
     }
 
@@ -71,8 +72,9 @@ impl RustWorkspace {
         path: PathBuf,
         relative_path: PathBuf,
         inherited_workspace_members: InheritedWorkspaceMembers,
+        package_publishable_by_default: bool,
     ) -> Self {
-        let publishable_by_default = name.is_some();
+        let publishable_by_default = name.is_some() && package_publishable_by_default;
         Self {
             name,
             version,
@@ -1128,6 +1130,7 @@ other_local = { path = "crates/other", version = "0.5.0" }
             cargo_toml.clone(),
             PathBuf::from("Cargo.toml"),
             inherited_members(&["vespera_core", "vespera_macro"]),
+            true,
         );
 
         workspace.update_version(UpdateType::Patch).await.unwrap();
@@ -1222,6 +1225,7 @@ version = "0.5.0"
             cargo_toml.clone(),
             PathBuf::from("Cargo.toml"),
             inherited_members(&["vespera_core", "vespera_macro"]),
+            true,
         );
 
         workspace.update_version(UpdateType::Patch).await.unwrap();
