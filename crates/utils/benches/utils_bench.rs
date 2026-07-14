@@ -1,6 +1,6 @@
 //! Criterion benchmarks for the pure hot-path utilities: semver bumping
-//! (`next_version`), version-prefix splitting (`split_version`), and the
-//! Kahn's-algorithm dependency sort (`sort_by_dependencies`).
+//! (`next_version`), version-prefix splitting (`split_version`), project
+//! ordering, and the Kahn's-algorithm dependency sort (`sort_by_dependencies`).
 //!
 //! These functions are deterministic and allocation-light, so they provide a
 //! stable regression signal for the retry-now improvement loop.
@@ -12,7 +12,7 @@ use std::time::Duration;
 use changepacks_core::{Package, Project, UpdateType};
 use changepacks_node::package::NodePackage;
 use changepacks_utils::{next_version, sort_by_dependencies, split_version};
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 
 /// Build a single Node package project with the given dependency names.
 fn make_project(name: &str, deps: &[String]) -> Project {
@@ -57,6 +57,31 @@ fn build_cyclic_graph(n: usize) -> Vec<Project> {
         .collect()
 }
 
+/// Build projects whose variant, language, and name are all identical, leaving
+/// their deliberately shuffled relative paths to decide every comparison.
+fn build_same_identity_projects(n: usize) -> Vec<Project> {
+    (0..n)
+        .map(|position| {
+            // 811 is coprime with the benchmark's power-of-two input size, so
+            // this visits every path index exactly once without producing an
+            // already sorted or reversed run.
+            let path_index = position * 811 % n;
+            let relative_path = if path_index.is_multiple_of(2) {
+                format!("packages\\{path_index:04}\\package.json")
+            } else {
+                format!("packages/{path_index:04}/package.json")
+            };
+            let package = NodePackage::new(
+                Some("same-package".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from(format!("/bench/packages/{path_index:04}/package.json")),
+                PathBuf::from(relative_path),
+            );
+            Project::Package(Box::new(package))
+        })
+        .collect()
+}
+
 fn bench_next_version(c: &mut Criterion) {
     c.bench_function("next_version/patch", |b| {
         b.iter(|| next_version(black_box("10.20.30"), black_box(UpdateType::Patch)).unwrap());
@@ -72,6 +97,22 @@ fn bench_split_version(c: &mut Criterion) {
     });
     c.bench_function("split_version/plain", |b| {
         b.iter(|| black_box(split_version(black_box("1.0.0-alpha.1+build1"))));
+    });
+}
+
+fn bench_project_sort_same_language_same_name_paths(c: &mut Criterion) {
+    let projects = build_same_identity_projects(1_024);
+    let unsorted: Vec<&Project> = projects.iter().collect();
+
+    c.bench_function("project_sort/same_language_same_name_paths", |b| {
+        b.iter_batched(
+            || unsorted.clone(),
+            |mut projects| {
+                projects.sort();
+                black_box(projects);
+            },
+            BatchSize::SmallInput,
+        );
     });
 }
 
@@ -122,7 +163,8 @@ criterion_group! {
         .warm_up_time(Duration::from_millis(500))
         .measurement_time(Duration::from_secs(2))
         .sample_size(60);
-    targets = bench_next_version, bench_split_version, bench_sort_by_dependencies,
+    targets = bench_next_version, bench_split_version,
+        bench_project_sort_same_language_same_name_paths, bench_sort_by_dependencies,
         bench_sort_by_dependencies_cyclic
 }
 criterion_main!(benches);

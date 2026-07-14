@@ -501,6 +501,7 @@ async fn find_gradlew_named(
 pub(crate) async fn run_gradle_publish(
     manifest_path: &Path,
     relative_path: &Path,
+    project_path: Option<&str>,
     task: &str,
     additional_args: &[OsString],
     missing_dir_ctx: &'static str,
@@ -512,7 +513,10 @@ pub(crate) async fn run_gradle_publish(
          Ensure the project root contains gradlew or gradlew.bat.",
     )?;
     let mut args = Vec::with_capacity(additional_args.len() + 1);
-    args.push(gradle_task_arg(project_dir, &gradlew_dir, task)?);
+    args.push(match project_path {
+        Some(project_path) => gradle_task_arg_from_project_path(project_path, task),
+        None => gradle_task_arg_from_project_dir(project_dir, &gradlew_dir, task)?,
+    });
     args.extend_from_slice(additional_args);
     let output = GradleCommandSpec::new(&gradlew, &gradlew_dir, args)
         .command()
@@ -1515,12 +1519,24 @@ fn parse_gradle_properties_output(output: &str) -> GradleProperties {
 #[cfg(test)]
 fn gradle_properties_args(project_dir: &Path, gradlew_dir: &Path) -> Result<Vec<OsString>> {
     Ok(vec![
-        gradle_task_arg(project_dir, gradlew_dir, "properties")?,
+        gradle_task_arg_from_project_dir(project_dir, gradlew_dir, "properties")?,
         OsString::from("-q"),
     ])
 }
 
-fn gradle_task_arg(project_dir: &Path, gradlew_dir: &Path, task: &str) -> Result<OsString> {
+fn gradle_task_arg_from_project_path(project_path: &str, task: &str) -> OsString {
+    if project_path == ":" {
+        OsString::from(task)
+    } else {
+        OsString::from(format!("{project_path}:{task}"))
+    }
+}
+
+fn gradle_task_arg_from_project_dir(
+    project_dir: &Path,
+    gradlew_dir: &Path,
+    task: &str,
+) -> Result<OsString> {
     if gradlew_dir == project_dir {
         return Ok(OsString::from(task));
     }
@@ -1660,6 +1676,7 @@ impl ProjectFinder for GradleProjectFinder {
                     gradlew.display()
                 )
             })?;
+        let project_path = metadata.project_path;
         let GradleProperties {
             name,
             version,
@@ -1689,23 +1706,29 @@ impl ProjectFinder for GradleProjectFinder {
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();
         let mut project = if is_workspace {
-            Project::Workspace(Box::new(GradleWorkspace::new_with_publish_tasks(
-                name,
-                version,
-                path_key.clone(),
-                relative_path_key,
-                has_publish_task,
-                has_publish_to_maven_local_task,
-            )))
+            Project::Workspace(Box::new(
+                GradleWorkspace::new_with_project_path_and_publish_tasks(
+                    name,
+                    version,
+                    path_key.clone(),
+                    relative_path_key,
+                    Some(project_path),
+                    has_publish_task,
+                    has_publish_to_maven_local_task,
+                ),
+            ))
         } else {
-            Project::Package(Box::new(GradlePackage::new_with_publish_tasks(
-                name,
-                version,
-                path_key.clone(),
-                relative_path_key,
-                has_publish_task,
-                has_publish_to_maven_local_task,
-            )))
+            Project::Package(Box::new(
+                GradlePackage::new_with_project_path_and_publish_tasks(
+                    name,
+                    version,
+                    path_key.clone(),
+                    relative_path_key,
+                    Some(project_path),
+                    has_publish_task,
+                    has_publish_to_maven_local_task,
+                ),
+            ))
         };
 
         for dependency in dependencies {
@@ -1950,6 +1973,7 @@ mod tests {
         dir: &Path,
         root_project_dir: &Path,
         child_project_dir: &Path,
+        child_project_path: &str,
         emit_child_record: bool,
     ) -> PathBuf {
         let invocation_count = dir.join("wrapper-invocations.txt");
@@ -1959,8 +1983,9 @@ mod tests {
             json_string(root_project_dir.to_string_lossy().as_ref())
         );
         let child_record = format!(
-            "{prefix}{{\"projectDir\":{},\"projectPath\":\":module one\",\"name\":\"child project\",\"version\":\"2.3.4\",\"aggregate\":false,\"hasPublishTask\":true,\"hasPublishToMavenLocalTask\":true}}",
-            json_string(child_project_dir.to_string_lossy().as_ref())
+            "{prefix}{{\"projectDir\":{},\"projectPath\":{},\"name\":\"child project\",\"version\":\"2.3.4\",\"aggregate\":false,\"hasPublishTask\":true,\"hasPublishToMavenLocalTask\":true}}",
+            json_string(child_project_dir.to_string_lossy().as_ref()),
+            json_string(child_project_path),
         );
         let batch_records = if emit_child_record {
             format!(
@@ -1989,7 +2014,7 @@ mod tests {
                      set /a count+=1\r\n\
                      >\"wrapper-invocations.txt\" echo %count%\r\n\
                      if \"%~1\"==\"properties\" goto root\r\n\
-                     if \"%~1\"==\":module one:properties\" goto child\r\n\
+                     if \"%~1\"==\"{child_project_path}:properties\" goto child\r\n\
                      {batch_records}\
                      exit /b 0\r\n\
                      :root\r\n\
@@ -2019,7 +2044,7 @@ mod tests {
                        properties)\n\
                          printf '%s\\n' 'name: root project' 'version: 1.2.3' \"subprojects: [project ':module one']\"\n\
                          ;;\n\
-                       ':module one:properties')\n\
+                       '{child_project_path}:properties')\n\
                          printf '%s\\n' 'name: child project' 'version: 2.3.4' 'subprojects: []'\n\
                          ;;\n\
                        *)\n\
@@ -2044,7 +2069,7 @@ mod tests {
         fs::create_dir_all(&child_dir).unwrap();
         let root_manifest = repo.join("build.gradle.kts");
         fs::write(&root_manifest, "plugins { java }\n").unwrap();
-        create_counting_multi_project_gradlew(&repo, &repo, &child_dir, true);
+        create_counting_multi_project_gradlew(&repo, &repo, &child_dir, ":module one", true);
 
         let mut finder = finder_with_java_available();
         finder
@@ -2185,7 +2210,7 @@ mod tests {
         fs::write(&root_manifest, "plugins { java }\n").unwrap();
         fs::write(&child_manifest, "plugins { java }\n").unwrap();
         let invocation_count =
-            create_counting_multi_project_gradlew(&repo, &repo, &child_dir, true);
+            create_counting_multi_project_gradlew(&repo, &repo, &child_dir, ":module one", true);
 
         let mut finder = finder_with_java_available();
         finder
@@ -2217,6 +2242,56 @@ mod tests {
         assert!(matches!(child, Project::Package(_)));
         assert_eq!(child.version(), Some("2.3.4"));
         assert_eq!(fs::read_to_string(invocation_count).unwrap().trim(), "1");
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_publish_uses_metadata_project_path_for_exact_argv() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path().join("repo with spaces");
+        let child_dir = repo.join("generated-backend");
+        fs::create_dir_all(&child_dir).unwrap();
+        let child_manifest = child_dir.join("build.gradle.kts");
+        fs::write(&child_manifest, "plugins { java }\n").unwrap();
+        create_counting_multi_project_gradlew(&repo, &repo, &child_dir, ":api", true);
+
+        let mut finder = finder_with_java_available();
+        finder
+            .visit(
+                &child_manifest,
+                Path::new("generated-backend/build.gradle.kts"),
+            )
+            .await
+            .unwrap();
+        let project = finder.projects()[0];
+
+        let output = project
+            .publish(&changepacks_core::Config::default())
+            .await
+            .unwrap();
+        assert!(output.success, "stderr: {}", output.stderr);
+        let publish_args = fs::read_to_string(repo.join("metadata-command-args.txt"))
+            .unwrap()
+            .lines()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(publish_args, [":api:publish"]);
+
+        let dry_run = project
+            .dry_run_publish(&changepacks_core::Config::default())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(dry_run.success, "stderr: {}", dry_run.stderr);
+        let dry_run_args = fs::read_to_string(repo.join("metadata-command-args.txt"))
+            .unwrap()
+            .lines()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(dry_run_args.len(), 2, "args: {dry_run_args:?}");
+        assert_eq!(dry_run_args[0], ":api:publishToMavenLocal");
+        assert!(dry_run_args[1].starts_with("-Dmaven.repo.local="));
 
         temp_dir.close().unwrap();
     }
@@ -2276,7 +2351,7 @@ mod tests {
         let child_manifest = child_dir.join("build.gradle.kts");
         fs::write(&root_manifest, "plugins { java }\n").unwrap();
         fs::write(&child_manifest, "plugins { java }\n").unwrap();
-        create_counting_multi_project_gradlew(&repo, &repo, &child_dir, false);
+        create_counting_multi_project_gradlew(&repo, &repo, &child_dir, ":module one", false);
 
         let mut finder = finder_with_java_available();
         finder
@@ -2332,6 +2407,58 @@ mod tests {
             vec![
                 OsString::from(":libs:core:properties"),
                 OsString::from("-q")
+            ]
+        );
+    }
+
+    #[test]
+    fn test_gradle_publish_task_args_for_root_project() {
+        let args = [
+            gradle_task_arg_from_project_path(":", "publish"),
+            gradle_task_arg_from_project_path(":", "publishToMavenLocal"),
+        ];
+
+        assert_eq!(
+            args,
+            [
+                OsString::from("publish"),
+                OsString::from("publishToMavenLocal")
+            ]
+        );
+    }
+
+    #[test]
+    fn test_gradle_publish_task_args_for_ordinary_nested_project() {
+        let args = [
+            gradle_task_arg_from_project_path(":libs:core", "publish"),
+            gradle_task_arg_from_project_path(":libs:core", "publishToMavenLocal"),
+        ];
+
+        assert_eq!(
+            args,
+            [
+                OsString::from(":libs:core:publish"),
+                OsString::from(":libs:core:publishToMavenLocal")
+            ]
+        );
+    }
+
+    #[test]
+    fn test_gradle_publish_task_args_for_filesystem_remapped_project() {
+        let filesystem_path = gradle_subproject_path(Path::new("generated/backend")).unwrap();
+        assert_eq!(filesystem_path, "generated:backend");
+        assert_ne!(format!(":{filesystem_path}"), ":api");
+
+        let args = [
+            gradle_task_arg_from_project_path(":api", "publish"),
+            gradle_task_arg_from_project_path(":api", "publishToMavenLocal"),
+        ];
+
+        assert_eq!(
+            args,
+            [
+                OsString::from(":api:publish"),
+                OsString::from(":api:publishToMavenLocal")
             ]
         );
     }

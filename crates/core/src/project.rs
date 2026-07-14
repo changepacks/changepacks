@@ -267,11 +267,17 @@ fn cmp_lang_then_name(
 }
 
 fn cmp_paths(lhs_relative: &Path, lhs_raw: &Path, rhs_relative: &Path, rhs_raw: &Path) -> Ordering {
-    let lhs_normalized = lhs_relative.to_string_lossy().replace('\\', "/");
-    let rhs_normalized = rhs_relative.to_string_lossy().replace('\\', "/");
+    let lhs_lossy = lhs_relative.to_string_lossy();
+    let rhs_lossy = rhs_relative.to_string_lossy();
 
-    lhs_normalized
-        .cmp(&rhs_normalized)
+    lhs_lossy
+        .chars()
+        .map(|character| if character == '\\' { '/' } else { character })
+        .cmp(
+            rhs_lossy
+                .chars()
+                .map(|character| if character == '\\' { '/' } else { character }),
+        )
         .then_with(|| lhs_raw.cmp(rhs_raw))
 }
 
@@ -664,6 +670,77 @@ mod tests {
             .map(|project| project.path().to_string_lossy())
             .collect();
         assert_eq!(sorted_paths, expected_paths);
+    }
+
+    #[test]
+    fn cmp_paths_normalizes_slashes_and_backslashes_before_ordering() {
+        let backslash_relative = Path::new("packages\\alpha\\package.json");
+        let slash_relative = Path::new("packages/beta/package.json");
+
+        assert_eq!(
+            cmp_paths(
+                backslash_relative,
+                Path::new("/repo/z/package.json"),
+                slash_relative,
+                Path::new("/repo/a/package.json"),
+            ),
+            Ordering::Less,
+        );
+        assert_eq!(
+            cmp_paths(
+                slash_relative,
+                Path::new("/repo/a/package.json"),
+                backslash_relative,
+                Path::new("/repo/z/package.json"),
+            ),
+            Ordering::Greater,
+        );
+    }
+
+    #[test]
+    fn cmp_paths_orders_non_ascii_normalized_paths_lexicographically() {
+        let latin_relative = Path::new("packages/éclair/package.json");
+        let hangul_relative = Path::new("packages/한글/package.json");
+
+        assert_eq!(
+            cmp_paths(
+                latin_relative,
+                Path::new("/repo/z/package.json"),
+                hangul_relative,
+                Path::new("/repo/a/package.json"),
+            ),
+            Ordering::Less,
+        );
+        assert_eq!(
+            cmp_paths(
+                hangul_relative,
+                Path::new("/repo/a/package.json"),
+                latin_relative,
+                Path::new("/repo/z/package.json"),
+            ),
+            Ordering::Greater,
+        );
+    }
+
+    #[test]
+    fn cmp_paths_uses_raw_path_to_order_normalized_key_collisions() {
+        let backslash_relative = Path::new("packages\\core\\package.json");
+        let slash_relative = Path::new("packages/core/package.json");
+        let earlier_raw = Path::new("/repo/a/package.json");
+        let later_raw = Path::new("/repo/z/package.json");
+
+        assert_eq!(
+            cmp_paths(backslash_relative, earlier_raw, slash_relative, later_raw,),
+            Ordering::Less,
+        );
+        assert_eq!(
+            cmp_paths(slash_relative, later_raw, backslash_relative, earlier_raw,),
+            Ordering::Greater,
+        );
+        assert_eq!(
+            cmp_paths(backslash_relative, earlier_raw, slash_relative, earlier_raw,),
+            Ordering::Equal,
+        );
     }
 
     #[test]

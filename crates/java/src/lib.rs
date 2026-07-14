@@ -87,6 +87,7 @@ where
 pub(crate) async fn run_publish_for_path(
     path: &Path,
     relative_path: &Path,
+    project_path: Option<&str>,
     config: &Config,
     missing_dir_message: &'static str,
 ) -> Result<changepacks_core::publish::PublishOutput> {
@@ -100,12 +101,21 @@ pub(crate) async fn run_publish_for_path(
         .await;
     }
 
-    finder::run_gradle_publish(path, relative_path, "publish", &[], missing_dir_message).await
+    finder::run_gradle_publish(
+        path,
+        relative_path,
+        project_path,
+        "publish",
+        &[],
+        missing_dir_message,
+    )
+    .await
 }
 
 pub(crate) async fn run_dry_run_publish_for_path(
     path: &Path,
     relative_path: &Path,
+    project_path: Option<&str>,
     config: &Config,
     missing_dir_message: &'static str,
 ) -> Result<Option<changepacks_core::publish::PublishOutput>> {
@@ -125,6 +135,7 @@ pub(crate) async fn run_dry_run_publish_for_path(
         finder::run_gradle_publish(
             path,
             relative_path,
+            project_path,
             "publishToMavenLocal",
             &[repository_argument],
             missing_dir_message,
@@ -383,6 +394,7 @@ mod tests {
                 finder::run_gradle_publish(
                     &manifest,
                     Path::new("build.gradle.kts"),
+                    Some(":"),
                     "publishToMavenLocal",
                     &[repository_argument],
                     "Package directory not found",
@@ -416,6 +428,7 @@ mod tests {
         let output = run_dry_run_publish_for_path(
             &manifest,
             relative_path,
+            Some(":libs:core"),
             &Config::default(),
             "Package directory not found",
         )
@@ -450,6 +463,7 @@ mod tests {
         let output = run_dry_run_publish_for_path(
             &manifest,
             relative_path,
+            Some(":libs:core"),
             &Config::default(),
             "Package directory not found",
         )
@@ -482,6 +496,7 @@ mod tests {
         let output = run_dry_run_publish_for_path(
             &manifest,
             Path::new("libs/core/build.gradle.kts"),
+            Some(":ignored:for:override"),
             &config,
             "Package directory not found",
         )

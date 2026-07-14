@@ -11,6 +11,7 @@ pub struct GradlePackage {
     version: Option<String>,
     path: PathBuf,
     relative_path: PathBuf,
+    project_path: Option<String>,
     is_changed: bool,
     dependencies: HashSet<String>,
     has_publish_task: bool,
@@ -37,11 +38,33 @@ impl GradlePackage {
         has_publish_task: bool,
         has_publish_to_maven_local_task: bool,
     ) -> Self {
+        Self::new_with_project_path_and_publish_tasks(
+            name,
+            version,
+            path,
+            relative_path,
+            None,
+            has_publish_task,
+            has_publish_to_maven_local_task,
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn new_with_project_path_and_publish_tasks(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        project_path: Option<String>,
+        has_publish_task: bool,
+        has_publish_to_maven_local_task: bool,
+    ) -> Self {
         Self {
             name,
             version,
             path,
             relative_path,
+            project_path,
             is_changed: false,
             dependencies: HashSet::new(),
             has_publish_task,
@@ -97,6 +120,7 @@ impl Package for GradlePackage {
         crate::run_publish_for_path(
             self.path(),
             self.relative_path(),
+            self.project_path.as_deref(),
             config,
             changepacks_core::publish::PACKAGE_DIR_NOT_FOUND,
         )
@@ -110,6 +134,7 @@ impl Package for GradlePackage {
         crate::run_dry_run_publish_for_path(
             self.path(),
             self.relative_path(),
+            self.project_path.as_deref(),
             config,
             changepacks_core::publish::PACKAGE_DIR_NOT_FOUND,
         )
@@ -135,7 +160,18 @@ mod tests {
         #[cfg(windows)]
         fs::write(
             root.join("gradlew.bat"),
-            "@echo off\necho cwd=%CD%\necho args=%*\n",
+            "@echo off\r\n\
+             setlocal EnableDelayedExpansion\r\n\
+             echo cwd=%CD%\r\n\
+             set /a argc=0\r\n\
+             :capture_arg\r\n\
+             if \"%~1\"==\"\" goto captured_args\r\n\
+             echo argv[!argc!]=%~1\r\n\
+             set /a argc+=1\r\n\
+             shift\r\n\
+             goto capture_arg\r\n\
+             :captured_args\r\n\
+             echo argc=!argc!\r\n",
         )
         .unwrap();
 
@@ -146,11 +182,28 @@ mod tests {
             let wrapper = root.join("gradlew");
             fs::write(
                 &wrapper,
-                "#!/bin/sh\nprintf 'cwd=%s\\nargs=%s\\n' \"$PWD\" \"$*\"\n",
+                "#!/bin/sh\n\
+                 printf 'cwd=%s\\n' \"$PWD\"\n\
+                 printf 'argc=%s\\n' \"$#\"\n\
+                 index=0\n\
+                 for arg in \"$@\"; do\n\
+                   printf 'argv[%s]=%s\\n' \"$index\" \"$arg\"\n\
+                   index=$((index + 1))\n\
+                 done\n",
             )
             .unwrap();
             fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
         }
+    }
+
+    fn captured_argv(stdout: &str) -> Vec<String> {
+        stdout
+            .lines()
+            .filter_map(|line| {
+                line.split_once("]=")
+                    .map(|(_, argument)| argument.to_owned())
+            })
+            .collect()
     }
 
     fn shell_echo_command(message: &str) -> String {
@@ -269,13 +322,78 @@ mod tests {
 
         assert!(output.success, "stderr: {}", output.stderr);
         assert!(output.stdout.contains(&format!("cwd={}", root.display())));
-        assert!(output.stdout.contains("args=:libs:core:publish"));
+        assert_eq!(captured_argv(&output.stdout), [":libs:core:publish"]);
         assert!(dry_run.success, "stderr: {}", dry_run.stderr);
-        assert!(
-            dry_run
-                .stdout
-                .contains("args=:libs:core:publishToMavenLocal")
+        let dry_run_argv = captured_argv(&dry_run.stdout);
+        assert_eq!(dry_run_argv.len(), 2, "stdout: {}", dry_run.stdout);
+        assert_eq!(dry_run_argv[0], ":libs:core:publishToMavenLocal");
+        assert!(dry_run_argv[1].starts_with("-Dmaven.repo.local="));
+    }
+
+    #[tokio::test]
+    async fn test_public_constructor_uses_root_tasks_for_nested_project_owning_wrapper() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_dir = temp_dir.path().join("tools").join("standalone");
+        fs::create_dir_all(&project_dir).unwrap();
+        create_publish_wrapper(&project_dir);
+        let manifest = project_dir.join("build.gradle.kts");
+        fs::write(&manifest, "version = \"1.0.0\"\n").unwrap();
+        let package = GradlePackage::new(
+            Some("standalone".to_string()),
+            Some("1.0.0".to_string()),
+            manifest,
+            PathBuf::from("tools/standalone/build.gradle.kts"),
         );
+
+        let output = package.publish(&Config::default()).await.unwrap();
+        let dry_run = package
+            .dry_run_publish(&Config::default())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert_eq!(captured_argv(&output.stdout), ["publish"]);
+        assert!(dry_run.success, "stderr: {}", dry_run.stderr);
+        let dry_run_argv = captured_argv(&dry_run.stdout);
+        assert_eq!(dry_run_argv.len(), 2, "stdout: {}", dry_run.stdout);
+        assert_eq!(dry_run_argv[0], "publishToMavenLocal");
+        assert!(dry_run_argv[1].starts_with("-Dmaven.repo.local="));
+    }
+
+    #[tokio::test]
+    async fn test_publish_filesystem_remapped_project_uses_exact_gradle_project_path_argv() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path().join("repo with spaces");
+        let project_dir = root.join("generated-backend");
+        fs::create_dir_all(&project_dir).unwrap();
+        create_publish_wrapper(&root);
+        let manifest = project_dir.join("build.gradle.kts");
+        fs::write(&manifest, "version = \"1.0.0\"\n").unwrap();
+        let package = GradlePackage::new_with_project_path_and_publish_tasks(
+            Some("api".to_string()),
+            Some("1.0.0".to_string()),
+            manifest,
+            PathBuf::from("generated-backend/build.gradle.kts"),
+            Some(":api".to_string()),
+            true,
+            true,
+        );
+
+        let output = package.publish(&Config::default()).await.unwrap();
+        let dry_run = package
+            .dry_run_publish(&Config::default())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert_eq!(captured_argv(&output.stdout), [":api:publish"]);
+        assert!(dry_run.success, "stderr: {}", dry_run.stderr);
+        let dry_run_argv = captured_argv(&dry_run.stdout);
+        assert_eq!(dry_run_argv.len(), 2, "stdout: {}", dry_run.stdout);
+        assert_eq!(dry_run_argv[0], ":api:publishToMavenLocal");
+        assert!(dry_run_argv[1].starts_with("-Dmaven.repo.local="));
     }
 
     #[tokio::test]

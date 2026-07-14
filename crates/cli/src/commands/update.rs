@@ -1,8 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
-    future::Future,
     path::{Path, PathBuf},
 };
+
+#[cfg(test)]
+use std::future::Future;
 
 use anyhow::{Context, Result, bail};
 use changepacks_core::{
@@ -10,14 +12,14 @@ use changepacks_core::{
 };
 use changepacks_utils::{
     apply_reverse_dependencies, clear_applied_update_logs, clear_update_logs,
-    collect_changepack_log_paths, discover_project_dirs, display_update, gen_changepack_result_map,
-    gen_update_map, get_relative_path, get_relative_path_ref,
+    collect_changepack_log_paths, display_update, gen_changepack_result_map, gen_update_map,
+    get_relative_path, get_relative_path_ref,
 };
 use clap::Args;
 
 use crate::{
     CommandContext,
-    finders::{collect_projects, get_finders, total_project_count},
+    finders::{collect_projects, total_project_count},
     options::{CliLanguage, FormatOptions, language_slice_contains},
     prompter::{InquirePrompter, Prompter},
 };
@@ -63,53 +65,26 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // Early return if no updates: `apply_update_on_rules` already ran inside
     // `gen_update_map`; `apply_reverse_dependencies` has an `is_empty()` fast-path;
     // `merge_workspace_inherited_updates` only mutates on `contains_key` hits —
-    // an empty map cannot become non-empty downstream. Skip the second git walk.
+    // an empty map cannot become non-empty downstream. Skip project collection
+    // and dependency-graph processing.
     if update_map.is_empty() {
         args.format.print("No updates found");
         return Ok(());
     }
 
-    let ignore_is_empty = ctx.config.ignore.is_empty();
     let mut project_finders = ctx.project_finders;
-    let all_finders = if ignore_is_empty {
-        None
-    } else {
-        let mut all_finders = get_finders();
 
-        // Reuse the ThreadSafeRepository already discovered by CommandContext::new
-        // instead of re-running `gix::discover` per invocation. `all_config` clears
-        // only the `ignore` filter (so nothing is filtered out here); the spread
-        // moves `ctx.config` — not read after this point — instead of cloning it.
-        //
-        // Use the discovery-only `discover_project_dirs`: this second walk exists
-        // solely to materialize the full unfiltered project set for
-        // `apply_reverse_dependencies` / `merge_workspace_inherited_updates` /
-        // `collect_workspace_projects`, which read only paths/names/deps/versions.
-        // `is_changed` is never read from `all_finders`, so paying for the
-        // base-branch diff + worktree-status change detection here would be pure
-        // waste — skip it.
-        let all_config = changepacks_core::Config {
-            ignore: Vec::new(),
-            ..ctx.config
-        };
-        discover_project_dirs(&ctx.repo, &mut all_finders, &all_config).await?;
-        Some(all_finders)
-    };
-
-    // Apply reverse dependency updates across all discovered projects. When
-    // `ignore` is non-empty, `all_finders` holds the full unfiltered tree;
-    // otherwise the already-unfiltered `project_finders` IS that full set. Both
-    // former branches ran the identical apply + merge over the same project
-    // slice — only the finder source differed — so select the source once.
-    let all_projects = collect_projects(all_finders.as_deref().unwrap_or(&project_finders));
-    apply_reverse_dependencies(&mut update_map, &all_projects, &ctx.repo_root_path)?;
+    // Ignore boundaries apply to graph expansion as well as direct mutation:
+    // dependents excluded during CommandContext discovery must not be scheduled.
+    let projects = collect_projects(&project_finders);
+    apply_reverse_dependencies(&mut update_map, &projects, &ctx.repo_root_path)?;
 
     // Merge workspace-inherited package updates into workspace entries. The
     // returned (member, workspace-root) pairs let the language-filtered
     // `applied_paths` snapshot below clear a folded member's changepack log in
     // lock-step with its workspace root.
     let merged_pairs =
-        merge_workspace_inherited_updates(&mut update_map, &all_projects, &ctx.repo_root_path);
+        merge_workspace_inherited_updates(&mut update_map, &projects, &ctx.repo_root_path);
 
     // Filter update_map by language if specified.
     //
@@ -194,16 +169,12 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         None
     };
 
-    // In the no-ignore branch the workspaces live in the same finder set as
-    // the mutably borrowed update projects. Capture their paths before taking
-    // that mutable borrow so the transaction can snapshot every manifest
-    // before the first version write.
-    let workspace_manifest_paths = all_finders.is_none().then(|| {
-        collect_workspace_projects(&project_finders)
-            .into_iter()
-            .map(|workspace| workspace.path().to_path_buf())
-            .collect::<Vec<_>>()
-    });
+    // Capture filtered workspace paths before taking the mutable project borrow
+    // so the transaction snapshots every in-scope manifest before the first write.
+    let workspace_manifest_paths = collect_workspace_projects(&project_finders)
+        .into_iter()
+        .map(|workspace| workspace.path().to_path_buf())
+        .collect::<Vec<_>>();
 
     let mut update_projects =
         collect_update_project_muts(&mut project_finders, &update_map, &ctx.repo_root_path)?;
@@ -217,74 +188,47 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         .iter()
         .map(|(project, _)| project.path().to_path_buf())
         .collect::<Vec<_>>();
-    if let Some(all_finders) = all_finders.as_ref() {
-        manifest_paths.extend(
-            collect_workspace_projects(all_finders)
-                .into_iter()
-                .map(|workspace| workspace.path().to_path_buf()),
-        );
-    } else {
-        manifest_paths.extend(workspace_manifest_paths.unwrap_or_default());
-    }
+    manifest_paths.extend(workspace_manifest_paths);
 
-    if let Some(all_finders) = all_finders.as_ref() {
-        let workspace_projects = collect_workspace_projects(all_finders);
-        run_update_transaction(
-            manifest_paths,
-            &ctx.changepacks_dir,
-            apply_updates_unchecked(&mut update_projects, &workspace_projects),
-            async {
-                match applied_paths {
-                    Some(applied) => {
-                        clear_applied_update_logs(&ctx.changepacks_dir, &applied).await
-                    }
-                    None => clear_update_logs(&ctx.changepacks_dir).await,
-                }
-            },
-        )
-        .await?;
-        drop(update_projects);
-    } else {
-        let snapshots = snapshot_update_state(manifest_paths, &ctx.changepacks_dir).await?;
-        let project_result = apply_project_version_updates(&mut update_projects).await;
-        drop(update_projects);
+    let snapshots = snapshot_update_state(manifest_paths, &ctx.changepacks_dir).await?;
+    let project_result = apply_project_version_updates(&mut update_projects).await;
+    drop(update_projects);
 
-        let update_result = match project_result {
-            Ok(()) => {
-                // Collect workspace projects after the mutable borrow is released.
-                let workspace_projects = collect_workspace_projects(&project_finders);
-                if workspace_projects.is_empty() {
-                    Ok(())
-                } else {
-                    match collect_update_project_refs(
-                        &project_finders,
-                        &update_map,
-                        &ctx.repo_root_path,
-                    ) {
-                        Ok(update_projects) => {
-                            let projects = packages_of(
-                                update_projects.len(),
-                                update_projects.iter().map(|(p, _)| *p),
-                            );
-                            apply_workspace_dependency_updates(&workspace_projects, &projects).await
-                        }
-                        Err(error) => Err(error),
+    let update_result = match project_result {
+        Ok(()) => {
+            // Collect filtered workspace projects after the mutable borrow is released.
+            let workspace_projects = collect_workspace_projects(&project_finders);
+            if workspace_projects.is_empty() {
+                Ok(())
+            } else {
+                match collect_update_project_refs(
+                    &project_finders,
+                    &update_map,
+                    &ctx.repo_root_path,
+                ) {
+                    Ok(update_projects) => {
+                        let projects = packages_of(
+                            update_projects.len(),
+                            update_projects.iter().map(|(p, _)| *p),
+                        );
+                        apply_workspace_dependency_updates(&workspace_projects, &projects).await
                     }
+                    Err(error) => Err(error),
                 }
             }
-            Err(error) => Err(error),
-        };
-
-        let transaction_result = match update_result {
-            Ok(()) => match applied_paths {
-                Some(applied) => clear_applied_update_logs(&ctx.changepacks_dir, &applied).await,
-                None => clear_update_logs(&ctx.changepacks_dir).await,
-            },
-            Err(error) => Err(error),
-        };
-        if let Err(error) = transaction_result {
-            return rollback_update_error(&snapshots, error).await;
         }
+        Err(error) => Err(error),
+    };
+
+    let transaction_result = match update_result {
+        Ok(()) => match applied_paths {
+            Some(applied) => clear_applied_update_logs(&ctx.changepacks_dir, &applied).await,
+            None => clear_update_logs(&ctx.changepacks_dir).await,
+        },
+        Err(error) => Err(error),
+    };
+    if let Err(error) = transaction_result {
+        return rollback_update_error(&snapshots, error).await;
     }
 
     if let Some(json_output) = json_output {
@@ -320,10 +264,10 @@ fn packages_of<'a>(
 /// cases the user-facing message is already printed here, so the caller simply
 /// returns `Ok(())` and prints nothing more. Returns `Ok(true)` to proceed.
 ///
-/// Extracted to share the identical preview/dry-run/confirm sequence between the
-/// two `handle_update_with_prompter` branches. Takes the `&mut Project`-pair
-/// slice directly and reborrows each project as shared (`&**project`) inside the
-/// display loop, so callers need no intermediate shared-reference vec.
+/// Keeps the preview, dry-run, and confirmation gate together. Takes the
+/// `&mut Project`-pair slice directly and reborrows each project as shared
+/// (`&**project`) inside the display loop, so callers need no intermediate
+/// shared-reference vec.
 fn preview_and_confirm(
     args: &UpdateArgs,
     prompter: &dyn Prompter,
@@ -455,6 +399,7 @@ fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<
     workspace_projects
 }
 
+#[cfg(test)]
 async fn apply_updates_unchecked(
     update_projects: &mut [UpdateProjectMut<'_>],
     workspace_projects: &[WorkspaceRef<'_>],
@@ -483,6 +428,7 @@ async fn apply_updates_unchecked(
     Ok(())
 }
 
+#[cfg(test)]
 async fn run_update_transaction(
     manifest_paths: Vec<PathBuf>,
     changepacks_dir: &Path,
@@ -718,13 +664,18 @@ mod tests {
     use anyhow::{Result, bail};
     use async_trait::async_trait;
     use changepacks_core::{
-        ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType, Workspace,
+        ChangePackLog, ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType,
+        Workspace,
     };
-    use changepacks_utils::clear_update_logs;
+    use changepacks_utils::{
+        clear_update_logs,
+        test_support::{git_add_and_commit, init_git_repo},
+    };
     use clap::Parser;
     use rstest::rstest;
+    use serial_test::serial;
     use std::{
-        collections::{HashMap, HashSet},
+        collections::{BTreeMap, HashMap, HashSet},
         path::{Path, PathBuf},
     };
     use tempfile::TempDir;
@@ -987,6 +938,165 @@ mod tests {
             remote: false,
             language: Vec::new(),
         }
+    }
+
+    struct CurrentDirGuard(PathBuf);
+
+    impl CurrentDirGuard {
+        fn enter(path: &Path) -> Result<Self> {
+            let previous = std::env::current_dir()?;
+            std::env::set_current_dir(path)?;
+            Ok(Self(previous))
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.0).expect("restore test working directory");
+        }
+    }
+
+    async fn ignored_update_fixture(
+        ignore_pattern: &str,
+        changed_manifest: &str,
+        files: &[(&str, &str)],
+    ) -> Result<TempDir> {
+        let repository = TempDir::new()?;
+        init_git_repo(repository.path());
+
+        let changepacks_dir = repository.path().join(".changepacks");
+        tokio::fs::create_dir_all(&changepacks_dir).await?;
+        tokio::fs::write(
+            changepacks_dir.join("config.json"),
+            serde_json::to_vec(&serde_json::json!({ "ignore": [ignore_pattern] }))?,
+        )
+        .await?;
+
+        for (relative_path, contents) in files {
+            let path = repository.path().join(relative_path);
+            if let Some(parent) = path.parent() {
+                tokio::fs::create_dir_all(parent).await?;
+            }
+            tokio::fs::write(path, contents).await?;
+        }
+
+        let changes = BTreeMap::from([(PathBuf::from(changed_manifest), UpdateType::Minor)]);
+        let log = ChangePackLog::new(changes, "visible package update".to_string());
+        tokio::fs::write(
+            changepacks_dir.join("changepack_log_ignore_boundary.json"),
+            serde_json::to_vec(&log)?,
+        )
+        .await?;
+        git_add_and_commit(repository.path(), "ignored update fixture");
+
+        Ok(repository)
+    }
+
+    fn assert_no_unresolved_ignored_path(result: &Result<()>, ignored_path: &str) {
+        let unresolved_ignored_path = result.as_ref().err().is_some_and(|error| {
+            let message = error.to_string();
+            message.contains("unresolved changepack update paths") && message.contains(ignored_path)
+        });
+        assert!(
+            !unresolved_ignored_path,
+            "update reported ignored manifest as unresolved: {}",
+            result
+                .as_ref()
+                .expect_err("an unresolved error was expected")
+        );
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_update_does_not_expand_into_ignored_dependent() -> Result<()> {
+        const VISIBLE_MANIFEST: &str = r#"{
+  "name": "visible-core",
+  "version": "1.0.0"
+}
+"#;
+        const IGNORED_MANIFEST: &str = r#"{
+  "name": "ignored-dependent",
+  "version": "1.0.0",
+  "dependencies": {
+    "visible-core": "workspace:*"
+  }
+}
+"#;
+        let repository = ignored_update_fixture(
+            "packages/ignored/**",
+            "packages/visible/package.json",
+            &[
+                ("packages/visible/package.json", VISIBLE_MANIFEST),
+                ("packages/ignored/package.json", IGNORED_MANIFEST),
+            ],
+        )
+        .await?;
+        let visible_path = repository.path().join("packages/visible/package.json");
+        let ignored_path = repository.path().join("packages/ignored/package.json");
+        let _current_dir = CurrentDirGuard::enter(repository.path())?;
+
+        let result = super::handle_update_with_prompter(
+            &update_args(false, true, FormatOptions::Json),
+            &MockPrompter::default(),
+        )
+        .await;
+
+        assert_no_unresolved_ignored_path(&result, "packages/ignored/package.json");
+        result?;
+        let visible: serde_json::Value =
+            serde_json::from_slice(&tokio::fs::read(visible_path).await?)?;
+        assert_eq!(visible["version"], "1.1.0");
+        assert_eq!(
+            tokio::fs::read(ignored_path).await?,
+            IGNORED_MANIFEST.as_bytes()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_update_does_not_rewrite_ignored_rust_workspace_path_dependency() -> Result<()> {
+        const VISIBLE_MANIFEST: &str = r#"[package]
+name = "visible-core"
+version = "1.0.0"
+edition = "2024"
+"#;
+        const IGNORED_MANIFEST: &str = r#"[workspace]
+members = []
+resolver = "3"
+
+[workspace.dependencies.visible-core]
+version = "1.0.0"
+path = "../visible"
+"#;
+        let repository = ignored_update_fixture(
+            "ignored/**",
+            "visible/Cargo.toml",
+            &[
+                ("visible/Cargo.toml", VISIBLE_MANIFEST),
+                ("ignored/Cargo.toml", IGNORED_MANIFEST),
+            ],
+        )
+        .await?;
+        let visible_path = repository.path().join("visible/Cargo.toml");
+        let ignored_path = repository.path().join("ignored/Cargo.toml");
+        let _current_dir = CurrentDirGuard::enter(repository.path())?;
+
+        let result = super::handle_update_with_prompter(
+            &update_args(false, true, FormatOptions::Json),
+            &MockPrompter::default(),
+        )
+        .await;
+
+        assert_no_unresolved_ignored_path(&result, "ignored/Cargo.toml");
+        result?;
+        let visible = tokio::fs::read_to_string(visible_path).await?;
+        assert!(visible.contains("version = \"1.1.0\""));
+        assert_eq!(
+            tokio::fs::read(ignored_path).await?,
+            IGNORED_MANIFEST.as_bytes()
+        );
+        Ok(())
     }
 
     #[test]
