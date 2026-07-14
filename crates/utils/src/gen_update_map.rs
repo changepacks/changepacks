@@ -85,6 +85,10 @@ pub async fn gen_update_map(
     Ok(update_map)
 }
 
+fn normalize_update_on_match_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn apply_update_on_rules(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     config: &Config,
@@ -123,16 +127,16 @@ fn apply_update_on_rules(
             let path = queued_paths
                 .pop_front()
                 .expect("the queued path batch length is exact");
-            let display_path = path.to_string_lossy().into_owned();
-            batch.push((path, display_path));
+            let match_path = normalize_update_on_match_path(&path);
+            batch.push((path, match_path));
         }
         batch.sort_by(|left, right| compare_diagnostic_paths(&left.0, &right.0));
 
         // Initial map keys are unique, and later paths are queued only through
         // `Entry::Vacant`, so every queued path reaches every rule exactly once.
         for (trigger_pattern, pattern, dependents) in &rules {
-            for (_, display_path) in &batch {
-                if !pattern.matches(display_path) {
+            for (_, match_path) in &batch {
+                if !pattern.matches(match_path) {
                     continue;
                 }
 
@@ -1051,6 +1055,68 @@ mod tests {
                 .to_string()
                 .contains("invalid glob pattern in updateOn config: [invalid")
         );
+    }
+
+    #[test]
+    fn test_apply_update_on_rules_normalizes_candidate_separators() {
+        assert_eq!(
+            normalize_update_on_match_path(Path::new("crates/core/Cargo.toml")),
+            "crates/core/Cargo.toml"
+        );
+        assert_eq!(
+            normalize_update_on_match_path(Path::new(r"crates\core\Cargo.toml")),
+            "crates/core/Cargo.toml"
+        );
+
+        let config = Config {
+            update_on: BTreeMap::from([
+                (
+                    "bridge/*".to_string(),
+                    vec!["release/Cargo.toml".to_string()],
+                ),
+                (
+                    "crates/*".to_string(),
+                    vec!["bridge/node/Cargo.toml".to_string()],
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        for candidate in ["crates/core/Cargo.toml", r"crates\core\Cargo.toml"] {
+            let candidate_path = PathBuf::from(candidate);
+            let unrelated_path = PathBuf::from("docs/guide.md");
+            let mut update_map = HashMap::from([
+                (candidate_path.clone(), (UpdateType::Minor, vec![])),
+                (unrelated_path.clone(), (UpdateType::Major, vec![])),
+            ]);
+
+            apply_update_on_rules(&mut update_map, &config).unwrap();
+
+            assert_eq!(update_map.len(), 4, "candidate: {candidate}");
+            assert!(
+                update_map.contains_key(&candidate_path),
+                "native candidate key must remain unchanged: {candidate}"
+            );
+            assert_eq!(
+                update_map[&unrelated_path].0,
+                UpdateType::Major,
+                "unrelated paths must remain unmatched: {candidate}"
+            );
+            assert!(
+                update_map[&unrelated_path].1.is_empty(),
+                "unrelated paths must not receive updateOn notes: {candidate}"
+            );
+            assert_eq!(
+                update_map[Path::new("bridge/node/Cargo.toml")].0,
+                UpdateType::Patch,
+                "candidate: {candidate}"
+            );
+            assert_eq!(
+                update_map[Path::new("release/Cargo.toml")].0,
+                UpdateType::Patch,
+                "transitive rules must converge: {candidate}"
+            );
+        }
     }
 
     #[test]

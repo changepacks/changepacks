@@ -109,15 +109,16 @@ impl ProjectFinder for PythonProjectFinder {
         // `None` positions.
         let uv_table = pyproject_toml.get("tool").and_then(|t| t.get("uv"));
 
-        // if workspace
-        //
-        // Flat `.and_then` chain matches the sibling Rust finder's
-        // `workspace_package_str` idiom (crates/rust/src/finder.rs) and
-        // the `[tool.uv.sources]` walk a few lines below, restoring
-        // stylistic parity across the finder module. Byte-identical
-        // to the previous nested closure: both short-circuit on the
-        // same `None` positions.
-        let mut project = if uv_table.and_then(|u| u.get("workspace")).is_some() {
+        let has_workspace_declaration = match uv_table.and_then(|u| u.get("workspace")) {
+            None => false,
+            Some(workspace) if workspace.as_table_like().is_some() => true,
+            Some(_) => anyhow::bail!(
+                "Invalid `[tool.uv].workspace` declaration in {}: expected a table or inline table",
+                path.display()
+            ),
+        };
+
+        let mut project = if has_workspace_declaration {
             Project::Workspace(Box::new(PythonWorkspace::new(
                 name,
                 version,
@@ -209,19 +210,34 @@ version = "1.0.0"
         temp_dir.close().unwrap();
     }
 
+    #[rstest]
+    #[case(
+        r#"[tool.uv.workspace]
+members = ["packages/*"]
+"#
+    )]
+    #[case("[tool.uv.workspace]\n")]
+    #[case(
+        r#"[tool.uv]
+workspace = { members = ["packages/*"] }
+"#
+    )]
+    #[case("[tool.uv]\nworkspace = {}\n")]
     #[tokio::test]
-    async fn test_python_project_finder_visit_workspace() {
+    async fn test_python_project_finder_visit_workspace_with_table_like_declaration(
+        #[case] workspace: &str,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let pyproject_toml = temp_dir.path().join("pyproject.toml");
         fs::write(
             &pyproject_toml,
-            r#"[tool.uv.workspace]
-members = ["packages/*"]
-
+            format!(
+                r#"{workspace}
 [project]
 name = "test-workspace"
 version = "1.0.0"
-"#,
+"#
+            ),
         )
         .unwrap();
 
@@ -240,6 +256,51 @@ version = "1.0.0"
             }
             _ => panic!("Expected Workspace"),
         }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[rstest]
+    #[case("true")]
+    #[case(r#""packages/*""#)]
+    #[case("[]")]
+    #[tokio::test]
+    async fn test_python_project_finder_rejects_invalid_uv_workspace_declaration(
+        #[case] workspace: &str,
+    ) {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            format!(
+                r#"[tool.uv]
+workspace = {workspace}
+
+[project]
+name = "test-package"
+version = "1.0.0"
+"#
+            ),
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        let result = finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await;
+
+        let error_msg = result
+            .expect_err("invalid uv workspace declaration should fail")
+            .to_string();
+        assert!(
+            error_msg.contains("Invalid `[tool.uv].workspace` declaration"),
+            "error message should explain the invalid declaration, got: {error_msg}"
+        );
+        assert!(
+            error_msg.contains(pyproject_toml.to_string_lossy().as_ref()),
+            "error message should contain the manifest path, got: {error_msg}"
+        );
+        assert!(finder.projects().is_empty());
 
         temp_dir.close().unwrap();
     }

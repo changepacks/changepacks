@@ -36,18 +36,6 @@ pub(crate) const PUBLISH_COMMAND: &str = "cargo publish";
 /// package-scope callers.
 pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "cargo publish --dry-run";
 
-/// Default publish command for a Cargo workspace root.
-///
-/// `--workspace` publishes every member in one invocation, which matches
-/// what `RustWorkspace::default_publish_command` returned before this
-/// consolidation.
-pub(crate) const WORKSPACE_PUBLISH_COMMAND: &str = "cargo publish --workspace";
-
-/// Default dry-run publish command for a Cargo workspace root.
-///
-/// Paired with `WORKSPACE_PUBLISH_COMMAND` for the workspace-scope callers.
-pub(crate) const WORKSPACE_DRY_RUN_PUBLISH_COMMAND: &str = "cargo publish --workspace --dry-run";
-
 /// Read and parse a Cargo.toml file, preserving the raw content for format finalization.
 ///
 /// Returns both the raw file content and the parsed `DocumentMut` to enable

@@ -37,6 +37,7 @@ pub struct RustWorkspace {
     name: Option<String>,
     is_changed: bool,
     dependencies: HashSet<String>,
+    publishable_by_default: bool,
     inherited_workspace_members: InheritedWorkspaceMembers,
 }
 
@@ -71,6 +72,7 @@ impl RustWorkspace {
         relative_path: PathBuf,
         inherited_workspace_members: InheritedWorkspaceMembers,
     ) -> Self {
+        let publishable_by_default = name.is_some();
         Self {
             name,
             version,
@@ -78,6 +80,7 @@ impl RustWorkspace {
             relative_path,
             is_changed: false,
             dependencies: HashSet::new(),
+            publishable_by_default,
             inherited_workspace_members,
         }
     }
@@ -245,18 +248,20 @@ impl Workspace for RustWorkspace {
     // `changepacks-core` alongside the other accessor macros.
     changepacks_core::impl_language!(Language::Rust);
 
+    fn is_publishable_by_default(&self) -> bool {
+        self.publishable_by_default
+    }
+
     // `default_publish_command` / `default_dry_run_publish_command` share
     // their const-based shape with every other const-driven language
     // crate. Consolidated via `impl_const_publish_commands!()` in
     // `changepacks-core` — expansion is byte-identical to the previous
-    // hand-rolled bodies. The macro's `$publish:path` argument keeps the
-    // workspace-scoped `crate::WORKSPACE_PUBLISH_COMMAND` /
-    // `crate::WORKSPACE_DRY_RUN_PUBLISH_COMMAND` const choice explicit at
-    // this call site, matching the pattern used by Python/Dart/Java
-    // workspace impls.
+    // hand-rolled bodies. Hybrid roots publish only their own `[package]`;
+    // discovered member projects remain separate topologically sorted
+    // publish operations.
     changepacks_core::impl_const_publish_commands!(
-        crate::WORKSPACE_PUBLISH_COMMAND,
-        crate::WORKSPACE_DRY_RUN_PUBLISH_COMMAND
+        crate::PUBLISH_COMMAND,
+        crate::DRY_RUN_PUBLISH_COMMAND
     );
 
     // `dependencies()` / `add_dependency()` share their byte-identical
@@ -379,7 +384,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_rust_workspace_new() {
+    async fn test_rust_workspace_new_hybrid_root_uses_root_scoped_publish_commands() {
         let workspace = RustWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
@@ -393,19 +398,17 @@ mod tests {
         assert_eq!(workspace.relative_path(), PathBuf::from("test/Cargo.toml"));
         assert_eq!(workspace.language(), Language::Rust);
         assert!(!workspace.is_changed());
-        assert_eq!(
-            workspace.default_publish_command(),
-            "cargo publish --workspace"
-        );
+        assert!(workspace.is_publishable_by_default());
+        assert_eq!(workspace.default_publish_command(), "cargo publish");
         assert_eq!(
             workspace.default_dry_run_publish_command().as_deref(),
-            Some("cargo publish --workspace --dry-run")
+            Some("cargo publish --dry-run")
         );
     }
 
     #[tokio::test]
     async fn test_rust_workspace_new_without_name_and_version() {
-        let workspace = RustWorkspace::new(
+        let mut workspace = RustWorkspace::new(
             None,
             None,
             PathBuf::from("/test/Cargo.toml"),
@@ -414,6 +417,14 @@ mod tests {
 
         assert_eq!(workspace.name(), None);
         assert_eq!(workspace.version(), None);
+        assert!(!workspace.is_publishable_by_default());
+
+        // Project discovery assigns a repository-name fallback to unnamed
+        // projects after finder finalization. That display-name mutation must
+        // not turn a virtual Cargo workspace into a publishable hybrid root.
+        workspace.set_name("repository-name".to_string());
+        assert_eq!(workspace.name(), Some("repository-name"));
+        assert!(!workspace.is_publishable_by_default());
     }
 
     #[tokio::test]

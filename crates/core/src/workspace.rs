@@ -53,6 +53,12 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     /// via `config.publish_dry_run`.
     fn default_dry_run_publish_command(&self) -> Option<String>;
 
+    /// Whether this project should be included in publish runs when no
+    /// project-path or language command override is configured.
+    fn is_publishable_by_default(&self) -> bool {
+        true
+    }
+
     /// Publish the workspace using the configured command or default
     ///
     /// # Errors
@@ -232,6 +238,14 @@ mod tests {
             MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
         workspace.check_changed(Path::new(changed_path)).unwrap();
         assert_eq!(workspace.is_changed(), expected);
+    }
+
+    #[test]
+    fn test_workspace_is_publishable_by_default() {
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
+
+        assert!(workspace.is_publishable_by_default());
     }
 
     #[test]

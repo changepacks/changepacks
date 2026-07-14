@@ -1,13 +1,15 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
+#[cfg(test)]
 use regex::Regex;
+#[cfg(test)]
+use std::sync::LazyLock;
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     process::Stdio,
-    sync::LazyLock,
 };
 use tokio::fs::read_to_string;
 use tokio::process::Command;
@@ -19,6 +21,24 @@ use crate::{package::GradlePackage, workspace::GradleWorkspace};
 /// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["build.gradle.kts", "build.gradle"];
+
+const GRADLE_METADATA_PREFIX: &str = "__CHANGEPACKS_GRADLE_METADATA_V1__";
+
+const GRADLE_METADATA_INIT_SCRIPT: &str = r#"import groovy.json.JsonOutput
+
+gradle.projectsEvaluated { evaluatedGradle ->
+    evaluatedGradle.rootProject.allprojects { project ->
+        def record = [
+            projectDir: project.projectDir.toPath().toAbsolutePath().normalize().toString(),
+            projectPath: project.path,
+            name: project.name,
+            version: project.version == null ? null : project.version.toString(),
+            aggregate: !project.childProjects.isEmpty()
+        ]
+        println("__CHANGEPACKS_GRADLE_METADATA_V1__" + JsonOutput.toJson(record))
+    }
+}
+"#;
 
 /// OS-specific Java executable filename, used by `which_java_in` and
 /// `java_home_has_java` to avoid repeating the `cfg!(windows)` branch.
@@ -33,12 +53,15 @@ const JAVA_EXECUTABLE: &str = "java";
 /// constants, so re-compiling them on every `get_gradle_properties` call
 /// (once per Gradle project per `check` / `update` / `publish`) was pure
 /// per-call waste that this now avoids.
+#[cfg(test)]
 static NAME_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^name:\s*(.+)$").expect("hardcoded regex must compile"));
 
+#[cfg(test)]
 static VERSION_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^version:\s*(.+)$").expect("hardcoded regex must compile"));
 
+#[cfg(test)]
 static SUBPROJECTS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?m)^subprojects:\s*(.+)$").expect("hardcoded regex must compile")
 });
@@ -47,6 +70,7 @@ static SUBPROJECTS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 pub struct GradleProjectFinder {
     projects: HashMap<PathBuf, Project>,
     java_available: Option<bool>,
+    metadata_by_wrapper: HashMap<PathBuf, HashMap<PathBuf, GradleMetadataRecord>>,
 }
 
 impl GradleProjectFinder {
@@ -57,11 +81,321 @@ impl GradleProjectFinder {
 }
 
 /// Project info obtained from gradlew properties
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct GradleProperties {
     name: Option<String>,
     version: Option<String>,
     has_subprojects: bool,
+}
+
+#[derive(Clone, Debug)]
+struct GradleMetadataRecord {
+    project_dir: PathBuf,
+    project_path: String,
+    properties: GradleProperties,
+}
+
+#[derive(Debug)]
+enum MetadataJsonValue {
+    String(String),
+    Bool(bool),
+    Null,
+}
+
+struct MetadataJsonParser<'a> {
+    input: &'a str,
+    cursor: usize,
+}
+
+impl<'a> MetadataJsonParser<'a> {
+    fn new(input: &'a str) -> Self {
+        Self { input, cursor: 0 }
+    }
+
+    fn parse_object(mut self) -> Result<HashMap<String, MetadataJsonValue>> {
+        self.skip_whitespace();
+        self.expect_char('{')?;
+        self.skip_whitespace();
+
+        let mut fields = HashMap::new();
+        if self.consume_char('}') {
+            self.ensure_finished()?;
+            return Ok(fields);
+        }
+
+        loop {
+            self.skip_whitespace();
+            let key = self.parse_string()?;
+            self.skip_whitespace();
+            self.expect_char(':')?;
+            self.skip_whitespace();
+            let value = self.parse_value()?;
+            anyhow::ensure!(
+                fields.insert(key.clone(), value).is_none(),
+                "duplicate JSON field '{key}'"
+            );
+            self.skip_whitespace();
+            if self.consume_char('}') {
+                break;
+            }
+            self.expect_char(',')?;
+        }
+
+        self.ensure_finished()?;
+        Ok(fields)
+    }
+
+    fn parse_value(&mut self) -> Result<MetadataJsonValue> {
+        match self.peek_char() {
+            Some('"') => self.parse_string().map(MetadataJsonValue::String),
+            Some('t') => {
+                self.expect_keyword("true")?;
+                Ok(MetadataJsonValue::Bool(true))
+            }
+            Some('f') => {
+                self.expect_keyword("false")?;
+                Ok(MetadataJsonValue::Bool(false))
+            }
+            Some('n') => {
+                self.expect_keyword("null")?;
+                Ok(MetadataJsonValue::Null)
+            }
+            Some(character) => Err(anyhow::anyhow!(
+                "unsupported JSON value starting with '{character}' at byte {}",
+                self.cursor
+            )),
+            None => Err(anyhow::anyhow!("unexpected end of JSON value")),
+        }
+    }
+
+    fn parse_string(&mut self) -> Result<String> {
+        self.expect_char('"')?;
+        let mut value = String::new();
+        loop {
+            let character = self
+                .next_char()
+                .context("unterminated JSON string in Gradle metadata")?;
+            match character {
+                '"' => return Ok(value),
+                '\\' => self.parse_string_escape(&mut value)?,
+                character if character <= '\u{1f}' => {
+                    return Err(anyhow::anyhow!(
+                        "unescaped control character in JSON string"
+                    ));
+                }
+                character => value.push(character),
+            }
+        }
+    }
+
+    fn parse_string_escape(&mut self, value: &mut String) -> Result<()> {
+        let escape = self
+            .next_char()
+            .context("unterminated JSON escape in Gradle metadata")?;
+        match escape {
+            '"' | '\\' | '/' => value.push(escape),
+            'b' => value.push('\u{0008}'),
+            'f' => value.push('\u{000c}'),
+            'n' => value.push('\n'),
+            'r' => value.push('\r'),
+            't' => value.push('\t'),
+            'u' => {
+                let first = self.parse_unicode_escape()?;
+                let code_point = if (0xd800..=0xdbff).contains(&first) {
+                    self.expect_char('\\')?;
+                    self.expect_char('u')?;
+                    let second = self.parse_unicode_escape()?;
+                    anyhow::ensure!(
+                        (0xdc00..=0xdfff).contains(&second),
+                        "invalid low surrogate in JSON string"
+                    );
+                    0x1_0000 + ((u32::from(first) - 0xd800) << 10) + (u32::from(second) - 0xdc00)
+                } else {
+                    anyhow::ensure!(
+                        !(0xdc00..=0xdfff).contains(&first),
+                        "unexpected low surrogate in JSON string"
+                    );
+                    u32::from(first)
+                };
+                value.push(
+                    char::from_u32(code_point)
+                        .context("invalid Unicode code point in JSON string")?,
+                );
+            }
+            escape => return Err(anyhow::anyhow!("invalid JSON escape '\\{escape}'")),
+        }
+        Ok(())
+    }
+
+    fn parse_unicode_escape(&mut self) -> Result<u16> {
+        let start = self.cursor;
+        let end = start
+            .checked_add(4)
+            .context("JSON Unicode escape offset overflow")?;
+        let digits = self
+            .input
+            .get(start..end)
+            .context("incomplete JSON Unicode escape")?;
+        anyhow::ensure!(
+            digits.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "invalid JSON Unicode escape '{digits}'"
+        );
+        self.cursor = end;
+        u16::from_str_radix(digits, 16).context("invalid JSON Unicode escape")
+    }
+
+    fn expect_keyword(&mut self, keyword: &str) -> Result<()> {
+        anyhow::ensure!(
+            self.input[self.cursor..].starts_with(keyword),
+            "expected JSON keyword '{keyword}' at byte {}",
+            self.cursor
+        );
+        self.cursor += keyword.len();
+        Ok(())
+    }
+
+    fn ensure_finished(&mut self) -> Result<()> {
+        self.skip_whitespace();
+        anyhow::ensure!(
+            self.cursor == self.input.len(),
+            "unexpected trailing JSON content at byte {}",
+            self.cursor
+        );
+        Ok(())
+    }
+
+    fn expect_char(&mut self, expected: char) -> Result<()> {
+        let actual = self.next_char();
+        anyhow::ensure!(
+            actual == Some(expected),
+            "expected '{expected}' at byte {}, found {actual:?}",
+            self.cursor.saturating_sub(actual.map_or(0, char::len_utf8))
+        );
+        Ok(())
+    }
+
+    fn consume_char(&mut self, expected: char) -> bool {
+        if self.peek_char() == Some(expected) {
+            self.cursor += expected.len_utf8();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while self.peek_char().is_some_and(char::is_whitespace) {
+            let _ = self.next_char();
+        }
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.input[self.cursor..].chars().next()
+    }
+
+    fn next_char(&mut self) -> Option<char> {
+        let character = self.peek_char()?;
+        self.cursor += character.len_utf8();
+        Some(character)
+    }
+}
+
+fn required_metadata_string(
+    fields: &mut HashMap<String, MetadataJsonValue>,
+    field: &str,
+) -> Result<String> {
+    match fields.remove(field) {
+        Some(MetadataJsonValue::String(value)) => Ok(value),
+        Some(value) => Err(anyhow::anyhow!(
+            "Gradle metadata field '{field}' must be a string, got {value:?}"
+        )),
+        None => Err(anyhow::anyhow!(
+            "Gradle metadata record is missing required field '{field}'"
+        )),
+    }
+}
+
+fn optional_metadata_string(
+    fields: &mut HashMap<String, MetadataJsonValue>,
+    field: &str,
+) -> Result<Option<String>> {
+    match fields.remove(field) {
+        Some(MetadataJsonValue::String(value)) => Ok(Some(value)),
+        Some(MetadataJsonValue::Null) => Ok(None),
+        Some(value) => Err(anyhow::anyhow!(
+            "Gradle metadata field '{field}' must be a string or null, got {value:?}"
+        )),
+        None => Err(anyhow::anyhow!(
+            "Gradle metadata record is missing required field '{field}'"
+        )),
+    }
+}
+
+fn required_metadata_bool(
+    fields: &mut HashMap<String, MetadataJsonValue>,
+    field: &str,
+) -> Result<bool> {
+    match fields.remove(field) {
+        Some(MetadataJsonValue::Bool(value)) => Ok(value),
+        Some(value) => Err(anyhow::anyhow!(
+            "Gradle metadata field '{field}' must be a boolean, got {value:?}"
+        )),
+        None => Err(anyhow::anyhow!(
+            "Gradle metadata record is missing required field '{field}'"
+        )),
+    }
+}
+
+fn normalized_gradle_property(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_owned())
+        .filter(|value| value != "unspecified")
+}
+
+fn parse_gradle_metadata_record(json: &str) -> Result<GradleMetadataRecord> {
+    let mut fields = MetadataJsonParser::new(json).parse_object()?;
+    let project_dir = required_metadata_string(&mut fields, "projectDir")?;
+    anyhow::ensure!(
+        !project_dir.is_empty(),
+        "Gradle metadata field 'projectDir' must not be empty"
+    );
+    let project_path = required_metadata_string(&mut fields, "projectPath")?;
+    anyhow::ensure!(
+        project_path.starts_with(':'),
+        "Gradle metadata field 'projectPath' must be a qualified Gradle path"
+    );
+    let name = required_metadata_string(&mut fields, "name")?;
+    let version = optional_metadata_string(&mut fields, "version")?;
+    let has_subprojects = required_metadata_bool(&mut fields, "aggregate")?;
+
+    Ok(GradleMetadataRecord {
+        project_dir: PathBuf::from(project_dir),
+        project_path,
+        properties: GradleProperties {
+            name: normalized_gradle_property(Some(name)),
+            version: normalized_gradle_property(version),
+            has_subprojects,
+        },
+    })
+}
+
+fn parse_gradle_metadata_records(output: &str) -> Result<Vec<GradleMetadataRecord>> {
+    output
+        .lines()
+        .enumerate()
+        .filter_map(|(line_index, line)| {
+            line.strip_prefix(GRADLE_METADATA_PREFIX)
+                .map(|record| (line_index, record))
+        })
+        .map(|(line_index, record)| {
+            parse_gradle_metadata_record(record).map_err(|error| {
+                anyhow::anyhow!(
+                    "malformed Gradle metadata record at line {}: {error:#}",
+                    line_index + 1
+                )
+            })
+        })
+        .collect()
 }
 
 /// Core logic for finding `java` in a given PATH value.
@@ -209,6 +543,7 @@ fn gradle_subproject_path(relative: &Path) -> Result<String> {
     Ok(path)
 }
 
+#[cfg(test)]
 fn gradle_property_value(caps: &regex::Captures) -> Option<String> {
     caps.get(1)
         .map(|m| m.as_str().trim())
@@ -957,6 +1292,129 @@ async fn java_is_available() -> Result<bool> {
     Ok(which_java_in(path.as_deref()).await?.is_some())
 }
 
+fn gradle_metadata_args(init_script_path: &Path) -> Vec<OsString> {
+    vec![
+        OsString::from("-Dorg.gradle.configureondemand=false"),
+        OsString::from("-Dorg.gradle.configuration-cache=false"),
+        OsString::from("--init-script"),
+        init_script_path.as_os_str().to_owned(),
+        OsString::from("--quiet"),
+        OsString::from("help"),
+    ]
+}
+
+async fn get_gradle_metadata(
+    gradlew: &Path,
+    gradlew_dir: &Path,
+    java_available: bool,
+) -> Result<HashMap<PathBuf, GradleMetadataRecord>> {
+    anyhow::ensure!(
+        java_available,
+        "Java is required for Gradle projects but JAVA_HOME is not set and 'java' was not found on PATH.\n\
+         Please set the JAVA_HOME environment variable or add java to your PATH."
+    );
+
+    let init_script = tempfile::Builder::new()
+        .prefix("changepacks-gradle-metadata-")
+        .suffix(".gradle")
+        .tempfile()
+        .context("Failed to create temporary Gradle metadata init script")?;
+    let init_script_path = init_script.path().to_path_buf();
+    tokio::fs::write(&init_script_path, GRADLE_METADATA_INIT_SCRIPT)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to write temporary Gradle metadata init script '{}'",
+                init_script_path.display()
+            )
+        })?;
+
+    let args = gradle_metadata_args(&init_script_path);
+    let command_spec = GradleCommandSpec::new(gradlew, gradlew_dir, args);
+    let output_result = command_spec
+        .command()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await;
+    let cleanup_failure = init_script.close().err().map(|error| {
+        format!(
+            "failed to remove temporary Gradle metadata init script '{}': {error}",
+            init_script_path.display()
+        )
+    });
+    let cleanup_suffix = cleanup_failure
+        .as_deref()
+        .map_or_else(String::new, |failure| format!("; additionally, {failure}"));
+    let output = match output_result {
+        Ok(output) => output,
+        Err(error) => {
+            return Err(anyhow::anyhow!(
+                "Failed to execute Gradle metadata discovery for wrapper root '{}' (gradlew: '{}'): {error}{cleanup_suffix}",
+                gradlew_dir.display(),
+                gradlew.display(),
+            ));
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr_trimmed = stderr.trim();
+        return Err(anyhow::anyhow!(
+            "Gradle metadata discovery failed for wrapper root '{}' using '{}' with status {}{}{}",
+            gradlew_dir.display(),
+            gradlew.display(),
+            output.status,
+            if stderr_trimmed.is_empty() {
+                String::new()
+            } else {
+                format!("; stderr: {stderr_trimmed}")
+            },
+            cleanup_suffix
+        ));
+    }
+
+    if let Some(cleanup_failure) = cleanup_failure {
+        return Err(anyhow::anyhow!(
+            "Temporary Gradle metadata init-script cleanup failed: {cleanup_failure}"
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let records = parse_gradle_metadata_records(&stdout).map_err(|error| {
+        anyhow::anyhow!(
+            "Failed to parse Gradle metadata emitted by '{}' for wrapper root '{}': {error:#}",
+            gradlew.display(),
+            gradlew_dir.display()
+        )
+    })?;
+    let mut metadata = HashMap::with_capacity(records.len());
+    for record in records {
+        let normalized_dir = tokio::fs::canonicalize(&record.project_dir)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to normalize Gradle metadata directory '{}' for project '{}' emitted by '{}'",
+                    record.project_dir.display(),
+                    record.project_path,
+                    gradlew.display()
+                )
+            })?;
+        let project_path = record.project_path.clone();
+        if let Some(previous) = metadata.insert(normalized_dir.clone(), record) {
+            return Err(anyhow::anyhow!(
+                "Duplicate Gradle metadata records for normalized directory '{}' from '{}': projects '{}' and '{}'",
+                normalized_dir.display(),
+                gradlew.display(),
+                previous.project_path,
+                project_path
+            ));
+        }
+    }
+
+    Ok(metadata)
+}
+
 /// Get project properties using gradlew command.
 ///
 /// Walks up the directory tree to find `gradlew`, then runs it with the correct
@@ -965,6 +1423,7 @@ async fn java_is_available() -> Result<bool> {
 ///
 /// Returns `Err` when `gradlew` is not found or Java is not available.
 ///
+#[cfg(test)]
 async fn get_gradle_properties(
     project_dir: &Path,
     java_available: bool,
@@ -1023,6 +1482,7 @@ async fn get_gradle_properties(
     )))
 }
 
+#[cfg(test)]
 fn parse_gradle_properties_output(output: &str) -> GradleProperties {
     let name = NAME_PATTERN
         .captures(output)
@@ -1042,6 +1502,7 @@ fn parse_gradle_properties_output(output: &str) -> GradleProperties {
     }
 }
 
+#[cfg(test)]
 fn gradle_properties_args(project_dir: &Path, gradlew_dir: &Path) -> Result<Vec<OsString>> {
     Ok(vec![
         gradle_task_arg(project_dir, gradlew_dir, "properties")?,
@@ -1142,8 +1603,54 @@ impl ProjectFinder for GradleProjectFinder {
         // Mirrors the C# finder's `is_workspace` bound.
         let max_depth = relative_path.components().count();
 
-        // Get properties from gradlew command
-        let props = get_gradle_properties(project_dir, java_available, max_depth).await?;
+        let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth).await?.context(
+            "Gradle wrapper (gradlew) not found. \
+             Ensure the project root contains gradlew or gradlew.bat.",
+        )?;
+        let normalized_wrapper_dir =
+            tokio::fs::canonicalize(&gradlew_dir)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to normalize Gradle wrapper root '{}' for '{}'",
+                        gradlew_dir.display(),
+                        path.display()
+                    )
+                })?;
+
+        if !self
+            .metadata_by_wrapper
+            .contains_key(&normalized_wrapper_dir)
+        {
+            let metadata = get_gradle_metadata(&gradlew, &gradlew_dir, java_available).await?;
+            self.metadata_by_wrapper
+                .insert(normalized_wrapper_dir.clone(), metadata);
+        }
+
+        let normalized_project_dir =
+            tokio::fs::canonicalize(project_dir)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to normalize Gradle project directory '{}' for '{}'",
+                        project_dir.display(),
+                        path.display()
+                    )
+                })?;
+        let metadata = self
+            .metadata_by_wrapper
+            .get(&normalized_wrapper_dir)
+            .and_then(|metadata| metadata.get(&normalized_project_dir))
+            .cloned()
+            .with_context(|| {
+                format!(
+                    "missing Gradle metadata record for project directory '{}' (normalized: '{}') from wrapper '{}'",
+                    project_dir.display(),
+                    normalized_project_dir.display(),
+                    gradlew.display()
+                )
+            })?;
+        let props = metadata.properties;
 
         // Use directory name as fallback for project name
         let name = props.name.or_else(|| {
@@ -1324,12 +1831,26 @@ mod tests {
 
     /// Create a mock gradlew in the given directory that outputs Gradle properties.
     fn create_mock_gradlew(dir: &Path, mock: MockGradlew<'_>) {
+        let record = format!(
+            "{GRADLE_METADATA_PREFIX}{{\"projectDir\":{},\"projectPath\":\":\",\"name\":{},\"version\":{},\"aggregate\":{}}}",
+            json_string(dir.to_string_lossy().as_ref()),
+            json_string(mock.name),
+            json_string(mock.version),
+            mock.subprojects != "[]"
+        );
         if cfg!(windows) {
             fs::write(
                 dir.join("gradlew.bat"),
                 format!(
-                    "@echo off\necho name: {}\necho version: {}\necho subprojects: {}\n",
-                    mock.name, mock.version, mock.subprojects
+                    "@echo off\r\n\
+                     if \"%~1\"==\"-Dorg.gradle.configureondemand=false\" goto metadata\r\n\
+                     echo name: {}\r\n\
+                     echo version: {}\r\n\
+                     echo subprojects: {}\r\n\
+                     exit /b 0\r\n\
+                     :metadata\r\n\
+                     echo {record}\r\n",
+                    mock.name, mock.version, mock.subprojects,
                 ),
             )
             .unwrap();
@@ -1338,8 +1859,13 @@ mod tests {
             fs::write(
                 &gradlew_path,
                 format!(
-                    "#!/bin/sh\necho 'name: {}'\necho 'version: {}'\necho \"subprojects: {}\"\n",
-                    mock.name, mock.version, mock.subprojects
+                    "#!/bin/sh\n\
+                     if [ \"$1\" = '-Dorg.gradle.configureondemand=false' ]; then\n\
+                       printf '%s\\n' '{record}'\n\
+                     else\n\
+                       printf '%s\\n' 'name: {}' 'version: {}' \"subprojects: {}\"\n\
+                     fi\n",
+                    mock.name, mock.version, mock.subprojects,
                 ),
             )
             .unwrap();
@@ -1365,6 +1891,285 @@ mod tests {
             #[cfg(unix)]
             make_executable(&gradlew_path);
         }
+    }
+
+    fn json_string(value: &str) -> String {
+        let mut escaped = String::with_capacity(value.len() + 2);
+        escaped.push('"');
+        for character in value.chars() {
+            match character {
+                '"' => escaped.push_str("\\\""),
+                '\\' => escaped.push_str("\\\\"),
+                '\n' => escaped.push_str("\\n"),
+                '\r' => escaped.push_str("\\r"),
+                '\t' => escaped.push_str("\\t"),
+                character => escaped.push(character),
+            }
+        }
+        escaped.push('"');
+        escaped
+    }
+
+    fn create_counting_multi_project_gradlew(
+        dir: &Path,
+        root_project_dir: &Path,
+        child_project_dir: &Path,
+        emit_child_record: bool,
+    ) -> PathBuf {
+        let invocation_count = dir.join("wrapper-invocations.txt");
+        let prefix = "__CHANGEPACKS_GRADLE_METADATA_V1__";
+        let root_record = format!(
+            "{prefix}{{\"projectDir\":{},\"projectPath\":\":\",\"name\":\"root project\",\"version\":\"1.2.3\",\"aggregate\":true}}",
+            json_string(root_project_dir.to_string_lossy().as_ref())
+        );
+        let child_record = format!(
+            "{prefix}{{\"projectDir\":{},\"projectPath\":\":module one\",\"name\":\"child project\",\"version\":\"2.3.4\",\"aggregate\":false}}",
+            json_string(child_project_dir.to_string_lossy().as_ref())
+        );
+        let batch_records = if emit_child_record {
+            format!(
+                "echo {root_record}\r\necho unrelated __CHANGEPACKS_GRADLE_METADATA text\r\necho {child_record}\r\n"
+            )
+        } else {
+            format!("echo {root_record}\r\n")
+        };
+        let unix_batch_records = if emit_child_record {
+            format!(
+                "printf '%s\\n' '{root_record}' 'unrelated __CHANGEPACKS_GRADLE_METADATA text' '{child_record}'"
+            )
+        } else {
+            format!("printf '%s\\n' '{root_record}'")
+        };
+
+        if cfg!(windows) {
+            fs::write(
+                dir.join("gradlew.bat"),
+                format!(
+                    "@echo off\r\n\
+                     type nul >\"metadata-command-args.txt\"\r\n\
+                     for %%A in (%*) do echo %%~A>>\"metadata-command-args.txt\"\r\n\
+                     set count=0\r\n\
+                     if exist \"wrapper-invocations.txt\" set /p count=<\"wrapper-invocations.txt\"\r\n\
+                     set /a count+=1\r\n\
+                     >\"wrapper-invocations.txt\" echo %count%\r\n\
+                     if \"%~1\"==\"properties\" goto root\r\n\
+                     if \"%~1\"==\":module one:properties\" goto child\r\n\
+                     {batch_records}\
+                     exit /b 0\r\n\
+                     :root\r\n\
+                     echo name: root project\r\n\
+                     echo version: 1.2.3\r\n\
+                     echo subprojects: [project ':module one']\r\n\
+                     exit /b 0\r\n\
+                     :child\r\n\
+                     echo name: child project\r\n\
+                     echo version: 2.3.4\r\n\
+                     echo subprojects: []\r\n"
+                ),
+            )
+            .unwrap();
+        } else {
+            let gradlew_path = dir.join("gradlew");
+            fs::write(
+                &gradlew_path,
+                format!(
+                    "#!/bin/sh\n\
+                     : > metadata-command-args.txt\n\
+                     for arg in \"$@\"; do printf '%s\\n' \"$arg\" >> metadata-command-args.txt; done\n\
+                     count=$(cat wrapper-invocations.txt 2>/dev/null || printf 0)\n\
+                     count=$((count + 1))\n\
+                     printf '%s\\n' \"$count\" > wrapper-invocations.txt\n\
+                     case \"$1\" in\n\
+                       properties)\n\
+                         printf '%s\\n' 'name: root project' 'version: 1.2.3' \"subprojects: [project ':module one']\"\n\
+                         ;;\n\
+                       ':module one:properties')\n\
+                         printf '%s\\n' 'name: child project' 'version: 2.3.4' 'subprojects: []'\n\
+                         ;;\n\
+                       *)\n\
+                         {unix_batch_records}\n\
+                         ;;\n\
+                     esac\n"
+                ),
+            )
+            .unwrap();
+            #[cfg(unix)]
+            make_executable(&gradlew_path);
+        }
+
+        invocation_count
+    }
+
+    #[tokio::test]
+    async fn test_gradle_metadata_command_disables_lazy_and_cached_configuration() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path().join("repo");
+        let child_dir = repo.join("child");
+        fs::create_dir_all(&child_dir).unwrap();
+        let root_manifest = repo.join("build.gradle.kts");
+        fs::write(&root_manifest, "plugins { java }\n").unwrap();
+        create_counting_multi_project_gradlew(&repo, &repo, &child_dir, true);
+
+        let mut finder = finder_with_java_available();
+        finder
+            .visit(&root_manifest, Path::new("build.gradle.kts"))
+            .await
+            .unwrap();
+
+        let actual = fs::read_to_string(repo.join("metadata-command-args.txt"))
+            .unwrap()
+            .lines()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>();
+        let init_script = actual
+            .iter()
+            .find(|argument| argument.ends_with(".gradle"))
+            .unwrap()
+            .clone();
+        assert_eq!(
+            actual,
+            vec![
+                "-Dorg.gradle.configureondemand=false".to_string(),
+                "-Dorg.gradle.configuration-cache=false".to_string(),
+                "--init-script".to_string(),
+                init_script,
+                "--quiet".to_string(),
+                "help".to_string(),
+            ]
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_parse_gradle_metadata_records_handles_spaces_unicode_and_unrelated_output() {
+        let output = concat!(
+            "Gradle configuration output\n",
+            "unrelated __CHANGEPACKS_GRADLE_METADATA_V1__{not a record}\n",
+            "__CHANGEPACKS_GRADLE_METADATA_V1__{\"projectDir\":\"C:\\\\repo with spaces\\\\모듈\",",
+            "\"projectPath\":\":module one:유니코드\",\"name\":\"이름 with spaces\",",
+            "\"version\":\"1.2.3-β\",\"aggregate\":false}\n",
+            "> Task :help\n",
+        );
+
+        let records = parse_gradle_metadata_records(output).unwrap();
+
+        assert_eq!(records.len(), 1);
+        let record = &records[0];
+        assert_eq!(
+            record.project_dir,
+            PathBuf::from(r"C:\repo with spaces\모듈")
+        );
+        assert_eq!(record.project_path, ":module one:유니코드");
+        assert_eq!(record.properties.name.as_deref(), Some("이름 with spaces"));
+        assert_eq!(record.properties.version.as_deref(), Some("1.2.3-β"));
+        assert!(!record.properties.has_subprojects);
+    }
+
+    #[test]
+    fn test_parse_gradle_metadata_records_rejects_malformed_prefixed_record() {
+        let output = concat!(
+            "ordinary output\n",
+            "__CHANGEPACKS_GRADLE_METADATA_V1__{\"projectDir\":\"/repo\",\"aggregate\":wat}\n",
+        );
+
+        let error = parse_gradle_metadata_records(output).unwrap_err();
+
+        assert!(error.to_string().contains("line 2"));
+        assert!(
+            error
+                .to_string()
+                .contains("malformed Gradle metadata record")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_batches_metadata_per_wrapper_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path().join("repo with spaces");
+        let child_dir = repo.join("module one");
+        fs::create_dir_all(&child_dir).unwrap();
+        let root_manifest = repo.join("build.gradle.kts");
+        let child_manifest = child_dir.join("build.gradle.kts");
+        fs::write(&root_manifest, "plugins { java }\n").unwrap();
+        fs::write(&child_manifest, "plugins { java }\n").unwrap();
+        let invocation_count =
+            create_counting_multi_project_gradlew(&repo, &repo, &child_dir, true);
+
+        let mut finder = finder_with_java_available();
+        finder
+            .visit(&root_manifest, Path::new("build.gradle.kts"))
+            .await
+            .unwrap();
+        finder
+            .visit(
+                &child_manifest,
+                Path::new("module one").join("build.gradle.kts").as_path(),
+            )
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 2);
+        let root = projects
+            .iter()
+            .copied()
+            .find(|project| project.name() == Some("root project"))
+            .unwrap();
+        let child = projects
+            .iter()
+            .copied()
+            .find(|project| project.name() == Some("child project"))
+            .unwrap();
+        assert!(matches!(root, Project::Workspace(_)));
+        assert_eq!(root.version(), Some("1.2.3"));
+        assert!(matches!(child, Project::Package(_)));
+        assert_eq!(child.version(), Some("2.3.4"));
+        assert_eq!(fs::read_to_string(invocation_count).unwrap().trim(), "1");
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_errors_when_batch_metadata_record_is_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path().join("repo");
+        let child_dir = repo.join("module one");
+        fs::create_dir_all(&child_dir).unwrap();
+        let root_manifest = repo.join("build.gradle.kts");
+        let child_manifest = child_dir.join("build.gradle.kts");
+        fs::write(&root_manifest, "plugins { java }\n").unwrap();
+        fs::write(&child_manifest, "plugins { java }\n").unwrap();
+        create_counting_multi_project_gradlew(&repo, &repo, &child_dir, false);
+
+        let mut finder = finder_with_java_available();
+        finder
+            .visit(&root_manifest, Path::new("build.gradle.kts"))
+            .await
+            .unwrap();
+        let error = finder
+            .visit(
+                &child_manifest,
+                Path::new("module one").join("build.gradle.kts").as_path(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("missing Gradle metadata record"));
+        assert!(
+            error
+                .to_string()
+                .contains(child_dir.to_string_lossy().as_ref())
+        );
+        assert!(
+            error.to_string().contains(
+                repo.join(gradle_wrapper_name(cfg!(windows)))
+                    .to_string_lossy()
+                    .as_ref()
+            )
+        );
+
+        temp_dir.close().unwrap();
     }
 
     #[test]

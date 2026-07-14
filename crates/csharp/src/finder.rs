@@ -10,7 +10,7 @@ use std::{
 };
 use tokio::fs::read_to_string;
 
-use crate::{package::CSharpPackage, workspace::CSharpWorkspace};
+use crate::package::CSharpPackage;
 
 /// Manifest filenames this finder recognizes. Static because the list is
 /// compile-time constant — no per-instance heap `Vec` is needed and the
@@ -21,16 +21,6 @@ const PROJECT_FILES: &[&str] = &[".csproj"];
 #[derive(Debug, Default)]
 pub struct CSharpProjectFinder {
     projects: HashMap<PathBuf, Project>,
-    /// Memoize `is_workspace` results by each scanned ancestor directory.
-    ///
-    /// The workspace predicate is "does this directory or one of its
-    /// ancestors contain a `.sln` file". Caching every scanned directory keeps
-    /// flat solutions fast and prevents child-project layouts from re-scanning
-    /// the same solution root for every `.csproj`.
-    ///
-    /// `HashMap<PathBuf, bool>` mirrors the shape already used for
-    /// `self.projects` — no new dependency, no macro, no `Arc`.
-    is_workspace_cache: HashMap<PathBuf, bool>,
 }
 
 impl CSharpProjectFinder {
@@ -147,92 +137,6 @@ impl CSharpProjectFinder {
         }
         Ok((version, projects))
     }
-
-    /// Check if this project is part of a solution (workspace).
-    ///
-    /// A project is considered a workspace if a `.sln` file lives in its
-    /// own directory or in one of its IN-REPO ancestor directories.
-    ///
-    /// The ancestor walk is BOUNDED to the repository root by `max_depth`.
-    /// The caller passes `relative_path.components().count()` — the number
-    /// of path components between the repo root and the manifest, which is
-    /// exactly how many ancestors of the manifest's parent lie inside the
-    /// repo (for `A/B.csproj`, count 2 → scan `<root>/A` then `<root>`; for
-    /// a root-level `B.csproj`, count 1 → scan `<root>` only). So
-    /// `parent.ancestors().take(max_depth)` stops at the repository root and
-    /// never touches the drive root, the user's home dir, or a sibling
-    /// checkout. `.sln` files OUTSIDE the repository intentionally NO LONGER
-    /// influence classification: project discovery is git-scoped, so a stray
-    /// `Solution.sln` above the repo root must not silently reclassify every
-    /// repo `.csproj` as a workspace (which would change publish-command
-    /// selection), and the bound also avoids `read_dir` syscalls on
-    /// out-of-repo directories.
-    ///
-    /// Memoized by scanned directory (not the `.csproj` path itself): the
-    /// predicate answers whether that directory holds a `.sln` marker. A
-    /// child project checks its own directory first, then walks upward
-    /// through its in-repo ancestors until a solution root is found or the
-    /// repository root has been scanned.
-    async fn is_workspace(&mut self, path: &Path, max_depth: usize) -> bool {
-        let Some(parent) = path.parent() else {
-            return false;
-        };
-        for dir in parent.ancestors().take(max_depth) {
-            if let Some(&cached) = self.is_workspace_cache.get(dir) {
-                if cached {
-                    return true;
-                }
-                continue;
-            }
-
-            let Some(has_solution) = dir_has_solution_file(dir).await else {
-                continue;
-            };
-            self.is_workspace_cache
-                .insert(dir.to_path_buf(), has_solution);
-            if has_solution {
-                return true;
-            }
-        }
-        false
-    }
-}
-
-/// Check if a directory contains a `.sln` (Solution) file.
-///
-/// Returns `Some(true)` if a readable `.sln` file is found, `Some(false)` if no
-/// `.sln` file exists, and `None` if the directory cannot be read at all
-/// (e.g. permission denied on `read_dir`). Per-entry `file_type()` errors are
-/// skipped rather than aborting the scan, allowing transient stat failures
-/// (broken symlinks, permission races) on individual entries to not poison
-/// detection when a readable `.sln` file appears later in iteration order.
-async fn dir_has_solution_file(dir: &Path) -> Option<bool> {
-    let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
-        // Do NOT cache read_dir failures: a later visit may succeed
-        // (e.g. transient permission race), and a failed scan should not
-        // poison ancestor detection for the rest of the finder lifetime.
-        return None;
-    };
-    loop {
-        match entries.next_entry().await {
-            Ok(Some(entry)) => {
-                // Case-insensitive `.sln` match so a Windows-native `Solution.SLN` /
-                // `Foo.Sln` is recognized the same as lowercase `.sln`.
-                let file_name = entry.file_name();
-                if has_extension_ignore_ascii_case(Path::new(&file_name), "sln") {
-                    let Ok(file_type) = entry.file_type().await else {
-                        continue;
-                    };
-                    if !file_type.is_file() {
-                        continue;
-                    }
-                    return Some(true);
-                }
-            }
-            Ok(None) => return Some(false),
-            Err(_) => return None,
-        }
-    }
 }
 
 /// Walk a `<ProjectReference Include="...">` / `Update="..."` element's attributes and
@@ -348,37 +252,14 @@ impl ProjectFinder for CSharpProjectFinder {
         // `.csproj` (meaningful on Unity/dotnet monorepos).
         let (version, project_refs) = Self::parse_csproj_metadata(&csproj_content)
             .with_context(|| format!("Failed to parse C# project XML: {}", path.display()))?;
-        // Bound the ancestor walk to the repository root: `relative_path`
-        // is repo-root-relative, so its component count is exactly how many
-        // ancestors of the manifest's parent lie inside the repo. A `.sln`
-        // above the repo root therefore cannot influence classification.
-        let is_workspace = self
-            .is_workspace(path, relative_path.components().count())
-            .await;
-
-        // Hoist the map key allocation out of both arms: the old shape
-        // built a `(PathBuf, Project)` tuple, which forced each branch
-        // to call `path.to_path_buf()` TWICE (once for the tuple slot,
-        // once again for `*::new`). One shared `path_key` + one
-        // `.clone()` into the constructor cuts 4 `PathBuf` allocs to 2.
-        // Mirror of the same fix in `crates/java/src/finder.rs::visit`.
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();
-        let mut project = if is_workspace {
-            Project::Workspace(Box::new(CSharpWorkspace::new(
-                name,
-                version,
-                path_key.clone(),
-                relative_path_key,
-            )))
-        } else {
-            Project::Package(Box::new(CSharpPackage::new(
-                name,
-                version,
-                path_key.clone(),
-                relative_path_key,
-            )))
-        };
+        let mut project = Project::Package(Box::new(CSharpPackage::new(
+            name,
+            version,
+            path_key.clone(),
+            relative_path_key,
+        )));
 
         // Add ProjectReference dependencies (local project references)
         // — `project_refs` came from the single-pass
@@ -396,6 +277,7 @@ impl ProjectFinder for CSharpProjectFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use changepacks_utils::sort_by_dependencies;
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
@@ -448,6 +330,157 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_root_solution_csproj_manifests_are_packages() {
+        let temp_dir = TempDir::new().unwrap();
+        let library_path = temp_dir.path().join("Library.csproj");
+        let app_path = temp_dir.path().join("App.csproj");
+        fs::write(
+            temp_dir.path().join("Product.sln"),
+            "Microsoft Visual Studio Solution File",
+        )
+        .unwrap();
+        fs::write(
+            &library_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.2.3</Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &app_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>4.5.6</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="Library.csproj" />
+  </ItemGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&app_path, Path::new("App.csproj"))
+            .await
+            .unwrap();
+        finder
+            .visit(&library_path, Path::new("Library.csproj"))
+            .await
+            .unwrap();
+
+        let projects = sort_by_dependencies(finder.projects()).unwrap();
+        assert_eq!(projects.len(), 2);
+        assert!(
+            projects
+                .iter()
+                .all(|project| matches!(project, Project::Package(_))),
+            "solution-contained manifests must remain packages: {projects:?}"
+        );
+        assert_eq!(
+            projects
+                .iter()
+                .map(|project| (project.name(), project.version(), project.relative_path()))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some("Library"), Some("1.2.3"), Path::new("Library.csproj"),),
+                (Some("App"), Some("4.5.6"), Path::new("App.csproj")),
+            ]
+        );
+        assert!(projects[1].dependencies().contains("Library"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_nested_solution_csproj_manifests_are_packages() {
+        let temp_dir = TempDir::new().unwrap();
+        let solution_dir = temp_dir.path().join("solutions").join("Product");
+        let library_path = solution_dir
+            .join("src")
+            .join("Library")
+            .join("Library.csproj");
+        let app_path = solution_dir.join("src").join("App").join("App.csproj");
+        fs::create_dir_all(library_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(app_path.parent().unwrap()).unwrap();
+        fs::write(
+            solution_dir.join("Product.sln"),
+            "Microsoft Visual Studio Solution File",
+        )
+        .unwrap();
+        fs::write(
+            &library_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>2.0.0</Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &app_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>3.1.4</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Library\Library.csproj" />
+  </ItemGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&app_path, Path::new("solutions/Product/src/App/App.csproj"))
+            .await
+            .unwrap();
+        finder
+            .visit(
+                &library_path,
+                Path::new("solutions/Product/src/Library/Library.csproj"),
+            )
+            .await
+            .unwrap();
+
+        let projects = sort_by_dependencies(finder.projects()).unwrap();
+        assert_eq!(projects.len(), 2);
+        assert!(
+            projects
+                .iter()
+                .all(|project| matches!(project, Project::Package(_))),
+            "nested solution manifests must remain packages: {projects:?}"
+        );
+        assert_eq!(
+            projects
+                .iter()
+                .map(|project| (project.name(), project.version(), project.relative_path()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    Some("Library"),
+                    Some("2.0.0"),
+                    Path::new("solutions/Product/src/Library/Library.csproj"),
+                ),
+                (
+                    Some("App"),
+                    Some("3.1.4"),
+                    Path::new("solutions/Product/src/App/App.csproj"),
+                ),
+            ]
+        );
+        assert!(projects[1].dependencies().contains("Library"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
     async fn test_visit_package_reads_version_from_cdata() {
         let temp_dir = TempDir::new().unwrap();
         let csproj_path = temp_dir.path().join("TestProject.csproj");
@@ -472,121 +505,6 @@ mod tests {
             Project::Package(pkg) => assert_eq!(pkg.version(), Some("1.2.3")),
             _ => panic!("Expected Package"),
         }
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_visit_workspace_with_sln() {
-        let temp_dir = TempDir::new().unwrap();
-        let csproj_path = temp_dir.path().join("TestProject.csproj");
-        let sln_path = temp_dir.path().join("TestSolution.sln");
-
-        fs::write(
-            &csproj_path,
-            r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <Version>1.0.0</Version>
-  </PropertyGroup>
-</Project>
-"#,
-        )
-        .unwrap();
-
-        fs::write(&sln_path, "Microsoft Visual Studio Solution File").unwrap();
-
-        let mut finder = CSharpProjectFinder::new();
-        finder
-            .visit(&csproj_path, &PathBuf::from("TestProject.csproj"))
-            .await
-            .unwrap();
-
-        assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("TestProject"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Workspace"),
-        }
-
-        temp_dir.close().unwrap();
-    }
-
-    /// Regression: a Windows-native uppercase `.SLN` sibling must classify
-    /// the `.csproj` as `Project::Workspace`, exactly like a lowercase
-    /// `.sln`. Locks in the case-insensitive `is_workspace` extension gate
-    /// so a future revert to a case-sensitive `ext == "sln"` compare (which
-    /// silently misclassified `MySolution.SLN` projects as `Package`) trips
-    /// immediately. Mirrors the case-insensitive `.csproj` coverage already
-    /// asserted in `test_extract_project_name_from_path`.
-    #[tokio::test]
-    async fn test_visit_workspace_with_uppercase_sln() {
-        let temp_dir = TempDir::new().unwrap();
-        let csproj_path = temp_dir.path().join("TestProject.csproj");
-        let sln_path = temp_dir.path().join("TestSolution.SLN");
-
-        fs::write(
-            &csproj_path,
-            r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <Version>1.0.0</Version>
-  </PropertyGroup>
-</Project>
-"#,
-        )
-        .unwrap();
-
-        fs::write(&sln_path, "Microsoft Visual Studio Solution File").unwrap();
-
-        let mut finder = CSharpProjectFinder::new();
-        finder
-            .visit(&csproj_path, &PathBuf::from("TestProject.csproj"))
-            .await
-            .unwrap();
-
-        assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("TestProject"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Workspace (uppercase .SLN must be recognized)"),
-        }
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_dir_has_solution_file_returns_true_for_sln_file() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::write(
-            temp_dir.path().join("Solution.sln"),
-            "Microsoft Visual Studio Solution File",
-        )
-        .unwrap();
-
-        assert_eq!(dir_has_solution_file(temp_dir.path()).await, Some(true));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_dir_has_solution_file_returns_false_without_sln() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::write(temp_dir.path().join("README.md"), "not a solution").unwrap();
-
-        assert_eq!(dir_has_solution_file(temp_dir.path()).await, Some(false));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_dir_has_solution_file_ignores_sln_directory() {
-        let temp_dir = TempDir::new().unwrap();
-        fs::create_dir(temp_dir.path().join("Fake.sln")).unwrap();
-
-        assert_eq!(dir_has_solution_file(temp_dir.path()).await, Some(false));
 
         temp_dir.close().unwrap();
     }
@@ -717,182 +635,6 @@ mod tests {
             .unwrap();
 
         assert_eq!(finder.projects().len(), 1);
-
-        temp_dir.close().unwrap();
-    }
-
-    /// Regression: locks in the "cache hits on the second call" contract
-    /// for `is_workspace`. Two sibling `.csproj` files share a directory
-    /// that also holds a `.sln`; visiting both via ONE `CSharpProjectFinder`
-    /// must produce a cache with exactly ONE entry — proving the second
-    /// visit reused the first's `read_dir` result instead of re-scanning
-    /// the sibling directory. A future refactor that silently drops the
-    /// cache would fail this test immediately.
-    ///
-    /// Complements `test_visit_workspace_with_sln`: that test asserts the
-    /// classification is correct; this test asserts the SYSCALL SAVINGS
-    /// is real. Together they pin both halves of the ancestor-scan cache
-    /// (correct classification AND deduplicated read_dir).
-    #[tokio::test]
-    async fn test_is_workspace_cache_reuses_result_for_siblings() {
-        let temp_dir = TempDir::new().unwrap();
-        let sln_path = temp_dir.path().join("Solution.sln");
-        let csproj1 = temp_dir.path().join("Project1.csproj");
-        let csproj2 = temp_dir.path().join("Project2.csproj");
-
-        std::fs::write(&sln_path, "Microsoft Visual Studio Solution File").unwrap();
-        std::fs::write(
-            &csproj1,
-            r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <Version>1.0.0</Version>
-  </PropertyGroup>
-</Project>
-"#,
-        )
-        .unwrap();
-        std::fs::write(
-            &csproj2,
-            r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <Version>2.0.0</Version>
-  </PropertyGroup>
-</Project>
-"#,
-        )
-        .unwrap();
-
-        let mut finder = CSharpProjectFinder::new();
-        finder
-            .visit(&csproj1, &PathBuf::from("Project1.csproj"))
-            .await
-            .unwrap();
-        finder
-            .visit(&csproj2, &PathBuf::from("Project2.csproj"))
-            .await
-            .unwrap();
-
-        // Both projects classified as Workspace via the .sln sibling.
-        assert_eq!(finder.projects().len(), 2);
-        for project in finder.projects() {
-            assert!(
-                matches!(project, Project::Workspace(_)),
-                "expected Workspace, got {project:?}"
-            );
-        }
-        // Exactly ONE cache entry: the shared parent directory. Both
-        // sibling visits resolved to the same key, so the second call
-        // hit the cache and skipped read_dir.
-        assert_eq!(
-            finder.is_workspace_cache.len(),
-            1,
-            "expected exactly one cache entry (shared parent), got {:?}",
-            finder.is_workspace_cache
-        );
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_visit_workspace_with_ancestor_sln() {
-        let temp_dir = TempDir::new().unwrap();
-        let project_dir = temp_dir.path().join("Project1");
-        let csproj_path = project_dir.join("Project1.csproj");
-        fs::create_dir_all(&project_dir).unwrap();
-        fs::write(
-            temp_dir.path().join("Solution.sln"),
-            "Microsoft Visual Studio Solution File",
-        )
-        .unwrap();
-        fs::write(
-            &csproj_path,
-            r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <Version>1.0.0</Version>
-  </PropertyGroup>
-</Project>
-"#,
-        )
-        .unwrap();
-
-        let mut finder = CSharpProjectFinder::new();
-        finder
-            .visit(&csproj_path, &PathBuf::from("Project1/Project1.csproj"))
-            .await
-            .unwrap();
-
-        let projects = finder.projects();
-        assert_eq!(projects.len(), 1);
-        assert!(
-            matches!(projects[0], Project::Workspace(_)),
-            "expected ancestor .sln to classify child project as Workspace, got {:?}",
-            projects[0]
-        );
-        assert_eq!(finder.is_workspace_cache.get(&project_dir), Some(&false));
-        assert_eq!(finder.is_workspace_cache.get(temp_dir.path()), Some(&true));
-
-        temp_dir.close().unwrap();
-    }
-
-    /// Regression: a decoy `.sln` ABOVE the repository root must NOT
-    /// classify an in-repo `.csproj` as `Project::Workspace`. The ancestor
-    /// walk is bounded by `relative_path.components().count()`, so it scans
-    /// only the manifest's in-repo ancestors (down to the repo root) and
-    /// never reaches the out-of-repo directory holding the stray solution
-    /// file. Project discovery is git-scoped; a `Solution.sln` in the user's
-    /// home dir, the drive root, or a sibling checkout must not silently flip
-    /// publish-command selection for every repo project. Complements
-    /// `test_visit_workspace_with_ancestor_sln`, which pins that an IN-repo
-    /// ancestor `.sln` still classifies as Workspace.
-    #[tokio::test]
-    async fn test_visit_package_ignores_sln_above_repo_root() {
-        let temp_dir = TempDir::new().unwrap();
-        // The simulated repo root is a nested subdir; the decoy solution
-        // file lives one level ABOVE it (outside the repo).
-        let repo_root = temp_dir.path().join("repo");
-        let project_dir = repo_root.join("src");
-        let csproj_path = project_dir.join("MyProject.csproj");
-        fs::create_dir_all(&project_dir).unwrap();
-        // Decoy `.sln` ABOVE the repo root — must be ignored.
-        fs::write(
-            temp_dir.path().join("Solution.sln"),
-            "Microsoft Visual Studio Solution File",
-        )
-        .unwrap();
-        fs::write(
-            &csproj_path,
-            r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <Version>1.0.0</Version>
-  </PropertyGroup>
-</Project>
-"#,
-        )
-        .unwrap();
-
-        let mut finder = CSharpProjectFinder::new();
-        // `relative_path` is repo-root-relative with 2 components, so the
-        // walk scans `<repo_root>/src` and `<repo_root>` — never `temp_dir`,
-        // where the decoy `.sln` lives.
-        finder
-            .visit(&csproj_path, &PathBuf::from("src/MyProject.csproj"))
-            .await
-            .unwrap();
-
-        let projects = finder.projects();
-        assert_eq!(projects.len(), 1);
-        assert!(
-            matches!(projects[0], Project::Package(_)),
-            "expected a decoy .sln above the repo root to be ignored (Package), got {:?}",
-            projects[0]
-        );
-        // The out-of-repo directory holding the decoy `.sln` was never
-        // scanned, so it must not appear in the memoization cache.
-        assert!(
-            !finder.is_workspace_cache.contains_key(temp_dir.path()),
-            "out-of-repo ancestor must not be scanned/cached, cache: {:?}",
-            finder.is_workspace_cache
-        );
 
         temp_dir.close().unwrap();
     }

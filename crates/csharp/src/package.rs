@@ -1,12 +1,14 @@
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::{collections::HashSet, ffi::OsString, future::Future, path::PathBuf};
 
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::publish::PublishOutput;
 use changepacks_core::{Config, Language, Package, UpdateType};
 
-use crate::dry_run::resolve_and_run_dry_run;
+use crate::dry_run::{
+    resolve_and_run_dry_run_with_command_runner, resolve_and_run_publish_with_command_runner,
+    run_dotnet_command,
+};
 
 #[derive(Debug)]
 pub struct CSharpPackage {
@@ -21,6 +23,44 @@ pub struct CSharpPackage {
 impl CSharpPackage {
     // Standard package/workspace constructor.
     changepacks_core::impl_default_new!();
+
+    async fn publish_with_command_runner<F, Fut>(
+        &self,
+        config: &Config,
+        runner: F,
+    ) -> Result<PublishOutput>
+    where
+        F: FnMut(&'static str, Vec<OsString>, PathBuf) -> Fut,
+        Fut: Future<Output = Result<PublishOutput>>,
+    {
+        resolve_and_run_publish_with_command_runner(
+            self.path(),
+            self.relative_path(),
+            config,
+            changepacks_core::publish::PACKAGE_DIR_NOT_FOUND,
+            runner,
+        )
+        .await
+    }
+
+    async fn dry_run_publish_with_command_runner<F, Fut>(
+        &self,
+        config: &Config,
+        runner: F,
+    ) -> Result<Option<PublishOutput>>
+    where
+        F: FnMut(&'static str, Vec<OsString>, PathBuf) -> Fut,
+        Fut: Future<Output = Result<PublishOutput>>,
+    {
+        resolve_and_run_dry_run_with_command_runner(
+            self.path(),
+            self.relative_path(),
+            config,
+            changepacks_core::publish::PACKAGE_DIR_NOT_FOUND,
+            runner,
+        )
+        .await
+    }
 }
 
 #[async_trait]
@@ -40,16 +80,16 @@ impl Package for CSharpPackage {
     // Fixed language accessor.
     changepacks_core::impl_language!(Language::CSharp);
 
-    // `default_publish_command` returns the const from `crate` (see
-    // `lib.rs`). `default_dry_run_publish_command` returns `None` because
-    // no single shell one-liner reliably represents the C# dry-run flow
-    // (pack + push to an ephemeral local feed + guaranteed cleanup);
-    // returning `None` still lets users supply a custom shell command via
-    // `publishDryRun` in config. The actual managed RAII dry-run flow
-    // lives in `dry_run_publish` below (delegates to
-    // `dry_run::resolve_and_run_dry_run`, which honors the `publishDryRun`
-    // override first).
+    // The legacy accessor value remains stable, but `publish` below never
+    // executes it: real and dry-run publishing use managed argv flows after
+    // resolving path/language overrides. Dry-run's default command remains
+    // `None` because no single shell command can safely model its local feed.
     changepacks_core::impl_const_publish_commands!(crate::PUBLISH_COMMAND);
+
+    async fn publish(&self, config: &Config) -> Result<PublishOutput> {
+        self.publish_with_command_runner(config, run_dotnet_command)
+            .await
+    }
 
     /// Managed dry-run for C#/.NET packages.
     ///
@@ -59,13 +99,8 @@ impl Package for CSharpPackage {
     /// `tempfile::TempDir` directories that are cleaned up via RAII — even
     /// on error, panic, or future cancellation.
     async fn dry_run_publish(&self, config: &Config) -> Result<Option<PublishOutput>> {
-        resolve_and_run_dry_run(
-            self.path(),
-            self.relative_path(),
-            config,
-            changepacks_core::publish::PACKAGE_DIR_NOT_FOUND,
-        )
-        .await
+        self.dry_run_publish_with_command_runner(config, run_dotnet_command)
+            .await
     }
 
     // Dependency set accessors.
@@ -76,7 +111,11 @@ impl Package for CSharpPackage {
 mod tests {
     use super::*;
     use rstest::rstest;
-    use std::fs;
+    use std::{
+        ffi::OsString,
+        fs,
+        sync::{Arc, Mutex},
+    };
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -111,8 +150,8 @@ mod tests {
             package.default_publish_command(),
             "dotnet pack -c Release && dotnet nuget push"
         );
-        // `dotnet nuget push` has no built-in dry-run mode, so the crate
-        // returns None and lets the publish loop skip with a warning.
+        // The legacy command accessor remains `None`; the overridden
+        // `dry_run_publish` method supplies the managed temporary-feed flow.
         assert!(package.default_dry_run_publish_command().is_none());
 
         temp_dir.close().unwrap();
@@ -134,6 +173,172 @@ mod tests {
 
         assert!(output.success, "stderr: {}", output.stderr);
         assert!(output.stdout.contains("package-forwarded"));
+    }
+
+    #[tokio::test]
+    async fn test_publish_forwards_path_override_without_managed_dotnet_flow() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Test.csproj");
+        let relative_path = PathBuf::from("packages/Test.csproj");
+        let package = CSharpPackage::new(None, None, csproj_path, relative_path.clone());
+        let mut config = Config::default();
+        config.publish.insert(
+            relative_path.to_string_lossy().into_owned(),
+            "echo package-publish-forwarded".to_string(),
+        );
+
+        let output = package.publish(&config).await.unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains("package-publish-forwarded"));
+    }
+
+    #[tokio::test]
+    async fn test_publish_and_dry_run_preserve_package_directory_error_message() {
+        let root = if cfg!(target_os = "windows") {
+            PathBuf::from(r"C:\")
+        } else {
+            PathBuf::from("/")
+        };
+        let package = CSharpPackage::new(None, None, root, PathBuf::from("Test.csproj"));
+
+        let publish_error = package.publish(&Config::default()).await.unwrap_err();
+        let dry_run_error = package
+            .dry_run_publish(&Config::default())
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            publish_error.to_string(),
+            changepacks_core::publish::PACKAGE_DIR_NOT_FOUND
+        );
+        assert_eq!(
+            dry_run_error.to_string(),
+            changepacks_core::publish::PACKAGE_DIR_NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn test_managed_publish_default_through_package_surfaces_cleanup_message() {
+        let temp_dir = TempDir::new().unwrap();
+        let package = CSharpPackage::new(
+            None,
+            None,
+            temp_dir.path().join("Test.csproj"),
+            PathBuf::from("Test.csproj"),
+        );
+        let pack_path = Arc::new(Mutex::new(None::<PathBuf>));
+        let recorded_pack_path = Arc::clone(&pack_path);
+
+        let output = package
+            .publish_with_command_runner(&Config::default(), move |_program, args, _working_dir| {
+                let recorded_pack_path = Arc::clone(&recorded_pack_path);
+                async move {
+                    let is_pack = args.first().and_then(|arg| arg.to_str()) == Some("pack");
+                    if is_pack {
+                        let path = PathBuf::from(&args[5]);
+                        assert_eq!(
+                            args,
+                            vec![
+                                OsString::from("pack"),
+                                OsString::from("Test.csproj"),
+                                OsString::from("-c"),
+                                OsString::from("Release"),
+                                OsString::from("-o"),
+                                path.clone().into_os_string(),
+                            ]
+                        );
+                        fs::write(path.join("only.nupkg"), b"").unwrap();
+                        *recorded_pack_path.lock().unwrap() = Some(path);
+                    } else {
+                        assert_eq!(
+                            args,
+                            vec![
+                                OsString::from("nuget"),
+                                OsString::from("push"),
+                                PathBuf::from(&args[2]).into_os_string(),
+                                OsString::from("--skip-duplicate"),
+                            ]
+                        );
+                        let path = PathBuf::from(&args[2]).parent().unwrap().to_path_buf();
+                        fs::remove_dir_all(&path).unwrap();
+                        fs::write(&path, b"force cleanup error").unwrap();
+                    }
+                    Ok(PublishOutput {
+                        success: true,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
+                }
+            })
+            .await
+            .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(
+            output
+                .stderr
+                .contains("[changepacks publish] pack tempdir cleanup error:")
+        );
+        let pack_path = pack_path.lock().unwrap().take().unwrap();
+        assert!(pack_path.is_file());
+        fs::remove_file(pack_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_managed_dry_run_default_through_package_uses_temporary_feed() {
+        let temp_dir = TempDir::new().unwrap();
+        let package = CSharpPackage::new(
+            None,
+            None,
+            temp_dir.path().join("Test.csproj"),
+            PathBuf::from("Test.csproj"),
+        );
+        let calls = Arc::new(Mutex::new(Vec::<Vec<OsString>>::new()));
+        let recorded_calls = Arc::clone(&calls);
+
+        let output = package
+            .dry_run_publish_with_command_runner(
+                &Config::default(),
+                move |_program, args, _working_dir| {
+                    let recorded_calls = Arc::clone(&recorded_calls);
+                    async move {
+                        if args.first().and_then(|arg| arg.to_str()) == Some("pack") {
+                            let pack_dir = PathBuf::from(&args[5]);
+                            fs::write(pack_dir.join("only.nupkg"), b"").unwrap();
+                        }
+                        recorded_calls.lock().unwrap().push(args);
+                        Ok(PublishOutput {
+                            success: true,
+                            stdout: String::new(),
+                            stderr: String::new(),
+                        })
+                    }
+                },
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "calls: {calls:?}");
+        assert_eq!(calls[1][3], "-s");
+        let pack_dir = PathBuf::from(&calls[0][5]);
+        assert_eq!(
+            calls[0],
+            vec![
+                OsString::from("pack"),
+                OsString::from("Test.csproj"),
+                OsString::from("-c"),
+                OsString::from("Release"),
+                OsString::from("-o"),
+                pack_dir.clone().into_os_string(),
+            ]
+        );
+        let feed_dir = PathBuf::from(&calls[1][4]);
+        assert!(!pack_dir.exists());
+        assert!(!feed_dir.exists());
     }
 
     #[test]

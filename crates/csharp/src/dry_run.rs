@@ -1,4 +1,4 @@
-//! Managed dry-run flow for C#/.NET packages.
+//! Managed real and dry-run publish flows for C#/.NET packages.
 //!
 //! `dotnet nuget push` has no built-in `--dry-run`, so we follow the spirit of
 //! Java's `publishToMavenLocal` precedent but go one step further by running
@@ -15,7 +15,7 @@
 //!
 //! ## Why cleanup survives every failure mode
 //!
-//! Both `TempDir` handles are stack locals. Rust's RAII guarantees their
+//! The managed flow's `TempDir` handles are stack locals. Rust's RAII guarantees their
 //! `Drop` runs on:
 //!
 //! - normal return,
@@ -29,45 +29,173 @@
 //! child holds a directory open and silently defeats `remove_dir_all`.
 
 use std::{
+    ffi::OsString,
     fmt::Write as _,
     future::Future,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
-use changepacks_core::publish::{resolve_dry_run_publish_command, run_publish_command};
+use changepacks_core::publish::{
+    lookup_by_path_or_language, resolve_dry_run_publish_command, run_publish_command,
+};
 use changepacks_core::{Config, Language, PublishOutput, has_extension_ignore_ascii_case};
 use tempfile::TempDir;
 use tokio::fs::read_dir;
 
-/// Shared dry-run publish flow for C#/.NET packages AND workspaces.
-///
-/// Both [`crate::package::CSharpPackage::dry_run_publish`] and
-/// [`crate::workspace::CSharpWorkspace::dry_run_publish`] delegate here so
-/// their bodies stay a single call:
-///
-/// 1. Resolve parent directory of `path`, returning `missing_dir_msg` as
-///    error context if it has none (only difference between the two callers).
-/// 2. Honor any `config.publishDryRun` override (per-project or per-language)
-///    via [`resolve_dry_run_publish_command`] + [`run_publish_command`].
-/// 3. Otherwise fall back to the managed pack+push flow with RAII cleanup
-///    via [`run_managed_dry_run`].
-///
-/// # Errors
-/// Returns error if the parent directory is missing, or if either the user
-/// override command or the managed dry-run fails to spawn / enumerate.
-pub(crate) async fn resolve_and_run_dry_run(
+#[derive(Clone, Copy)]
+enum ManagedPublishTarget {
+    /// Let `dotnet nuget push` resolve its source and credentials from the
+    /// user's normal NuGet configuration.
+    UserConfig,
+    /// Redirect pushes to an ephemeral filesystem feed for dry-run safety.
+    TemporaryFeed,
+}
+
+impl ManagedPublishTarget {
+    const fn operation(self) -> &'static str {
+        match self {
+            Self::UserConfig => "publish",
+            Self::TemporaryFeed => "dry-run",
+        }
+    }
+}
+
+async fn run_managed_publish_with<F, Fut>(
+    working_dir: &Path,
+    manifest: &Path,
+    target: ManagedPublishTarget,
+    mut runner: F,
+) -> Result<PublishOutput>
+where
+    F: FnMut(&'static str, Vec<OsString>, PathBuf) -> Fut,
+    Fut: Future<Output = Result<PublishOutput>>,
+{
+    let manifest_arg = manifest
+        .file_name()
+        .context("C# project manifest path has no file name")?
+        .to_owned();
+    let pack_dir =
+        TempDir::new().context("Failed to create temporary directory for dotnet pack output")?;
+    let feed_dir = match target {
+        ManagedPublishTarget::UserConfig => None,
+        ManagedPublishTarget::TemporaryFeed => Some(
+            TempDir::new().context("Failed to create temporary directory for local NuGet feed")?,
+        ),
+    };
+    let pack_output = runner(
+        "dotnet",
+        vec![
+            OsString::from("pack"),
+            manifest_arg,
+            OsString::from("-c"),
+            OsString::from("Release"),
+            OsString::from("-o"),
+            pack_dir.path().as_os_str().to_owned(),
+        ],
+        working_dir.to_path_buf(),
+    )
+    .await
+    .context("Failed to spawn `dotnet pack`")?;
+
+    let mut combined = prefixed("dotnet pack", pack_output);
+
+    if combined.success {
+        let nupkgs = collect_nupkgs(pack_dir.path()).await.with_context(|| {
+            format!(
+                "Failed to enumerate .nupkg files in {}",
+                pack_dir.path().display()
+            )
+        })?;
+
+        if nupkgs.is_empty() {
+            let _ = write!(
+                combined.stderr,
+                "\n[changepacks {}] no .nupkg produced by `dotnet pack`; \
+                 check that the project sets <IsPackable>true</IsPackable> and \
+                 includes the required PackageId / Version metadata.\n",
+                target.operation(),
+            );
+            combined.success = false;
+        }
+
+        for nupkg in nupkgs {
+            let mut push_args = vec![
+                OsString::from("nuget"),
+                OsString::from("push"),
+                nupkg.as_os_str().to_owned(),
+            ];
+            if let Some(feed_dir) = &feed_dir {
+                push_args.push(OsString::from("-s"));
+                push_args.push(feed_dir.path().as_os_str().to_owned());
+            }
+            push_args.push(OsString::from("--skip-duplicate"));
+            let push_output = runner("dotnet", push_args, working_dir.to_path_buf())
+                .await
+                .with_context(|| {
+                    format!("Failed to spawn `dotnet nuget push {}`", nupkg.display())
+                })?;
+            let label = format!("dotnet nuget push {}", nupkg.display());
+            let prefixed_output = prefixed(&label, push_output);
+            combined.success &= prefixed_output.success;
+            combined.stdout.push_str(&prefixed_output.stdout);
+            combined.stderr.push_str(&prefixed_output.stderr);
+        }
+    }
+
+    note_tempdir_close_error(pack_dir, target.operation(), "pack", &mut combined.stderr);
+    if let Some(feed_dir) = feed_dir {
+        note_tempdir_close_error(feed_dir, target.operation(), "feed", &mut combined.stderr);
+    }
+
+    Ok(combined)
+}
+
+async fn resolve_and_run_publish_with<F, Fut>(
     path: &Path,
     relative_path: &Path,
     config: &Config,
     missing_dir_msg: &'static str,
-) -> Result<Option<PublishOutput>> {
-    resolve_and_run_dry_run_with(
+    managed_runner: F,
+) -> Result<PublishOutput>
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: Future<Output = Result<PublishOutput>>,
+{
+    let dir = path.parent().context(missing_dir_msg)?;
+
+    if let Some(user_cmd) =
+        lookup_by_path_or_language(&config.publish, relative_path, Language::CSharp)
+    {
+        return run_publish_command(&user_cmd, dir).await;
+    }
+
+    managed_runner(dir.to_path_buf()).await
+}
+
+/// Resolve a configured real-publish override or run the managed NuGet flow
+/// with the supplied command boundary.
+pub(crate) async fn resolve_and_run_publish_with_command_runner<F, Fut>(
+    path: &Path,
+    relative_path: &Path,
+    config: &Config,
+    missing_dir_msg: &'static str,
+    runner: F,
+) -> Result<PublishOutput>
+where
+    F: FnMut(&'static str, Vec<OsString>, PathBuf) -> Fut,
+    Fut: Future<Output = Result<PublishOutput>>,
+{
+    let manifest = path.to_path_buf();
+    resolve_and_run_publish_with(
         path,
         relative_path,
         config,
         missing_dir_msg,
-        |dir| async move { run_managed_dry_run(&dir).await },
+        move |dir| async move {
+            run_managed_publish_with(&dir, &manifest, ManagedPublishTarget::UserConfig, runner)
+                .await
+        },
     )
     .await
 }
@@ -94,123 +222,53 @@ where
     Ok(Some(managed_runner(dir.to_path_buf()).await?))
 }
 
-/// Run a managed dry-run for a C#/.NET package.
-///
-/// Steps:
-///
-/// 1. Create ephemeral `pack_dir` and `feed_dir` via [`TempDir`].
-/// 2. `dotnet pack -c Release -o <pack_dir>` in `working_dir` (argv, no shell).
-/// 3. If pack failed, return its output immediately (TempDirs drop here).
-/// 4. Enumerate `*.nupkg` in `pack_dir` via async `read_dir`.
-/// 5. For each `.nupkg`, run
-///    `dotnet nuget push <file> -s <feed_dir> --skip-duplicate`.
-/// 6. Combine all captured stdout/stderr into a single
-///    [`PublishOutput`] (success = AND of all sub-commands).
-///
-/// # Errors
-///
-/// Returns an error only when a sub-command fails to spawn at all (e.g.
-/// `dotnet` is not installed) or when filesystem enumeration of `pack_dir`
-/// fails. A non-zero exit from `dotnet pack` or `dotnet nuget push` is
-/// reported via `PublishOutput::success = false`, not as `Err`.
-///
-/// The command-resolution and orchestration paths are covered without a .NET
-/// SDK. Only the two statements that spawn and await `dotnet` are excluded
-/// from coverage; their command runner is covered in `changepacks-core`.
-pub async fn run_managed_dry_run(working_dir: &Path) -> Result<PublishOutput> {
-    let pack_dir =
-        TempDir::new().context("Failed to create temporary directory for dotnet pack output")?;
-    let feed_dir =
-        TempDir::new().context("Failed to create temporary directory for local NuGet feed")?;
-
-    #[cfg(not(tarpaulin_include))]
-    let pack_output = changepacks_core::publish::run_publish_command_os_args(
-        "dotnet",
-        [
-            std::ffi::OsStr::new("pack"),
-            std::ffi::OsStr::new("-c"),
-            std::ffi::OsStr::new("Release"),
-            std::ffi::OsStr::new("-o"),
-            pack_dir.path().as_os_str(),
-        ],
-        working_dir,
-        true,
+/// Resolve a configured dry-run override or run the managed temporary-feed
+/// flow with the supplied command boundary.
+pub(crate) async fn resolve_and_run_dry_run_with_command_runner<F, Fut>(
+    path: &Path,
+    relative_path: &Path,
+    config: &Config,
+    missing_dir_msg: &'static str,
+    runner: F,
+) -> Result<Option<PublishOutput>>
+where
+    F: FnMut(&'static str, Vec<OsString>, PathBuf) -> Fut,
+    Fut: Future<Output = Result<PublishOutput>>,
+{
+    let manifest = path.to_path_buf();
+    resolve_and_run_dry_run_with(
+        path,
+        relative_path,
+        config,
+        missing_dir_msg,
+        move |dir| async move {
+            run_managed_publish_with(&dir, &manifest, ManagedPublishTarget::TemporaryFeed, runner)
+                .await
+        },
     )
     .await
-    .context("Failed to spawn `dotnet pack`")?;
-    #[cfg(tarpaulin_include)]
-    let pack_output = dotnet_unavailable_during_coverage()?;
-
-    // If pack failed, surface its output verbatim — there's nothing to push.
-    // TempDirs drop on return → cleanup runs.
-    if !pack_output.success {
-        return Ok(prefixed("dotnet pack", pack_output));
-    }
-
-    // Enumerate produced .nupkg files in Rust — no shell glob involved.
-    let nupkgs = collect_nupkgs(pack_dir.path()).await.with_context(|| {
-        format!(
-            "Failed to enumerate .nupkg files in {}",
-            pack_dir.path().display()
-        )
-    })?;
-
-    let mut combined = prefixed("dotnet pack", pack_output);
-
-    if nupkgs.is_empty() {
-        combined.stderr.push_str(
-            "\n[changepacks dry-run] no .nupkg produced by `dotnet pack`; \
-             check that the project sets <IsPackable>true</IsPackable> and \
-             includes the required PackageId / Version metadata.\n",
-        );
-        combined.success = false;
-        // NOTE: no early return — fall through to the shared close block so
-        // any tempdir cleanup failure is surfaced on this path too. The push
-        // loop below is a no-op over the empty `nupkgs`, so semantics are
-        // byte-identical to the previous early return.
-    }
-
-    for nupkg in &nupkgs {
-        #[cfg(not(tarpaulin_include))]
-        let push_output = changepacks_core::publish::run_publish_command_os_args(
-            "dotnet",
-            [
-                std::ffi::OsStr::new("nuget"),
-                std::ffi::OsStr::new("push"),
-                nupkg.as_os_str(),
-                std::ffi::OsStr::new("-s"),
-                feed_dir.path().as_os_str(),
-                std::ffi::OsStr::new("--skip-duplicate"),
-            ],
-            working_dir,
-            true,
-        )
-        .await
-        .with_context(|| format!("Failed to spawn `dotnet nuget push {}`", nupkg.display()))?;
-        #[cfg(tarpaulin_include)]
-        let push_output = dotnet_unavailable_during_coverage()?;
-
-        let label = format!("dotnet nuget push {}", nupkg.display());
-        let prefixed_output = prefixed(&label, push_output);
-        combined.success &= prefixed_output.success;
-        combined.stdout.push_str(&prefixed_output.stdout);
-        combined.stderr.push_str(&prefixed_output.stderr);
-    }
-
-    // Explicit close on the happy path so any cleanup failure is surfaced
-    // (TempDir::drop swallows errors). On the error path above, RAII Drop
-    // still handles it.
-    note_tempdir_close_error(pack_dir, "pack", &mut combined.stderr);
-    note_tempdir_close_error(feed_dir, "feed", &mut combined.stderr);
-
-    Ok(combined)
 }
 
-#[cfg(tarpaulin_include)]
-fn dotnet_unavailable_during_coverage() -> Result<PublishOutput> {
-    Err(anyhow::anyhow!(
-        "the dotnet process is not spawned during coverage"
-    ))
+/// External process boundary for the otherwise deterministic managed flow.
+pub(crate) async fn run_dotnet_command(
+    program: &'static str,
+    args: Vec<OsString>,
+    working_dir: PathBuf,
+) -> Result<PublishOutput> {
+    #[cfg(not(tarpaulin_include))]
+    let output =
+        changepacks_core::publish::run_publish_command_os_args(program, args, &working_dir, true)
+            .await;
+
+    #[cfg(tarpaulin_include)]
+    let output = {
+        let _ = (program, args, working_dir);
+        Err(anyhow::anyhow!(
+            "the dotnet process is not spawned during coverage"
+        ))
+    };
+
+    output
 }
 
 /// Asynchronously enumerate `*.nupkg` files in `dir` (non-recursive).
@@ -257,14 +315,23 @@ fn prefix_stream(stream: &mut String, label: &str, kind: &str) {
 /// — extracting them keeps the note format in a single place so future
 /// edits (label prefix, newline handling, error shape) land once instead
 /// of drifting between two call sites.
-fn note_tempdir_close_error(dir: TempDir, label: &str, stderr: &mut String) {
-    if let Err(e) = dir.close() {
+fn note_tempdir_close_error(dir: TempDir, operation: &str, label: &str, stderr: &mut String) {
+    note_cleanup_result(dir.close(), operation, label, stderr);
+}
+
+fn note_cleanup_result(
+    result: std::io::Result<()>,
+    operation: &str,
+    label: &str,
+    stderr: &mut String,
+) {
+    if let Err(e) = result {
         // Writing into a `String` via `fmt::Write` never returns `Err`, so
         // the discarded `Result` is `Ok(())` in practice — mirrors
         // `prompter.rs::format_selected_projects`.
         let _ = write!(
             stderr,
-            "\n[changepacks dry-run] {label} tempdir cleanup error: {e}\n"
+            "\n[changepacks {operation}] {label} tempdir cleanup error: {e}\n"
         );
     }
 }
@@ -272,7 +339,11 @@ fn note_tempdir_close_error(dir: TempDir, label: &str, stderr: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{
+        ffi::OsString,
+        fs,
+        sync::{Arc, Mutex},
+    };
     use tempfile::TempDir;
 
     fn harmless_command(marker: &str) -> String {
@@ -306,6 +377,36 @@ mod tests {
         )
         .await
         .unwrap()
+        .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        assert!(output.stdout.contains("path-override"));
+        assert!(!output.stdout.contains("language-override"));
+        assert!(!output.stdout.contains("managed-fallback"));
+    }
+
+    #[tokio::test]
+    async fn test_resolve_publish_prefers_path_override_and_bypasses_managed_default() {
+        let dir = TempDir::new().unwrap();
+        let manifest = dir.path().join("Project.csproj");
+        let relative = Path::new("packages/Project.csproj");
+        let mut config = Config::default();
+        config
+            .publish
+            .insert("csharp".to_string(), harmless_command("language-override"));
+        config.publish.insert(
+            relative.to_string_lossy().into_owned(),
+            harmless_command("path-override"),
+        );
+
+        let output = resolve_and_run_publish_with(
+            &manifest,
+            relative,
+            &config,
+            "missing parent",
+            run_harmless_managed,
+        )
+        .await
         .unwrap();
 
         assert!(output.success, "stderr: {}", output.stderr);
@@ -410,6 +511,26 @@ mod tests {
         assert!(!out.success);
     }
 
+    #[test]
+    fn test_cleanup_error_messages_cover_publish_and_dry_run_paths() {
+        let mut stderr = String::new();
+        note_cleanup_result(
+            Err(std::io::Error::other("pack locked")),
+            "publish",
+            "pack",
+            &mut stderr,
+        );
+        note_cleanup_result(
+            Err(std::io::Error::other("feed locked")),
+            "dry-run",
+            "feed",
+            &mut stderr,
+        );
+
+        assert!(stderr.contains("[changepacks publish] pack tempdir cleanup error: pack locked"));
+        assert!(stderr.contains("[changepacks dry-run] feed tempdir cleanup error: feed locked"));
+    }
+
     #[tokio::test]
     async fn test_collect_nupkgs_filters_and_sorts() {
         let dir = TempDir::new().unwrap();
@@ -444,7 +565,7 @@ mod tests {
     }
 
     /// Regression for the cancellation/cleanup story: when
-    /// `run_managed_dry_run` returns (success or error), the working temp
+    /// the managed dry-run returns (success or error), the working temp
     /// directories it created must no longer exist on disk. We can't
     /// directly observe the inner `TempDir` paths without instrumentation,
     /// so we instead assert that `dotnet` not being installed produces a
@@ -459,12 +580,338 @@ mod tests {
         // so we only assert the contract: the function either returns an
         // `Err` (spawn failed) or returns `Ok` with a captured output. Both
         // paths must exit without leaking the working dir we passed in.
-        let _ = run_managed_dry_run(work.path()).await;
+        let _ = run_managed_publish_with(
+            work.path(),
+            Path::new("Project.csproj"),
+            ManagedPublishTarget::TemporaryFeed,
+            run_dotnet_command,
+        )
+        .await;
 
         // The working dir we passed is still ours — TempDir::Drop will
         // clean it on test exit. We assert it still exists right now (the
         // function must not delete the caller's working dir, only its own
         // internally-allocated pack/feed dirs).
         assert!(work.path().exists());
+    }
+
+    #[tokio::test]
+    async fn test_managed_real_publish_packs_then_pushes_sorted_nupkgs_with_user_config() {
+        let work = TempDir::new().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::<(String, Vec<OsString>, PathBuf)>::new()));
+        let recorded_calls = Arc::clone(&calls);
+
+        let output = run_managed_publish_with(
+            work.path(),
+            Path::new("Project.csproj"),
+            ManagedPublishTarget::UserConfig,
+            move |program, args, working_dir| {
+                let recorded_calls = Arc::clone(&recorded_calls);
+                async move {
+                    if args.first().and_then(|arg| arg.to_str()) == Some("pack") {
+                        let output_index = args.iter().position(|arg| arg == "-o").unwrap() + 1;
+                        let pack_dir = PathBuf::from(&args[output_index]);
+                        fs::write(pack_dir.join("b.nupkg"), b"").unwrap();
+                        fs::write(pack_dir.join("a.nupkg"), b"").unwrap();
+                        fs::write(pack_dir.join("symbols.snupkg"), b"").unwrap();
+                    }
+                    recorded_calls
+                        .lock()
+                        .unwrap()
+                        .push((program.to_string(), args, working_dir));
+                    Ok(PublishOutput {
+                        success: true,
+                        stdout: "ok".to_string(),
+                        stderr: String::new(),
+                    })
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 3, "calls: {calls:?}");
+        let pack_dir = PathBuf::from(&calls[0].1[5]);
+        assert_eq!(
+            calls[0].1,
+            vec![
+                OsString::from("pack"),
+                OsString::from("Project.csproj"),
+                OsString::from("-c"),
+                OsString::from("Release"),
+                OsString::from("-o"),
+                pack_dir.clone().into_os_string(),
+            ]
+        );
+        assert_eq!(
+            calls[1].1,
+            vec![
+                OsString::from("nuget"),
+                OsString::from("push"),
+                pack_dir.join("a.nupkg").into_os_string(),
+                OsString::from("--skip-duplicate"),
+            ]
+        );
+        assert_eq!(
+            calls[2].1,
+            vec![
+                OsString::from("nuget"),
+                OsString::from("push"),
+                pack_dir.join("b.nupkg").into_os_string(),
+                OsString::from("--skip-duplicate"),
+            ]
+        );
+        assert!(
+            calls
+                .iter()
+                .all(|(program, _, cwd)| { program == "dotnet" && cwd == work.path() })
+        );
+        assert!(output.stdout.find("a.nupkg").unwrap() < output.stdout.find("b.nupkg").unwrap());
+        assert!(!pack_dir.exists(), "temporary pack directory leaked");
+    }
+
+    #[tokio::test]
+    async fn test_managed_publish_pack_targets_selected_manifest_among_siblings() {
+        let root = TempDir::new().unwrap();
+        let work = root.path().join("projects with spaces");
+        fs::create_dir(&work).unwrap();
+        let manifest = work.join("Selected Project.csproj");
+        let sibling = work.join("Sibling Project.csproj");
+        fs::write(&manifest, b"").unwrap();
+        fs::write(&sibling, b"").unwrap();
+        let calls = Arc::new(Mutex::new(Vec::<Vec<OsString>>::new()));
+        let recorded_calls = Arc::clone(&calls);
+
+        let output = resolve_and_run_publish_with_command_runner(
+            &manifest,
+            Path::new("projects with spaces/Selected Project.csproj"),
+            &Config::default(),
+            "missing parent",
+            move |_program, args, _working_dir| {
+                let recorded_calls = Arc::clone(&recorded_calls);
+                async move {
+                    if args.first().and_then(|arg| arg.to_str()) == Some("pack") {
+                        let output_index = args.iter().position(|arg| arg == "-o").unwrap() + 1;
+                        let pack_dir = PathBuf::from(&args[output_index]);
+                        fs::write(pack_dir.join("only.nupkg"), b"").unwrap();
+                    }
+                    recorded_calls.lock().unwrap().push(args);
+                    Ok(PublishOutput {
+                        success: true,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(output.success, "stderr: {}", output.stderr);
+        let calls = calls.lock().unwrap();
+        let pack_args = &calls[0];
+        let output_index = pack_args.iter().position(|arg| arg == "-o").unwrap() + 1;
+        let pack_dir = PathBuf::from(&pack_args[output_index]);
+        assert_eq!(
+            pack_args,
+            &vec![
+                OsString::from("pack"),
+                manifest.file_name().unwrap().to_owned(),
+                OsString::from("-c"),
+                OsString::from("Release"),
+                OsString::from("-o"),
+                pack_dir.into_os_string(),
+            ]
+        );
+        assert!(!pack_args.contains(&sibling.file_name().unwrap().to_owned()));
+    }
+
+    #[tokio::test]
+    async fn test_managed_publish_stops_after_pack_failure() {
+        let work = TempDir::new().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::<Vec<OsString>>::new()));
+        let recorded_calls = Arc::clone(&calls);
+
+        let output = run_managed_publish_with(
+            work.path(),
+            Path::new("Project.csproj"),
+            ManagedPublishTarget::UserConfig,
+            move |_program, args, _working_dir| {
+                let recorded_calls = Arc::clone(&recorded_calls);
+                async move {
+                    let is_pack = args.first().and_then(|arg| arg.to_str()) == Some("pack");
+                    if is_pack {
+                        let output_index = args.iter().position(|arg| arg == "-o").unwrap() + 1;
+                        let pack_dir = PathBuf::from(&args[output_index]);
+                        fs::write(pack_dir.join("partial.nupkg"), b"").unwrap();
+                    }
+                    recorded_calls.lock().unwrap().push(args);
+                    Ok(PublishOutput {
+                        success: !is_pack,
+                        stdout: String::new(),
+                        stderr: if is_pack {
+                            "pack failed".to_string()
+                        } else {
+                            String::new()
+                        },
+                    })
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(!output.success);
+        assert!(output.stderr.contains("pack failed"));
+        assert_eq!(calls.lock().unwrap().len(), 1, "push ran after pack failed");
+    }
+
+    #[tokio::test]
+    async fn test_managed_publish_reports_zero_artifacts() {
+        let work = TempDir::new().unwrap();
+        let calls = Arc::new(Mutex::new(0_usize));
+        let recorded_calls = Arc::clone(&calls);
+
+        let output = run_managed_publish_with(
+            work.path(),
+            Path::new("Project.csproj"),
+            ManagedPublishTarget::UserConfig,
+            move |_program, _args, _working_dir| {
+                let recorded_calls = Arc::clone(&recorded_calls);
+                async move {
+                    *recorded_calls.lock().unwrap() += 1;
+                    Ok(PublishOutput {
+                        success: true,
+                        stdout: "packed".to_string(),
+                        stderr: String::new(),
+                    })
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(!output.success, "zero artifacts must not report success");
+        assert!(
+            output
+                .stderr
+                .contains("no .nupkg produced by `dotnet pack`")
+        );
+        assert_eq!(*calls.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_managed_publish_aggregates_partial_push_failure_and_continues() {
+        let work = TempDir::new().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::<Vec<OsString>>::new()));
+        let recorded_calls = Arc::clone(&calls);
+
+        let output = run_managed_publish_with(
+            work.path(),
+            Path::new("Project.csproj"),
+            ManagedPublishTarget::UserConfig,
+            move |_program, args, _working_dir| {
+                let recorded_calls = Arc::clone(&recorded_calls);
+                async move {
+                    let is_pack = args.first().and_then(|arg| arg.to_str()) == Some("pack");
+                    if is_pack {
+                        let output_index = args.iter().position(|arg| arg == "-o").unwrap() + 1;
+                        let pack_dir = PathBuf::from(&args[output_index]);
+                        fs::write(pack_dir.join("a.nupkg"), b"").unwrap();
+                        fs::write(pack_dir.join("b.nupkg"), b"").unwrap();
+                    }
+                    let fails = args.iter().any(|arg| Path::new(arg).ends_with("a.nupkg"));
+                    recorded_calls.lock().unwrap().push(args);
+                    Ok(PublishOutput {
+                        success: !fails,
+                        stdout: if fails {
+                            String::new()
+                        } else {
+                            "succeeded".to_string()
+                        },
+                        stderr: if fails {
+                            "rejected".to_string()
+                        } else {
+                            String::new()
+                        },
+                    })
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !output.success,
+            "one failed push must fail the combined output"
+        );
+        assert!(output.stderr.contains("rejected"));
+        assert!(output.stdout.contains("b.nupkg"));
+        assert_eq!(
+            calls.lock().unwrap().len(),
+            3,
+            "all artifacts must be pushed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_managed_dry_run_uses_local_feed_and_cleans_up_after_push_spawn_failure() {
+        let work = TempDir::new().unwrap();
+        let calls = Arc::new(Mutex::new(Vec::<Vec<OsString>>::new()));
+        let recorded_calls = Arc::clone(&calls);
+
+        let error = run_managed_publish_with(
+            work.path(),
+            Path::new("Project.csproj"),
+            ManagedPublishTarget::TemporaryFeed,
+            move |_program, args, _working_dir| {
+                let recorded_calls = Arc::clone(&recorded_calls);
+                async move {
+                    let is_pack = args.first().and_then(|arg| arg.to_str()) == Some("pack");
+                    if is_pack {
+                        let output_index = args.iter().position(|arg| arg == "-o").unwrap() + 1;
+                        let pack_dir = PathBuf::from(&args[output_index]);
+                        fs::write(pack_dir.join("only.nupkg"), b"").unwrap();
+                    }
+                    recorded_calls.lock().unwrap().push(args);
+                    if is_pack {
+                        Ok(PublishOutput {
+                            success: true,
+                            stdout: "packed".to_string(),
+                            stderr: String::new(),
+                        })
+                    } else {
+                        Err(anyhow::anyhow!("runner spawn boom"))
+                    }
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        let chain = format!("{error:#}");
+        assert!(chain.contains("Failed to spawn `dotnet nuget push"));
+        assert!(chain.contains("only.nupkg"));
+        assert!(chain.contains("runner spawn boom"));
+
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "calls: {calls:?}");
+        let pack_dir = PathBuf::from(&calls[0][5]);
+        let feed_dir = PathBuf::from(&calls[1][4]);
+        assert_eq!(
+            calls[1],
+            vec![
+                OsString::from("nuget"),
+                OsString::from("push"),
+                pack_dir.join("only.nupkg").into_os_string(),
+                OsString::from("-s"),
+                feed_dir.clone().into_os_string(),
+                OsString::from("--skip-duplicate"),
+            ]
+        );
+        assert!(!pack_dir.exists(), "temporary pack directory leaked");
+        assert!(!feed_dir.exists(), "temporary feed directory leaked");
     }
 }

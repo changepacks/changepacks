@@ -19,13 +19,11 @@ use tokio::fs::{read_to_string, write};
 
 pub use finder::CSharpProjectFinder;
 
-/// Default publish command for C#/.NET projects. Shared by `CSharpPackage`
-/// and `CSharpWorkspace` so a single edit here updates both trait impls.
-///
-/// `dotnet nuget push` has no native `--dry-run` mode, so
-/// `default_dry_run_publish_command` returns `None` in both impls and the
-/// actual dry-run flow lives in the RAII-managed `dry_run_publish`
-/// override (`crate::dry_run::resolve_and_run_dry_run`).
+/// Legacy command description required by the core `Package` / `Workspace`
+/// trait API. C# publish execution does not run this incomplete shell string:
+/// both implementations override `publish` and use the managed argv pipeline
+/// in [`dry_run`] after resolving configuration overrides. Keeping the string
+/// preserves the existing public accessor value for callers that display it.
 pub(crate) const PUBLISH_COMMAND: &str = "dotnet pack -c Release && dotnet nuget push";
 
 /// Update the `<Version>` element of the `.csproj` XML at `path` to

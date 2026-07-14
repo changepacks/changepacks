@@ -93,16 +93,24 @@ impl ProjectFinder for NodeProjectFinder {
         let package_manager =
             detect_package_manager_recursive_async(path, relative_path.components().count())
                 .await?;
-        // Workspace detection is short-circuited: a `workspaces` field in
-        // `package.json` (npm / yarn / bun monorepos — the common case)
-        // is enough on its own, so only fall back to a `pnpm-workspace.yaml`
-        // stat when that field is absent. Shared with the Dart finder via
+        // Workspace detection is short-circuited: a valid `workspaces`
+        // array or object in `package.json` (npm / yarn / bun monorepos —
+        // the common case) is enough on its own, so only fall back to a
+        // `pnpm-workspace.yaml` stat when that field is absent. Shared with the Dart finder via
         // `changepacks_utils::is_workspace_by_sibling` — the one source of
         // truth for the "declared field OR fixed sibling file" policy
         // (missing/directory marker → not-a-workspace; other metadata errors
         // propagate; all file ops via `tokio::fs`).
+        let has_workspace_declaration = match package_json.get("workspaces") {
+            None => false,
+            Some(workspaces) if workspaces.is_array() || workspaces.is_object() => true,
+            Some(_) => anyhow::bail!(
+                "Invalid `workspaces` declaration in {}: expected an array or object",
+                path.display()
+            ),
+        };
         let is_workspace = changepacks_utils::is_workspace_by_sibling(
-            package_json.get("workspaces").is_some(),
+            has_workspace_declaration,
             path,
             "pnpm-workspace.yaml",
         )
@@ -214,18 +222,27 @@ mod tests {
         }
     }
 
+    #[rstest]
+    #[case(r#"["packages/*"]"#)]
+    #[case(r#"{"packages":["packages/*"]}"#)]
+    #[case("[]")]
+    #[case("{}")]
     #[tokio::test]
-    async fn test_node_project_finder_visit_workspace_with_workspaces() {
+    async fn test_node_project_finder_visit_workspace_with_valid_workspaces(
+        #[case] workspaces: &str,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let package_json = temp_dir.path().join("package.json");
         fs::write(
             &package_json,
-            r#"{
+            format!(
+                r#"{{
   "name": "test-workspace",
   "version": "1.0.0",
-  "workspaces": ["packages/*"]
-}
-"#,
+  "workspaces": {workspaces}
+}}
+"#
+            ),
         )
         .unwrap();
 
@@ -244,6 +261,51 @@ mod tests {
             }
             _ => panic!("Expected Workspace"),
         }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[rstest]
+    #[case("null")]
+    #[case(r#""packages/*""#)]
+    #[case("true")]
+    #[case("42")]
+    #[tokio::test]
+    async fn test_node_project_finder_rejects_invalid_workspaces_declaration(
+        #[case] workspaces: &str,
+    ) {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            format!(
+                r#"{{
+  "name": "test-package",
+  "version": "1.0.0",
+  "workspaces": {workspaces}
+}}
+"#
+            ),
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        let result = finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await;
+
+        let error_msg = result
+            .expect_err("invalid workspaces declaration should fail")
+            .to_string();
+        assert!(
+            error_msg.contains("Invalid `workspaces` declaration"),
+            "error message should explain the invalid declaration, got: {error_msg}"
+        );
+        assert!(
+            error_msg.contains(package_json.to_string_lossy().as_ref()),
+            "error message should contain the manifest path, got: {error_msg}"
+        );
+        assert!(finder.projects().is_empty());
 
         temp_dir.close().unwrap();
     }

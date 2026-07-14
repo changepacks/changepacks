@@ -92,8 +92,10 @@ pub async fn handle_publish_with_prompter(
         });
     }
 
-    // Sort projects by dependencies (no cloning, just reordering references)
-    let projects = sort_by_dependencies(projects)?;
+    // Default-nonpublishable aggregate roots must leave the graph before the
+    // mandatory topological sort. An explicit command for this publish mode
+    // remains authoritative and keeps the project in the batch.
+    let projects = sort_publishable_projects(projects, &ctx.config, args.dry_run)?;
 
     if projects.is_empty() {
         args.format.print("No projects found");
@@ -136,6 +138,28 @@ pub async fn handle_publish_with_prompter(
         &args.format,
         "Failed to publish",
     )
+}
+
+fn sort_publishable_projects<'a>(
+    mut projects: Vec<&'a Project>,
+    config: &Config,
+    dry_run: bool,
+) -> Result<Vec<&'a Project>> {
+    let configured_commands = if dry_run {
+        &config.publish_dry_run
+    } else {
+        &config.publish
+    };
+    projects.retain(|project| {
+        project.is_publishable_by_default()
+            || changepacks_core::publish::lookup_by_path_or_language(
+                configured_commands,
+                project.relative_path(),
+                project.language(),
+            )
+            .is_some()
+    });
+    Ok(sort_by_dependencies(projects)?)
 }
 
 fn print_projects_to_publish(projects: &[&Project], format: &FormatOptions) {
@@ -616,12 +640,15 @@ async fn execute_publish_loop(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use changepacks_core::{Language, Package, UpdateType};
+    use changepacks_core::{Language, Package, UpdateType, Workspace};
     use changepacks_utils::test_support::{git_add_and_commit, init_git_repo};
     use clap::Parser;
     use rstest::rstest;
     use serial_test::serial;
-    use std::collections::HashSet;
+    use std::{
+        collections::HashSet,
+        sync::{Arc, Mutex},
+    };
     use tempfile::tempdir;
 
     #[derive(Parser)]
@@ -744,6 +771,81 @@ mod tests {
         print_publish_output(&output);
     }
 
+    #[derive(Debug)]
+    struct TestWorkspace {
+        label: String,
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        is_changed: bool,
+        dependencies: HashSet<String>,
+        publishable_by_default: bool,
+        publish_log: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl TestWorkspace {
+        fn recording_rust(
+            label: &str,
+            name: Option<&str>,
+            relative_path: &str,
+            dependencies: &[&str],
+            publishable_by_default: bool,
+            publish_log: Arc<Mutex<Vec<String>>>,
+        ) -> Self {
+            Self {
+                label: label.to_string(),
+                name: name.map(str::to_string),
+                version: Some("1.0.0".to_string()),
+                path: PathBuf::from(relative_path),
+                relative_path: PathBuf::from(relative_path),
+                is_changed: false,
+                dependencies: dependencies
+                    .iter()
+                    .map(|dependency| (*dependency).to_string())
+                    .collect(),
+                publishable_by_default,
+                publish_log,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Workspace for TestWorkspace {
+        changepacks_core::impl_basic_accessors!();
+
+        async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        changepacks_core::impl_language!(Language::Rust);
+        changepacks_core::impl_dependencies_accessors!();
+
+        fn is_publishable_by_default(&self) -> bool {
+            self.publishable_by_default
+        }
+
+        fn default_publish_command(&self) -> String {
+            "cargo publish".to_string()
+        }
+
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            Some("cargo publish --dry-run".to_string())
+        }
+
+        async fn publish(&self, _config: &Config) -> anyhow::Result<PublishOutput> {
+            self.publish_log
+                .lock()
+                .expect("publish log mutex")
+                .push(self.label.clone());
+            Ok(PublishOutput {
+                success: true,
+                stdout: format!("publish {}", self.label),
+                stderr: String::new(),
+            })
+        }
+    }
+
     /// One configurable mock `Package` for the publish-loop tests. Replaces the
     /// five near-identical hand-written mocks (`FailSpawnPackage`,
     /// `DryRunFailurePackage`, `DryRunUnsupportedPackage`, `RustMockPackage`,
@@ -762,6 +864,7 @@ mod tests {
         default_dry_run_publish_command: Option<&'static str>,
         publish_behavior: PublishBehavior,
         dry_run_behavior: DryRunBehavior,
+        publish_log: Option<Arc<Mutex<Vec<String>>>>,
     }
 
     /// Outcome produced by [`TestPackage::publish`].
@@ -804,6 +907,7 @@ mod tests {
                 default_dry_run_publish_command: Some("echo publish --dry-run"),
                 publish_behavior: PublishBehavior::SpawnError,
                 dry_run_behavior: DryRunBehavior::SpawnError,
+                publish_log: None,
             }
         }
 
@@ -820,6 +924,7 @@ mod tests {
                 default_dry_run_publish_command: Some("echo publish --dry-run"),
                 publish_behavior: PublishBehavior::Unused,
                 dry_run_behavior: DryRunBehavior::NonZeroExit,
+                publish_log: None,
             }
         }
 
@@ -836,6 +941,7 @@ mod tests {
                 default_dry_run_publish_command: None,
                 publish_behavior: PublishBehavior::Unused,
                 dry_run_behavior: DryRunBehavior::Unsupported,
+                publish_log: None,
             }
         }
 
@@ -853,6 +959,7 @@ mod tests {
                 default_dry_run_publish_command: Some("cargo publish --dry-run"),
                 publish_behavior: PublishBehavior::Unused,
                 dry_run_behavior: DryRunBehavior::OkForName,
+                publish_log: None,
             }
         }
 
@@ -870,6 +977,31 @@ mod tests {
                 default_dry_run_publish_command: Some("npm publish --dry-run"),
                 publish_behavior: PublishBehavior::Succeeds(succeeds),
                 dry_run_behavior: DryRunBehavior::Succeeds(succeeds),
+                publish_log: None,
+            }
+        }
+
+        fn recording_rust(
+            name: &str,
+            relative_path: &str,
+            dependencies: &[&str],
+            publish_log: Arc<Mutex<Vec<String>>>,
+        ) -> Self {
+            Self {
+                name: name.to_string(),
+                version: "1.0.0",
+                path: PathBuf::from(relative_path),
+                relative_path: PathBuf::from(relative_path),
+                language: Language::Rust,
+                deps: dependencies
+                    .iter()
+                    .map(|dependency| (*dependency).to_string())
+                    .collect(),
+                default_publish_command: "cargo publish",
+                default_dry_run_publish_command: Some("cargo publish --dry-run"),
+                publish_behavior: PublishBehavior::Succeeds(true),
+                dry_run_behavior: DryRunBehavior::Succeeds(true),
+                publish_log: Some(publish_log),
             }
         }
     }
@@ -913,6 +1045,12 @@ mod tests {
             self.default_dry_run_publish_command.map(str::to_string)
         }
         async fn publish(&self, _config: &Config) -> anyhow::Result<PublishOutput> {
+            if let Some(publish_log) = &self.publish_log {
+                publish_log
+                    .lock()
+                    .expect("publish log mutex")
+                    .push(self.name.clone());
+            }
             match self.publish_behavior {
                 PublishBehavior::SpawnError => {
                     anyhow::bail!("spawn failed: No such file or directory")
@@ -1146,6 +1284,213 @@ mod tests {
             deps,
             succeeds,
         )))
+    }
+
+    fn make_recording_rust_package(
+        name: &str,
+        relative_path: &str,
+        dependencies: &[&str],
+        publish_log: Arc<Mutex<Vec<String>>>,
+    ) -> Project {
+        Project::Package(Box::new(TestPackage::recording_rust(
+            name,
+            relative_path,
+            dependencies,
+            publish_log,
+        )))
+    }
+
+    fn make_recording_rust_workspace(
+        label: &str,
+        name: Option<&str>,
+        dependencies: &[&str],
+        publishable_by_default: bool,
+        publish_log: Arc<Mutex<Vec<String>>>,
+    ) -> Project {
+        Project::Workspace(Box::new(TestWorkspace::recording_rust(
+            label,
+            name,
+            "Cargo.toml",
+            dependencies,
+            publishable_by_default,
+            publish_log,
+        )))
+    }
+
+    fn recorded_publishes(publish_log: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+        publish_log.lock().expect("publish log mutex").clone()
+    }
+
+    #[tokio::test]
+    async fn test_virtual_aggregate_is_filtered_and_members_publish_once_in_dependency_order() {
+        let publish_log = Arc::new(Mutex::new(Vec::new()));
+        let aggregate =
+            make_recording_rust_workspace("aggregate", None, &[], false, Arc::clone(&publish_log));
+        let parent = make_recording_rust_package(
+            "parent",
+            "crates/parent/Cargo.toml",
+            &["leaf"],
+            Arc::clone(&publish_log),
+        );
+        let leaf = make_recording_rust_package(
+            "leaf",
+            "crates/leaf/Cargo.toml",
+            &[],
+            Arc::clone(&publish_log),
+        );
+
+        let projects =
+            sort_publishable_projects(vec![&aggregate, &parent, &leaf], &Config::default(), false)
+                .expect("filtered member graph should be acyclic");
+
+        assert_eq!(
+            projects
+                .iter()
+                .map(|project| project.name())
+                .collect::<Vec<_>>(),
+            vec![Some("leaf"), Some("parent")]
+        );
+        let (_, failed) =
+            execute_publish_loop(&projects, &Config::default(), &FormatOptions::Json).await;
+        assert!(failed.is_empty());
+        assert_eq!(recorded_publishes(&publish_log), ["leaf", "parent"]);
+    }
+
+    #[test]
+    fn test_default_nonpublishable_aggregate_is_filtered_before_topological_sort() {
+        let publish_log = Arc::new(Mutex::new(Vec::new()));
+        // The aggregate and member intentionally form a cycle. Filtering the
+        // default-nonpublishable aggregate first removes that irrelevant edge;
+        // sorting the unfiltered graph would reject the publish batch.
+        let aggregate = make_recording_rust_workspace(
+            "aggregate",
+            Some("aggregate"),
+            &["member"],
+            false,
+            Arc::clone(&publish_log),
+        );
+        let member = make_recording_rust_package(
+            "member",
+            "crates/member/Cargo.toml",
+            &["aggregate"],
+            publish_log,
+        );
+
+        let projects =
+            sort_publishable_projects(vec![&aggregate, &member], &Config::default(), false)
+                .expect("filtering must happen before cycle detection");
+
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].name(), Some("member"));
+    }
+
+    #[tokio::test]
+    async fn test_default_publishable_hybrid_root_and_members_publish_once_in_dependency_order() {
+        let publish_log = Arc::new(Mutex::new(Vec::new()));
+        let root = make_recording_rust_workspace(
+            "root",
+            Some("root"),
+            &[],
+            true,
+            Arc::clone(&publish_log),
+        );
+        let parent = make_recording_rust_package(
+            "parent",
+            "crates/parent/Cargo.toml",
+            &["leaf"],
+            Arc::clone(&publish_log),
+        );
+        let leaf = make_recording_rust_package(
+            "leaf",
+            "crates/leaf/Cargo.toml",
+            &[],
+            Arc::clone(&publish_log),
+        );
+
+        let projects =
+            sort_publishable_projects(vec![&parent, &root, &leaf], &Config::default(), false)
+                .expect("hybrid root member graph should be acyclic");
+        let (_, failed) =
+            execute_publish_loop(&projects, &Config::default(), &FormatOptions::Json).await;
+        assert!(failed.is_empty());
+
+        let publishes = recorded_publishes(&publish_log);
+        for name in ["root", "leaf", "parent"] {
+            assert_eq!(
+                publishes
+                    .iter()
+                    .filter(|published| *published == name)
+                    .count(),
+                1,
+                "{name} should publish exactly once: {publishes:?}"
+            );
+        }
+        let leaf_index = publishes.iter().position(|name| name == "leaf").unwrap();
+        let parent_index = publishes.iter().position(|name| name == "parent").unwrap();
+        assert!(leaf_index < parent_index, "dependency order: {publishes:?}");
+    }
+
+    async fn assert_configured_virtual_root_publishes(config: Config) {
+        let publish_log = Arc::new(Mutex::new(Vec::new()));
+        let virtual_root = make_recording_rust_workspace(
+            "virtual-root",
+            None,
+            &[],
+            false,
+            Arc::clone(&publish_log),
+        );
+
+        let projects = sort_publishable_projects(vec![&virtual_root], &config, false)
+            .expect("configured virtual root should remain publishable");
+        let (_, failed) = execute_publish_loop(&projects, &config, &FormatOptions::Json).await;
+
+        assert!(failed.is_empty());
+        assert_eq!(recorded_publishes(&publish_log), ["virtual-root"]);
+    }
+
+    #[tokio::test]
+    async fn test_exact_path_publish_command_supersedes_virtual_root_default() {
+        let config = Config {
+            publish: BTreeMap::from([("Cargo.toml".to_string(), "custom publish".to_string())]),
+            ..Config::default()
+        };
+
+        assert_configured_virtual_root_publishes(config).await;
+    }
+
+    #[tokio::test]
+    async fn test_language_publish_command_supersedes_virtual_root_default() {
+        let config = Config {
+            publish: BTreeMap::from([("rust".to_string(), "custom publish".to_string())]),
+            ..Config::default()
+        };
+
+        assert_configured_virtual_root_publishes(config).await;
+    }
+
+    #[test]
+    fn test_dry_run_command_supersedes_virtual_root_default() {
+        for key in ["Cargo.toml", "rust"] {
+            let virtual_root = make_recording_rust_workspace(
+                "virtual-root",
+                None,
+                &[],
+                false,
+                Arc::new(Mutex::new(Vec::new())),
+            );
+            let config = Config {
+                publish_dry_run: BTreeMap::from([(
+                    key.to_string(),
+                    "custom dry-run publish".to_string(),
+                )]),
+                ..Config::default()
+            };
+
+            let projects = sort_publishable_projects(vec![&virtual_root], &config, true)
+                .expect("configured virtual root should remain in dry-run batch");
+
+            assert_eq!(projects.len(), 1, "override key {key}");
+        }
     }
 
     #[tokio::test]

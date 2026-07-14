@@ -140,6 +140,14 @@ impl Project {
         }
     }
 
+    #[must_use]
+    pub fn is_publishable_by_default(&self) -> bool {
+        match self {
+            Self::Workspace(workspace) => workspace.is_publishable_by_default(),
+            Self::Package(package) => package.is_publishable_by_default(),
+        }
+    }
+
     /// # Errors
     /// Returns error if the underlying publish call fails to spawn.
     pub async fn publish(&self, config: &Config) -> Result<crate::publish::PublishOutput> {
@@ -449,6 +457,15 @@ mod tests {
         let package = MockPackage::new(Some("test"), Some("1.0.0"), Language::Dart);
         let project = Project::Package(Box::new(package));
         assert!(matches!(project.language(), Language::Dart));
+    }
+
+    #[test]
+    fn test_project_variants_are_publishable_by_default() {
+        let workspace = ws(Some("workspace"), Some("1.0.0"), Language::Node);
+        let package = pkg(Some("package"), Some("1.0.0"), Language::Rust);
+
+        assert!(workspace.is_publishable_by_default());
+        assert!(package.is_publishable_by_default());
     }
 
     #[tokio::test]

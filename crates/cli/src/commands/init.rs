@@ -1,6 +1,9 @@
 use changepacks_core::Config;
-use std::path::Path;
-use tokio::fs::{create_dir_all, write};
+use std::{future::poll_fn, io::ErrorKind, path::Path, pin::Pin};
+use tokio::{
+    fs::{File, OpenOptions, create_dir_all},
+    io::AsyncWrite,
+};
 
 use anyhow::{Context, Result};
 use changepacks_utils::get_changepacks_dir;
@@ -24,6 +27,18 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
     handle_init_at(args, &current_dir).await
 }
 
+async fn write_all(file: &mut File, mut contents: &[u8]) -> std::io::Result<()> {
+    while !contents.is_empty() {
+        let written = poll_fn(|context| Pin::new(&mut *file).poll_write(context, contents)).await?;
+        if written == 0 {
+            return Err(ErrorKind::WriteZero.into());
+        }
+        contents = &contents[written..];
+    }
+
+    poll_fn(|context| Pin::new(&mut *file).poll_flush(context)).await
+}
+
 async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
     // create .changepacks directory
     let changepacks_dir = get_changepacks_dir(current_dir)?;
@@ -37,44 +52,62 @@ async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
     }
     // create config.json file
     let config_file = changepacks_dir.join("config.json");
-    if tokio::fs::try_exists(&config_file).await.with_context(|| {
-        format!(
-            "Failed to check changepacks config {}",
-            config_file.display()
-        )
-    })? {
-        Err(anyhow::anyhow!("changepacks project already initialized"))
-    } else {
-        if args.dry_run {
-            // Dry-run skipped both the `create_dir_all` (line above) and the
-            // `write` of `config.json` (line below), so nothing has actually
-            // been initialized — the message must reflect that or a user
-            // running `changepacks init --dry-run` cannot distinguish the
-            // preview from a real init.
-            println!(
-                "Would initialize changepacks project in {}",
-                changepacks_dir.display()
-            );
-        } else {
-            write(
-                &config_file,
-                serde_json::to_string_pretty(&Config::default())?,
+    if args.dry_run {
+        if tokio::fs::try_exists(&config_file).await.with_context(|| {
+            format!(
+                "Failed to check changepacks config {}",
+                config_file.display()
             )
-            .await
-            .with_context(|| {
+        })? {
+            return Err(anyhow::anyhow!("changepacks project already initialized"));
+        }
+
+        // Dry-run skipped both the `create_dir_all` (line above) and the
+        // write of `config.json` (below), so nothing has actually been
+        // initialized — the message must reflect that or a user running
+        // `changepacks init --dry-run` cannot distinguish the preview from a
+        // real init.
+        println!(
+            "Would initialize changepacks project in {}",
+            changepacks_dir.display()
+        );
+        return Ok(());
+    }
+
+    let contents = serde_json::to_string_pretty(&Config::default())?;
+    let mut file = match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&config_file)
+        .await
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            return Err(anyhow::anyhow!("changepacks project already initialized"));
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
                 format!(
                     "Failed to write changepacks config {}",
                     config_file.display()
                 )
-            })?;
-            println!(
-                "changepacks project initialized in {}",
-                changepacks_dir.display()
-            );
+            });
         }
+    };
+    write_all(&mut file, contents.as_bytes())
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to write changepacks config {}",
+                config_file.display()
+            )
+        })?;
+    println!(
+        "changepacks project initialized in {}",
+        changepacks_dir.display()
+    );
 
-        Ok(())
-    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -132,6 +165,49 @@ mod tests {
         handle_init_at(&args, repository.path())
             .await
             .expect("init succeeds");
+
+        let config = std::fs::read_to_string(repository.path().join(".changepacks/config.json"))
+            .expect("read generated config");
+        assert_eq!(
+            config,
+            concat!(
+                "{\n",
+                "  \"ignore\": [],\n",
+                "  \"baseBranch\": \"main\",\n",
+                "  \"latestPackage\": null,\n",
+                "  \"publish\": {},\n",
+                "  \"publishDryRun\": {},\n",
+                "  \"updateOn\": {}\n",
+                "}"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_init_creates_default_config_once() {
+        let repository = temporary_repository();
+        let args = InitArgs { dry_run: false };
+
+        let (first, second) = tokio::join!(
+            handle_init_at(&args, repository.path()),
+            handle_init_at(&args, repository.path()),
+        );
+        let results = [first, second];
+
+        assert_eq!(
+            results.iter().filter(|result| result.is_ok()).count(),
+            1,
+            "exactly one concurrent init must succeed"
+        );
+        let errors = results
+            .into_iter()
+            .filter_map(|result| result.err())
+            .collect::<Vec<_>>();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].to_string(),
+            "changepacks project already initialized"
+        );
 
         let config = std::fs::read_to_string(repository.path().join(".changepacks/config.json"))
             .expect("read generated config");

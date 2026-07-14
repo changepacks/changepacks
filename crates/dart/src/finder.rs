@@ -76,14 +76,22 @@ impl ProjectFinder for DartProjectFinder {
             .with_context(|| format!("Failed to parse pubspec.yaml {}", path.display()))?;
 
         // Check if this is a workspace (melos workspace or similar).
-        // Short-circuit: when the pubspec's inline `workspace:` field is
-        // already present, skip the sibling `melos.yaml` stat. Shared with
+        // Short-circuit: when the pubspec's inline `workspace:` field is a
+        // sequence, skip the sibling `melos.yaml` stat. Shared with
         // the Node finder via `changepacks_utils::is_workspace_by_sibling`
         // — the one source of truth for the "declared field OR fixed
         // sibling file" policy (stat error → not-a-workspace; all file ops
         // via `tokio::fs`).
+        let has_workspace_declaration = match pubspec.get("workspace") {
+            None => false,
+            Some(workspace) if workspace.is_sequence() => true,
+            Some(_) => anyhow::bail!(
+                "Invalid `workspace` declaration in {}: expected a sequence",
+                path.display()
+            ),
+        };
         let is_workspace = changepacks_utils::is_workspace_by_sibling(
-            pubspec.get("workspace").is_some(),
+            has_workspace_declaration,
             path,
             "melos.yaml",
         )
@@ -194,18 +202,20 @@ version: 1.0.0
         temp_dir.close().unwrap();
     }
 
+    #[rstest]
+    #[case("workspace:\n  - packages/*\n")]
+    #[case("workspace: []\n")]
     #[tokio::test]
-    async fn test_visit_workspace_with_workspace_field() {
+    async fn test_visit_workspace_with_workspace_sequence(#[case] workspace: &str) {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_workspace
+            format!(
+                r#"name: test_workspace
 version: 1.0.0
-workspace:
-  packages:
-    - packages/*
-"#,
+{workspace}"#
+            ),
         )
         .unwrap();
 
@@ -223,6 +233,45 @@ workspace:
             }
             _ => panic!("Expected Workspace"),
         }
+
+        temp_dir.close().unwrap();
+    }
+
+    #[rstest]
+    #[case("workspace: null\n")]
+    #[case("workspace: packages/*\n")]
+    #[case("workspace:\n  packages:\n    - packages/*\n")]
+    #[tokio::test]
+    async fn test_rejects_invalid_workspace_declaration(#[case] workspace: &str) {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            format!(
+                r#"name: test_package
+version: 1.0.0
+{workspace}"#
+            ),
+        )
+        .unwrap();
+
+        let mut finder = DartProjectFinder::new();
+        let result = finder
+            .visit(&pubspec_path, &PathBuf::from("pubspec.yaml"))
+            .await;
+
+        let error_msg = result
+            .expect_err("invalid workspace declaration should fail")
+            .to_string();
+        assert!(
+            error_msg.contains("Invalid `workspace` declaration"),
+            "error message should explain the invalid declaration, got: {error_msg}"
+        );
+        assert!(
+            error_msg.contains(pubspec_path.to_string_lossy().as_ref()),
+            "error message should contain the manifest path, got: {error_msg}"
+        );
+        assert!(finder.projects().is_empty());
 
         temp_dir.close().unwrap();
     }
@@ -267,8 +316,7 @@ version: 1.0.0
             &pubspec_path,
             r#"name: test_workspace
 workspace:
-  packages:
-    - packages/*
+  - packages/*
 "#,
         )
         .unwrap();
