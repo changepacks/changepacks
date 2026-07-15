@@ -661,6 +661,226 @@ impl GradleLexState {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GradleIdentifierContext {
+    Dependencies,
+    DependencyHandlerMember,
+    Other,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct GradlePendingIdentifier {
+    context: GradleIdentifierContext,
+    begins_dependency_statement: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum GradleDependencyDelimiter {
+    Parenthesis { dependency_declaration: bool },
+    Bracket,
+    Block { dependencies: bool },
+}
+
+#[derive(Debug)]
+struct GradleDependencyContext {
+    delimiters: Vec<GradleDependencyDelimiter>,
+    pending_identifier: Option<GradlePendingIdentifier>,
+    dependency_handler_member_access: bool,
+    dependency_statement: bool,
+    statement_start: bool,
+}
+
+impl Default for GradleDependencyContext {
+    fn default() -> Self {
+        Self {
+            delimiters: Vec::new(),
+            pending_identifier: None,
+            dependency_handler_member_access: false,
+            dependency_statement: false,
+            statement_start: true,
+        }
+    }
+}
+
+impl GradleDependencyContext {
+    fn is_directly_in_dependencies_block(&self) -> bool {
+        self.delimiters
+            .iter()
+            .rposition(|delimiter| {
+                matches!(
+                    delimiter,
+                    GradleDependencyDelimiter::Block { dependencies: true }
+                )
+            })
+            .is_some_and(|position| position + 1 == self.delimiters.len())
+    }
+
+    fn allows_project_dependency(&self) -> bool {
+        self.delimiters.iter().any(|delimiter| {
+            matches!(
+                delimiter,
+                GradleDependencyDelimiter::Parenthesis {
+                    dependency_declaration: true
+                }
+            )
+        }) || (self.is_directly_in_dependencies_block() && self.dependency_statement)
+    }
+
+    fn mark_identifier(&mut self, identifier: &[u8], member_access: bool) {
+        let begins_dependency_statement =
+            self.is_directly_in_dependencies_block() && self.statement_start && !member_access;
+        if begins_dependency_statement {
+            self.dependency_statement = true;
+        }
+
+        let context = if self.dependency_handler_member_access {
+            GradleIdentifierContext::DependencyHandlerMember
+        } else if identifier == b"dependencies" {
+            GradleIdentifierContext::Dependencies
+        } else {
+            GradleIdentifierContext::Other
+        };
+        self.pending_identifier = Some(GradlePendingIdentifier {
+            context,
+            begins_dependency_statement,
+        });
+        self.dependency_handler_member_access = false;
+        self.statement_start = false;
+    }
+
+    fn mark_literal(&mut self) {
+        self.pending_identifier = None;
+        self.dependency_handler_member_access = false;
+        self.statement_start = false;
+    }
+
+    fn open_parenthesis(&mut self) {
+        let dependency_handler_call = self.pending_identifier.is_some_and(|identifier| {
+            identifier.context == GradleIdentifierContext::DependencyHandlerMember
+        });
+        let dependency_declaration = dependency_handler_call
+            || (self.is_directly_in_dependencies_block() && self.dependency_statement);
+        self.delimiters
+            .push(GradleDependencyDelimiter::Parenthesis {
+                dependency_declaration,
+            });
+        self.mark_expression();
+    }
+
+    fn open_bracket(&mut self) {
+        self.delimiters.push(GradleDependencyDelimiter::Bracket);
+        self.mark_expression();
+    }
+
+    fn open_block(&mut self) {
+        let dependencies = self
+            .pending_identifier
+            .is_some_and(|identifier| identifier.context == GradleIdentifierContext::Dependencies);
+        self.delimiters
+            .push(GradleDependencyDelimiter::Block { dependencies });
+        self.pending_identifier = None;
+        self.dependency_handler_member_access = false;
+        self.dependency_statement = false;
+        self.statement_start = true;
+    }
+
+    fn close_parenthesis(&mut self) {
+        if matches!(
+            self.delimiters.last(),
+            Some(GradleDependencyDelimiter::Parenthesis { .. })
+        ) {
+            self.delimiters.pop();
+        }
+        self.mark_expression();
+    }
+
+    fn close_bracket(&mut self) {
+        if matches!(
+            self.delimiters.last(),
+            Some(GradleDependencyDelimiter::Bracket)
+        ) {
+            self.delimiters.pop();
+        }
+        self.mark_expression();
+    }
+
+    fn close_block(&mut self) {
+        if matches!(
+            self.delimiters.last(),
+            Some(GradleDependencyDelimiter::Block { .. })
+        ) {
+            self.delimiters.pop();
+        }
+        self.pending_identifier = None;
+        self.dependency_handler_member_access = false;
+        self.dependency_statement = false;
+        self.statement_start = false;
+    }
+
+    fn mark_byte(&mut self, byte: u8) {
+        if byte == b'.' {
+            self.dependency_handler_member_access =
+                self.pending_identifier.is_some_and(|identifier| {
+                    identifier.context == GradleIdentifierContext::Dependencies
+                });
+            self.pending_identifier = None;
+            self.statement_start = false;
+            return;
+        }
+
+        if byte == b';' {
+            self.pending_identifier = None;
+            self.dependency_handler_member_access = false;
+            self.dependency_statement = false;
+            self.statement_start = true;
+            return;
+        }
+
+        self.pending_identifier = None;
+        self.dependency_handler_member_access = false;
+        if matches!(byte, b'=' | b':') {
+            self.dependency_statement = false;
+        }
+        self.statement_start = false;
+    }
+
+    fn mark_line_break(&mut self) {
+        let continues_identifier = self.pending_identifier.is_some_and(|identifier| {
+            identifier.begins_dependency_statement
+                || identifier.context != GradleIdentifierContext::Other
+        });
+        if !continues_identifier {
+            self.pending_identifier = None;
+            self.dependency_statement = false;
+        }
+        self.dependency_handler_member_access = false;
+        self.statement_start = true;
+    }
+
+    fn mark_expression(&mut self) {
+        self.pending_identifier = None;
+        self.dependency_handler_member_access = false;
+        self.statement_start = false;
+    }
+
+    fn recover_after_malformed_call(&mut self) {
+        if let Some(dependencies) = self.delimiters.iter().rposition(|delimiter| {
+            matches!(
+                delimiter,
+                GradleDependencyDelimiter::Block { dependencies: true }
+            )
+        }) {
+            self.delimiters.truncate(dependencies + 1);
+        } else {
+            self.delimiters.clear();
+        }
+        self.pending_identifier = None;
+        self.dependency_handler_member_access = false;
+        self.dependency_statement = false;
+        self.statement_start = true;
+    }
+}
+
 fn gradle_identifier_end(bytes: &[u8], start: usize) -> usize {
     let mut end = start;
     while bytes
@@ -1211,6 +1431,7 @@ fn extract_gradle_project_dependencies(
     let mut dependencies = Vec::new();
     let mut cursor = 0usize;
     let mut lexical = GradleLexState::default();
+    let mut dependency_context = GradleDependencyContext::default();
     let mut continuation_group_depth = 0usize;
 
     while cursor < bytes.len() {
@@ -1223,6 +1444,7 @@ fn extract_gradle_project_dependencies(
             GradleLiteralScan::Complete(next) => {
                 cursor = next;
                 lexical.mark_literal();
+                dependency_context.mark_literal();
                 continue;
             }
             GradleLiteralScan::Unterminated => break,
@@ -1247,7 +1469,8 @@ fn extract_gradle_project_dependencies(
                 let qualified = lexical.is_member_access();
                 match scan_gradle_call(bytes, open, dialect) {
                     GradleCallScan::Complete { end, arguments } => {
-                        if !qualified
+                        if dependency_context.allows_project_dependency()
+                            && !qualified
                             && let Some(dependency) =
                                 gradle_dependency_from_arguments(content, &arguments, dialect)
                         {
@@ -1255,10 +1478,13 @@ fn extract_gradle_project_dependencies(
                         }
                         cursor = end;
                         lexical.mark_byte(b')');
+                        dependency_context.mark_expression();
                     }
                     GradleCallScan::Malformed { resume } => {
                         cursor = resume.max(open + 1);
                         lexical = GradleLexState::default();
+                        dependency_context.recover_after_malformed_call();
+                        continuation_group_depth = 0;
                     }
                 }
                 continue;
@@ -1271,23 +1497,50 @@ fn extract_gradle_project_dependencies(
             .is_some_and(is_gradle_identifier_start)
         {
             let end = gradle_identifier_end(bytes, cursor);
+            dependency_context.mark_identifier(&bytes[cursor..end], lexical.is_member_access());
             lexical.mark_identifier(&bytes[cursor..end]);
             cursor = end;
             continue;
         }
 
         match bytes[cursor] {
-            b'(' | b'[' => {
+            b'(' => {
                 continuation_group_depth += 1;
-                lexical.mark_byte(bytes[cursor]);
+                dependency_context.open_parenthesis();
+                lexical.mark_byte(b'(');
             }
-            b')' | b']' => {
+            b'[' => {
+                continuation_group_depth += 1;
+                dependency_context.open_bracket();
+                lexical.mark_byte(b'[');
+            }
+            b'{' => {
+                dependency_context.open_block();
+                lexical.mark_byte(b'{');
+            }
+            b')' => {
                 continuation_group_depth = continuation_group_depth.saturating_sub(1);
-                lexical.mark_byte(bytes[cursor]);
+                dependency_context.close_parenthesis();
+                lexical.mark_byte(b')');
             }
-            b'\r' | b'\n' if continuation_group_depth == 0 => lexical.mark_statement_start(),
+            b']' => {
+                continuation_group_depth = continuation_group_depth.saturating_sub(1);
+                dependency_context.close_bracket();
+                lexical.mark_byte(b']');
+            }
+            b'}' => {
+                dependency_context.close_block();
+                lexical.mark_byte(b'}');
+            }
+            b'\r' | b'\n' if continuation_group_depth == 0 => {
+                dependency_context.mark_line_break();
+                lexical.mark_statement_start();
+            }
             byte if byte.is_ascii_whitespace() => {}
-            byte => lexical.mark_byte(byte),
+            byte => {
+                dependency_context.mark_byte(byte);
+                lexical.mark_byte(byte);
+            }
         }
         cursor += 1;
     }
@@ -3105,6 +3358,29 @@ val rendered = "project(\":string-decoy\", configuration = \"default\")"
     }
 
     #[test]
+    fn test_extract_gradle_project_dependencies_requires_dependency_declaration_context() {
+        let content = r#"
+project(":configured") {
+    description = "project configuration, not a dependency"
+}
+val kotlinAssignment = project(path = ":assigned-kotlin")
+def groovyAssignment = project(path: ':assigned-groovy')
+
+dependencies {
+    implementation(project(":real"))
+    runtimeOnly(platform(project(path = ":nested-real")))
+    testImplementation project(path: ':command-real')
+}
+dependencies.add("compileOnly", project(":direct-add-real"))
+"#;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec!["real", "nested-real", "command-real", "direct-add-real"]
+        );
+    }
+
+    #[test]
     fn test_extract_gradle_project_dependencies_skips_gradle_literals_and_dynamic_paths() {
         let content = r##"
 val kotlinRaw = """quoted " text project(":triple-double-decoy") """
@@ -3196,7 +3472,7 @@ dependencies { implementation(project(":real-groovy")) }
     }
 
     #[test]
-    fn test_extract_gradle_project_dependencies_keeps_grouped_multiline_division_state() {
+    fn test_extract_gradle_project_dependencies_ignores_grouped_non_dependency_calls() {
         let content = r#"
 def quotient = (
     numerator
@@ -3206,10 +3482,7 @@ def quotient = (
 dependencies { implementation(project(":real")) }
 "#;
 
-        assert_eq!(
-            extract_gradle_project_dependencies(content),
-            vec!["grouped-division", "real"]
-        );
+        assert_eq!(extract_gradle_project_dependencies(content), vec!["real"]);
     }
 
     #[test]
@@ -3461,6 +3734,71 @@ def second = 20 / 4
         assert_eq!(
             update_map[&PathBuf::from("app/build.gradle.kts")].0,
             UpdateType::Patch
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_ignores_project_configuration_edge_that_would_form_cycle() {
+        let temp_dir = TempDir::new().unwrap();
+        let core_dir = temp_dir.path().join("core");
+        let app_dir = temp_dir.path().join("app");
+        fs::create_dir_all(&core_dir).unwrap();
+        fs::create_dir_all(&app_dir).unwrap();
+
+        let core_manifest = core_dir.join("build.gradle.kts");
+        let app_manifest = app_dir.join("build.gradle.kts");
+        fs::write(
+            &core_manifest,
+            r#"project(":app") {
+    description = "configuration only"
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &app_manifest,
+            r#"dependencies {
+    implementation(project(":core"))
+}
+"#,
+        )
+        .unwrap();
+        create_mock_gradlew(&core_dir, MockGradlew::package("core", "1.0.0"));
+        create_mock_gradlew(&app_dir, MockGradlew::package("app", "1.0.0"));
+
+        let mut finder = finder_with_java_available();
+        finder
+            .visit(&core_manifest, Path::new("core/build.gradle.kts"))
+            .await
+            .unwrap();
+        finder
+            .visit(&app_manifest, Path::new("app/build.gradle.kts"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        let core = projects
+            .iter()
+            .copied()
+            .find(|project| project.name() == Some("core"))
+            .unwrap();
+        let app = projects
+            .iter()
+            .copied()
+            .find(|project| project.name() == Some("app"))
+            .unwrap();
+        assert!(core.dependencies().is_empty());
+        assert_eq!(app.dependencies(), &HashSet::from(["core".to_string()]));
+
+        let sorted = sort_by_dependencies(vec![app, core]).unwrap();
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|project| project.name().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["core", "app"]
         );
 
         temp_dir.close().unwrap();

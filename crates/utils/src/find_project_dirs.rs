@@ -9,21 +9,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Resolve a git ref (local or remote) to its committed tree by peeling
-/// `ref → id → commit → tree_id → tree`. Extracted so the local-branch and
-/// remote-branch arms of `find_project_dirs` no longer duplicate the six-step
-/// gix chain — a future gix API tweak (e.g. `peel_to_tree()` becoming an
-/// upstream helper) then only needs to be applied here. Same lifetime story on
-/// both sides: the returned `gix::Tree` borrows the same repository as the
-/// input `gix::Reference`.
-fn peel_to_tree(reference: gix::Reference<'_>) -> Result<gix::Tree<'_>> {
-    Ok(reference
-        .id()
-        .object()?
-        .try_into_commit()?
-        .tree_id()?
-        .object()?
-        .try_into_tree()?)
+/// Resolve a git ref (local or remote) to the commit it ultimately names.
+fn peel_to_commit_id(mut reference: gix::Reference<'_>) -> Result<gix::ObjectId> {
+    Ok(reference.peel_to_commit()?.id)
 }
 
 fn project_files_can_visit_path(project_files: &[&str], path: &Path, file_name: &str) -> bool {
@@ -242,11 +230,11 @@ pub async fn find_project_dirs(
     // paths that populate `is_changed`.
     let repo = repo.to_thread_local();
 
-    // diff from main branch — compute FIRST so `diff.len()` can seed the
+    // diff from the merge base — compute FIRST so `diff.len()` can seed the
     // `unique_files` capacity below without an intermediate
     // `changed_files: Vec<PathBuf>` allocation for the status entries.
-    let main_tree = if remote {
-        peel_to_tree(
+    let base_commit_id = if remote {
+        peel_to_commit_id(
             repo.find_remote("origin")
                 .context(
                     "Git remote 'origin' is not configured; --remote requires an 'origin' remote",
@@ -261,7 +249,7 @@ pub async fn find_project_dirs(
                 })?,
         )?
     } else {
-        peel_to_tree(
+        peel_to_commit_id(
             repo.find_reference(&format!("refs/heads/{}", config.base_branch))
                 .with_context(|| {
                     format!(
@@ -271,11 +259,17 @@ pub async fn find_project_dirs(
                 })?,
         )?
     };
-    let head_tree = repo.head_tree()?;
+    let head_commit = repo.head_commit()?;
+    let head_tree = head_commit.tree()?;
+    let comparison_tree = repo
+        .merge_base(base_commit_id, head_commit.id)?
+        .object()?
+        .try_into_commit()?
+        .tree()?;
     let diff = repo
         .diff_tree_to_tree(
             Some(&head_tree),
-            Some(&main_tree),
+            Some(&comparison_tree),
             gix::diff::Options::default(),
         )?
         .into_iter()
@@ -1057,6 +1051,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_find_project_dirs_local_divergent_history_uses_merge_base() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        init_git_repo(temp_path);
+        for name in ["a", "b", "uncommitted"] {
+            let package_dir = temp_path.join(format!("packages/{name}"));
+            fs::create_dir_all(&package_dir).await.unwrap();
+            fs::write(
+                package_dir.join("package.json"),
+                format!(r#"{{"name":"{name}","version":"1.0.0"}}"#),
+            )
+            .await
+            .unwrap();
+            fs::write(package_dir.join("index.js"), "export const value = 0;")
+                .await
+                .unwrap();
+        }
+        git_add_and_commit(temp_path, "Common ancestor");
+
+        run_git(temp_path, &["checkout", "-b", "feature"]);
+        fs::write(
+            temp_path.join("packages/a/index.js"),
+            "export const value = 'feature';",
+        )
+        .await
+        .unwrap();
+        git_add_and_commit(temp_path, "Feature-only package A change");
+
+        run_git(temp_path, &["checkout", "main"]);
+        fs::write(
+            temp_path.join("packages/b/index.js"),
+            "export const value = 'upstream';",
+        )
+        .await
+        .unwrap();
+        git_add_and_commit(temp_path, "Upstream-only package B change");
+
+        run_git(temp_path, &["checkout", "feature"]);
+        fs::write(
+            temp_path.join("packages/uncommitted/index.js"),
+            "export const value = 'working tree';",
+        )
+        .await
+        .unwrap();
+
+        let repo = discover_repo(temp_path);
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        find_project_dirs(&repo, &mut finders, &Config::default(), false)
+            .await
+            .unwrap();
+
+        let projects: Vec<_> = finders
+            .iter()
+            .flat_map(|finder| finder.projects())
+            .collect();
+        let is_changed = |name: &str| {
+            projects
+                .iter()
+                .find(|project| project.name() == Some(name))
+                .unwrap_or_else(|| panic!("project {name} was not discovered"))
+                .is_changed()
+        };
+        assert!(is_changed("a"), "feature-only package A was excluded");
+        assert!(
+            !is_changed("b"),
+            "upstream-only package B was included in the feature diff"
+        );
+        assert!(
+            is_changed("uncommitted"),
+            "uncommitted worktree change was excluded"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
     async fn test_find_project_dirs_remote_branch() {
         // Create a "remote" repository
         let remote_dir = TempDir::new().unwrap();
@@ -1116,6 +1188,89 @@ mod tests {
         let projects: Vec<_> = finders.iter().flat_map(|f| f.projects()).collect();
         assert_eq!(projects.len(), 1);
         assert!(projects[0].is_changed());
+
+        local_dir.close().unwrap();
+        remote_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_find_project_dirs_remote_divergent_history_uses_merge_base() {
+        let remote_dir = TempDir::new().unwrap();
+        let remote_path = remote_dir.path();
+
+        init_git_repo(remote_path);
+        for name in ["a", "b", "uncommitted"] {
+            let package_dir = remote_path.join(format!("packages/{name}"));
+            fs::create_dir_all(&package_dir).await.unwrap();
+            fs::write(
+                package_dir.join("package.json"),
+                format!(r#"{{"name":"{name}","version":"1.0.0"}}"#),
+            )
+            .await
+            .unwrap();
+            fs::write(package_dir.join("index.js"), "export const value = 0;")
+                .await
+                .unwrap();
+        }
+        git_add_and_commit(remote_path, "Common ancestor");
+
+        let local_dir = TempDir::new().unwrap();
+        let local_path = local_dir.path();
+        run_git(local_path, &["clone", remote_path.to_str().unwrap(), "."]);
+        run_git(local_path, &["config", "user.email", "test@test.com"]);
+        run_git(local_path, &["config", "user.name", "Test"]);
+        run_git(local_path, &["checkout", "-b", "feature"]);
+        fs::write(
+            local_path.join("packages/a/index.js"),
+            "export const value = 'feature';",
+        )
+        .await
+        .unwrap();
+        git_add_and_commit(local_path, "Feature-only package A change");
+
+        fs::write(
+            remote_path.join("packages/b/index.js"),
+            "export const value = 'upstream';",
+        )
+        .await
+        .unwrap();
+        git_add_and_commit(remote_path, "Upstream-only package B change");
+        run_git(local_path, &["fetch", "origin"]);
+
+        fs::write(
+            local_path.join("packages/uncommitted/index.js"),
+            "export const value = 'working tree';",
+        )
+        .await
+        .unwrap();
+
+        let repo = discover_repo(local_path);
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        find_project_dirs(&repo, &mut finders, &Config::default(), true)
+            .await
+            .unwrap();
+
+        let projects: Vec<_> = finders
+            .iter()
+            .flat_map(|finder| finder.projects())
+            .collect();
+        let is_changed = |name: &str| {
+            projects
+                .iter()
+                .find(|project| project.name() == Some(name))
+                .unwrap_or_else(|| panic!("project {name} was not discovered"))
+                .is_changed()
+        };
+        assert!(is_changed("a"), "feature-only package A was excluded");
+        assert!(
+            !is_changed("b"),
+            "upstream-only package B was included in the feature diff"
+        );
+        assert!(
+            is_changed("uncommitted"),
+            "uncommitted worktree change was excluded"
+        );
 
         local_dir.close().unwrap();
         remote_dir.close().unwrap();
