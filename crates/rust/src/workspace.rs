@@ -341,10 +341,13 @@ impl Workspace for RustWorkspace {
                 // operator, so rewrite the value in place via `get_mut` — never
                 // insert a `version` key where none exists.
                 let bumped = replace_version_keep_prefix(current_version, next_version);
+                if bumped == current_version {
+                    continue;
+                }
                 if let Some(v) = dep.get_mut("version") {
                     *v = toml_edit::value(bumped);
+                    any_updated = true;
                 }
-                any_updated = true;
             }
         }
 
@@ -779,6 +782,85 @@ path = "crates/utils"
 "#
         );
 
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_skips_current_inline_dependency_write() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let original = r#"[workspace]
+[workspace.dependencies]
+core = { version = "~1.2.3", path = "crates/core" }
+"#;
+        fs::write(&cargo_toml, original).unwrap();
+        let writable_permissions = fs::metadata(&cargo_toml).unwrap().permissions();
+        let mut readonly_permissions = writable_permissions.clone();
+        readonly_permissions.set_readonly(true);
+        fs::set_permissions(&cargo_toml, readonly_permissions).unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+        let core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            Some("1.2.3".to_string()),
+            temp_dir.path().join("crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+
+        workspace
+            .update_workspace_dependencies(&[&core_pkg])
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(&cargo_toml).unwrap(), original.as_bytes());
+        fs::set_permissions(&cargo_toml, writable_permissions).unwrap();
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_skips_current_subtable_dependency_write() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let original = r#"[workspace]
+[workspace.dependencies.core]
+version = "^2.0.0"
+path = "crates/core"
+"#;
+        fs::write(&cargo_toml, original).unwrap();
+        let writable_permissions = fs::metadata(&cargo_toml).unwrap().permissions();
+        let mut readonly_permissions = writable_permissions.clone();
+        readonly_permissions.set_readonly(true);
+        fs::set_permissions(&cargo_toml, readonly_permissions).unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+        let core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            Some("2.0.0".to_string()),
+            temp_dir.path().join("crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+
+        workspace
+            .update_workspace_dependencies(&[&core_pkg])
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(&cargo_toml).unwrap(), original.as_bytes());
+        fs::set_permissions(&cargo_toml, writable_permissions).unwrap();
         temp_dir.close().unwrap();
     }
 

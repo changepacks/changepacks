@@ -413,6 +413,30 @@ fn parse_gradle_metadata_records(output: &str) -> Result<Vec<GradleMetadataRecor
         .collect()
 }
 
+async fn is_java_executable_candidate(path: &Path) -> Result<bool> {
+    let metadata = match tokio::fs::metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to read metadata for {}", path.display()));
+        }
+    };
+    if !metadata.is_file() {
+        return Ok(false);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Ok(metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(true)
+    }
+}
+
 /// Core logic for finding `java` in a given PATH value.
 ///
 /// Scans the split paths for a `java` / `java.exe` executable.
@@ -430,10 +454,7 @@ async fn which_java_in(path_var: Option<&OsStr>) -> Result<Option<PathBuf>> {
     }
     for dir in std::env::split_paths(path_var) {
         let candidate = dir.join(JAVA_EXECUTABLE);
-        // Async probe via the shared `changepacks_core::is_regular_file`
-        // (a `tokio::fs::metadata().is_file()` check), matching the sibling
-        // `java_home_has_java` and honoring the crate's no-blocking-I/O rule.
-        if changepacks_core::is_regular_file(&candidate).await? {
+        if is_java_executable_candidate(&candidate).await? {
             return Ok(Some(candidate));
         }
     }
@@ -449,7 +470,7 @@ async fn java_home_has_java(java_home: Option<&OsStr>) -> Result<bool> {
     }
 
     let candidate = Path::new(java_home).join("bin").join(JAVA_EXECUTABLE);
-    changepacks_core::is_regular_file(&candidate).await
+    is_java_executable_candidate(&candidate).await
 }
 
 /// Find gradlew executable by walking up the directory tree.
@@ -4181,6 +4202,24 @@ def second = 20 / 4
         temp_dir.close().unwrap();
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_which_java_in_rejects_non_executable_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let java_path = temp_dir.path().join("java");
+        fs::write(&java_path, "").unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&java_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let result = which_java_in(Some(temp_dir.path().as_os_str()))
+            .await
+            .unwrap();
+        assert!(result.is_none());
+
+        temp_dir.close().unwrap();
+    }
+
     #[tokio::test]
     async fn test_which_java_in_without_java() {
         let temp_dir = TempDir::new().unwrap();
@@ -4227,8 +4266,34 @@ def second = 20 / 4
         fs::create_dir_all(java_path.parent().unwrap()).unwrap();
         fs::write(&java_path, "").unwrap();
 
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&java_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
         assert!(
             java_home_has_java(Some(temp_dir.path().as_os_str()))
+                .await
+                .unwrap()
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_java_home_has_java_rejects_non_executable_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let java_path = temp_dir.path().join("bin").join("java");
+        fs::create_dir_all(java_path.parent().unwrap()).unwrap();
+        fs::write(&java_path, "").unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&java_path, fs::Permissions::from_mode(0o644)).unwrap();
+
+        assert!(
+            !java_home_has_java(Some(temp_dir.path().as_os_str()))
                 .await
                 .unwrap()
         );

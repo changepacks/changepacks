@@ -282,8 +282,6 @@ pub async fn clear_applied_update_logs(
 
 #[cfg(test)]
 mod tests {
-    use crate::get_changepacks_dir;
-
     use super::*;
     use std::fs;
     use tempfile::TempDir;
@@ -294,11 +292,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        // Initialize git repository
-        crate::test_support::init_git_repo(temp_path);
-
         // Create .changepacks directory
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         // Test clearing logs from empty directory
@@ -312,11 +307,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        // Initialize git repository
-        crate::test_support::init_git_repo(temp_path);
-
         // Test clearing logs when .changepacks directory doesn't exist
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         let result = clear_update_logs(&changepacks_dir).await;
         assert!(result.is_ok());
     }
@@ -327,11 +319,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        // Initialize git repository
-        crate::test_support::init_git_repo(temp_path);
-
         // Create .changepacks directory
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         // Create only config.json
@@ -350,11 +339,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        // Initialize git repository
-        crate::test_support::init_git_repo(temp_path);
-
         // Create .changepacks directory
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         // Create config.json
@@ -397,11 +383,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        // Initialize git repository
-        crate::test_support::init_git_repo(temp_path);
-
         // Create .changepacks directory
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         // Create config.json
@@ -438,11 +421,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        // Initialize git repository
-        crate::test_support::init_git_repo(temp_path);
-
         // Create .changepacks directory
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         // Create update log files without config.json
@@ -476,9 +456,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        crate::test_support::init_git_repo(temp_path);
-
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         // Non-JSON files the user could have placed there.
@@ -543,11 +521,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        // Initialize git repository
-        crate::test_support::init_git_repo(temp_path);
-
         // Create .changepacks directory
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         // Create a subdirectory with a name that looks like a JSON file.
@@ -565,9 +540,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        crate::test_support::init_git_repo(temp_path);
-
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         let log_file = changepacks_dir.join("changepack_log_1.json");
@@ -589,9 +562,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        crate::test_support::init_git_repo(temp_path);
-
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         let log_file = changepacks_dir.join("changepack_log_1.json");
@@ -619,9 +590,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        crate::test_support::init_git_repo(temp_path);
-
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         let config_file = changepacks_dir.join("config.json");
@@ -642,9 +611,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        crate::test_support::init_git_repo(temp_path);
-
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
         let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
 
@@ -656,9 +623,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        crate::test_support::init_git_repo(temp_path);
-
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         // Create a changepack log with keys in order: changes, note, date
@@ -698,9 +663,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        crate::test_support::init_git_repo(temp_path);
-
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
 
         let log_file = changepacks_dir.join("changepack_log_1.json");
@@ -770,8 +733,7 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
-        crate::test_support::init_git_repo(temp_path);
-        let changepacks_dir = get_changepacks_dir(temp_path).unwrap();
+        let changepacks_dir = temp_path.join(".changepacks");
         fs::create_dir_all(&changepacks_dir).unwrap();
         let log_file = changepacks_dir.join("changepack_log_1.json");
         fs::write(&log_file, input.as_bytes()).unwrap();

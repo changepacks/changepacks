@@ -97,9 +97,6 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
 
-        // Initialize git repo
-        crate::test_support::init_git_repo(repo_root);
-
         let project_path = repo_root.join("project1");
         fs::create_dir_all(&project_path).unwrap();
         let package_json = project_path.join("package.json");
@@ -166,9 +163,6 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
 
-        // Initialize git repo
-        crate::test_support::init_git_repo(repo_root);
-
         let project_path = repo_root.join("project2");
         fs::create_dir_all(&project_path).unwrap();
         let package_json = project_path.join("package.json");
@@ -225,9 +219,6 @@ mod tests {
     fn test_gen_changepack_result_map_multiple_projects() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        // Initialize git repo
-        crate::test_support::init_git_repo(repo_root);
 
         // Create first project
         let project1_path = repo_root.join("project1");
@@ -325,9 +316,6 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
 
-        // Initialize git repo
-        crate::test_support::init_git_repo(repo_root);
-
         let project_path = repo_root.join("project3");
         fs::create_dir_all(&project_path).unwrap();
         let package_json = project_path.join("package.json");
@@ -378,9 +366,6 @@ mod tests {
     fn test_gen_changepack_result_map_project_without_version() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        // Initialize git repo
-        crate::test_support::init_git_repo(repo_root);
 
         let project_path = repo_root.join("project4");
         fs::create_dir_all(&project_path).unwrap();
@@ -433,9 +418,6 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
 
-        // Initialize git repo
-        crate::test_support::init_git_repo(repo_root);
-
         let project_path = repo_root.join("project5");
         fs::create_dir_all(&project_path).unwrap();
         let package_json = project_path.join("package.json");
@@ -486,8 +468,6 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
 
-        crate::test_support::init_git_repo(repo_root);
-
         let update_result = HashMap::new();
         let projects: Vec<&Project> = vec![];
         let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
@@ -501,8 +481,6 @@ mod tests {
     fn test_gen_changepack_result_map_no_matching_update_entry() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        crate::test_support::init_git_repo(repo_root);
 
         let project_path = repo_root.join("projectA");
         fs::create_dir_all(&project_path).unwrap();
@@ -551,8 +529,6 @@ mod tests {
     fn test_gen_changepack_result_map_project_with_empty_version() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        crate::test_support::init_git_repo(repo_root);
 
         let project_path = repo_root.join("project_empty_ver");
         fs::create_dir_all(&project_path).unwrap();

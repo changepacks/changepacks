@@ -93,22 +93,53 @@ impl<'a> ProjectNameAnalysis<'a> {
 }
 
 pub(crate) fn compare_paths(left: &Path, right: &Path) -> Ordering {
-    left.to_string_lossy()
-        .replace('\\', "/")
-        .cmp(&right.to_string_lossy().replace('\\', "/"))
-        .then_with(|| left.to_string_lossy().cmp(&right.to_string_lossy()))
+    let left_lossy = left.to_string_lossy();
+    let right_lossy = right.to_string_lossy();
+
+    left_lossy
+        .chars()
+        .map(|character| if character == '\\' { '/' } else { character })
+        .cmp(
+            right_lossy
+                .chars()
+                .map(|character| if character == '\\' { '/' } else { character }),
+        )
+        .then_with(|| left_lossy.cmp(&right_lossy))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        cmp::Ordering,
+        path::{Path, PathBuf},
+    };
 
     use changepacks_core::Project;
     use changepacks_node::package::NodePackage;
 
     use crate::test_support::create_project;
 
-    use super::{ProjectNameAnalysis, ProjectNameResolution};
+    use super::{ProjectNameAnalysis, ProjectNameResolution, compare_paths};
+
+    #[test]
+    fn compare_paths_breaks_normalized_separator_tie_with_original_text() {
+        let slash_path = Path::new("packages/a/package.json");
+        let backslash_path = Path::new(r"packages\a\package.json");
+
+        assert_eq!(compare_paths(slash_path, backslash_path), Ordering::Less);
+        assert_eq!(compare_paths(backslash_path, slash_path), Ordering::Greater);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compare_paths_preserves_lossy_non_unicode_equality() {
+        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+        let left = PathBuf::from(OsString::from_vec(vec![b'p', 0x80, b'/', b'a']));
+        let right = PathBuf::from(OsString::from_vec(vec![b'p', 0x81, b'/', b'a']));
+
+        assert_eq!(compare_paths(&left, &right), Ordering::Equal);
+    }
 
     #[test]
     fn resolves_unique_name_when_dependency_references_one_project() {

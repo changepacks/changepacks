@@ -64,12 +64,9 @@ mod tests {
 
     #[test]
     fn test_get_relative_path_absolute_path_outside_repo() {
-        // Create a temporary directory and initialize git
+        // Create a temporary directory.
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
-
-        // Initialize git repository
-        crate::test_support::init_git_repo(temp_path);
 
         let inside_path = temp_path.join("inside_absolute_path.txt");
         fs::write(&inside_path, "inside content").unwrap();
