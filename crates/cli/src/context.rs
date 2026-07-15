@@ -2,9 +2,7 @@ use crate::finders::get_finders;
 use anyhow::{Context, Result};
 use changepacks_core::Config;
 use changepacks_core::ProjectFinder;
-use changepacks_utils::{
-    ThreadSafeRepository, find_current_git_repo, find_project_dirs, get_changepacks_config_at,
-};
+use changepacks_utils::{find_current_git_repo, find_project_dirs, get_changepacks_config_at};
 use std::path::{Path, PathBuf};
 
 /// Shared setup context for all CLI commands.
@@ -18,10 +16,6 @@ pub struct CommandContext {
     pub config: Config,
     /// Project finders for all supported languages
     pub project_finders: Vec<Box<dyn ProjectFinder>>,
-    /// Cached git repository handle so downstream commands (e.g. `update`)
-    /// do not re-run `gix::discover` per invocation. `ThreadSafeRepository`
-    /// is an internal `Arc` handle so this adds no measurable memory cost.
-    pub repo: ThreadSafeRepository,
     /// Cached `<repo_root_path>/.changepacks` computed once in `new()` so
     /// every `check`/`update`/`changepack` command reads a stable
     /// `&PathBuf` (deref-coerces to `&Path`) instead of re-allocating a
@@ -73,7 +67,6 @@ impl CommandContext {
             repo_root_path,
             config,
             project_finders,
-            repo,
             changepacks_dir,
         })
     }

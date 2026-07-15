@@ -274,7 +274,20 @@ fn cached_project_line<'a, 'ctx>(
     }
 }
 
-/// Display a single node in the tree
+enum TreeFrame<'a> {
+    Node {
+        project: &'a Project,
+        prefix: String,
+        is_last: bool,
+    },
+    Dependencies {
+        project: &'a Project,
+        prefix: String,
+        next_index: usize,
+    },
+}
+
+/// Display a single node and its dependencies without growing the call stack.
 fn display_tree_node<'a>(
     project: &'a Project,
     ctx: &mut TreeContext<'a>,
@@ -283,39 +296,74 @@ fn display_tree_node<'a>(
     visited: &mut HashSet<&'a Path>,
     writer: &mut impl Write,
 ) -> Result<()> {
-    let project_path = project.path();
-    let is_first_visit = visited.insert(project_path);
+    let mut frames = vec![TreeFrame::Node {
+        project,
+        prefix: prefix.to_owned(),
+        is_last,
+    }];
 
-    // Only print the project line if this is the first time visiting it
-    if is_first_visit {
-        let connector = tree_connector(is_last);
-        writeln!(
-            writer,
-            "{}{}{}",
-            prefix,
-            connector,
-            cached_project_line(project, ctx)?
-        )?;
-    }
+    while let Some(frame) = frames.pop() {
+        match frame {
+            TreeFrame::Node {
+                project,
+                prefix,
+                is_last,
+            } => {
+                let project_path = project.path();
+                if visited.insert(project_path) {
+                    writeln!(
+                        writer,
+                        "{}{}{}",
+                        prefix,
+                        tree_connector(is_last),
+                        cached_project_line(project, ctx)?
+                    )?;
+                }
 
-    // Always display dependencies, even if the node was already visited
-    // This ensures all dependencies are shown in the tree.
-    // Dependencies were resolved and sorted when the graph was built.
-    if let Some(deps) = ctx.graph.get(project_path) {
-        let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
-        for (idx, dep_project) in deps.iter().enumerate() {
-            let is_last_dep = idx == deps.len() - 1;
-            if visited.contains(dep_project.path()) {
-                let dep_connector = tree_connector(is_last_dep);
-                writeln!(
-                    writer,
-                    "{}{}{}",
-                    new_prefix,
-                    dep_connector,
-                    cached_project_line(dep_project, ctx)?
-                )?;
-            } else {
-                display_tree_node(dep_project, ctx, &new_prefix, is_last_dep, visited, writer)?;
+                if ctx.graph.contains_key(project_path) {
+                    frames.push(TreeFrame::Dependencies {
+                        project,
+                        prefix: format!("{}{}", prefix, if is_last { "    " } else { "│   " }),
+                        next_index: 0,
+                    });
+                }
+            }
+            TreeFrame::Dependencies {
+                project,
+                prefix,
+                next_index,
+            } => {
+                let Some(deps) = ctx.graph.get(project.path()) else {
+                    continue;
+                };
+                let Some(dep_project) = deps.get(next_index).copied() else {
+                    continue;
+                };
+                let is_last_dep = next_index == deps.len() - 1;
+
+                if !is_last_dep {
+                    frames.push(TreeFrame::Dependencies {
+                        project,
+                        prefix: prefix.clone(),
+                        next_index: next_index + 1,
+                    });
+                }
+
+                if visited.contains(dep_project.path()) {
+                    writeln!(
+                        writer,
+                        "{}{}{}",
+                        prefix,
+                        tree_connector(is_last_dep),
+                        cached_project_line(dep_project, ctx)?
+                    )?;
+                } else {
+                    frames.push(TreeFrame::Node {
+                        project: dep_project,
+                        prefix,
+                        is_last: is_last_dep,
+                    });
+                }
             }
         }
     }
@@ -516,7 +564,7 @@ mod tests {
 
     use changepacks_core::test_support::{MockPackage, MockWorkspace};
 
-    fn package(name: &'static str, dependencies: &[&str]) -> Project {
+    fn package(name: &str, dependencies: &[&str]) -> Project {
         let relative_path = format!("packages/{name}/package.json");
         let path = format!("/repo/{relative_path}");
         let mut package = MockPackage::with_all(
@@ -612,6 +660,36 @@ mod tests {
                 "[Node.js] b (v1.0.0) - packages/b/package.json [deps:\n",
                 "        a]\n",
             )
+        );
+    }
+
+    #[test]
+    fn test_display_tree_handles_deep_acyclic_chain_without_stack_growth() {
+        const DEPTH: usize = 10_000;
+
+        let names: Vec<String> = (0..DEPTH).map(|index| format!("node-{index:05}")).collect();
+        let projects: Vec<Project> = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let dependencies: Vec<&str> = names
+                    .get(index + 1)
+                    .map(String::as_str)
+                    .into_iter()
+                    .collect();
+                package(name, &dependencies)
+            })
+            .collect();
+        let project_refs: Vec<&Project> = projects.iter().collect();
+
+        assert!(
+            display_tree(
+                &project_refs,
+                Path::new("/repo"),
+                &HashMap::new(),
+                &mut std::io::sink(),
+            )
+            .is_ok()
         );
     }
 

@@ -104,15 +104,21 @@ pub(crate) fn compare_paths(left: &Path, right: &Path) -> Ordering {
                 .chars()
                 .map(|character| if character == '\\' { '/' } else { character }),
         )
-        .then_with(|| left_lossy.cmp(&right_lossy))
+        .then_with(|| left.as_os_str().cmp(right.as_os_str()))
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
         cmp::Ordering,
+        ffi::OsString,
         path::{Path, PathBuf},
     };
+
+    #[cfg(unix)]
+    use std::os::unix::ffi::OsStringExt;
+    #[cfg(windows)]
+    use std::os::windows::ffi::OsStringExt;
 
     use changepacks_core::Project;
     use changepacks_node::package::NodePackage;
@@ -120,6 +126,32 @@ mod tests {
     use crate::test_support::create_project;
 
     use super::{ProjectNameAnalysis, ProjectNameResolution, compare_paths};
+
+    #[cfg(unix)]
+    fn lossy_collision_paths() -> (PathBuf, PathBuf) {
+        (
+            PathBuf::from(OsString::from_vec(vec![b'p', 0x80, b'/', b'a'])),
+            PathBuf::from(OsString::from_vec(vec![b'p', 0x81, b'/', b'a'])),
+        )
+    }
+
+    #[cfg(windows)]
+    fn lossy_collision_paths() -> (PathBuf, PathBuf) {
+        (
+            PathBuf::from(OsString::from_wide(&[
+                b'p'.into(),
+                0xD800,
+                b'/'.into(),
+                b'a'.into(),
+            ])),
+            PathBuf::from(OsString::from_wide(&[
+                b'p'.into(),
+                0xD801,
+                b'/'.into(),
+                b'a'.into(),
+            ])),
+        )
+    }
 
     #[test]
     fn compare_paths_breaks_normalized_separator_tie_with_original_text() {
@@ -130,15 +162,49 @@ mod tests {
         assert_eq!(compare_paths(backslash_path, slash_path), Ordering::Greater);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn compare_paths_preserves_lossy_non_unicode_equality() {
-        use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    fn compare_paths_breaks_lossy_non_unicode_tie_with_raw_os_string() {
+        let (left, right) = lossy_collision_paths();
 
-        let left = PathBuf::from(OsString::from_vec(vec![b'p', 0x80, b'/', b'a']));
-        let right = PathBuf::from(OsString::from_vec(vec![b'p', 0x81, b'/', b'a']));
+        assert_eq!(left.to_string_lossy(), right.to_string_lossy());
+        assert_eq!(compare_paths(&left, &right), Ordering::Less);
+        assert_eq!(compare_paths(&right, &left), Ordering::Greater);
+    }
 
-        assert_eq!(compare_paths(&left, &right), Ordering::Equal);
+    #[test]
+    fn reports_lossy_colliding_candidates_deterministically_across_discovery_permutations() {
+        // Given
+        let (left_path, right_path) = lossy_collision_paths();
+        let left = Project::Package(Box::new(NodePackage::new(
+            Some("shared".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/left/package.json"),
+            left_path.clone(),
+        )));
+        let right = Project::Package(Box::new(NodePackage::new(
+            Some("shared".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/right/package.json"),
+            right_path.clone(),
+        )));
+        let app = create_project("app", vec!["shared"]);
+        let permutations = [vec![&right, &app, &left], vec![&left, &right, &app]];
+
+        // When
+        let diagnostics: Vec<_> = permutations
+            .iter()
+            .map(|projects| {
+                ProjectNameAnalysis::new(projects)
+                    .referenced_ambiguity()
+                    .expect("the referenced duplicate must be ambiguous")
+                    .candidates()
+                    .to_vec()
+            })
+            .collect();
+
+        // Then
+        assert_eq!(diagnostics[0], diagnostics[1]);
+        assert_eq!(diagnostics[0], [left_path, right_path]);
     }
 
     #[test]
