@@ -442,7 +442,7 @@ If you're using changepacks in your project, we'd love to feature you here! Plea
 
 ## License
 
-This project is distributed under the MIT License. See the [LICENSE](LICENSE) file for more details.
+This project is distributed under the Apache License 2.0. See the [LICENSE](LICENSE) file for more details.
 
 ## Roadmap
 
