@@ -53,6 +53,23 @@ fn should_dispatch_change(gitignore: Option<&Gitignore>, path: &Path) -> bool {
     !contains_changepacks_component(path) && !config_ignores_path(gitignore, path)
 }
 
+fn collect_dispatchable_paths(
+    paths: impl IntoIterator<Item = Result<PathBuf>>,
+    gitignore: Option<&Gitignore>,
+    error_context: &'static str,
+) -> Result<Vec<PathBuf>> {
+    paths
+        .into_iter()
+        .collect::<Result<Vec<_>>>()
+        .context(error_context)
+        .map(|paths| {
+            paths
+                .into_iter()
+                .filter(|path| should_dispatch_change(gitignore, path))
+                .collect()
+        })
+}
+
 /// Discover project directories containing specific files from git tracked
 /// files — the discovery-only walk, with NO git change detection.
 ///
@@ -266,12 +283,13 @@ pub async fn find_project_dirs(
         .object()?
         .try_into_commit()?
         .tree()?;
-    let diff = repo
-        .diff_tree_to_tree(
+    let diff = collect_dispatchable_paths(
+        repo.diff_tree_to_tree(
             Some(&head_tree),
             Some(&comparison_tree),
             gix::diff::Options::default(),
-        )?
+        )
+        .context("Failed to enumerate changed tree")?
         .into_iter()
         // gix reports ancestor tree entries alongside their changed leaves.
         // Dispatch only changes with a leaf on either side so file-specific
@@ -279,15 +297,16 @@ pub async fn find_project_dirs(
         .filter(|change| {
             change.entry_mode().is_no_tree() || change.source_entry_mode_and_id().0.is_no_tree()
         })
-        .filter_map(|change| {
-            change
+        .map(|change| {
+            Ok(change
                 .location()
                 .to_path()
-                .ok()
-                .map(std::path::Path::to_path_buf)
-        })
-        .filter(|path| should_dispatch_change(gitignore.as_ref(), path))
-        .collect::<Vec<_>>();
+                .context("Failed to convert changed tree path")?
+                .to_path_buf())
+        }),
+        gitignore.as_ref(),
+        "Failed to enumerate changed tree paths",
+    )?;
 
     // Dedupe status ∪ diff before dispatching to `check_changed`.
     // The common case during a live edit against `main` is a file that has
@@ -303,29 +322,28 @@ pub async fn find_project_dirs(
     //
     // Preallocate: `HashSet::from_iter` (via `collect`) does NOT use
     // `size_hint` to reserve capacity (unlike `Vec`), so it incurs
-    // geometric-doubling reallocations. The intermediate
-    // `changed_files: Vec<PathBuf>` from the status iterator was pure
-    // waste — its sole consumer was `unique_files.extend(changed_files)`,
-    // so we skip the Vec entirely and extend the HashSet directly from
-    // the status iterator. `diff.len() * 2` is a conservative estimate
-    // (typical live-edit repos have status entries in the same order of
-    // magnitude as base-branch diff entries) that avoids reserving too
+    // geometric-doubling reallocations. `diff.len() * 2` is a conservative
+    // estimate (typical live-edit repos have status entries in the same order
+    // of magnitude as base-branch diff entries) that avoids reserving too
     // little without unbounded over-allocation.
     let mut unique_files: HashSet<PathBuf> = HashSet::with_capacity(diff.len() * 2);
-    unique_files.extend(
-        repo.status(progress::Discard)?
-            .into_index_worktree_iter(Vec::new())?
-            .filter_map(|entry| {
-                entry.ok().and_then(|entry| {
-                    entry
-                        .rela_path()
-                        .to_path()
-                        .ok()
-                        .map(std::path::Path::to_path_buf)
-                        .filter(|path| should_dispatch_change(gitignore.as_ref(), path))
-                })
+    let status_paths = collect_dispatchable_paths(
+        repo.status(progress::Discard)
+            .context("Failed to prepare repository status")?
+            .into_index_worktree_iter(Vec::new())
+            .context("Failed to enumerate index and worktree changes")?
+            .map(|entry| {
+                let entry = entry.context("Failed to enumerate worktree status entry")?;
+                Ok(entry
+                    .rela_path()
+                    .to_path()
+                    .context("Failed to convert worktree status path")?
+                    .to_path_buf())
             }),
-    );
+        gitignore.as_ref(),
+        "Failed to enumerate worktree status paths",
+    )?;
+    unique_files.extend(status_paths);
     unique_files.extend(diff);
 
     // Resolve every unique changed file to an absolute path ONCE, then dispatch
@@ -522,6 +540,42 @@ mod tests {
             .unwrap();
 
         assert_eq!(finders[0].projects()[0].name(), Some(expected));
+    }
+
+    #[test]
+    fn changed_path_collection_propagates_injected_status_error() {
+        let status_paths = [Err(anyhow::anyhow!("injected status enumeration failure")
+            .context("Failed to enumerate worktree status entry"))];
+
+        let error = collect_dispatchable_paths(
+            status_paths,
+            None,
+            "Failed to enumerate worktree status paths",
+        )
+        .expect_err("injected status error must reach the caller");
+
+        assert!(
+            format!("{error:#}").contains("Failed to enumerate worktree status paths"),
+            "unexpected error context: {error:#}"
+        );
+        assert!(
+            format!("{error:#}").contains("Failed to enumerate worktree status entry"),
+            "missing status-entry context: {error:#}"
+        );
+    }
+
+    #[test]
+    fn changed_path_collection_propagates_injected_diff_path_error() {
+        let diff_paths = [Err(anyhow::anyhow!("injected path conversion failure")
+            .context("Failed to convert changed tree path"))];
+
+        let error =
+            collect_dispatchable_paths(diff_paths, None, "Failed to enumerate changed tree paths")
+                .expect_err("injected diff path error must reach the caller");
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to enumerate changed tree paths"));
+        assert!(message.contains("Failed to convert changed tree path"));
     }
 
     #[tokio::test]

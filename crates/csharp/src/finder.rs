@@ -98,11 +98,11 @@ impl CSharpProjectFinder {
                     {
                         in_is_packable = true;
                     } else if name.as_ref() == b"ProjectReference" {
-                        collect_project_reference(&e, &mut projects);
+                        collect_project_reference(&e, &mut projects)?;
                     }
                 }
                 Ok(Event::Empty(e)) if e.local_name().as_ref() == b"ProjectReference" => {
-                    collect_project_reference(&e, &mut projects);
+                    collect_project_reference(&e, &mut projects)?;
                 }
                 Ok(Event::End(e)) => {
                     element_depth = element_depth
@@ -175,18 +175,22 @@ impl CSharpProjectFinder {
 /// push its extracted project name into `projects`. Shared by both the
 /// `Event::Start` and `Event::Empty` arms of `parse_csproj_metadata` so
 /// the attribute-parsing lives in exactly one place.
-fn collect_project_reference(e: &quick_xml::events::BytesStart<'_>, projects: &mut Vec<String>) {
+fn collect_project_reference(
+    e: &quick_xml::events::BytesStart<'_>,
+    projects: &mut Vec<String>,
+) -> Result<()> {
     let mut include_name = None;
     let mut update_name = None;
 
-    for attr in e.attributes().flatten() {
+    for attr in e.attributes() {
+        let attr = attr.context("Failed to parse ProjectReference attribute")?;
         let attr_name = attr.key.as_ref();
         if !matches!(attr_name, b"Include" | b"Update") {
             continue;
         }
-        let Ok(value) = attr.normalized_value(XmlVersion::Implicit1_0) else {
-            continue;
-        };
+        let value = attr
+            .normalized_value(XmlVersion::Implicit1_0)
+            .context("Failed to normalize ProjectReference attribute value")?;
         let Some(name) = extract_project_name_from_path(&value) else {
             continue;
         };
@@ -200,6 +204,7 @@ fn collect_project_reference(e: &quick_xml::events::BytesStart<'_>, projects: &m
     if let Some(name) = include_name.or(update_name) {
         projects.push(name);
     }
+    Ok(())
 }
 
 /// Extract project name from a path string, handling both Windows and Unix separators
@@ -985,6 +990,46 @@ mod tests {
             .unwrap()
             .1;
         assert_eq!(refs, vec!["CoreLib".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_project_references_from_start_and_empty_elements() {
+        let content = r#"<Project>
+  <ItemGroup>
+    <ProjectReference Include="..\Started\Started.csproj"></ProjectReference>
+    <ProjectReference Include="..\Empty\Empty.csproj" />
+  </ItemGroup>
+</Project>"#;
+
+        let refs = CSharpProjectFinder::parse_csproj_metadata(content)
+            .unwrap()
+            .1;
+
+        assert_eq!(refs, vec!["Started".to_string(), "Empty".to_string()]);
+    }
+
+    #[test]
+    fn test_project_reference_malformed_attribute_returns_contextual_error() {
+        let content = r#"<Project><ItemGroup><ProjectReference Include="Valid.csproj" Broken /></ItemGroup></Project>"#;
+
+        let error = CSharpProjectFinder::parse_csproj_metadata(content).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Failed to parse ProjectReference attribute"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn test_project_reference_malformed_entity_returns_contextual_error() {
+        let content = r#"<Project><ItemGroup><ProjectReference Include="..\Bad&unknown;\Bad.csproj" /></ItemGroup></Project>"#;
+
+        let error = CSharpProjectFinder::parse_csproj_metadata(content).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Failed to normalize ProjectReference attribute value"),
+            "unexpected error: {error:#}"
+        );
     }
 
     // The unified `parse_csproj_metadata` MUST return both the version and

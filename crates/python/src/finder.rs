@@ -128,11 +128,12 @@ impl ProjectFinder for PythonProjectFinder {
                 publishable_by_default,
             )))
         } else {
-            Project::Package(Box::new(PythonPackage::new(
+            Project::Package(Box::new(PythonPackage::new_discovered(
                 name,
                 version,
                 path_key.clone(),
                 relative_path_key,
+                publishable_by_default,
             )))
         };
 
@@ -205,6 +206,7 @@ version = "1.0.0"
             Project::Package(pkg) => {
                 assert_eq!(pkg.name(), Some("test-package"));
                 assert_eq!(pkg.version(), Some("1.0.0"));
+                assert!(pkg.is_publishable_by_default());
             }
             _ => panic!("Expected Package"),
         }
@@ -507,15 +509,18 @@ requires = ["setuptools"]
             .await
             .unwrap();
 
-        let projects = finder.projects();
+        let mut projects = finder.projects_mut();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), None);
-                assert_eq!(pkg.version(), None);
-            }
-            _ => panic!("Expected Package"),
-        }
+        let project = projects.pop().unwrap();
+        assert!(matches!(&project, Project::Package(_)));
+        assert_eq!(project.name(), None);
+        assert_eq!(project.version(), None);
+        assert!(!project.is_publishable_by_default());
+
+        project.set_name("repository-name".to_string());
+
+        assert_eq!(project.name(), Some("repository-name"));
+        assert!(!project.is_publishable_by_default());
 
         temp_dir.close().unwrap();
     }

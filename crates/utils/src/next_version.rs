@@ -2,17 +2,29 @@ use anyhow::Result;
 use changepacks_core::UpdateType;
 
 /// Single anyhow constructor for every "Invalid version format: <v>" error
-/// path in `next_version` — the three early-exit branches (the two
-/// `split_once('.')` misses and the `patch.contains('.')` guard) plus the
-/// `parse` closure's `u64`-parse failure. Routing all four sites through one
-/// helper means a future rewording (e.g. adding valid-shape guidance) only
-/// touches one location, so the message can never drift between them. Pure
-/// code-quality gain — error path only, so `bench_next_version` (which feeds
-/// `"10.20.30"` / `"10.20.30+42"`, the happy path) cannot be affected.
+/// path in `next_version`.
 fn invalid_version(v: &str) -> anyhow::Error {
     anyhow::anyhow!(
         "Invalid version format: {v} (expected MAJOR.MINOR.PATCH, optionally with +build metadata)"
     )
+}
+
+fn push_incremented_decimal(result: &mut String, component: &str) {
+    match component
+        .as_bytes()
+        .iter()
+        .rposition(|digit| *digit != b'9')
+    {
+        Some(index) => {
+            result.push_str(&component[..index]);
+            result.push(char::from(component.as_bytes()[index] + 1));
+            result.extend(std::iter::repeat_n('0', component.len() - index - 1));
+        }
+        None => {
+            result.push('1');
+            result.extend(std::iter::repeat_n('0', component.len()));
+        }
+    }
 }
 
 /// Compute the next version with the shared "reserve `0.0.0` when
@@ -60,7 +72,7 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     //   - `"1.2.3.4"` → both splits succeed but `patch = "3.4"` still
     //     carries a `'.'`, caught by `patch.contains('.')` → error.
     //   - `"1.2.wrong"` → both splits succeed, `patch = "wrong"`, no `.`,
-    //     `parse::<u64>()` fails downstream.
+    //     canonical-digit validation fails downstream.
     let (major, rest) = version
         .split_once('.')
         .ok_or_else(|| invalid_version(version))?;
@@ -105,8 +117,8 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
     // SemVer numeric identifiers must be nonempty ASCII decimal digits in
     // their canonical spelling: zero is valid by itself, while every
     // multi-digit component must start with a non-zero digit. Do not rely on
-    // `u64::from_str` for the lexical rule because it accepts a leading `+`.
-    // Parsing below remains responsible for the numeric overflow boundary.
+    // integer parsing for the lexical rule because it accepts a leading `+`
+    // and imposes an artificial numeric ceiling.
     if [major, minor, patch].into_iter().any(|component| {
         component.is_empty()
             || !component.bytes().all(|byte| byte.is_ascii_digit())
@@ -115,40 +127,26 @@ pub fn next_version(version: &str, update_type: UpdateType) -> Result<String> {
         return Err(invalid_version(version));
     }
 
-    // Version components are semver-scoped (spec: 32-bit safe), so `usize`
-    // was the wrong type for a serialized format: platform-dependent (32 vs
-    // 64 bit). `u64` matches semver's practical upper bound and gives us
-    // cross-platform determinism for edge inputs. `Display` for `u64` is
-    // byte-identical to `Display` for `usize` at the values real semver
-    // components hit, so the `format!` outputs stay unchanged.
-    let parse = |s: &str| -> Result<u64> { s.parse::<u64>().map_err(|_| invalid_version(version)) };
-
-    // Parse all three numeric base components up front. This validates that
-    // major, minor, and patch are all valid u64 integers before any bump is
-    // applied. The parse closure routes all failures through `invalid_version`,
-    // ensuring consistent error messages across all three components.
-    let major_num = parse(major)?;
-    let minor_num = parse(minor)?;
-    let patch_num = parse(patch)?;
-
-    // Rebuild via `format!` — one allocation for the result string, no
-    // per-part heap traffic. Lower components reset to `0` for Major /
-    // Minor bumps, matching the previous "reset lower parts to 0" loop.
-    //
-    // Guard each increment with `checked_add(1)`: a component of exactly
-    // `u64::MAX` (18446744073709551615) parses fine and clears every guard
-    // above, so a bare `+ 1` would debug-panic on overflow or silently wrap
-    // to `0` in release (e.g. a Major bump of `18446744073709551615.0.0`
-    // yielding `0.0.0`, a silently wrong version). Route the overflow through
-    // the SAME `invalid_version` constructor as the parse/shape errors so the
-    // function honors its documented "invalid version format" contract for
-    // every structurally-valid input, from one place — no second error path.
-    let bump = |n: u64| n.checked_add(1).ok_or_else(|| invalid_version(version));
-    let mut result = match update_type {
-        UpdateType::Major => format!("{}.0.0", bump(major_num)?),
-        UpdateType::Minor => format!("{}.{}.0", major_num, bump(minor_num)?),
-        UpdateType::Patch => format!("{}.{}.{}", major_num, minor_num, bump(patch_num)?),
-    };
+    let mut result = String::with_capacity(version.len() + 1);
+    match update_type {
+        UpdateType::Major => {
+            push_incremented_decimal(&mut result, major);
+            result.push_str(".0.0");
+        }
+        UpdateType::Minor => {
+            result.push_str(major);
+            result.push('.');
+            push_incremented_decimal(&mut result, minor);
+            result.push_str(".0");
+        }
+        UpdateType::Patch => {
+            result.push_str(major);
+            result.push('.');
+            result.push_str(minor);
+            result.push('.');
+            push_incremented_decimal(&mut result, patch);
+        }
+    }
 
     if let Some(p) = plus_part {
         result.push('+');
@@ -234,23 +232,49 @@ mod tests {
         );
     }
 
-    // A component of exactly `u64::MAX` (18446744073709551615) parses cleanly
-    // and clears every shape / `.` / `+` guard, so the ONLY thing between it
-    // and a debug-build overflow panic (or a release-build silent wrap to `0`,
-    // e.g. a Major bump of `18446744073709551615.0.0` yielding `0.0.0`) is the
-    // `checked_add(1)` guard on the bumped component. Each update type bumps a
-    // DIFFERENT component, so the boundary must be rejected for whichever
-    // component that update actually increments — the other two stay small and
-    // valid to prove the error comes from the overflow guard, not the parse.
     #[rstest]
-    #[case("18446744073709551615.0.0", UpdateType::Major)]
-    #[case("1.18446744073709551615.0", UpdateType::Minor)]
-    #[case("1.0.18446744073709551615", UpdateType::Patch)]
-    fn test_next_version_component_overflow_is_err(
+    #[case(
+        "18446744073709551616.7.8",
+        UpdateType::Major,
+        "18446744073709551617.0.0"
+    )]
+    #[case(
+        "18446744073709551616.18446744073709551616.8",
+        UpdateType::Minor,
+        "18446744073709551616.18446744073709551617.0"
+    )]
+    #[case(
+        "18446744073709551616.18446744073709551616.18446744073709551616+build.0007",
+        UpdateType::Patch,
+        "18446744073709551616.18446744073709551616.18446744073709551617+build.0007"
+    )]
+    #[case(
+        concat!("9999999999", "9999999999", "9999999999", ".2.3"),
+        UpdateType::Major,
+        concat!("1", "0000000000", "0000000000", "0000000000", ".0.0")
+    )]
+    #[case(
+        concat!("1234567890.9999999999", "9999999999", "9999999999", ".7"),
+        UpdateType::Minor,
+        concat!("1234567890.1", "0000000000", "0000000000", "0000000000", ".0")
+    )]
+    #[case(
+        concat!("1234567890.7.9999999999", "9999999999", "9999999999", "+meta.9"),
+        UpdateType::Patch,
+        concat!(
+            "1234567890.7.1",
+            "0000000000",
+            "0000000000",
+            "0000000000",
+            "+meta.9"
+        )
+    )]
+    fn test_next_version_arbitrary_length_component(
         #[case] version: &str,
         #[case] update_type: UpdateType,
+        #[case] expected: &str,
     ) {
-        assert!(next_version(version, update_type).is_err());
+        assert_eq!(next_version(version, update_type).unwrap(), expected);
     }
 
     // A rejected version (here a pre-release, which `next_version`
