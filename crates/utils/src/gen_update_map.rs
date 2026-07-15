@@ -8,7 +8,11 @@ use anyhow::{Context, Result};
 use changepacks_core::{ChangePackLog, ChangePackResultLog, Config, Project, UpdateType};
 use glob::Pattern;
 
-use crate::{collect_changepack_log_paths, get_relative_path, read_log_bodies};
+use crate::{
+    collect_changepack_log_paths, get_relative_path,
+    project_names::{ProjectNameAnalysis, ProjectNameResolution, compare_paths},
+    read_log_bodies,
+};
 
 /// Generate update map from changepack logs
 ///
@@ -115,7 +119,7 @@ fn apply_update_on_rules(
     }
 
     let mut initial_paths: Vec<_> = update_map.keys().cloned().collect();
-    initial_paths.sort_by(|left, right| compare_diagnostic_paths(left, right));
+    initial_paths.sort_by(|left, right| compare_paths(left, right));
     let mut queued_paths: VecDeque<PathBuf> = initial_paths.into();
 
     while !queued_paths.is_empty() {
@@ -130,7 +134,7 @@ fn apply_update_on_rules(
             let match_path = normalize_update_on_match_path(&path);
             batch.push((path, match_path));
         }
-        batch.sort_by(|left, right| compare_diagnostic_paths(&left.0, &right.0));
+        batch.sort_by(|left, right| compare_paths(&left.0, &right.0));
 
         // Initial map keys are unique, and later paths are queued only through
         // `Entry::Vacant`, so every queued path reaches every rule exactly once.
@@ -162,13 +166,6 @@ fn apply_update_on_rules(
     Ok(())
 }
 
-fn compare_diagnostic_paths(left: &Path, right: &Path) -> std::cmp::Ordering {
-    left.to_string_lossy()
-        .replace('\\', "/")
-        .cmp(&right.to_string_lossy().replace('\\', "/"))
-        .then_with(|| left.to_string_lossy().cmp(&right.to_string_lossy()))
-}
-
 /// Apply reverse dependency updates: if package A depends on package B (via a local workspace dependency),
 /// and B is being updated, then A should also be updated as PATCH.
 pub fn apply_reverse_dependencies<S: BuildHasher>(
@@ -189,45 +186,11 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         return Ok(());
     }
 
-    // Dependencies are resolved by project name, so record whether every name
-    // is unique before building either lookup. As in `sort_by_dependencies`,
-    // `Some(index)` means unique and `None` means duplicate/ambiguous.
-    let mut name_to_index: HashMap<&str, Option<usize>> = HashMap::with_capacity(projects.len());
-    for (idx, project) in projects.iter().enumerate() {
-        if let Some(name) = project.name() {
-            match name_to_index.entry(name) {
-                Entry::Occupied(entry) => {
-                    *entry.into_mut() = None;
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(Some(idx));
-                }
-            }
-        }
-    }
-
-    // Match `sort_by_dependencies`: duplicate names are harmless until a
-    // dependency edge references one. Report the lexicographically first
-    // ambiguous dependency with candidate paths sorted independently of
-    // project discovery order.
-    let mut ambiguous_dependencies = Vec::new();
-    for project in projects {
-        for dependency in project.dependencies() {
-            if name_to_index.get(dependency.as_str()) == Some(&None) {
-                ambiguous_dependencies.push(dependency.as_str());
-            }
-        }
-    }
-    if !ambiguous_dependencies.is_empty() {
-        ambiguous_dependencies.sort_unstable();
-        let dependency = ambiguous_dependencies[0];
-        let mut candidates: Vec<_> = projects
-            .iter()
-            .filter(|project| project.name() == Some(dependency))
-            .map(|project| project.relative_path().to_path_buf())
-            .collect();
-        candidates.sort_by(|left, right| compare_diagnostic_paths(left, right));
-        let candidate_paths = candidates
+    let project_names = ProjectNameAnalysis::new(projects);
+    if let Some(ambiguity) = project_names.referenced_ambiguity() {
+        let dependency = ambiguity.dependency();
+        let candidate_paths = ambiguity
+            .candidates()
             .iter()
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()
@@ -266,14 +229,19 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         let name_opt = project.name();
         let project_name = name_opt.unwrap_or("unknown");
         let worklist_name = match name_opt {
-            Some(name) if name_to_index.get(name) == Some(&Some(idx)) => Some(name),
+            Some(name) if project_names.resolve(name) == ProjectNameResolution::Unique(idx) => {
+                Some(name)
+            }
             Some(_) => None,
             None => Some(project_name),
         };
 
         let dependencies = project.dependencies();
         for dep_name in dependencies {
-            if !matches!(name_to_index.get(dep_name.as_str()), Some(Some(_))) {
+            if !matches!(
+                project_names.resolve(dep_name),
+                ProjectNameResolution::Unique(_)
+            ) {
                 continue;
             }
 
@@ -302,7 +270,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
 
     for dependents in reverse_deps.values_mut() {
         dependents.sort_by(|left, right| {
-            compare_diagnostic_paths(&left.0, &right.0).then_with(|| left.1.cmp(&right.1))
+            compare_paths(&left.0, &right.0).then_with(|| left.1.cmp(&right.1))
         });
     }
 
@@ -323,9 +291,8 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         .keys()
         .filter_map(|path| path_to_name.get(path).map(|name| (path, *name)))
         .collect();
-    initial_paths.sort_by(|left, right| {
-        compare_diagnostic_paths(left.0, right.0).then_with(|| left.1.cmp(right.1))
-    });
+    initial_paths
+        .sort_by(|left, right| compare_paths(left.0, right.0).then_with(|| left.1.cmp(right.1)));
     let mut to_process: VecDeque<&str> = initial_paths.into_iter().map(|(_, name)| name).collect();
     while let Some(trigger_name) = to_process.pop_front() {
         if let Some(dependents) = reverse_deps.get(trigger_name) {
@@ -369,7 +336,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
             ),
         )
     }));
-    ordered_entries.sort_by(|left, right| compare_diagnostic_paths(&left.0, &right.0));
+    ordered_entries.sort_by(|left, right| compare_paths(&left.0, &right.0));
     update_map.extend(ordered_entries);
 
     Ok(())

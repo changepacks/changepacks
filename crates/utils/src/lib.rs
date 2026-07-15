@@ -64,6 +64,7 @@ mod get_relative_path;
 mod is_changepack_log;
 mod is_workspace_by_sibling;
 mod next_version;
+mod project_names;
 mod sort_by_dep;
 mod split_version;
 #[cfg(any(test, feature = "test-support"))]

@@ -42,7 +42,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_changepacks_dir_creates_directory() {
+    fn test_get_changepacks_dir_returns_path_without_creating() {
         // Create a temporary directory and initialize git
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
@@ -55,10 +55,12 @@ mod tests {
 
         let changepacks_dir = result.unwrap();
 
-        // Create the directory to test that the path is correct
-        fs::create_dir_all(&changepacks_dir).unwrap();
-        assert!(changepacks_dir.exists());
-        assert!(changepacks_dir.is_dir());
+        // Verify the returned path is exactly <repo>/.changepacks
+        assert_eq!(changepacks_dir, temp_path.join(".changepacks"));
+
+        // Verify the path does not exist after the call (non-mutating contract)
+        assert!(!changepacks_dir.exists());
+
         temp_dir.close().unwrap();
     }
 

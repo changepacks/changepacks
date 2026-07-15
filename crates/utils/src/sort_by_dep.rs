@@ -1,9 +1,9 @@
 use changepacks_core::Project;
-use std::cmp::Ordering;
-use std::collections::hash_map::Entry;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use crate::project_names::{ProjectNameAnalysis, ProjectNameResolution, compare_paths};
 
 /// A project participating in a dependency cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,25 +228,20 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
         return Ok(projects);
     }
 
-    // Dependencies are stored as package names, so name lookup is the ordering key.
-    // name_to_index maps each name to Some(idx) if unique, or None if duplicate/ambiguous.
-    let mut name_to_index: HashMap<&str, Option<usize>> = HashMap::with_capacity(projects.len());
-    for (idx, project) in projects.iter().enumerate() {
-        if let Some(name) = project.name() {
-            match name_to_index.entry(name) {
-                Entry::Occupied(e) => {
-                    *e.into_mut() = None;
-                }
-                Entry::Vacant(v) => {
-                    v.insert(Some(idx));
-                }
-            }
-        }
+    let project_names = ProjectNameAnalysis::new(&projects);
+
+    if let Some(ambiguity) = project_names.referenced_ambiguity() {
+        return Err(DependencySortError::AmbiguousDependency(
+            DependencyAmbiguityError {
+                dependency: ambiguity.dependency().to_string(),
+                candidates: ambiguity.candidates().to_vec(),
+            },
+        ));
     }
 
     // Build dependency graph: for each project, find which projects depend on it.
-    // Duplicate names are ambiguous across polyglot publish sets and are marked None
-    // in name_to_index. Only names actually referenced by an edge are errors.
+    // Duplicate names are ambiguous across polyglot publish sets. Only names
+    // actually referenced by an edge are errors.
     // in_degree[i] = number of dependencies that project i has
     let mut in_degree: Vec<usize> = vec![0; projects.len()];
     // Collect edges in the same order the old adjacency Vecs received pushes:
@@ -256,39 +251,20 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
         .map(|project| project.dependencies().len())
         .sum();
     let mut edges: Vec<(usize, usize)> = Vec::with_capacity(dependency_count);
-    let mut ambiguous_dependencies: Vec<&str> = Vec::new();
 
     for (idx, project) in projects.iter().enumerate() {
         let deps = project.dependencies();
         for dep in deps {
-            match name_to_index.get(dep.as_str()) {
-                Some(Some(dep_idx)) => {
+            match project_names.resolve(dep) {
+                ProjectNameResolution::Unique(dep_idx) => {
                     // Project at idx depends on project at dep_idx
                     // So dep_idx should come before idx
-                    edges.push((*dep_idx, idx));
+                    edges.push((dep_idx, idx));
                     in_degree[idx] += 1;
                 }
-                Some(None) => ambiguous_dependencies.push(dep),
-                None => {}
+                ProjectNameResolution::Missing | ProjectNameResolution::Ambiguous => {}
             }
         }
-    }
-
-    if !ambiguous_dependencies.is_empty() {
-        ambiguous_dependencies.sort_unstable();
-        let dependency = ambiguous_dependencies[0];
-        let mut candidates: Vec<_> = projects
-            .iter()
-            .filter(|project| project.name() == Some(dependency))
-            .map(|project| project.relative_path().to_path_buf())
-            .collect();
-        candidates.sort_by(|left, right| compare_paths(left, right));
-        return Err(DependencySortError::AmbiguousDependency(
-            DependencyAmbiguityError {
-                dependency: dependency.to_string(),
-                candidates,
-            },
-        ));
     }
 
     // Store adjacency as CSR: adj[offsets[i]..offsets[i + 1]] contains the
@@ -328,7 +304,7 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
     // per-pop membership guard is unreachable. The initial fill enumerates
     // each index exactly once, and inside the loop each edge is walked
     // exactly once (deps are stored in a `HashSet<String>` so no duplicate
-    // edges, and `name_to_index.get(dep)` resolves each dep to a single
+    // edges, and `project_names.resolve(dep)` resolves each dep to a single
     // index), so every `in_degree` decrement is unique and the `== 0`
     // push happens at most once per node.
     while let Some(idx) = queue.pop_front() {
@@ -375,18 +351,10 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
         .collect())
 }
 
-fn path_sort_key(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
-fn compare_paths(left: &Path, right: &Path) -> Ordering {
-    path_sort_key(left)
-        .cmp(&path_sort_key(right))
-        .then_with(|| left.to_string_lossy().cmp(&right.to_string_lossy()))
-}
-
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     use crate::test_support::create_project;
