@@ -474,27 +474,30 @@ async fn snapshot_update_state(
     changepacks_dir: &Path,
 ) -> Result<UpdateStateSnapshot> {
     let mut seen = HashSet::with_capacity(manifest_paths.len());
+    let manifest_paths = manifest_paths
+        .into_iter()
+        .filter(|path| seen.insert(path.clone()))
+        .collect::<Vec<_>>();
+    let manifest_reads =
+        futures::future::join_all(manifest_paths.iter().map(tokio::fs::read)).await;
     let mut snapshots = Vec::with_capacity(manifest_paths.len());
-    for path in manifest_paths {
-        if seen.insert(path.clone()) {
-            let bytes = match tokio::fs::read(&path).await {
-                Ok(bytes) => Some(bytes),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!("failed to snapshot manifest {}", path.display())
-                    });
-                }
-            };
-            snapshots.push(FileSnapshot { path, bytes });
-        }
+    for (path, result) in manifest_paths.into_iter().zip(manifest_reads) {
+        let bytes = match result {
+            Ok(bytes) => Some(bytes),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("failed to snapshot manifest {}", path.display()));
+            }
+        };
+        snapshots.push(FileSnapshot { path, bytes });
     }
 
     let log_paths = collect_changepack_log_paths(changepacks_dir).await?;
+    let log_reads = futures::future::join_all(log_paths.iter().map(tokio::fs::read)).await;
     let mut logs = Vec::with_capacity(log_paths.len());
-    for path in log_paths {
-        let bytes = tokio::fs::read(&path)
-            .await
+    for (path, result) in log_paths.into_iter().zip(log_reads) {
+        let bytes = result
             .with_context(|| format!("failed to snapshot changepack log {}", path.display()))?;
         logs.push(FileSnapshot {
             path,
@@ -1224,7 +1227,11 @@ path = "../visible"
         let workspaces: Vec<&dyn Workspace> = vec![&workspace];
 
         let error = run_update_transaction(
-            vec![package_path.clone(), workspace_path.clone()],
+            vec![
+                package_path.clone(),
+                workspace_path.clone(),
+                package_path.clone(),
+            ],
             &changepacks_dir,
             apply_updates_unchecked(&mut update_projects, &workspaces),
             async { Ok(()) },
@@ -1240,7 +1247,32 @@ path = "../visible"
     }
 
     #[tokio::test]
-    async fn test_cleanup_failure_restores_manifests_and_complete_log_snapshot() -> Result<()> {
+    async fn test_failed_update_transaction_removes_manifest_missing_at_snapshot() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let manifest_path = temp_dir.path().join("generated.json");
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        tokio::fs::create_dir(&changepacks_dir).await?;
+
+        let error = run_update_transaction(
+            vec![manifest_path.clone()],
+            &changepacks_dir,
+            async {
+                tokio::fs::write(&manifest_path, b"generated during update\n").await?;
+                bail!("deliberate update failure")
+            },
+            async { Ok(()) },
+        )
+        .await
+        .expect_err("the update should fail after creating the manifest");
+
+        assert_eq!(error.to_string(), "deliberate update failure");
+        assert!(!manifest_path.exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_failure_transaction_restores_multiple_original_logs_and_removes_new_log()
+    -> Result<()> {
         let temp_dir = TempDir::new()?;
         let manifest_path = temp_dir.path().join("package.json");
         let changepacks_dir = temp_dir.path().join(".changepacks");

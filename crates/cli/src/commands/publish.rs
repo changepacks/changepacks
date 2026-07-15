@@ -497,6 +497,18 @@ async fn execute_dry_run_publish_loop(
     );
 
     for project in projects {
+        if let Some(dependency) = failed_dependency(project, &failed_project_names) {
+            record_dependency_skip(
+                &mut result_map,
+                &mut failed_projects,
+                &mut failed_project_names,
+                project,
+                dependency,
+                "Dry-run skipped for",
+                format,
+            );
+            continue;
+        }
         if skip_dry_run_due_to_workspace_internal_dep(project, &rust_batch_names) {
             if let FormatOptions::Stdout = format {
                 eprintln!(
@@ -510,18 +522,6 @@ async fn execute_dry_run_publish_loop(
                 &mut result_map,
                 project,
                 "dry-run skipped (workspace-internal dep)",
-                format,
-            );
-            continue;
-        }
-        if let Some(dependency) = failed_dependency(project, &failed_project_names) {
-            record_dependency_skip(
-                &mut result_map,
-                &mut failed_projects,
-                &mut failed_project_names,
-                project,
-                dependency,
-                "Dry-run skipped for",
                 format,
             );
             continue;
@@ -973,6 +973,22 @@ mod tests {
             }
         }
 
+        fn failing_rust_mock(name: &str, relative_path: &str, deps: &[&str]) -> Self {
+            Self {
+                name: name.to_string(),
+                version: "0.0.1",
+                path: PathBuf::from("Cargo.toml"),
+                relative_path: PathBuf::from(relative_path),
+                language: Language::Rust,
+                deps: deps.iter().map(|d| (*d).to_string()).collect(),
+                default_publish_command: "cargo publish",
+                default_dry_run_publish_command: Some("cargo publish --dry-run"),
+                publish_behavior: PublishBehavior::Unused,
+                dry_run_behavior: DryRunBehavior::NonZeroExit,
+                publish_log: None,
+            }
+        }
+
         /// Node package whose publish / dry-run outcome follows `succeeds`
         /// (was `PublishCascadePackage`).
         fn publish_cascade(name: &str, relative_path: &str, deps: &[&str], succeeds: bool) -> Self {
@@ -1280,6 +1296,14 @@ mod tests {
     // parent (the actual cargo invocation we want to avoid).
     fn make_rust_mock(name: &str, relative_path: &str, deps: &[&str]) -> Project {
         Project::Package(Box::new(TestPackage::rust_mock(name, relative_path, deps)))
+    }
+
+    fn make_failing_rust_mock(name: &str, relative_path: &str, deps: &[&str]) -> Project {
+        Project::Package(Box::new(TestPackage::failing_rust_mock(
+            name,
+            relative_path,
+            deps,
+        )))
     }
 
     fn make_publish_cascade_mock(
@@ -1964,6 +1988,27 @@ members = ["packages/*"]
             .expect("dependent should be recorded as skipped dry-run failure");
         let dependent_serialized = serde_json::to_string(dependent_entry).expect("serialize");
         assert!(dependent_serialized.contains("skipped because dependency failed: pkg-a"));
+    }
+
+    #[tokio::test]
+    async fn test_execute_dry_run_loop_prioritizes_failed_rust_dependency_over_workspace_skip() {
+        let leaf = make_failing_rust_mock("crate-leaf", "crates/leaf/Cargo.toml", &[]);
+        let parent = make_rust_mock("crate-parent", "crates/parent/Cargo.toml", &["crate-leaf"]);
+        let projects: Vec<&Project> = vec![&leaf, &parent];
+        let config = Config::default();
+
+        let (result_map, failed) =
+            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Json).await;
+
+        assert_eq!(failed.len(), 2);
+        assert!(failed[0].contains("crate-leaf"));
+        assert!(failed[1].contains("crate-parent"));
+        let parent_entry = result_map
+            .get(std::path::Path::new("crates/parent/Cargo.toml"))
+            .expect("parent should be recorded as skipped dry-run failure");
+        let parent_serialized = serde_json::to_string(parent_entry).expect("serialize");
+        assert!(parent_serialized.contains("skipped because dependency failed: crate-leaf"));
+        assert!(!parent_serialized.contains("dry-run skipped (workspace-internal dep)"));
     }
 
     #[test]
