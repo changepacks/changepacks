@@ -72,7 +72,7 @@ static SUBPROJECTS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 pub struct GradleProjectFinder {
     projects: HashMap<PathBuf, Project>,
     java_available: Option<bool>,
-    metadata_by_wrapper: HashMap<PathBuf, HashMap<PathBuf, GradleMetadataRecord>>,
+    metadata_by_wrapper: HashMap<PathBuf, GradleWrapperMetadata>,
 }
 
 impl GradleProjectFinder {
@@ -97,6 +97,12 @@ struct GradleMetadataRecord {
     project_dir: PathBuf,
     project_path: String,
     properties: GradleProperties,
+}
+
+#[derive(Debug)]
+struct GradleWrapperMetadata {
+    by_project_dir: HashMap<PathBuf, GradleMetadataRecord>,
+    project_names_by_path: HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -562,14 +568,6 @@ fn gradle_property_value(caps: &regex::Captures) -> Option<String> {
         .map(|m| m.as_str().trim())
         .filter(|v| *v != "unspecified")
         .map(std::string::ToString::to_string)
-}
-
-fn gradle_dependency_name(project_path: &str) -> Option<&str> {
-    project_path
-        .trim_matches(':')
-        .rsplit(':')
-        .next()
-        .filter(|name| !name.is_empty())
 }
 
 fn is_gradle_identifier_byte(byte: u8) -> bool {
@@ -1415,10 +1413,7 @@ fn gradle_dependency_from_arguments<'a>(
         }
     }
 
-    (candidate_count == 1)
-        .then_some(project_path)
-        .flatten()
-        .and_then(gradle_dependency_name)
+    (candidate_count == 1).then_some(project_path).flatten()
 }
 
 fn extract_gradle_project_dependencies(
@@ -1573,7 +1568,7 @@ async fn get_gradle_metadata(
     gradlew: &Path,
     gradlew_dir: &Path,
     java_available: bool,
-) -> Result<HashMap<PathBuf, GradleMetadataRecord>> {
+) -> Result<GradleWrapperMetadata> {
     anyhow::ensure!(
         java_available,
         "Java is required for Gradle projects but JAVA_HOME is not set and 'java' was not found on PATH.\n\
@@ -1654,7 +1649,8 @@ async fn get_gradle_metadata(
             gradlew_dir.display()
         )
     })?;
-    let mut metadata = HashMap::with_capacity(records.len());
+    let mut by_project_dir = HashMap::with_capacity(records.len());
+    let mut project_names_by_path = HashMap::with_capacity(records.len());
     for record in records {
         let normalized_dir = tokio::fs::canonicalize(&record.project_dir)
             .await
@@ -1667,7 +1663,35 @@ async fn get_gradle_metadata(
                 )
             })?;
         let project_path = record.project_path.clone();
-        if let Some(previous) = metadata.insert(normalized_dir.clone(), record) {
+        let project_name = record
+            .properties
+            .name
+            .clone()
+            .or_else(|| {
+                normalized_dir
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .map(str::to_owned)
+            })
+            .with_context(|| {
+                format!(
+                    "Gradle metadata project '{}' from '{}' has no usable evaluated project name",
+                    project_path,
+                    gradlew.display()
+                )
+            })?;
+        if let Some(previous_name) =
+            project_names_by_path.insert(project_path.clone(), project_name.clone())
+        {
+            return Err(anyhow::anyhow!(
+                "Duplicate Gradle metadata project path '{}' from '{}': projects '{}' and '{}'",
+                project_path,
+                gradlew.display(),
+                previous_name,
+                project_name
+            ));
+        }
+        if let Some(previous) = by_project_dir.insert(normalized_dir.clone(), record) {
             return Err(anyhow::anyhow!(
                 "Duplicate Gradle metadata records for normalized directory '{}' from '{}': projects '{}' and '{}'",
                 normalized_dir.display(),
@@ -1678,7 +1702,10 @@ async fn get_gradle_metadata(
         }
     }
 
-    Ok(metadata)
+    Ok(GradleWrapperMetadata {
+        by_project_dir,
+        project_names_by_path,
+    })
 }
 
 /// Get project properties using gradlew command.
@@ -1919,7 +1946,7 @@ impl ProjectFinder for GradleProjectFinder {
         let metadata = self
             .metadata_by_wrapper
             .get(&normalized_wrapper_dir)
-            .and_then(|metadata| metadata.get(&normalized_project_dir))
+            .and_then(|metadata| metadata.by_project_dir.get(&normalized_project_dir))
             .cloned()
             .with_context(|| {
                 format!(
@@ -1945,6 +1972,25 @@ impl ProjectFinder for GradleProjectFinder {
                 .and_then(|n| n.to_str())
                 .map(std::string::ToString::to_string)
         });
+
+        let dependency_names = dependencies
+            .iter()
+            .map(|dependency_path| {
+                self.metadata_by_wrapper
+                    .get(&normalized_wrapper_dir)
+                    .and_then(|metadata| metadata.project_names_by_path.get(*dependency_path))
+                    .with_context(|| {
+                        format!(
+                            "Gradle dependency project path '{}' declared by project '{}' (Gradle path '{}', manifest '{}') is missing from metadata emitted by wrapper '{}'",
+                            dependency_path,
+                            name.as_deref().unwrap_or("<unnamed>"),
+                            project_path,
+                            path.display(),
+                            gradlew.display()
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         // Workspace detection: gradlew reports non-empty subprojects list.
         // Previous approach (checking for settings.gradle.kts existence) caused
@@ -1984,7 +2030,7 @@ impl ProjectFinder for GradleProjectFinder {
             ))
         };
 
-        for dependency in dependencies {
+        for dependency in dependency_names {
             project.add_dependency(dependency);
         }
 
@@ -2017,10 +2063,26 @@ mod tests {
     async fn dependencies_for_manifest(manifest_name: &str, content: &str) -> HashSet<String> {
         let temp_dir = TempDir::new().unwrap();
         let project_dir = temp_dir.path().join("project");
-        fs::create_dir_all(&project_dir).unwrap();
+        tokio::fs::create_dir_all(&project_dir).await.unwrap();
         let manifest = project_dir.join(manifest_name);
-        fs::write(&manifest, content).unwrap();
-        create_mock_gradlew(&project_dir, MockGradlew::package("project", "1.0.0"));
+        tokio::fs::write(&manifest, content).await.unwrap();
+        let dependency_paths = super::extract_gradle_project_dependencies(
+            content,
+            gradle_dependency_dialect(&manifest),
+        );
+        let mut records = vec![metadata_record(&project_dir, ":", "project", false)];
+        for (index, dependency_path) in dependency_paths.iter().enumerate() {
+            let dependency_dir = project_dir.join(format!("dependency-{index}"));
+            tokio::fs::create_dir_all(&dependency_dir).await.unwrap();
+            let dependency_name = dependency_path.rsplit(':').next().unwrap();
+            records.push(metadata_record(
+                &dependency_dir,
+                dependency_path,
+                dependency_name,
+                false,
+            ));
+        }
+        create_metadata_gradlew(&project_dir, &records).await;
 
         let mut finder = finder_with_java_available();
         finder
@@ -2312,6 +2374,52 @@ mod tests {
         }
 
         invocation_count
+    }
+
+    fn metadata_record(
+        project_dir: &Path,
+        project_path: &str,
+        name: &str,
+        aggregate: bool,
+    ) -> String {
+        format!(
+            "{GRADLE_METADATA_PREFIX}{{\"projectDir\":{},\"projectPath\":{},\"name\":{},\"version\":\"1.0.0\",\"aggregate\":{aggregate},\"hasPublishTask\":true,\"hasPublishToMavenLocalTask\":true}}",
+            json_string(project_dir.to_string_lossy().as_ref()),
+            json_string(project_path),
+            json_string(name),
+        )
+    }
+
+    async fn create_metadata_gradlew(dir: &Path, records: &[String]) {
+        if cfg!(windows) {
+            let output = records
+                .iter()
+                .map(|record| format!("echo {record}\r\n"))
+                .collect::<String>();
+            tokio::fs::write(
+                dir.join("gradlew.bat"),
+                format!("@echo off\r\n{output}exit /b 0\r\n"),
+            )
+            .await
+            .unwrap();
+        } else {
+            let output = records
+                .iter()
+                .map(|record| format!("printf '%s\\n' '{record}'\n"))
+                .collect::<String>();
+            let gradlew = dir.join("gradlew");
+            tokio::fs::write(&gradlew, format!("#!/bin/sh\n{output}"))
+                .await
+                .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                tokio::fs::set_permissions(&gradlew, fs::Permissions::from_mode(0o755))
+                    .await
+                    .unwrap();
+            }
+        }
     }
 
     #[tokio::test]
@@ -3309,7 +3417,13 @@ dependencies {
 
         assert_eq!(
             dependencies,
-            vec!["lib", "fixtures", "core", "cli", "shared"]
+            vec![
+                ":lib",
+                ":testing:fixtures",
+                ":core",
+                ":tools:cli",
+                ":shared"
+            ]
         );
     }
 
@@ -3331,7 +3445,10 @@ dependencies {
 
         let dependencies = extract_gradle_project_dependencies(content);
 
-        assert_eq!(dependencies, vec!["공통", "인증", "cli"]);
+        assert_eq!(
+            dependencies,
+            vec![":libraries:공통", ":services:인증", ":도구:cli"]
+        );
     }
 
     #[test]
@@ -3354,7 +3471,7 @@ val rendered = "project(\":string-decoy\", configuration = \"default\")"
 
         let dependencies = extract_gradle_project_dependencies(content);
 
-        assert_eq!(dependencies, vec!["real"]);
+        assert_eq!(dependencies, vec![":real"]);
     }
 
     #[test]
@@ -3376,7 +3493,7 @@ dependencies.add("compileOnly", project(":direct-add-real"))
 
         assert_eq!(
             extract_gradle_project_dependencies(content),
-            vec!["real", "nested-real", "command-real", "direct-add-real"]
+            vec![":real", ":nested-real", ":command-real", ":direct-add-real"]
         );
     }
 
@@ -3398,7 +3515,7 @@ dependencies {
 
         assert_eq!(
             extract_gradle_project_dependencies(content),
-            vec!["유니코드"]
+            vec![":plain:유니코드"]
         );
     }
 
@@ -3412,7 +3529,7 @@ dependencies {
 }
 "#;
 
-        assert_eq!(extract_gradle_project_dependencies(content), vec!["real"]);
+        assert_eq!(extract_gradle_project_dependencies(content), vec![":real"]);
     }
 
     #[test]
@@ -3424,7 +3541,7 @@ dependencies { implementation(project(":real-groovy")) }
 "#;
         assert_eq!(
             super::extract_gradle_project_dependencies(groovy, GradleDependencyDialect::Groovy),
-            vec!["real-groovy"]
+            vec![":real-groovy"]
         );
 
         let kotlin = r#"
@@ -3436,7 +3553,7 @@ dependencies { implementation(project(":real-kotlin")) }
 "#;
         assert_eq!(
             super::extract_gradle_project_dependencies(kotlin, GradleDependencyDialect::Kotlin),
-            vec!["real-kotlin"]
+            vec![":real-kotlin"]
         );
     }
 
@@ -3458,7 +3575,7 @@ dependencies { implementation(project(":real-kotlin")) }
         assert!(kotlin[raw_end..].starts_with("\ndependencies"));
         assert_eq!(
             super::extract_gradle_project_dependencies(kotlin, GradleDependencyDialect::Kotlin),
-            vec!["real-kotlin"]
+            vec![":real-kotlin"]
         );
 
         let groovy = r####"
@@ -3467,7 +3584,7 @@ dependencies { implementation(project(":real-groovy")) }
 "####;
         assert_eq!(
             super::extract_gradle_project_dependencies(groovy, GradleDependencyDialect::Groovy),
-            vec!["real-groovy"]
+            vec![":real-groovy"]
         );
     }
 
@@ -3482,7 +3599,7 @@ def quotient = (
 dependencies { implementation(project(":real")) }
 "#;
 
-        assert_eq!(extract_gradle_project_dependencies(content), vec!["real"]);
+        assert_eq!(extract_gradle_project_dependencies(content), vec![":real"]);
     }
 
     #[test]
@@ -3504,7 +3621,7 @@ dependencies {
 }
 "#;
 
-        assert_eq!(extract_gradle_project_dependencies(content), vec!["real"]);
+        assert_eq!(extract_gradle_project_dependencies(content), vec![":real"]);
     }
 
     #[test]
@@ -3520,7 +3637,7 @@ dependencies {
 }
 "#;
 
-        assert_eq!(extract_gradle_project_dependencies(content), vec!["free"]);
+        assert_eq!(extract_gradle_project_dependencies(content), vec![":free"]);
     }
 
     #[test]
@@ -3544,7 +3661,7 @@ dependencies {
 
         assert_eq!(
             extract_gradle_project_dependencies(content),
-            vec!["late-kotlin", "late-groovy", "stacked"]
+            vec![":late-kotlin", ":late-groovy", ":balanced:stacked"]
         );
     }
 
@@ -3566,7 +3683,7 @@ dependencies {
 
         assert_eq!(
             extract_gradle_project_dependencies(content),
-            vec!["real", "after-balanced-calls"]
+            vec![":real", ":after-balanced-calls"]
         );
     }
 
@@ -3589,7 +3706,11 @@ dependencies {
 
         assert_eq!(
             extract_gradle_project_dependencies(content),
-            vec!["after-unclosed", "after-mismatch", "after-nested-malformed"]
+            vec![
+                ":after-unclosed",
+                ":after-mismatch",
+                ":after-nested-malformed"
+            ]
         );
     }
 
@@ -3613,9 +3734,9 @@ dependencies {
         assert_eq!(
             extract_gradle_project_dependencies(content),
             vec![
-                "after-blank-line",
-                "after-pre-mismatch-boundary",
-                "after-second-blank-line"
+                ":after-blank-line",
+                ":after-pre-mismatch-boundary",
+                ":after-second-blank-line"
             ]
         );
     }
@@ -3641,8 +3762,146 @@ dependencies {
 
         assert_eq!(
             extract_gradle_project_dependencies(content),
-            vec!["after-provider", "after-closure"]
+            vec![":after-provider", ":after-closure"]
         );
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_resolves_project_path_to_evaluated_name_for_graph_edges() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path().join("repo");
+        let dependency_dir = repo.join("generated-backend");
+        tokio::fs::create_dir_all(&dependency_dir).await.unwrap();
+        let dependent_manifest = repo.join("build.gradle.kts");
+        let dependency_manifest = dependency_dir.join("build.gradle.kts");
+        tokio::fs::write(
+            &dependent_manifest,
+            "dependencies { implementation(project(\":api\")) }\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(&dependency_manifest, "plugins { java }\n")
+            .await
+            .unwrap();
+        create_metadata_gradlew(
+            &repo,
+            &[
+                metadata_record(&repo, ":", "service-suite", true),
+                metadata_record(&dependency_dir, ":api", "published-api", false),
+            ],
+        )
+        .await;
+
+        let mut finder = finder_with_java_available();
+        finder
+            .visit(&dependent_manifest, Path::new("build.gradle.kts"))
+            .await
+            .unwrap();
+        finder
+            .visit(
+                &dependency_manifest,
+                Path::new("generated-backend/build.gradle.kts"),
+            )
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        let dependent = projects
+            .iter()
+            .copied()
+            .find(|project| project.name() == Some("service-suite"))
+            .unwrap();
+        let dependency = projects
+            .iter()
+            .copied()
+            .find(|project| project.name() == Some("published-api"))
+            .unwrap();
+        assert_eq!(
+            dependent.dependencies(),
+            &HashSet::from(["published-api".to_string()])
+        );
+
+        let sorted = sort_by_dependencies(vec![dependent, dependency]).unwrap();
+        assert_eq!(
+            sorted
+                .iter()
+                .map(|project| project.name().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["published-api", "service-suite"]
+        );
+
+        let mut update_map = HashMap::from([(
+            PathBuf::from("generated-backend/build.gradle.kts"),
+            (UpdateType::Minor, Vec::new()),
+        )]);
+        apply_reverse_dependencies(&mut update_map, &[dependency, dependent], &repo).unwrap();
+        assert_eq!(
+            update_map[&PathBuf::from("build.gradle.kts")].0,
+            UpdateType::Patch
+        );
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_errors_when_dependency_path_is_missing_from_wrapper_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path().join("repo");
+        tokio::fs::create_dir_all(&repo).await.unwrap();
+        let manifest = repo.join("build.gradle.kts");
+        tokio::fs::write(
+            &manifest,
+            "dependencies { implementation(project(\":missing\")) }\n",
+        )
+        .await
+        .unwrap();
+        create_metadata_gradlew(
+            &repo,
+            &[metadata_record(&repo, ":", "service-suite", false)],
+        )
+        .await;
+
+        let error = finder_with_java_available()
+            .visit(&manifest, Path::new("build.gradle.kts"))
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains(":missing"), "{message}");
+        assert!(message.contains("service-suite"), "{message}");
+        assert!(message.contains("gradlew"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_errors_when_wrapper_metadata_duplicates_project_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path().join("repo");
+        let first_dir = repo.join("first");
+        let second_dir = repo.join("second");
+        tokio::fs::create_dir_all(&first_dir).await.unwrap();
+        tokio::fs::create_dir_all(&second_dir).await.unwrap();
+        let manifest = repo.join("build.gradle.kts");
+        tokio::fs::write(&manifest, "plugins { java }\n")
+            .await
+            .unwrap();
+        create_metadata_gradlew(
+            &repo,
+            &[
+                metadata_record(&repo, ":", "service-suite", true),
+                metadata_record(&first_dir, ":api", "first-api", false),
+                metadata_record(&second_dir, ":api", "second-api", false),
+            ],
+        )
+        .await;
+
+        let error = finder_with_java_available()
+            .visit(&manifest, Path::new("build.gradle.kts"))
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("Duplicate Gradle metadata project path ':api'"));
+        assert!(message.contains("first-api"));
+        assert!(message.contains("second-api"));
+        assert!(message.contains("gradlew"));
     }
 
     #[tokio::test]
@@ -3676,22 +3935,31 @@ def second = 20 / 4
         let temp_dir = TempDir::new().unwrap();
         let core_dir = temp_dir.path().join("core");
         let app_dir = temp_dir.path().join("app");
-        fs::create_dir_all(&core_dir).unwrap();
-        fs::create_dir_all(&app_dir).unwrap();
+        tokio::fs::create_dir_all(&core_dir).await.unwrap();
+        tokio::fs::create_dir_all(&app_dir).await.unwrap();
 
         let core_manifest = core_dir.join("build.gradle.kts");
         let app_manifest = app_dir.join("build.gradle.kts");
-        fs::write(&core_manifest, "plugins { java }\n").unwrap();
-        fs::write(
+        tokio::fs::write(&core_manifest, "plugins { java }\n")
+            .await
+            .unwrap();
+        tokio::fs::write(
             &app_manifest,
             r#"dependencies {
     implementation(project(configuration = "default", path = ":modules:core"))
 }
 "#,
         )
+        .await
         .unwrap();
-        create_mock_gradlew(&core_dir, MockGradlew::package("core", "1.0.0"));
-        create_mock_gradlew(&app_dir, MockGradlew::package("app", "1.0.0"));
+        create_metadata_gradlew(
+            temp_dir.path(),
+            &[
+                metadata_record(&core_dir, ":modules:core", "core", false),
+                metadata_record(&app_dir, ":app", "app", false),
+            ],
+        )
+        .await;
 
         let mut finder = finder_with_java_available();
         finder
@@ -3744,29 +4012,37 @@ def second = 20 / 4
         let temp_dir = TempDir::new().unwrap();
         let core_dir = temp_dir.path().join("core");
         let app_dir = temp_dir.path().join("app");
-        fs::create_dir_all(&core_dir).unwrap();
-        fs::create_dir_all(&app_dir).unwrap();
+        tokio::fs::create_dir_all(&core_dir).await.unwrap();
+        tokio::fs::create_dir_all(&app_dir).await.unwrap();
 
         let core_manifest = core_dir.join("build.gradle.kts");
         let app_manifest = app_dir.join("build.gradle.kts");
-        fs::write(
+        tokio::fs::write(
             &core_manifest,
             r#"project(":app") {
     description = "configuration only"
 }
 "#,
         )
+        .await
         .unwrap();
-        fs::write(
+        tokio::fs::write(
             &app_manifest,
             r#"dependencies {
     implementation(project(":core"))
 }
 "#,
         )
+        .await
         .unwrap();
-        create_mock_gradlew(&core_dir, MockGradlew::package("core", "1.0.0"));
-        create_mock_gradlew(&app_dir, MockGradlew::package("app", "1.0.0"));
+        create_metadata_gradlew(
+            temp_dir.path(),
+            &[
+                metadata_record(&core_dir, ":core", "core", false),
+                metadata_record(&app_dir, ":app", "app", false),
+            ],
+        )
+        .await;
 
         let mut finder = finder_with_java_available();
         finder
@@ -4018,20 +4294,5 @@ def second = 20 / 4
         assert_eq!(finder.project_count(), 0);
 
         temp_dir.close().unwrap();
-    }
-
-    #[rstest]
-    #[case(":lib", Some("lib"))]
-    #[case(":a:b", Some("b"))]
-    #[case(":::", None)]
-    #[case("lib", Some("lib"))]
-    #[case("", None)]
-    #[case(":", None)]
-    #[case("::", None)]
-    #[case("a:b:c", Some("c"))]
-    #[case(":a:b:c:d", Some("d"))]
-    fn test_gradle_dependency_name(#[case] input: &str, #[case] expected: Option<&str>) {
-        let result = gradle_dependency_name(input);
-        assert_eq!(result, expected);
     }
 }

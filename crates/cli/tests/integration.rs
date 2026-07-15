@@ -1,4 +1,8 @@
-use changepacks_utils::test_support::{git_add_and_commit, init_git_repo, run_git};
+use changepacks_core::{ChangePackLog, UpdateType};
+use changepacks_utils::{
+    collect_changepack_log_paths,
+    test_support::{git_add_and_commit, init_git_repo, run_git},
+};
 use serial_test::serial;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -60,6 +64,44 @@ async fn write_repo_fixture(temp_path: &Path, files: &[(&str, &str)]) {
     }
 
     git_add_and_commit(temp_path, "Initial commit");
+}
+
+async fn read_pending_logs(repo_root: &Path) -> Vec<ChangePackLog> {
+    let paths = collect_changepack_log_paths(&repo_root.join(".changepacks"))
+        .await
+        .unwrap();
+    let mut logs = Vec::with_capacity(paths.len());
+    for path in paths {
+        let content = tokio::fs::read_to_string(path).await.unwrap();
+        logs.push(serde_json::from_str(&content).unwrap());
+    }
+    logs
+}
+
+fn pending_changes(logs: &[ChangePackLog]) -> Vec<(PathBuf, UpdateType)> {
+    let mut changes = logs
+        .iter()
+        .flat_map(|log| {
+            log.changes()
+                .iter()
+                .map(|(path, update_type)| (path.clone(), *update_type))
+        })
+        .collect::<Vec<_>>();
+    changes.sort();
+    changes
+}
+
+async fn run_language_update(language: &str) -> anyhow::Result<()> {
+    changepacks_cli::main(&[
+        "changepacks".to_string(),
+        "update".to_string(),
+        "--yes".to_string(),
+        "--language".to_string(),
+        language.to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+    ])
+    .await
 }
 
 #[tokio::test]
@@ -1123,6 +1165,356 @@ version.workspace = true
         "workspace root version must stay 2.5.0 when node filter excludes it, got: {}",
         cargo_content
     );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_update_language_filter_carries_update_on_bumps_exactly_once() {
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"updateOn":{"crates/core/Cargo.toml":["bridge/node/package.json","bridge/python/pyproject.toml"]}}"#,
+        ),
+        (
+            ".changepacks/changepack_log_core.json",
+            r#"{"changes":{"crates/core/Cargo.toml":"Minor"},"note":"core feature","date":"2026-07-15T00:00:00Z"}"#,
+        ),
+        (
+            "crates/core/Cargo.toml",
+            "[package]\nname = \"core\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        ),
+        (
+            "bridge/node/package.json",
+            r#"{"name":"bridge-node","version":"1.0.0"}"#,
+        ),
+        (
+            "bridge/python/pyproject.toml",
+            "[project]\nname = \"bridge-python\"\nversion = \"1.0.0\"\n",
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    run_language_update("rust").await.unwrap();
+
+    let rust_manifest = tokio::fs::read_to_string(temp_path.join("crates/core/Cargo.toml"))
+        .await
+        .unwrap();
+    assert!(rust_manifest.contains("version = \"1.1.0\""));
+    assert_eq!(
+        pending_changes(&read_pending_logs(&temp_path).await),
+        vec![
+            (PathBuf::from("bridge/node/package.json"), UpdateType::Patch,),
+            (
+                PathBuf::from("bridge/python/pyproject.toml"),
+                UpdateType::Patch,
+            ),
+        ]
+    );
+
+    run_language_update("node").await.unwrap();
+
+    let node_after_first_update = tokio::fs::read(temp_path.join("bridge/node/package.json"))
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&node_after_first_update).contains("1.0.1"));
+    assert_eq!(
+        pending_changes(&read_pending_logs(&temp_path).await),
+        vec![(
+            PathBuf::from("bridge/python/pyproject.toml"),
+            UpdateType::Patch,
+        )]
+    );
+
+    run_language_update("python").await.unwrap();
+    run_language_update("node").await.unwrap();
+    run_language_update("python").await.unwrap();
+
+    assert_eq!(
+        tokio::fs::read(temp_path.join("bridge/node/package.json"))
+            .await
+            .unwrap(),
+        node_after_first_update
+    );
+    let python_manifest = tokio::fs::read_to_string(temp_path.join("bridge/python/pyproject.toml"))
+        .await
+        .unwrap();
+    assert!(python_manifest.contains("version = \"1.0.1\""));
+    assert!(read_pending_logs(&temp_path).await.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_update_language_filter_carries_reverse_dependency_bump_exactly_once() {
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_core.json",
+            r#"{"changes":{"crates/core/Cargo.toml":"Minor"},"note":"core feature","date":"2026-07-15T00:00:00Z"}"#,
+        ),
+        (
+            "crates/core/Cargo.toml",
+            "[package]\nname = \"core\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        ),
+        (
+            "bridge/node/package.json",
+            r#"{"name":"bridge-node","version":"1.0.0","dependencies":{"core":"workspace:*"}}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    run_language_update("rust").await.unwrap();
+
+    assert_eq!(
+        pending_changes(&read_pending_logs(&temp_path).await),
+        vec![(PathBuf::from("bridge/node/package.json"), UpdateType::Patch,)]
+    );
+
+    run_language_update("node").await.unwrap();
+    let node_after_first_update = tokio::fs::read(temp_path.join("bridge/node/package.json"))
+        .await
+        .unwrap();
+    run_language_update("node").await.unwrap();
+
+    assert_eq!(
+        tokio::fs::read(temp_path.join("bridge/node/package.json"))
+            .await
+            .unwrap(),
+        node_after_first_update
+    );
+    assert!(String::from_utf8_lossy(&node_after_first_update).contains("1.0.1"));
+    assert!(read_pending_logs(&temp_path).await.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_update_language_filter_update_on_transitive_descendant_bumps_once() {
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"updateOn":{"crates/a/Cargo.toml":["bridge/node/package.json"],"bridge/node/package.json":["crates/c/Cargo.toml"]}}"#,
+        ),
+        (
+            ".changepacks/changepack_log_a.json",
+            r#"{"changes":{"crates/a/Cargo.toml":"Minor"},"note":"rust a feature","date":"2026-07-15T00:00:00Z"}"#,
+        ),
+        (
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"rust-a\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        ),
+        (
+            "bridge/node/package.json",
+            r#"{"name":"node-b","version":"1.0.0"}"#,
+        ),
+        (
+            "crates/c/Cargo.toml",
+            "[package]\nname = \"rust-c\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    run_language_update("rust").await.unwrap();
+    let rust_c_after_materialization = tokio::fs::read(temp_path.join("crates/c/Cargo.toml"))
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&rust_c_after_materialization).contains("1.0.1"));
+    assert_eq!(
+        pending_changes(&read_pending_logs(&temp_path).await),
+        vec![(PathBuf::from("bridge/node/package.json"), UpdateType::Patch)]
+    );
+
+    run_language_update("node").await.unwrap();
+    run_language_update("rust").await.unwrap();
+
+    assert_eq!(
+        tokio::fs::read(temp_path.join("crates/c/Cargo.toml"))
+            .await
+            .unwrap(),
+        rust_c_after_materialization
+    );
+    let node_manifest = tokio::fs::read_to_string(temp_path.join("bridge/node/package.json"))
+        .await
+        .unwrap();
+    assert!(node_manifest.contains("1.0.1"));
+    assert!(read_pending_logs(&temp_path).await.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_update_language_filter_update_on_cycle_bumps_origin_once() {
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"updateOn":{"crates/a/Cargo.toml":["bridge/node/package.json"],"bridge/node/package.json":["crates/a/Cargo.toml"]}}"#,
+        ),
+        (
+            ".changepacks/changepack_log_a.json",
+            r#"{"changes":{"crates/a/Cargo.toml":"Minor"},"note":"rust a feature","date":"2026-07-15T00:00:00Z"}"#,
+        ),
+        (
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"rust-a\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        ),
+        (
+            "bridge/node/package.json",
+            r#"{"name":"node-b","version":"1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    run_language_update("rust").await.unwrap();
+    let rust_a_after_materialization = tokio::fs::read(temp_path.join("crates/a/Cargo.toml"))
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&rust_a_after_materialization).contains("1.1.0"));
+
+    run_language_update("node").await.unwrap();
+    run_language_update("rust").await.unwrap();
+
+    assert_eq!(
+        tokio::fs::read(temp_path.join("crates/a/Cargo.toml"))
+            .await
+            .unwrap(),
+        rust_a_after_materialization
+    );
+    assert!(read_pending_logs(&temp_path).await.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_update_language_filter_reverse_dependency_transitive_descendant_bumps_once() {
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_a.json",
+            r#"{"changes":{"crates/a/Cargo.toml":"Minor"},"note":"rust a feature","date":"2026-07-15T00:00:00Z"}"#,
+        ),
+        (
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"rust-a\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        ),
+        (
+            "bridge/node/package.json",
+            r#"{"name":"node-b","version":"1.0.0","dependencies":{"rust-a":"workspace:*"}}"#,
+        ),
+        (
+            "crates/c/Cargo.toml",
+            "[package]\nname = \"rust-c\"\nversion = \"1.0.0\"\nedition = \"2024\"\n\n[dependencies]\nnode-b = { package = \"node-b\", path = \"../../bridge/node\" }\n",
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    run_language_update("rust").await.unwrap();
+    let rust_c_after_materialization = tokio::fs::read(temp_path.join("crates/c/Cargo.toml"))
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&rust_c_after_materialization).contains("1.0.1"));
+    assert_eq!(
+        pending_changes(&read_pending_logs(&temp_path).await),
+        vec![(PathBuf::from("bridge/node/package.json"), UpdateType::Patch)]
+    );
+
+    run_language_update("node").await.unwrap();
+    run_language_update("rust").await.unwrap();
+
+    assert_eq!(
+        tokio::fs::read(temp_path.join("crates/c/Cargo.toml"))
+            .await
+            .unwrap(),
+        rust_c_after_materialization
+    );
+    assert!(read_pending_logs(&temp_path).await.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_update_language_filter_reverse_dependency_cycle_bumps_origin_once() {
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_a.json",
+            r#"{"changes":{"crates/a/Cargo.toml":"Minor"},"note":"rust a feature","date":"2026-07-15T00:00:00Z"}"#,
+        ),
+        (
+            "crates/a/Cargo.toml",
+            "[package]\nname = \"rust-a\"\nversion = \"1.0.0\"\nedition = \"2024\"\n\n[dependencies]\nnode-b = { package = \"node-b\", path = \"../../bridge/node\" }\n",
+        ),
+        (
+            "bridge/node/package.json",
+            r#"{"name":"node-b","version":"1.0.0","dependencies":{"rust-a":"workspace:*"}}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    run_language_update("rust").await.unwrap();
+    let rust_a_after_materialization = tokio::fs::read(temp_path.join("crates/a/Cargo.toml"))
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&rust_a_after_materialization).contains("1.1.0"));
+
+    run_language_update("node").await.unwrap();
+    run_language_update("rust").await.unwrap();
+
+    assert_eq!(
+        tokio::fs::read(temp_path.join("crates/a/Cargo.toml"))
+            .await
+            .unwrap(),
+        rust_a_after_materialization
+    );
+    assert!(read_pending_logs(&temp_path).await.is_empty());
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_update_language_filter_does_not_duplicate_explicit_excluded_entry() {
+    let original_note = "explicit bridge release note";
+    let log = format!(
+        r#"{{"changes":{{"crates/core/Cargo.toml":"Minor","bridge/node/package.json":"Major"}},"note":"{original_note}","date":"2026-07-15T00:00:00Z"}}"#
+    );
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"updateOn":{"crates/core/Cargo.toml":["bridge/node/package.json"]}}"#,
+        ),
+        (".changepacks/changepack_log_release.json", &log),
+        (
+            "crates/core/Cargo.toml",
+            "[package]\nname = \"core\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        ),
+        (
+            "bridge/node/package.json",
+            r#"{"name":"bridge-node","version":"1.0.0"}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    run_language_update("rust").await.unwrap();
+
+    let logs = read_pending_logs(&temp_path).await;
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].note(), original_note);
+    assert_eq!(
+        pending_changes(&logs),
+        vec![(PathBuf::from("bridge/node/package.json"), UpdateType::Major,)]
+    );
+
+    run_language_update("node").await.unwrap();
+
+    let node_manifest = tokio::fs::read_to_string(temp_path.join("bridge/node/package.json"))
+        .await
+        .unwrap();
+    assert!(node_manifest.contains("2.0.0"));
+    assert!(read_pending_logs(&temp_path).await.is_empty());
 }
 
 // Test update with no updates found

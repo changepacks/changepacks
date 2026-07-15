@@ -8,10 +8,11 @@ use std::future::Future;
 
 use anyhow::{Context, Result, bail};
 use changepacks_core::{
-    ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType, Workspace,
+    ChangePackLog, ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType,
+    Workspace,
 };
 use changepacks_utils::{
-    apply_reverse_dependencies, clear_applied_update_logs, clear_update_logs,
+    CARRY_FORWARD_LOG_PREFIX, clear_applied_update_logs, clear_update_logs,
     collect_changepack_log_paths, display_update, gen_changepack_result_map, gen_update_map,
     get_relative_path, get_relative_path_ref,
 };
@@ -77,7 +78,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // Ignore boundaries apply to graph expansion as well as direct mutation:
     // dependents excluded during CommandContext discovery must not be scheduled.
     let projects = collect_projects(&project_finders);
-    apply_reverse_dependencies(&mut update_map, &projects, &ctx.repo_root_path)?;
+    update_map.apply_reverse_dependencies(&projects, &ctx.repo_root_path)?;
 
     // Merge workspace-inherited package updates into workspace entries. The
     // returned (member, workspace-root) pairs let the language-filtered
@@ -85,6 +86,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // lock-step with its workspace root.
     let merged_pairs =
         merge_workspace_inherited_updates(&mut update_map, &projects, &ctx.repo_root_path);
+    update_map.merge_provenance(&merged_pairs);
 
     // Filter update_map by language if specified.
     //
@@ -93,7 +95,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // (map entry × project) pair — dropping allocations from `M × N` to
     // `N` (one PathBuf per project) plus `M` HashMap lookups.
     let language_filter_active = !args.language.is_empty();
-    if language_filter_active {
+    let carry_forward_logs = if language_filter_active {
         // Preallocate: `HashMap::from_iter` (via `collect`) does NOT use
         // `size_hint` to reserve capacity (unlike `Vec`), so on a
         // language-filtered `changepacks update -l rust` against a large
@@ -115,12 +117,14 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         // `--language` selection" rule has one definition across both filter
         // shells. Byte-identical filtering (short-circuits on the first match,
         // iterates `args.language` in order).
-        update_map.retain(|path, _| {
+        update_map.retain_updates(|path| {
             path_to_language
-                .get(path.as_path())
+                .get(path)
                 .is_some_and(|lang| language_slice_contains(&args.language, *lang))
-        });
-    }
+        })
+    } else {
+        Vec::new()
+    };
 
     // The --language filter can empty the map (e.g. `update -l dart` with only
     // Rust logs pending); mirror the unfiltered empty case above instead of
@@ -184,11 +188,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         return Ok(());
     }
 
-    let mut manifest_paths = update_projects
-        .iter()
-        .map(|(project, _)| project.path().to_path_buf())
-        .collect::<Vec<_>>();
-    manifest_paths.extend(workspace_manifest_paths);
+    let manifest_paths = collect_update_snapshot_paths(&update_projects, workspace_manifest_paths);
 
     let snapshots = snapshot_update_state(manifest_paths, &ctx.changepacks_dir).await?;
     let project_result = apply_project_version_updates(&mut update_projects).await;
@@ -221,9 +221,13 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     };
 
     let transaction_result = match update_result {
-        Ok(()) => match applied_paths {
-            Some(applied) => clear_applied_update_logs(&ctx.changepacks_dir, &applied).await,
-            None => clear_update_logs(&ctx.changepacks_dir).await,
+        Ok(()) => match persist_carry_forward_logs(&ctx.changepacks_dir, &carry_forward_logs).await
+        {
+            Ok(()) => match applied_paths {
+                Some(applied) => clear_applied_update_logs(&ctx.changepacks_dir, &applied).await,
+                None => clear_update_logs(&ctx.changepacks_dir).await,
+            },
+            Err(error) => Err(error),
         },
         Err(error) => Err(error),
     };
@@ -399,6 +403,24 @@ fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<
     workspace_projects
 }
 
+fn collect_update_snapshot_paths(
+    update_projects: &[UpdateProjectMut<'_>],
+    workspace_manifest_paths: Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    let mut paths = Vec::with_capacity(update_projects.len() * 2 + workspace_manifest_paths.len());
+    for (project, _) in update_projects {
+        let manifest_path = project.path().to_path_buf();
+        if project.language() == Language::Java {
+            paths.push(manifest_path.with_file_name("gradle.properties"));
+        }
+        paths.push(manifest_path);
+    }
+    paths.extend(workspace_manifest_paths);
+    paths.sort_unstable();
+    paths.dedup();
+    paths
+}
+
 #[cfg(test)]
 async fn apply_updates_unchecked(
     update_projects: &mut [UpdateProjectMut<'_>],
@@ -444,6 +466,20 @@ async fn run_update_transaction(
         Ok(()) => Ok(()),
         Err(update_error) => rollback_update_error(&snapshots, update_error).await,
     }
+}
+
+async fn persist_carry_forward_logs(changepacks_dir: &Path, logs: &[ChangePackLog]) -> Result<()> {
+    for log in logs {
+        let path = changepacks_dir.join(format!(
+            "{CARRY_FORWARD_LOG_PREFIX}{}.json",
+            nanoid::nanoid!()
+        ));
+        let content = serde_json::to_string_pretty(log)?;
+        tokio::fs::write(&path, content)
+            .await
+            .with_context(|| format!("Failed to write changepack log {}", path.display()))?;
+    }
+    Ok(())
 }
 
 struct FileSnapshot {
@@ -661,8 +697,9 @@ fn merge_workspace_inherited_updates(
 mod tests {
     use super::{
         UpdateArgs, apply_updates_unchecked, collect_projects, collect_update_project_muts,
-        collect_update_project_refs, collect_workspace_projects, merge_workspace_inherited_updates,
-        preview_and_confirm, run_update_transaction, validate_update_project_paths,
+        collect_update_project_refs, collect_update_snapshot_paths, collect_workspace_projects,
+        merge_workspace_inherited_updates, persist_carry_forward_logs, preview_and_confirm,
+        run_update_transaction, validate_update_project_paths,
     };
     use anyhow::{Result, bail};
     use async_trait::async_trait;
@@ -671,7 +708,7 @@ mod tests {
         Workspace,
     };
     use changepacks_utils::{
-        clear_update_logs,
+        clear_update_logs, collect_changepack_log_paths,
         test_support::{git_add_and_commit, init_git_repo},
     };
     use clap::Parser;
@@ -1202,6 +1239,30 @@ path = "../visible"
             .collect()
     }
 
+    #[test]
+    fn test_collect_update_snapshot_paths_includes_deduplicated_java_properties() {
+        let project_path = PathBuf::from("/repo/java/build.gradle.kts");
+        let properties_path = PathBuf::from("/repo/java/gradle.properties");
+        let mut project = Project::Package(Box::new(FileUpdatingPackage {
+            name: Some("java-package".to_string()),
+            version: Some("1.0.0".to_string()),
+            path: project_path.clone(),
+            relative_path: PathBuf::from("java/build.gradle.kts"),
+            language: Language::Java,
+            dependencies: HashSet::new(),
+            is_changed: false,
+            updated_bytes: Vec::new(),
+        }));
+        let update_projects = vec![(&mut project, UpdateType::Patch)];
+
+        let paths = collect_update_snapshot_paths(
+            &update_projects,
+            vec![project_path.clone(), project_path.clone()],
+        );
+
+        assert_eq!(paths, vec![project_path, properties_path]);
+    }
+
     #[tokio::test]
     async fn test_failed_update_transaction_restores_manifests_and_preserves_logs() -> Result<()> {
         let temp_dir = TempDir::new()?;
@@ -1242,6 +1303,78 @@ path = "../visible"
         assert_eq!(error.to_string(), "deliberate workspace dependency failure");
         assert_eq!(tokio::fs::read(&package_path).await?, original_package);
         assert_eq!(tokio::fs::read(&workspace_path).await?, original_workspace);
+        assert_eq!(tokio::fs::read(&log_path).await?, original_log);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_later_update_failure_restores_gradle_properties_and_log() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let later_manifest_path = temp_dir.path().join("package.json");
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        let log_path = changepacks_dir.join("changepack_log_java.json");
+        let original_properties = b"version = 1.0.0 # exact\r\n";
+        let original_manifest = b"{\"version\":\"1.0.0\"}\n";
+        let original_log = b"{\"changes\":{\"build.gradle.kts\":\"Patch\"}}\n";
+        tokio::fs::create_dir(&changepacks_dir).await?;
+        tokio::fs::write(&properties_path, original_properties).await?;
+        tokio::fs::write(&later_manifest_path, original_manifest).await?;
+        tokio::fs::write(&log_path, original_log).await?;
+
+        let error = run_update_transaction(
+            vec![properties_path.clone(), later_manifest_path.clone()],
+            &changepacks_dir,
+            async {
+                tokio::fs::write(&properties_path, b"version = 1.0.1 # exact\r\n").await?;
+                tokio::fs::write(&later_manifest_path, b"{\"version\":\"1.0.1\"}\n").await?;
+                bail!("deliberate later project update failure")
+            },
+            async { Ok(()) },
+        )
+        .await
+        .expect_err("a later project update should fail after the property write");
+
+        assert_eq!(error.to_string(), "deliberate later project update failure");
+        assert_eq!(
+            tokio::fs::read(&properties_path).await?,
+            original_properties
+        );
+        assert_eq!(
+            tokio::fs::read(&later_manifest_path).await?,
+            original_manifest
+        );
+        assert_eq!(tokio::fs::read(&log_path).await?, original_log);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_failed_update_removes_new_gradle_properties_and_preserves_log() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        let log_path = changepacks_dir.join("changepack_log_java.json");
+        let original_log = b"{\"changes\":{\"build.gradle\":\"Patch\"}}\n";
+        tokio::fs::create_dir(&changepacks_dir).await?;
+        tokio::fs::write(&log_path, original_log).await?;
+
+        let error = run_update_transaction(
+            vec![properties_path.clone()],
+            &changepacks_dir,
+            async {
+                tokio::fs::write(&properties_path, b"version=1.0.1\n").await?;
+                bail!("deliberate failure after creating properties")
+            },
+            async { Ok(()) },
+        )
+        .await
+        .expect_err("the update should fail after creating gradle.properties");
+
+        assert_eq!(
+            error.to_string(),
+            "deliberate failure after creating properties"
+        );
+        assert!(!tokio::fs::try_exists(&properties_path).await?);
         assert_eq!(tokio::fs::read(&log_path).await?, original_log);
         Ok(())
     }
@@ -1315,6 +1448,82 @@ path = "../visible"
         assert!(
             !created_log.exists(),
             "rollback must remove newly created logs"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_failure_restores_gradle_properties_and_changepack_logs() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        let log_path = changepacks_dir.join("changepack_log_java.json");
+        let original_properties = b"version: 3.0.0 ! exact\n";
+        let original_log = b"{\"changes\":{\"build.gradle\":\"Minor\"}}\n";
+        tokio::fs::create_dir(&changepacks_dir).await?;
+        tokio::fs::write(&properties_path, original_properties).await?;
+        tokio::fs::write(&log_path, original_log).await?;
+
+        let error = run_update_transaction(
+            vec![properties_path.clone()],
+            &changepacks_dir,
+            async {
+                tokio::fs::write(&properties_path, b"version: 3.1.0 ! exact\n").await?;
+                Ok(())
+            },
+            async {
+                tokio::fs::remove_file(&log_path).await?;
+                bail!("deliberate cleanup failure after removing Java log")
+            },
+        )
+        .await
+        .expect_err("cleanup should fail after the Gradle property write");
+
+        assert_eq!(
+            error.to_string(),
+            "deliberate cleanup failure after removing Java log"
+        );
+        assert_eq!(
+            tokio::fs::read(&properties_path).await?,
+            original_properties
+        );
+        assert_eq!(tokio::fs::read(&log_path).await?, original_log);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_post_write_failure_restores_original_log_and_removes_carry_forward_log()
+    -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        let original_log_path = changepacks_dir.join("changepack_log_original.json");
+        let original_log = b"{\"changes\":{\"Cargo.toml\":\"Minor\"},\"note\":\"original\"}\n";
+        tokio::fs::create_dir(&changepacks_dir).await?;
+        tokio::fs::write(&original_log_path, original_log).await?;
+        let carry_forward_log = ChangePackLog::new(
+            BTreeMap::from([(PathBuf::from("bridge/node/package.json"), UpdateType::Patch)]),
+            "generated bridge update".to_string(),
+        );
+
+        let error = run_update_transaction(Vec::new(), &changepacks_dir, async { Ok(()) }, async {
+            persist_carry_forward_logs(&changepacks_dir, &[carry_forward_log]).await?;
+            assert_eq!(
+                collect_changepack_log_paths(&changepacks_dir).await?.len(),
+                2
+            );
+            bail!("deliberate failure after carry-forward write")
+        })
+        .await
+        .expect_err("the transaction should fail after writing the carry-forward log");
+
+        assert_eq!(
+            error.to_string(),
+            "deliberate failure after carry-forward write"
+        );
+        assert_eq!(tokio::fs::read(&original_log_path).await?, original_log);
+        assert_eq!(
+            collect_changepack_log_paths(&changepacks_dir).await?,
+            vec![original_log_path]
         );
         Ok(())
     }

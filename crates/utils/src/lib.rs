@@ -86,7 +86,10 @@ pub use display_update::display_update;
 pub use find_current_git_repo::find_current_git_repo;
 pub use find_project_dirs::{discover_project_dirs, find_project_dirs};
 pub use gen_changepack_result_map::gen_changepack_result_map;
-pub use gen_update_map::{apply_reverse_dependencies, gen_update_map};
+pub use gen_update_map::{
+    CARRY_FORWARD_LOG_PREFIX, ReverseDependencyUpdates, UpdatePlan, apply_reverse_dependencies,
+    gen_update_map,
+};
 pub use get_changepacks_config::{get_changepacks_config, get_changepacks_config_at};
 pub use get_changepacks_dir::get_changepacks_dir;
 pub use get_relative_path::{get_relative_path, get_relative_path_ref};

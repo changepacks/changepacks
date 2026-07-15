@@ -476,7 +476,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_version_without_property_group_preserves_file_and_memory_on_error() {
+    async fn test_update_version_without_property_group_creates_global_version() {
         let temp_dir = TempDir::new().unwrap();
         let csproj_path = temp_dir.path().join("NoPropertyGroup.csproj");
         let original_content = b"<Project Sdk=\"Microsoft.NET.Sdk\">\r\n</Project>\r\n";
@@ -488,25 +488,21 @@ mod tests {
             PathBuf::from("NoPropertyGroup.csproj"),
         );
 
-        let err = package
-            .update_version(UpdateType::Patch)
-            .await
-            .expect_err("XML without a PropertyGroup cannot be updated");
+        package.update_version(UpdateType::Patch).await.unwrap();
 
-        assert_eq!(fs::read(&csproj_path).unwrap(), original_content);
-        assert_eq!(package.version(), None);
-        assert!(
-            format!("{err:#}").contains(&csproj_path.display().to_string()),
-            "error chain should name the manifest path, got: {err:#}",
+        assert_eq!(
+            fs::read_to_string(&csproj_path).unwrap(),
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\r\n<PropertyGroup>\r\n    <Version>0.0.1</Version>\r\n</PropertyGroup>\r\n</Project>\r\n"
         );
+        assert_eq!(package.version(), Some("0.0.1"));
         temp_dir.close().unwrap();
     }
 
     #[tokio::test]
-    async fn test_update_version_with_stale_has_version_preserves_file_and_memory_on_error() {
+    async fn test_update_version_with_stale_has_version_ignores_conditional_version() {
         let temp_dir = TempDir::new().unwrap();
         let csproj_path = temp_dir.path().join("StaleVersion.csproj");
-        let original_content = b"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n  </PropertyGroup>\n</Project>\n";
+        let original_content = b"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>1.2.3</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n  </PropertyGroup>\n</Project>\n";
         fs::write(&csproj_path, original_content).unwrap();
         let mut package = CSharpPackage::new(
             Some("Test".to_string()),
@@ -515,17 +511,13 @@ mod tests {
             PathBuf::from("StaleVersion.csproj"),
         );
 
-        let err = package
-            .update_version(UpdateType::Patch)
-            .await
-            .expect_err("stale in-memory version metadata cannot report success");
+        package.update_version(UpdateType::Patch).await.unwrap();
 
-        assert_eq!(fs::read(&csproj_path).unwrap(), original_content);
-        assert_eq!(package.version(), Some("1.2.3"));
-        assert!(
-            format!("{err:#}").contains("did not mutate any XML node"),
-            "error chain should explain the failed mutation, got: {err:#}",
+        assert_eq!(
+            fs::read_to_string(&csproj_path).unwrap(),
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>1.2.3</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <Version>1.2.4</Version>\n  </PropertyGroup>\n</Project>\n"
         );
+        assert_eq!(package.version(), Some("1.2.4"));
         temp_dir.close().unwrap();
     }
 

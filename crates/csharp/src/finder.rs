@@ -10,7 +10,7 @@ use std::{
 };
 use tokio::fs::read_to_string;
 
-use crate::package::CSharpPackage;
+use crate::{package::CSharpPackage, xml_utils::is_unconditional_project_property_group};
 
 /// Manifest filenames this finder recognizes. Static because the list is
 /// compile-time constant — no per-instance heap `Vec` is needed and the
@@ -57,11 +57,11 @@ impl CSharpProjectFinder {
         // `<Version>` and `<ProjectReference>` shapes) without over-
         // reserving on tiny `.csproj` files.
         let mut buf = Vec::with_capacity(256);
-        let mut in_property_group = false;
-        let mut in_unconditional_top_level_property_group = false;
+        let mut eligible_property_group_depth = None;
         let mut in_version = false;
         let mut in_is_packable = false;
         let mut element_depth = 0usize;
+        let mut project_depth = None;
         let mut version: Option<String> = None;
         let mut publishable_by_default = true;
         // Preallocate against the typical `<ProjectReference>` fan-out
@@ -82,21 +82,22 @@ impl CSharpProjectFinder {
                 Ok(Event::Start(e)) => {
                     element_depth += 1;
                     let name = e.local_name();
-                    if name.as_ref() == b"PropertyGroup" {
-                        in_property_group = true;
-                        in_unconditional_top_level_property_group = element_depth == 2
-                            && e.attributes().all(|attribute| {
-                                attribute.is_ok_and(|attribute| {
-                                    !attribute.key.as_ref().eq_ignore_ascii_case(b"Condition")
-                                })
-                            });
-                    } else if in_property_group && name.as_ref() == b"Version" {
-                        in_version = true;
-                    } else if in_unconditional_top_level_property_group
-                        && element_depth == 3
-                        && name.as_ref() == b"IsPackable"
+                    if name.as_ref() == b"Project" && project_depth.is_none() {
+                        project_depth = Some(element_depth);
+                    } else if name.as_ref() == b"PropertyGroup"
+                        && is_unconditional_project_property_group(
+                            &e,
+                            element_depth,
+                            project_depth,
+                        )?
                     {
-                        in_is_packable = true;
+                        eligible_property_group_depth = Some(element_depth);
+                    } else if name.as_ref() == b"Version" {
+                        in_version = eligible_property_group_depth
+                            .is_some_and(|depth| element_depth == depth + 1);
+                    } else if name.as_ref() == b"IsPackable" {
+                        in_is_packable = eligible_property_group_depth
+                            .is_some_and(|depth| element_depth == depth + 1);
                     } else if name.as_ref() == b"ProjectReference" {
                         collect_project_reference(&e, &mut projects)?;
                     }
@@ -105,18 +106,19 @@ impl CSharpProjectFinder {
                     collect_project_reference(&e, &mut projects)?;
                 }
                 Ok(Event::End(e)) => {
-                    element_depth = element_depth
-                        .checked_sub(1)
-                        .context("unexpected XML end tag")?;
                     let name = e.local_name();
-                    if name.as_ref() == b"PropertyGroup" {
-                        in_property_group = false;
-                        in_unconditional_top_level_property_group = false;
+                    if name.as_ref() == b"PropertyGroup"
+                        && eligible_property_group_depth == Some(element_depth)
+                    {
+                        eligible_property_group_depth = None;
                     } else if name.as_ref() == b"Version" {
                         in_version = false;
                     } else if name.as_ref() == b"IsPackable" {
                         in_is_packable = false;
                     }
+                    element_depth = element_depth
+                        .checked_sub(1)
+                        .context("unexpected XML end tag")?;
                 }
                 Ok(Event::Text(e)) => {
                     // Preserve the "first non-empty wins" semantics of the
@@ -316,10 +318,19 @@ impl ProjectFinder for CSharpProjectFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use changepacks_core::UpdateType;
     use changepacks_utils::sort_by_dependencies;
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
+    use tokio::fs as async_fs;
+
+    struct VersionPolicyCase {
+        name: &'static str,
+        input: &'static str,
+        discovered: Option<&'static str>,
+        expected: &'static str,
+    }
 
     #[tokio::test]
     async fn test_new() {
@@ -1060,6 +1071,92 @@ mod tests {
         assert!(refs.contains(&"CoreLib".to_string()));
         assert!(refs.contains(&"Utils".to_string()));
         assert!(publishable_by_default);
+    }
+
+    #[tokio::test]
+    async fn test_discovery_and_rewrite_use_unconditional_top_level_property_groups() -> Result<()>
+    {
+        let cases = [
+            VersionPolicyCase {
+                name: "target-local",
+                input: "<Project>\n  <Target Name=\"Build\">\n    <PropertyGroup>\n      <Version>7.0.0</Version>\n    </PropertyGroup>\n  </Target>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>",
+                discovered: None,
+                expected: "<Project>\n  <Target Name=\"Build\">\n    <PropertyGroup>\n      <Version>7.0.0</Version>\n    </PropertyGroup>\n  </Target>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <Version>0.0.1</Version>\n  </PropertyGroup>\n</Project>",
+            },
+            VersionPolicyCase {
+                name: "conditional-only",
+                input: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>7.0.0</Version>\n  </PropertyGroup>\n</Project>",
+                discovered: None,
+                expected: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>7.0.0</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Version>0.0.1</Version>\n  </PropertyGroup>\n</Project>",
+            },
+            VersionPolicyCase {
+                name: "conditional-before-unconditional",
+                input: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>7.0.0</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Version>1.2.3</Version>\n  </PropertyGroup>\n</Project>",
+                discovered: Some("1.2.3"),
+                expected: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>7.0.0</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Version>1.2.4</Version>\n  </PropertyGroup>\n</Project>",
+            },
+            VersionPolicyCase {
+                name: "cdata",
+                input: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version><![CDATA[7.0.0]]></Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Version><![CDATA[1.2.3]]></Version>\n  </PropertyGroup>\n</Project>",
+                discovered: Some("1.2.3"),
+                expected: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version><![CDATA[7.0.0]]></Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Version><![CDATA[1.2.4]]></Version>\n  </PropertyGroup>\n</Project>",
+            },
+            VersionPolicyCase {
+                name: "self-closing",
+                input: "<Project>\n  <Target Name=\"Build\">\n    <PropertyGroup>\n      <Version>7.0.0</Version>\n    </PropertyGroup>\n  </Target>\n  <PropertyGroup>\n    <Version/>\n  </PropertyGroup>\n</Project>",
+                discovered: None,
+                expected: "<Project>\n  <Target Name=\"Build\">\n    <PropertyGroup>\n      <Version>7.0.0</Version>\n    </PropertyGroup>\n  </Target>\n  <PropertyGroup>\n    <Version>0.0.1</Version>\n  </PropertyGroup>\n</Project>",
+            },
+            VersionPolicyCase {
+                name: "namespaced",
+                input: "<msb:Project xmlns:msb=\"urn:msbuild\">\n  <msb:PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <msb:Version>7.0.0</msb:Version>\n  </msb:PropertyGroup>\n  <msb:PropertyGroup>\n    <msb:Version>1.2.3</msb:Version>\n  </msb:PropertyGroup>\n</msb:Project>",
+                discovered: Some("1.2.3"),
+                expected: "<msb:Project xmlns:msb=\"urn:msbuild\">\n  <msb:PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <msb:Version>7.0.0</msb:Version>\n  </msb:PropertyGroup>\n  <msb:PropertyGroup>\n    <msb:Version>1.2.4</msb:Version>\n  </msb:PropertyGroup>\n</msb:Project>",
+            },
+            VersionPolicyCase {
+                name: "crlf",
+                input: "<Project>\r\n  <Target Name=\"Build\">\r\n    <PropertyGroup>\r\n      <Version>7.0.0</Version>\r\n    </PropertyGroup>\r\n  </Target>\r\n  <PropertyGroup>\r\n    <TargetFramework>net8.0</TargetFramework>\r\n  </PropertyGroup>\r\n</Project>\r\n",
+                discovered: None,
+                expected: "<Project>\r\n  <Target Name=\"Build\">\r\n    <PropertyGroup>\r\n      <Version>7.0.0</Version>\r\n    </PropertyGroup>\r\n  </Target>\r\n  <PropertyGroup>\r\n    <TargetFramework>net8.0</TargetFramework>\r\n    <Version>0.0.1</Version>\r\n  </PropertyGroup>\r\n</Project>\r\n",
+            },
+            VersionPolicyCase {
+                name: "tab-indented",
+                input: "<Project>\n\t<PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n\t\t<Version>7.0.0</Version>\n\t</PropertyGroup>\n\t<PropertyGroup>\n\t\t<Version>1.2.3</Version>\n\t</PropertyGroup>\n</Project>",
+                discovered: Some("1.2.3"),
+                expected: "<Project>\n\t<PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n\t\t<Version>7.0.0</Version>\n\t</PropertyGroup>\n\t<PropertyGroup>\n\t\t<Version>1.2.4</Version>\n\t</PropertyGroup>\n</Project>",
+            },
+        ];
+
+        for case in cases {
+            let temp_dir = TempDir::new()?;
+            let manifest = temp_dir.path().join("Test.csproj");
+            async_fs::write(&manifest, case.input).await?;
+            let mut finder = CSharpProjectFinder::new();
+
+            finder.visit(&manifest, Path::new("Test.csproj")).await?;
+            {
+                let mut projects = finder.projects_mut();
+                let project = projects
+                    .first_mut()
+                    .context("finder did not return the C# fixture")?;
+                assert_eq!(
+                    project.version(),
+                    case.discovered,
+                    "{} discovery",
+                    case.name
+                );
+                project.update_version(UpdateType::Patch).await?;
+            }
+            assert_eq!(
+                async_fs::read_to_string(&manifest).await?,
+                case.expected,
+                "{} rewrite",
+                case.name
+            );
+            temp_dir.close()?;
+        }
+
+        Ok(())
     }
 
     #[rstest]

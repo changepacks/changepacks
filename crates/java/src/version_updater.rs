@@ -2,10 +2,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use changepacks_core::has_extension_ignore_ascii_case;
 use regex::Regex;
 use std::borrow::Cow;
+use std::io::ErrorKind;
 use std::ops::Range;
 use std::path::Path;
 use std::sync::LazyLock;
-use tokio::fs::{read_to_string, write};
+use tokio::fs::{read, read_to_string, write};
 
 static KTS_SIMPLE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"^\s*version\s*=\s*"([^"\r\n]+)""#).expect("hardcoded regex must compile")
@@ -23,6 +24,13 @@ static GROOVY_ASSIGN_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
 
 static GROOVY_SPACE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"^\s*version\s+(['"])([^'"\r\n]+)(['"])"#).expect("hardcoded regex must compile")
+});
+
+static SCRIPT_VERSION_DECLARATION_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^\s*(?:(?:project\.)?version(?:\s*=|\s+|\.set\s*\(|\s*\()|(?:(?:project|this)\.)?setVersion\s*\()",
+    )
+    .expect("hardcoded regex must compile")
 });
 
 /// Select which Gradle scopes may own the project version declaration.
@@ -81,6 +89,16 @@ enum LexContext {
     LineComment,
     BlockComment(usize),
     String(StringKind),
+}
+
+struct ScriptCandidates {
+    editable: Vec<Range<usize>>,
+    has_unsupported: bool,
+}
+
+enum PropertyAssignment {
+    Literal(Range<usize>),
+    Unsupported,
 }
 
 fn scope_is_supported(scopes: &[BraceScope], policy: GradleVersionScope) -> bool {
@@ -197,7 +215,7 @@ fn candidate_ranges(
     policy: GradleVersionScope,
     dialect: GradleDialect,
     value_range: fn(&str) -> Option<Range<usize>>,
-) -> Vec<Range<usize>> {
+) -> ScriptCandidates {
     let bytes = content.as_bytes();
     let mut ranges = Vec::new();
     let mut scopes = Vec::new();
@@ -210,6 +228,7 @@ fn candidate_ranges(
     let mut member_access = false;
     let mut index = 0;
     let mut at_line_start = true;
+    let mut has_unsupported = false;
 
     while index < bytes.len() {
         if at_line_start {
@@ -217,11 +236,13 @@ fn candidate_ranges(
                 .iter()
                 .position(|byte| *byte == b'\n')
                 .map_or(bytes.len(), |offset| index + offset);
-            if in_script_code(&contexts)
-                && scope_is_supported(&scopes, policy)
-                && let Some(range) = value_range(&content[index..line_end])
-            {
-                ranges.push(index + range.start..index + range.end);
+            if in_script_code(&contexts) && scope_is_supported(&scopes, policy) {
+                let line = &content[index..line_end];
+                if let Some(range) = value_range(line) {
+                    ranges.push(index + range.start..index + range.end);
+                } else if SCRIPT_VERSION_DECLARATION_PATTERN.is_match(line) {
+                    has_unsupported = true;
+                }
             }
             at_line_start = false;
         }
@@ -596,7 +617,102 @@ fn candidate_ranges(
         }
     }
 
-    ranges
+    ScriptCandidates {
+        editable: ranges,
+        has_unsupported,
+    }
+}
+
+const fn is_property_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | 0x0c)
+}
+
+fn is_escaped(bytes: &[u8], index: usize) -> bool {
+    let preceding_backslashes = bytes[..index]
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'\\')
+        .count();
+    preceding_backslashes % 2 == 1
+}
+
+fn property_value_is_literal(value: &[u8]) -> bool {
+    !value.windows(2).any(|window| window == b"${")
+        && !value.windows(10).any(|window| window == b"providers.")
+        && !value.windows(8).any(|window| window == b"project.")
+        && !value.windows(13).any(|window| window == b"findProperty(")
+        && !value
+            .last()
+            .is_some_and(|byte| *byte == b'\\' && is_escaped(value, value.len()))
+}
+
+fn property_assignments(content: &[u8]) -> Vec<PropertyAssignment> {
+    let mut assignments = Vec::new();
+    let mut line_start = 0;
+
+    while line_start < content.len() {
+        let line_end = content[line_start..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(content.len(), |offset| line_start + offset);
+        let logical_end = if line_end > line_start && content[line_end - 1] == b'\r' {
+            line_end - 1
+        } else {
+            line_end
+        };
+        let mut cursor = line_start;
+        while cursor < logical_end && is_property_whitespace(content[cursor]) {
+            cursor += 1;
+        }
+
+        if !matches!(content.get(cursor), Some(b'#' | b'!'))
+            && content.get(cursor..cursor + b"version".len()) == Some(b"version")
+        {
+            cursor += b"version".len();
+            while cursor < logical_end && is_property_whitespace(content[cursor]) {
+                cursor += 1;
+            }
+            if matches!(content.get(cursor), Some(b'=' | b':')) {
+                cursor += 1;
+                while cursor < logical_end && is_property_whitespace(content[cursor]) {
+                    cursor += 1;
+                }
+                let value_start = cursor;
+                let mut value_end = logical_end;
+                let mut scan = value_start;
+                while scan < logical_end {
+                    if matches!(content[scan], b'#' | b'!')
+                        && scan > value_start
+                        && is_property_whitespace(content[scan - 1])
+                        && !is_escaped(content, scan)
+                    {
+                        value_end = scan;
+                        break;
+                    }
+                    scan += 1;
+                }
+                while value_end > value_start && is_property_whitespace(content[value_end - 1]) {
+                    value_end -= 1;
+                }
+
+                if value_start < value_end
+                    && property_value_is_literal(&content[value_start..value_end])
+                {
+                    assignments.push(PropertyAssignment::Literal(value_start..value_end));
+                } else {
+                    assignments.push(PropertyAssignment::Unsupported);
+                }
+            }
+        }
+
+        line_start = if line_end < content.len() {
+            line_end + 1
+        } else {
+            content.len()
+        };
+    }
+
+    assignments
 }
 
 fn replace_candidate<'a>(
@@ -631,7 +747,7 @@ pub fn update_version_in_kts<'a>(
     replace_candidate(
         content,
         new_version,
-        candidate_ranges(content, policy, GradleDialect::Kotlin, kts_value_range),
+        candidate_ranges(content, policy, GradleDialect::Kotlin, kts_value_range).editable,
     )
 }
 
@@ -647,7 +763,7 @@ pub fn update_version_in_groovy<'a>(
     replace_candidate(
         content,
         new_version,
-        candidate_ranges(content, policy, GradleDialect::Groovy, groovy_value_range),
+        candidate_ranges(content, policy, GradleDialect::Groovy, groovy_value_range).editable,
     )
 }
 
@@ -673,18 +789,99 @@ pub async fn write_gradle_version(
     // stem is empty or missing, matching the old `unwrap_or_default() →
     // Path::new("").extension() == None` fallthrough.
     let is_kts = has_extension_ignore_ascii_case(path, "kts");
-
-    let updated_content = if is_kts {
-        update_version_in_kts(&content, new_version, policy)
+    let script_candidates = if is_kts {
+        candidate_ranges(&content, policy, GradleDialect::Kotlin, kts_value_range)
     } else {
-        update_version_in_groovy(&content, new_version, policy)
-    }
-    .map_err(|error| anyhow!("{error} in Gradle build file {}", path.display()))?;
+        candidate_ranges(&content, policy, GradleDialect::Groovy, groovy_value_range)
+    };
+    let properties_path = path.with_file_name("gradle.properties");
+    let properties_content = match read(&properties_path).await {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to read Gradle properties file {}",
+                    properties_path.display()
+                )
+            });
+        }
+    };
+    let property_assignments = properties_content
+        .as_deref()
+        .map(property_assignments)
+        .unwrap_or_default();
 
-    write(path, updated_content.as_ref())
-        .await
-        .with_context(|| format!("Failed to write Gradle build file {}", path.display()))?;
-    Ok(())
+    if script_candidates.editable.len() > 1 {
+        bail!(
+            "Ambiguous supported editable version declarations found ({} candidates) in Gradle build file {}",
+            script_candidates.editable.len(),
+            path.display()
+        );
+    }
+    if property_assignments.len() > 1 {
+        bail!(
+            "Ambiguous active version assignments found ({} candidates) in Gradle properties file {}",
+            property_assignments.len(),
+            properties_path.display()
+        );
+    }
+    if matches!(
+        property_assignments.as_slice(),
+        [PropertyAssignment::Unsupported]
+    ) {
+        bail!(
+            "The active version assignment is computed, continued, or otherwise non-literal in Gradle properties file {}",
+            properties_path.display()
+        );
+    }
+    if !script_candidates.editable.is_empty() && !property_assignments.is_empty() {
+        bail!(
+            "Ambiguous editable version sources found in both Gradle build file {} and Gradle properties file {}",
+            path.display(),
+            properties_path.display()
+        );
+    }
+
+    if let [candidate] = script_candidates.editable.as_slice() {
+        let updated_content = replace_candidate(&content, new_version, vec![candidate.clone()])
+            .map_err(|error| anyhow!("{error} in Gradle build file {}", path.display()))?;
+
+        write(path, updated_content.as_ref())
+            .await
+            .with_context(|| format!("Failed to write Gradle build file {}", path.display()))?;
+        return Ok(());
+    }
+    if script_candidates.has_unsupported {
+        bail!(
+            "The Gradle version source is computed or provider-backed in Gradle build file {}",
+            path.display()
+        );
+    }
+    if let (Some(properties_content), [PropertyAssignment::Literal(candidate)]) = (
+        properties_content.as_deref(),
+        property_assignments.as_slice(),
+    ) {
+        let mut updated =
+            Vec::with_capacity(properties_content.len() - candidate.len() + new_version.len());
+        updated.extend_from_slice(&properties_content[..candidate.start]);
+        updated.extend_from_slice(new_version.as_bytes());
+        updated.extend_from_slice(&properties_content[candidate.end..]);
+
+        write(&properties_path, updated).await.with_context(|| {
+            format!(
+                "Failed to write Gradle properties file {}",
+                properties_path.display()
+            )
+        })?;
+        return Ok(());
+    }
+
+    bail!(
+        "No supported editable version declaration found in Gradle build file {} or Gradle properties file {}",
+        path.display(),
+        properties_path.display()
+    )
 }
 
 #[cfg(test)]
@@ -1259,5 +1456,196 @@ group = "com.example"
         assert!(error.to_string().contains("Ambiguous"));
         assert!(error.to_string().contains(&path.display().to_string()));
         assert_eq!(tokio::fs::read(&path).await.unwrap(), content);
+    }
+
+    #[tokio::test]
+    async fn write_gradle_version_updates_equals_property_preserving_exact_bytes() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle.kts");
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let build_content = b"plugins { id(\"java\") }\r\n";
+        let properties_content =
+            b"# project version\r\n\tversion \t=  1.0.0 \t # release\r\nother=value\r\n";
+        tokio::fs::write(&build_path, build_content).await.unwrap();
+        tokio::fs::write(&properties_path, properties_content)
+            .await
+            .unwrap();
+
+        write_gradle_version(&build_path, "1.0.1", GradleVersionScope::ScriptOnly)
+            .await
+            .unwrap();
+
+        assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
+        assert_eq!(
+            tokio::fs::read(&properties_path).await.unwrap(),
+            b"# project version\r\n\tversion \t=  1.0.1 \t # release\r\nother=value\r\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_gradle_version_updates_colon_property_preserving_exact_bytes() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle");
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let build_content = b"plugins { id 'java' }\n";
+        let properties_content = b"! version: disabled\n  version :\t2.0.0  ! keep\nlast=true\n";
+        tokio::fs::write(&build_path, build_content).await.unwrap();
+        tokio::fs::write(&properties_path, properties_content)
+            .await
+            .unwrap();
+
+        write_gradle_version(&build_path, "2.0.1", GradleVersionScope::ScriptOnly)
+            .await
+            .unwrap();
+
+        assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
+        assert_eq!(
+            tokio::fs::read(&properties_path).await.unwrap(),
+            b"! version: disabled\n  version :\t2.0.1  ! keep\nlast=true\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_gradle_version_rejects_missing_properties_without_writing() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle.kts");
+        let build_content = b"plugins { id(\"java\") }\n";
+        tokio::fs::write(&build_path, build_content).await.unwrap();
+
+        let error = write_gradle_version(&build_path, "1.0.1", GradleVersionScope::ScriptOnly)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("No supported editable version"));
+        assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
+        assert!(
+            !tokio::fs::try_exists(temp_dir.path().join("gradle.properties"))
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn write_gradle_version_rejects_duplicate_active_properties_without_writing() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle.kts");
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let build_content = b"plugins { id(\"java\") }\n";
+        let properties_content =
+            b"# version=ignored\nversion=1.0.0\n  version : 2.0.0 # duplicate\n";
+        tokio::fs::write(&build_path, build_content).await.unwrap();
+        tokio::fs::write(&properties_path, properties_content)
+            .await
+            .unwrap();
+
+        let error = write_gradle_version(&build_path, "1.0.1", GradleVersionScope::ScriptOnly)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Ambiguous"));
+        assert!(error.to_string().contains("2"));
+        assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
+        assert_eq!(
+            tokio::fs::read(&properties_path).await.unwrap(),
+            properties_content
+        );
+    }
+
+    #[tokio::test]
+    async fn write_gradle_version_rejects_competing_script_and_properties_without_writing() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle");
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let build_content = b"version = '1.0.0'\n";
+        let properties_content = b"version=1.0.0\n";
+        tokio::fs::write(&build_path, build_content).await.unwrap();
+        tokio::fs::write(&properties_path, properties_content)
+            .await
+            .unwrap();
+
+        let error = write_gradle_version(&build_path, "1.0.1", GradleVersionScope::ScriptOnly)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("Ambiguous"));
+        assert!(error.to_string().contains("gradle.properties"));
+        assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
+        assert_eq!(
+            tokio::fs::read(&properties_path).await.unwrap(),
+            properties_content
+        );
+    }
+
+    #[tokio::test]
+    async fn write_gradle_version_rejects_provider_backed_script_without_writing_properties() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle.kts");
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let build_content = b"version = providers.gradleProperty(\"releaseVersion\").get()\n";
+        let properties_content = b"version=1.0.0\nreleaseVersion=1.0.0\n";
+        tokio::fs::write(&build_path, build_content).await.unwrap();
+        tokio::fs::write(&properties_path, properties_content)
+            .await
+            .unwrap();
+
+        let error = write_gradle_version(&build_path, "1.0.1", GradleVersionScope::ScriptOnly)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("computed or provider-backed"));
+        assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
+        assert_eq!(
+            tokio::fs::read(&properties_path).await.unwrap(),
+            properties_content
+        );
+    }
+
+    #[tokio::test]
+    async fn write_gradle_version_rejects_kotlin_project_set_version_without_writing() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle.kts");
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let build_content =
+            b"project.setVersion(providers.gradleProperty(\"releaseVersion\").get())\r\n";
+        let properties_content = b"version = 1.0.0 # shadowed\r\nreleaseVersion=2.0.0\r\n";
+        tokio::fs::write(&build_path, build_content).await.unwrap();
+        tokio::fs::write(&properties_path, properties_content)
+            .await
+            .unwrap();
+
+        let error = write_gradle_version(&build_path, "1.0.1", GradleVersionScope::ScriptOnly)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("computed or provider-backed"));
+        assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
+        assert_eq!(
+            tokio::fs::read(&properties_path).await.unwrap(),
+            properties_content
+        );
+    }
+
+    #[tokio::test]
+    async fn write_gradle_version_rejects_groovy_this_set_version_without_writing() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle");
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let build_content = b"this.setVersion(providers.gradleProperty('releaseVersion').get())\n";
+        let properties_content = b"version: 1.0.0 ! shadowed\nreleaseVersion=2.0.0\n";
+        tokio::fs::write(&build_path, build_content).await.unwrap();
+        tokio::fs::write(&properties_path, properties_content)
+            .await
+            .unwrap();
+
+        let error = write_gradle_version(&build_path, "1.0.1", GradleVersionScope::ScriptOnly)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("computed or provider-backed"));
+        assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
+        assert_eq!(
+            tokio::fs::read(&properties_path).await.unwrap(),
+            properties_content
+        );
     }
 }

@@ -1,6 +1,7 @@
 use std::{
-    collections::{HashMap, VecDeque, hash_map::Entry},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque, hash_map::Entry},
     hash::BuildHasher,
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
 };
 
@@ -14,14 +15,158 @@ use crate::{
     read_log_bodies,
 };
 
+type UpdateEntry = (UpdateType, Vec<ChangePackResultLog>);
+type UpdateMap = HashMap<PathBuf, UpdateEntry>;
+
+/// Reserved prefix for generated carry-forward changepack logs.
+pub const CARRY_FORWARD_LOG_PREFIX: &str = "changepack_log_carry_forward_";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GeneratedState {
+    Fresh,
+    Persisted,
+}
+
+#[derive(Debug)]
+enum UpdateProvenance {
+    Explicit,
+    Generated {
+        notes: Vec<String>,
+        state: GeneratedState,
+    },
+}
+
+/// Planned updates together with their explicit or generated origin.
+#[derive(Debug)]
+pub struct UpdatePlan {
+    updates: UpdateMap,
+    provenance: HashMap<PathBuf, UpdateProvenance>,
+    expansion_seeds: HashSet<PathBuf>,
+}
+
+impl UpdatePlan {
+    fn record_generated(&mut self, generated: impl IntoIterator<Item = (PathBuf, String)>) {
+        for (path, note) in generated {
+            self.provenance.insert(
+                path,
+                UpdateProvenance::Generated {
+                    notes: vec![note],
+                    state: GeneratedState::Fresh,
+                },
+            );
+        }
+    }
+
+    /// Apply reverse-dependency expansion while retaining generated provenance.
+    ///
+    /// # Errors
+    /// Returns an error when project names are ambiguous or a project path is outside the repo.
+    pub fn apply_reverse_dependencies(
+        &mut self,
+        projects: &[&Project],
+        repo_root_path: &Path,
+    ) -> Result<()> {
+        let generated = apply_reverse_dependencies_with_provenance(
+            &mut self.updates,
+            projects,
+            ReverseDependencyContext {
+                repo_root_path,
+                expansion_seeds: &self.expansion_seeds,
+            },
+        )?;
+        self.record_generated(generated);
+        Ok(())
+    }
+
+    /// Fold source provenance into the workspace paths that own their bumps.
+    pub fn merge_provenance(&mut self, merged_pairs: &[(PathBuf, PathBuf)]) {
+        for (source_path, target_path) in merged_pairs {
+            if self.expansion_seeds.remove(source_path) {
+                self.expansion_seeds.insert(target_path.clone());
+            }
+            let Some(source) = self.provenance.remove(source_path) else {
+                continue;
+            };
+            match self.provenance.entry(target_path.clone()) {
+                Entry::Vacant(entry) => {
+                    entry.insert(source);
+                }
+                Entry::Occupied(mut entry) => match (entry.get_mut(), source) {
+                    (
+                        UpdateProvenance::Explicit,
+                        UpdateProvenance::Explicit | UpdateProvenance::Generated { .. },
+                    ) => {}
+                    (target @ UpdateProvenance::Generated { .. }, UpdateProvenance::Explicit) => {
+                        *target = UpdateProvenance::Explicit;
+                    }
+                    (
+                        UpdateProvenance::Generated {
+                            notes: target_notes,
+                            state: target_state,
+                        },
+                        UpdateProvenance::Generated {
+                            notes: mut source_notes,
+                            state: source_state,
+                        },
+                    ) => {
+                        target_notes.append(&mut source_notes);
+                        if source_state == GeneratedState::Persisted {
+                            *target_state = GeneratedState::Persisted;
+                        }
+                    }
+                },
+            }
+        }
+    }
+
+    /// Retain selected updates and return changepack logs for excluded generated updates.
+    pub fn retain_updates(&mut self, mut retain: impl FnMut(&Path) -> bool) -> Vec<ChangePackLog> {
+        let mut excluded_paths = self
+            .updates
+            .keys()
+            .filter(|path| !retain(path))
+            .cloned()
+            .collect::<Vec<_>>();
+        excluded_paths.sort_by(|left, right| compare_paths(left, right));
+
+        let mut carry_forward = Vec::new();
+        for path in excluded_paths {
+            let Some((update_type, _)) = self.updates.remove(&path) else {
+                continue;
+            };
+            if let Some(UpdateProvenance::Generated {
+                notes,
+                state: GeneratedState::Fresh,
+            }) = self.provenance.remove(&path)
+            {
+                carry_forward.extend(notes.into_iter().map(|note| {
+                    ChangePackLog::new(BTreeMap::from([(path.clone(), update_type)]), note)
+                }));
+            }
+        }
+        carry_forward
+    }
+}
+
+impl Deref for UpdatePlan {
+    type Target = UpdateMap;
+
+    fn deref(&self) -> &Self::Target {
+        &self.updates
+    }
+}
+
+impl DerefMut for UpdatePlan {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.updates
+    }
+}
+
 /// Generate update map from changepack logs
 ///
 /// # Errors
 /// Returns error if reading changepacks, parsing JSON, or validating `updateOn` rules fails.
-pub async fn gen_update_map(
-    changepacks_dir: &Path,
-    config: &Config,
-) -> Result<HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>> {
+pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<UpdatePlan> {
     // Two-phase reader (mirrors `clear_update_logs`):
     //   Phase 1: single directory walk to collect the paths of every matching
     //            `changepack_log_*.json` entry — pure name filtering, no IO body.
@@ -43,8 +188,9 @@ pub async fn gen_update_map(
     // `apply_reverse_dependencies`. Eliminates the first geometric-doubling
     // reallocation on any repo with more than one changepack log; byte-
     // identical map contents.
-    let mut update_map: HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)> =
-        HashMap::with_capacity(paths.len());
+    let mut update_map = HashMap::with_capacity(paths.len());
+    let mut provenance = HashMap::with_capacity(paths.len());
+    let mut expansion_seeds = HashSet::with_capacity(paths.len());
     let bodies = read_log_bodies(&paths, "changepack log").await?;
     // Zip `paths` with `bodies` so a malformed `changepack_log_*.json`
     // surfaces WHICH file failed rather than a bare `serde_json` error.
@@ -57,7 +203,32 @@ pub async fn gen_update_map(
     for (path, body) in paths.iter().zip(bodies) {
         let file_json: ChangePackLog = serde_json::from_str(&body)
             .with_context(|| format!("Failed to parse changepack log {}", path.display()))?;
+        let is_carry_forward = path.file_name().is_some_and(|file_name| {
+            file_name
+                .to_string_lossy()
+                .starts_with(CARRY_FORWARD_LOG_PREFIX)
+        });
         for (project_path, update_type) in file_json.changes() {
+            if is_carry_forward {
+                match provenance.entry(project_path.clone()) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(UpdateProvenance::Generated {
+                            notes: vec![file_json.note().to_string()],
+                            state: GeneratedState::Persisted,
+                        });
+                    }
+                    Entry::Occupied(mut entry) => match entry.get_mut() {
+                        UpdateProvenance::Explicit => {}
+                        UpdateProvenance::Generated { notes, state } => {
+                            notes.push(file_json.note().to_string());
+                            *state = GeneratedState::Persisted;
+                        }
+                    },
+                }
+            } else {
+                provenance.insert(project_path.clone(), UpdateProvenance::Explicit);
+                expansion_seeds.insert(project_path.clone());
+            }
             // Fast-path: `HashMap::get_mut` on an existing key is zero-alloc,
             // whereas `entry(project_path.clone()).or_insert(...)` unconditionally
             // clones the `PathBuf` even when the entry already exists. On repos
@@ -84,21 +255,37 @@ pub async fn gen_update_map(
 
     // Apply updateOn rules: if any updated package matches a trigger pattern,
     // add dependent packages as PATCH updates
-    apply_update_on_rules(&mut update_map, config)?;
+    let generated = apply_update_on_rules_from(&mut update_map, config, &mut expansion_seeds)?;
 
-    Ok(update_map)
+    let mut plan = UpdatePlan {
+        updates: update_map,
+        provenance,
+        expansion_seeds,
+    };
+    plan.record_generated(generated);
+    Ok(plan)
 }
 
 fn normalize_update_on_match_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+#[cfg(test)]
 fn apply_update_on_rules(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     config: &Config,
-) -> Result<()> {
+) -> Result<Vec<(PathBuf, String)>> {
+    let mut expansion_seeds = update_map.keys().cloned().collect();
+    apply_update_on_rules_from(update_map, config, &mut expansion_seeds)
+}
+
+fn apply_update_on_rules_from(
+    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    config: &Config,
+    expansion_seeds: &mut HashSet<PathBuf>,
+) -> Result<Vec<(PathBuf, String)>> {
     if config.update_on.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     // Compile every pattern once and validate configuration even when there
@@ -114,11 +301,12 @@ fn apply_update_on_rules(
         })
         .collect::<Result<_>>()?;
 
-    if update_map.is_empty() {
-        return Ok(());
+    if update_map.is_empty() || expansion_seeds.is_empty() {
+        return Ok(Vec::new());
     }
 
-    let mut initial_paths: Vec<_> = update_map.keys().cloned().collect();
+    let mut generated = Vec::new();
+    let mut initial_paths: Vec<_> = expansion_seeds.iter().cloned().collect();
     initial_paths.sort_by(|left, right| compare_paths(left, right));
     let mut queued_paths: VecDeque<PathBuf> = initial_paths.into();
 
@@ -136,8 +324,9 @@ fn apply_update_on_rules(
         }
         batch.sort_by(|left, right| compare_paths(&left.0, &right.0));
 
-        // Initial map keys are unique, and later paths are queued only through
-        // `Entry::Vacant`, so every queued path reaches every rule exactly once.
+        // `expansion_seeds` records every queued path, including a persisted
+        // generated entry reached by a fresh explicit path, so each path reaches
+        // every rule exactly once within this plan.
         for (trigger_pattern, pattern, dependents) in &rules {
             for (_, match_path) in &batch {
                 if !pattern.matches(match_path) {
@@ -147,15 +336,15 @@ fn apply_update_on_rules(
                 for dependent in *dependents {
                     let dependent_path = PathBuf::from(dependent);
                     if let Entry::Vacant(entry) = update_map.entry(dependent_path.clone()) {
+                        let note =
+                            format!("Auto-update triggered by updateOn rule: {trigger_pattern}");
                         entry.insert((
                             UpdateType::Patch,
-                            vec![ChangePackResultLog::new(
-                                UpdateType::Patch,
-                                format!(
-                                    "Auto-update triggered by updateOn rule: {trigger_pattern}"
-                                ),
-                            )],
+                            vec![ChangePackResultLog::new(UpdateType::Patch, note.clone())],
                         ));
+                        generated.push((dependent_path.clone(), note));
+                    }
+                    if expansion_seeds.insert(dependent_path.clone()) {
                         queued_paths.push_back(dependent_path);
                     }
                 }
@@ -163,16 +352,72 @@ fn apply_update_on_rules(
         }
     }
 
-    Ok(())
+    Ok(generated)
 }
 
 /// Apply reverse dependency updates: if package A depends on package B (via a local workspace dependency),
 /// and B is being updated, then A should also be updated as PATCH.
-pub fn apply_reverse_dependencies<S: BuildHasher>(
-    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
+pub trait ReverseDependencyUpdates {
+    /// Apply reverse-dependency expansion using this target's eligible seeds.
+    ///
+    /// # Errors
+    /// Returns an error when project names are ambiguous or a project path is outside the repo.
+    fn expand_reverse_dependencies(
+        &mut self,
+        projects: &[&Project],
+        repo_root_path: &Path,
+    ) -> Result<()>;
+}
+
+impl ReverseDependencyUpdates for UpdatePlan {
+    fn expand_reverse_dependencies(
+        &mut self,
+        projects: &[&Project],
+        repo_root_path: &Path,
+    ) -> Result<()> {
+        self.apply_reverse_dependencies(projects, repo_root_path)
+    }
+}
+
+impl<S: BuildHasher> ReverseDependencyUpdates
+    for HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>
+{
+    fn expand_reverse_dependencies(
+        &mut self,
+        projects: &[&Project],
+        repo_root_path: &Path,
+    ) -> Result<()> {
+        let expansion_seeds = self.keys().cloned().collect();
+        apply_reverse_dependencies_with_provenance(
+            self,
+            projects,
+            ReverseDependencyContext {
+                repo_root_path,
+                expansion_seeds: &expansion_seeds,
+            },
+        )
+        .map(|_| ())
+    }
+}
+
+pub fn apply_reverse_dependencies<T: ReverseDependencyUpdates + ?Sized>(
+    update_map: &mut T,
     projects: &[&Project],
     repo_root_path: &Path,
 ) -> Result<()> {
+    update_map.expand_reverse_dependencies(projects, repo_root_path)
+}
+
+struct ReverseDependencyContext<'a> {
+    repo_root_path: &'a Path,
+    expansion_seeds: &'a HashSet<PathBuf>,
+}
+
+fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
+    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
+    projects: &[&Project],
+    context: ReverseDependencyContext<'_>,
+) -> Result<Vec<(PathBuf, String)>> {
     // Fast path: with no project carrying any local
     // (monorepo) dependency edge, the DFS discovers nothing and the
     // full `path_to_name` / `reverse_deps` construction below is pure
@@ -183,7 +428,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // it's O(1) amortized when the rest of the function would have
     // fired anyway.
     if projects.iter().all(|p| p.dependencies().is_empty()) {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let project_names = ProjectNameAnalysis::new(projects);
@@ -203,7 +448,10 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // Ambiguity validation is unconditional. Once it succeeds, an empty map
     // cannot seed reverse-dependency traversal and is safe to return early.
     if update_map.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
+    }
+    if context.expansion_seeds.is_empty() {
+        return Ok(Vec::new());
     }
 
     // Single pass over projects to build:
@@ -214,7 +462,7 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
         HashMap::with_capacity(projects.len());
     for (idx, project) in projects.iter().enumerate() {
         let rel_path_buf =
-            get_relative_path(repo_root_path, project.path()).with_context(|| {
+            get_relative_path(context.repo_root_path, project.path()).with_context(|| {
                 format!(
                     "failed to apply reverse dependencies for project '{}'",
                     project.path().display()
@@ -289,22 +537,28 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // triggers settle the note winner before transitive propagation begins.
     let mut initial_paths: Vec<_> = update_map
         .keys()
+        .filter(|path| context.expansion_seeds.contains(*path))
         .filter_map(|path| path_to_name.get(path).map(|name| (path, *name)))
         .collect();
     initial_paths
         .sort_by(|left, right| compare_paths(left.0, right.0).then_with(|| left.1.cmp(right.1)));
     let mut to_process: VecDeque<&str> = initial_paths.into_iter().map(|(_, name)| name).collect();
+    let mut reached_paths = context.expansion_seeds.clone();
     while let Some(trigger_name) = to_process.pop_front() {
         if let Some(dependents) = reverse_deps.get(trigger_name) {
             for (dependent_path, dependent_name) in dependents {
+                let newly_reached = reached_paths.insert(dependent_path.clone());
                 if update_map.contains_key(dependent_path) {
+                    if newly_reached && let Some(dependent_name) = dependent_name {
+                        to_process.push_back(*dependent_name);
+                    }
                     continue;
                 }
 
                 match packages_to_add.entry(dependent_path.clone()) {
                     Entry::Vacant(entry) => {
                         entry.insert(trigger_name);
-                        if let Some(dependent_name) = dependent_name {
+                        if newly_reached && let Some(dependent_name) = dependent_name {
                             to_process.push_back(*dependent_name);
                         }
                     }
@@ -322,24 +576,23 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     // ordered iteration, but this gives deterministic insertion/serialization
     // whenever the map's chosen hasher supports it.
     let mut ordered_entries: Vec<_> = update_map.drain().collect();
-    ordered_entries.extend(packages_to_add.into_iter().map(|(path, dependency_name)| {
-        (
+    let mut generated = Vec::with_capacity(packages_to_add.len());
+    for (path, dependency_name) in packages_to_add {
+        let note =
+            format!("Auto-update: depends on '{dependency_name}' via a local workspace dependency");
+        generated.push((path.clone(), note.clone()));
+        ordered_entries.push((
             path,
             (
                 UpdateType::Patch,
-                vec![ChangePackResultLog::new(
-                    UpdateType::Patch,
-                    format!(
-                        "Auto-update: depends on '{dependency_name}' via a local workspace dependency"
-                    ),
-                )],
+                vec![ChangePackResultLog::new(UpdateType::Patch, note)],
             ),
-        )
-    }));
+        ));
+    }
     ordered_entries.sort_by(|left, right| compare_paths(&left.0, &right.0));
     update_map.extend(ordered_entries);
 
-    Ok(())
+    Ok(generated)
 }
 
 #[cfg(test)]
@@ -730,6 +983,81 @@ mod tests {
         );
 
         temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn persisted_carry_plan_does_not_seed_update_on_or_reverse_dependencies() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir(&changepacks_dir).await.unwrap();
+        let carry = ChangePackLog::new(
+            BTreeMap::from([(PathBuf::from("core/package.json"), UpdateType::Patch)]),
+            "persisted generated core".to_string(),
+        );
+        fs::write(
+            changepacks_dir.join(format!("{CARRY_FORWARD_LOG_PREFIX}test.json")),
+            serde_json::to_vec(&carry).unwrap(),
+        )
+        .await
+        .unwrap();
+        let config = Config {
+            update_on: BTreeMap::from([(
+                "core/package.json".to_string(),
+                vec!["update-on/package.json".to_string()],
+            )]),
+            ..Default::default()
+        };
+        let mut plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+        let core = create_project("core", vec![]);
+        let cli = create_project("cli", vec!["core"]);
+
+        apply_reverse_dependencies(&mut plan, &[&core, &cli], Path::new("/test")).unwrap();
+
+        assert_eq!(plan.len(), 1);
+        assert!(plan.contains_key(Path::new("core/package.json")));
+        assert!(!plan.contains_key(Path::new("update-on/package.json")));
+        assert!(!plan.contains_key(Path::new("cli/package.json")));
+    }
+
+    #[tokio::test]
+    async fn explicit_log_dominates_persisted_carry_for_fresh_expansion() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir(&changepacks_dir).await.unwrap();
+        let path = PathBuf::from("core/package.json");
+        let carry = ChangePackLog::new(
+            BTreeMap::from([(path.clone(), UpdateType::Patch)]),
+            "persisted generated core".to_string(),
+        );
+        let explicit = ChangePackLog::new(
+            BTreeMap::from([(path.clone(), UpdateType::Minor)]),
+            "fresh explicit core".to_string(),
+        );
+        fs::write(
+            changepacks_dir.join(format!("{CARRY_FORWARD_LOG_PREFIX}test.json")),
+            serde_json::to_vec(&carry).unwrap(),
+        )
+        .await
+        .unwrap();
+        fs::write(
+            changepacks_dir.join("changepack_log_explicit.json"),
+            serde_json::to_vec(&explicit).unwrap(),
+        )
+        .await
+        .unwrap();
+        let generated_path = PathBuf::from("bridge/node/package.json");
+        let config = Config {
+            update_on: BTreeMap::from([(
+                "core/package.json".to_string(),
+                vec![generated_path.to_string_lossy().into_owned()],
+            )]),
+            ..Default::default()
+        };
+
+        let plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+
+        assert_eq!(plan[&path].0, UpdateType::Minor);
+        assert_eq!(plan[&generated_path].0, UpdateType::Patch);
     }
 
     #[test]

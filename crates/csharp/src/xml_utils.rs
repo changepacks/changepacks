@@ -7,6 +7,8 @@ struct PropertyGroupContext {
     version_qname: Option<String>,
     close_ws: Option<String>,
     indent: String,
+    depth: usize,
+    eligible: bool,
 }
 
 fn has_condition_attribute(element: &BytesStart<'_>) -> Result<bool> {
@@ -22,6 +24,70 @@ fn has_condition_attribute(element: &BytesStart<'_>) -> Result<bool> {
         }
     }
     Ok(false)
+}
+
+pub(crate) fn is_unconditional_project_property_group(
+    element: &BytesStart<'_>,
+    element_depth: usize,
+    project_depth: Option<usize>,
+) -> Result<bool> {
+    Ok(
+        project_depth.is_some_and(|depth| element_depth == depth + 1)
+            && !has_condition_attribute(element)?,
+    )
+}
+
+fn has_eligible_version(content: &str) -> Result<bool> {
+    let mut reader = Reader::from_str(content);
+    let mut buf = Vec::with_capacity(256);
+    let mut element_depth = 0usize;
+    let mut project_depth = None;
+    let mut eligible_property_group_depth = None;
+
+    loop {
+        match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(element)) => {
+                element_depth += 1;
+                let name = element.local_name();
+                if name.as_ref() == b"Project" && project_depth.is_none() {
+                    project_depth = Some(element_depth);
+                } else if name.as_ref() == b"PropertyGroup"
+                    && is_unconditional_project_property_group(
+                        &element,
+                        element_depth,
+                        project_depth,
+                    )?
+                {
+                    eligible_property_group_depth = Some(element_depth);
+                } else if name.as_ref() == b"Version"
+                    && eligible_property_group_depth.is_some_and(|depth| element_depth == depth + 1)
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(Event::Empty(element)) => {
+                if element.local_name().as_ref() == b"Version"
+                    && eligible_property_group_depth.is_some_and(|depth| element_depth == depth)
+                {
+                    return Ok(true);
+                }
+            }
+            Ok(Event::End(element)) => {
+                if element.local_name().as_ref() == b"PropertyGroup"
+                    && eligible_property_group_depth == Some(element_depth)
+                {
+                    eligible_property_group_depth = None;
+                }
+                element_depth = element_depth
+                    .checked_sub(1)
+                    .context("unexpected XML end tag")?;
+            }
+            Ok(Event::Eof) => return Ok(false),
+            Err(error) => return Err(anyhow::anyhow!("XML parsing error: {error}")),
+            Ok(_) => {}
+        }
+        buf.clear();
+    }
 }
 
 fn qname_with_local_name(qname: &str, local_name: &str) -> String {
@@ -53,8 +119,9 @@ fn contains_line_break(whitespace: &str) -> bool {
 pub fn update_version_in_xml(
     content: &str,
     new_version: &str,
-    has_version: bool,
+    _has_version: bool,
 ) -> Result<String> {
+    let has_version = has_eligible_version(content)?;
     let mut reader = Reader::from_str(content);
     let mut writer = Writer::new(Cursor::new(Vec::with_capacity(content.len())));
 
@@ -91,7 +158,7 @@ pub fn update_version_in_xml(
     let mut project_depth = None;
     let mut project_close_ws: Option<String> = None;
     let mut fallback_qnames: Option<(String, String)> = None;
-    let mut fallback_group_indent = String::new();
+    let mut fallback_group_indent = None;
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -100,6 +167,12 @@ pub fn update_version_in_xml(
                 let name = e.local_name();
                 if name.as_ref() == b"Project" && project_depth.is_none() {
                     project_depth = Some(element_depth);
+                    let element_name = e.name();
+                    let qname = std::str::from_utf8(element_name.as_ref())
+                        .context("Failed to decode Project qualified name")?;
+                    let property_group_qname = qname_with_local_name(qname, "PropertyGroup");
+                    let version_qname = qname_with_local_name(qname, "Version");
+                    fallback_qnames = Some((property_group_qname, version_qname));
                 }
                 let is_top_level = project_depth.is_some_and(|depth| element_depth == depth + 1);
                 let preceding_project_ws = if is_top_level {
@@ -107,6 +180,14 @@ pub fn update_version_in_xml(
                 } else {
                     None
                 };
+                if is_top_level && fallback_group_indent.is_none() {
+                    fallback_group_indent = Some(
+                        preceding_project_ws
+                            .as_deref()
+                            .map_or("", trailing_indentation)
+                            .to_owned(),
+                    );
+                }
                 if let Some(property_group) = property_groups.last_mut() {
                     property_group.close_ws = None;
                 }
@@ -115,18 +196,16 @@ pub fn update_version_in_xml(
                         .as_deref()
                         .map_or("", trailing_indentation)
                         .to_owned();
-                    let version_qname = if !has_version && !version_updated {
-                        let qname = std::str::from_utf8(e.name().as_ref())
-                            .context("Failed to decode PropertyGroup qualified name")?
-                            .to_owned();
-                        let version_qname = qname_with_local_name(&qname, "Version");
-                        let is_unconditional_top_level =
-                            is_top_level && !has_condition_attribute(&e)?;
-                        if is_top_level && fallback_qnames.is_none() {
-                            fallback_qnames = Some((qname, version_qname.clone()));
-                            fallback_group_indent.clone_from(&group_indent);
-                        }
-                        is_unconditional_top_level.then_some(version_qname)
+                    let eligible =
+                        is_unconditional_project_property_group(&e, element_depth, project_depth)?;
+                    if is_top_level && fallback_group_indent.is_none() {
+                        fallback_group_indent = Some(group_indent.clone());
+                    }
+                    let version_qname = if !has_version && !version_updated && eligible {
+                        let element_name = e.name();
+                        let qname = std::str::from_utf8(element_name.as_ref())
+                            .context("Failed to decode PropertyGroup qualified name")?;
+                        Some(qname_with_local_name(qname, "Version"))
                     } else {
                         None
                     };
@@ -134,9 +213,13 @@ pub fn update_version_in_xml(
                         version_qname,
                         close_ws: None,
                         indent: group_indent,
+                        depth: element_depth,
+                        eligible,
                     });
-                } else if !property_groups.is_empty() && name.as_ref() == b"Version" {
-                    in_version = true;
+                } else if name.as_ref() == b"Version" {
+                    in_version = property_groups.last().is_some_and(|property_group| {
+                        property_group.eligible && element_depth == property_group.depth + 1
+                    });
                 }
                 writer.write_event(Event::Start(e))?;
             }
@@ -189,14 +272,15 @@ pub fn update_version_in_xml(
                     && !has_version
                     && let Some((property_group_qname, version_qname)) = fallback_qnames.as_ref()
                 {
+                    let fallback_group_indent = fallback_group_indent.as_deref().unwrap_or("");
                     if let Some(trailing) = project_close_ws.as_deref() {
                         if contains_line_break(trailing) {
                             writer
-                                .write_event(Event::Text(BytesText::new(&fallback_group_indent)))?;
+                                .write_event(Event::Text(BytesText::new(fallback_group_indent)))?;
                         }
                     } else if !line_ending.is_empty() {
                         writer.write_event(Event::Text(BytesText::new(line_ending)))?;
-                        writer.write_event(Event::Text(BytesText::new(&fallback_group_indent)))?;
+                        writer.write_event(Event::Text(BytesText::new(fallback_group_indent)))?;
                     }
 
                     writer.write_event(Event::Start(BytesStart::new(property_group_qname)))?;
@@ -210,7 +294,7 @@ pub fn update_version_in_xml(
                     writer.write_event(Event::End(BytesEnd::new(version_qname)))?;
                     if !line_ending.is_empty() {
                         writer.write_event(Event::Text(BytesText::new(line_ending)))?;
-                        writer.write_event(Event::Text(BytesText::new(&fallback_group_indent)))?;
+                        writer.write_event(Event::Text(BytesText::new(fallback_group_indent)))?;
                     }
                     writer.write_event(Event::End(BytesEnd::new(property_group_qname)))?;
                     if let Some(trailing) = project_close_ws.as_deref() {
@@ -271,10 +355,56 @@ pub fn update_version_in_xml(
                 } else {
                     None
                 };
+                if is_top_level && fallback_group_indent.is_none() {
+                    fallback_group_indent = Some(
+                        preceding_project_ws
+                            .as_deref()
+                            .map_or("", trailing_indentation)
+                            .to_owned(),
+                    );
+                }
                 if let Some(property_group) = property_groups.last_mut() {
                     property_group.close_ws = None;
                 }
-                if name.as_ref() == b"PropertyGroup" && !version_updated && !has_version {
+                if name.as_ref() == b"Project"
+                    && project_depth.is_none()
+                    && !version_updated
+                    && !has_version
+                {
+                    let start = e.into_owned();
+                    let end = BytesEnd::from(start.name()).into_owned();
+                    let element_name = start.name();
+                    let project_qname = std::str::from_utf8(element_name.as_ref())
+                        .context("Failed to decode Project qualified name")?;
+                    let property_group_qname =
+                        qname_with_local_name(project_qname, "PropertyGroup");
+                    let version_qname = qname_with_local_name(project_qname, "Version");
+                    let inner_indent = format!("{indent}{indent}");
+
+                    writer.write_event(Event::Start(start))?;
+                    if !line_ending.is_empty() {
+                        writer.write_event(Event::Text(BytesText::new(line_ending)))?;
+                        writer.write_event(Event::Text(BytesText::new(indent)))?;
+                    }
+                    writer.write_event(Event::Start(BytesStart::new(&property_group_qname)))?;
+                    if !line_ending.is_empty() {
+                        writer.write_event(Event::Text(BytesText::new(line_ending)))?;
+                        writer.write_event(Event::Text(BytesText::new(&inner_indent)))?;
+                    }
+                    writer.write_event(Event::Start(BytesStart::new(&version_qname)))?;
+                    writer.write_event(Event::Text(BytesText::new(new_version)))?;
+                    writer.write_event(Event::End(BytesEnd::new(&version_qname)))?;
+                    if !line_ending.is_empty() {
+                        writer.write_event(Event::Text(BytesText::new(line_ending)))?;
+                        writer.write_event(Event::Text(BytesText::new(indent)))?;
+                    }
+                    writer.write_event(Event::End(BytesEnd::new(&property_group_qname)))?;
+                    if !line_ending.is_empty() {
+                        writer.write_event(Event::Text(BytesText::new(line_ending)))?;
+                    }
+                    writer.write_event(Event::End(end))?;
+                    version_updated = true;
+                } else if name.as_ref() == b"PropertyGroup" && !version_updated && !has_version {
                     let qname = std::str::from_utf8(e.name().as_ref())
                         .context("Failed to decode PropertyGroup qualified name")?
                         .to_owned();
@@ -283,10 +413,13 @@ pub fn update_version_in_xml(
                         .as_deref()
                         .map_or("", trailing_indentation)
                         .to_owned();
-                    let is_unconditional_top_level = is_top_level && !has_condition_attribute(&e)?;
-                    if is_top_level && fallback_qnames.is_none() {
-                        fallback_qnames = Some((qname, version_qname.clone()));
-                        fallback_group_indent.clone_from(&group_indent);
+                    let is_unconditional_top_level = is_unconditional_project_property_group(
+                        &e,
+                        element_depth + 1,
+                        project_depth,
+                    )?;
+                    if is_top_level && fallback_group_indent.is_none() {
+                        fallback_group_indent = Some(group_indent.clone());
                     }
                     if is_unconditional_top_level {
                         let start = e.into_owned();
@@ -318,9 +451,11 @@ pub fn update_version_in_xml(
                 // (Start/End) fill-in-place above. Every other empty element
                 // (including `<Version/>` outside a PropertyGroup, or once the
                 // version is already updated) passes through unchanged.
-                } else if !property_groups.is_empty()
-                    && name.as_ref() == b"Version"
+                } else if name.as_ref() == b"Version"
                     && !version_updated
+                    && property_groups.last().is_some_and(|property_group| {
+                        property_group.eligible && element_depth == property_group.depth
+                    })
                 {
                     let start = e.into_owned();
                     let end = BytesEnd::from(start.name()).into_owned();
@@ -487,9 +622,9 @@ mod tests {
     }
 
     #[test]
-    fn test_update_existing_version_in_conditional_group_is_unchanged() {
+    fn test_conditional_version_is_unchanged_when_global_version_is_missing() {
         let content = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>1.2.3</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>";
-        let expected = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>";
+        let expected = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>1.2.3</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n</Project>";
 
         let result = update_version_in_xml(content, "2.0.0", true).unwrap();
 
@@ -740,14 +875,39 @@ mod tests {
     }
 
     #[test]
-    fn test_update_version_without_property_group_returns_error() {
+    fn test_update_version_without_property_group_creates_unconditional_group() {
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n";
-        let err = update_version_in_xml(content, "0.0.1", false)
-            .expect_err("XML without a PropertyGroup cannot be updated");
+        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
 
-        assert!(
-            err.to_string().contains("did not mutate any XML node"),
-            "unexpected error: {err:#}",
+        assert_eq!(
+            result,
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n<PropertyGroup>\n    <Version>0.0.1</Version>\n</PropertyGroup>\n</Project>\n"
         );
+    }
+
+    #[test]
+    fn test_self_closing_project_expands_with_crlf_and_trailing_bytes() -> Result<()> {
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\" />\r\n<!-- trailing -->\r\n";
+
+        let result = update_version_in_xml(content, "1.2.3", false)?;
+
+        assert_eq!(
+            result,
+            "<Project Sdk=\"Microsoft.NET.Sdk\" >\r\n    <PropertyGroup>\r\n        <Version>1.2.3</Version>\r\n    </PropertyGroup>\r\n</Project>\r\n<!-- trailing -->\r\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_namespaced_self_closing_project_preserves_qualified_names() -> Result<()> {
+        let content = "<msb:Project xmlns:msb=\"urn:msbuild\"/>\n";
+
+        let result = update_version_in_xml(content, "2.0.0", false)?;
+
+        assert_eq!(
+            result,
+            "<msb:Project xmlns:msb=\"urn:msbuild\">\n    <msb:PropertyGroup>\n        <msb:Version>2.0.0</msb:Version>\n    </msb:PropertyGroup>\n</msb:Project>\n"
+        );
+        Ok(())
     }
 }

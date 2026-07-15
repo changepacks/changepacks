@@ -583,6 +583,36 @@ version = project.findProperty("releaseVersion") ?: "1.0.11"
     }
 
     #[tokio::test]
+    async fn gradle_package_updates_kotlin_version_from_sibling_properties() {
+        let temp_dir = TempDir::new().unwrap();
+        let build_gradle = temp_dir.path().join("build.gradle.kts");
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let build_content = b"plugins { id(\"java\") }\r\n";
+        let properties_content = b"version = 1.0.0 # package\r\n";
+        tokio::fs::write(&build_gradle, build_content)
+            .await
+            .unwrap();
+        tokio::fs::write(&properties_path, properties_content)
+            .await
+            .unwrap();
+        let mut package = GradlePackage::new(
+            Some("myproject".to_string()),
+            Some("1.0.0".to_string()),
+            build_gradle.clone(),
+            PathBuf::from("build.gradle.kts"),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        assert_eq!(package.version(), Some("1.0.1"));
+        assert_eq!(tokio::fs::read(&build_gradle).await.unwrap(), build_content);
+        assert_eq!(
+            tokio::fs::read(&properties_path).await.unwrap(),
+            b"version = 1.0.1 # package\r\n"
+        );
+    }
+
+    #[tokio::test]
     async fn test_gradle_package_update_version_errors_without_editable_version() {
         let temp_dir = TempDir::new().unwrap();
         let build_gradle = temp_dir.path().join("build.gradle.kts");

@@ -475,7 +475,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_version_in_unsupported_location_preserves_file_and_memory_on_error() {
+    async fn test_update_version_ignores_version_outside_property_group() {
         let temp_dir = TempDir::new().unwrap();
         let csproj_path = temp_dir.path().join("UnsupportedVersion.csproj");
         let original_content = b"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Version>1.2.3</Version>\n  </ItemGroup>\n</Project>\n";
@@ -487,22 +487,13 @@ mod tests {
             PathBuf::from("UnsupportedVersion.csproj"),
         );
 
-        let err = workspace
-            .update_version(UpdateType::Patch)
-            .await
-            .expect_err("Version outside PropertyGroup cannot be updated");
+        workspace.update_version(UpdateType::Patch).await.unwrap();
 
-        assert_eq!(fs::read(&csproj_path).unwrap(), original_content);
-        assert_eq!(workspace.version(), Some("1.2.3"));
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains(&csproj_path.display().to_string()),
-            "error chain should name the manifest path, got: {chain}",
+        assert_eq!(
+            fs::read_to_string(&csproj_path).unwrap(),
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <ItemGroup>\n    <Version>1.2.3</Version>\n  </ItemGroup>\n  <PropertyGroup>\n    <Version>1.2.4</Version>\n  </PropertyGroup>\n</Project>\n"
         );
-        assert!(
-            chain.contains("did not mutate any XML node"),
-            "error chain should explain the failed mutation, got: {chain}",
-        );
+        assert_eq!(workspace.version(), Some("1.2.4"));
         temp_dir.close().unwrap();
     }
 

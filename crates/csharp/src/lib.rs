@@ -29,8 +29,10 @@ pub(crate) const PUBLISH_COMMAND: &str = "dotnet pack -c Release && dotnet nuget
 /// Update the `<Version>` element of the `.csproj` XML at `path` to
 /// `new_version`, delegating to [`xml_utils::update_version_in_xml`] to
 /// preserve the file's original formatting (indentation, comments, sibling
-/// elements). When `has_version` is `false`, a new `<Version>` element is
-/// added under the first `<PropertyGroup>` (see `update_version_in_xml`).
+/// elements). The XML is re-scanned at write time instead of trusting the
+/// caller's `has_version` hint. Missing global versions are added under the
+/// first unconditional top-level `<PropertyGroup>`, or under a newly created
+/// group when none is eligible (see `update_version_in_xml`).
 ///
 /// Shared by `CSharpPackage::update_version` and `CSharpWorkspace::update_version`
 /// so both paths emit byte-identical output — matching the Node/Python/Dart
@@ -64,25 +66,19 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn test_write_csproj_version_rejects_no_property_group_without_writing() {
+    async fn test_write_csproj_version_creates_property_group_when_missing() {
         let temp_dir = TempDir::new().unwrap();
         let csproj_path = temp_dir.path().join("NoPropertyGroup.csproj");
         let content = b"<Project Sdk=\"Microsoft.NET.Sdk\">\r\n</Project>\r\n";
         tokio::fs::write(&csproj_path, content).await.unwrap();
 
-        let err = write_csproj_version(&csproj_path, "1.2.3", false)
+        write_csproj_version(&csproj_path, "1.2.3", false)
             .await
-            .expect_err("XML without a PropertyGroup cannot be updated");
-        let chain = format!("{err:#}");
+            .unwrap();
 
-        assert_eq!(tokio::fs::read(&csproj_path).await.unwrap(), content);
-        assert!(
-            chain.contains(&csproj_path.display().to_string()),
-            "error chain should name the manifest path, got: {chain}",
-        );
-        assert!(
-            chain.contains("did not mutate any XML node"),
-            "error chain should explain the failed mutation, got: {chain}",
+        assert_eq!(
+            tokio::fs::read_to_string(&csproj_path).await.unwrap(),
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\r\n<PropertyGroup>\r\n    <Version>1.2.3</Version>\r\n</PropertyGroup>\r\n</Project>\r\n"
         );
         temp_dir.close().unwrap();
     }
