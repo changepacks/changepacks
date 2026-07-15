@@ -564,37 +564,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Regression for the cancellation/cleanup story: when
-    /// the managed dry-run returns (success or error), the working temp
-    /// directories it created must no longer exist on disk. We can't
-    /// directly observe the inner `TempDir` paths without instrumentation,
-    /// so we instead assert that `dotnet` not being installed produces a
-    /// clean error rather than a panic or hang — exercising the early-exit
-    /// path with RAII cleanup.
-    #[tokio::test]
-    async fn test_managed_dry_run_errors_cleanly_when_dotnet_missing() {
-        // Working dir must exist so we don't get a different error first.
-        let work = TempDir::new().unwrap();
-
-        // We don't control whether `dotnet` is installed on the test host,
-        // so we only assert the contract: the function either returns an
-        // `Err` (spawn failed) or returns `Ok` with a captured output. Both
-        // paths must exit without leaking the working dir we passed in.
-        let _ = run_managed_publish_with(
-            work.path(),
-            Path::new("Project.csproj"),
-            ManagedPublishTarget::TemporaryFeed,
-            run_dotnet_command,
-        )
-        .await;
-
-        // The working dir we passed is still ours — TempDir::Drop will
-        // clean it on test exit. We assert it still exists right now (the
-        // function must not delete the caller's working dir, only its own
-        // internally-allocated pack/feed dirs).
-        assert!(work.path().exists());
-    }
-
     #[tokio::test]
     async fn test_managed_real_publish_packs_then_pushes_sorted_nupkgs_with_user_config() {
         let work = TempDir::new().unwrap();

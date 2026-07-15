@@ -8,6 +8,8 @@
 
 pub mod finder;
 pub mod package;
+mod properties_version;
+mod version_lexer;
 pub mod version_updater;
 pub mod workspace;
 

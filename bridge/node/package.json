@@ -55,7 +55,7 @@
     "format:rs": "cargo fmt",
     "lint": "oxlint .",
     "prepublishOnly": "napi prepublish -t npm --no-gh-release",
-    "test": "echo 'test'",
+    "test": "bun run build && ava",
     "preversion": "napi build --platform && git add .",
     "version": "napi version"
   },
@@ -74,9 +74,10 @@
     "typescript": "^6.0.3"
   },
   "ava": {
-    "extensions": {
-      "ts": "module"
-    },
+    "extensions": [
+      "js",
+      "ts"
+    ],
     "timeout": "2m",
     "workerThreads": false,
     "environmentVariables": {

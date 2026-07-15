@@ -1,10 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
-#[cfg(test)]
-use regex::Regex;
-#[cfg(test)]
-use std::sync::LazyLock;
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
@@ -49,25 +45,6 @@ const JAVA_EXECUTABLE: &str = "java.exe";
 #[cfg(not(windows))]
 const JAVA_EXECUTABLE: &str = "java";
 
-/// Cached regexes for parsing gradlew `properties -q` output. `LazyLock`
-/// mirrors the idiom already used in `crates/java/src/version_updater.rs`
-/// (`KTS_SIMPLE_PATTERN` et al.) — the pattern strings are compile-time
-/// constants, so re-compiling them on every `get_gradle_properties` call
-/// (once per Gradle project per `check` / `update` / `publish`) was pure
-/// per-call waste that this now avoids.
-#[cfg(test)]
-static NAME_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^name:\s*(.+)$").expect("hardcoded regex must compile"));
-
-#[cfg(test)]
-static VERSION_PATTERN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^version:\s*(.+)$").expect("hardcoded regex must compile"));
-
-#[cfg(test)]
-static SUBPROJECTS_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^subprojects:\s*(.+)$").expect("hardcoded regex must compile")
-});
-
 #[derive(Debug, Default)]
 pub struct GradleProjectFinder {
     projects: HashMap<PathBuf, Project>,
@@ -82,7 +59,7 @@ impl GradleProjectFinder {
     }
 }
 
-/// Project info obtained from gradlew properties
+/// Project info obtained from batched Gradle metadata.
 #[derive(Clone, Debug, Default)]
 struct GradleProperties {
     name: Option<String>,
@@ -581,14 +558,6 @@ fn gradle_subproject_path(relative: &Path) -> Result<String> {
         path.push_str(value);
     }
     Ok(path)
-}
-
-#[cfg(test)]
-fn gradle_property_value(caps: &regex::Captures) -> Option<String> {
-    caps.get(1)
-        .map(|m| m.as_str().trim())
-        .filter(|v| *v != "unspecified")
-        .map(std::string::ToString::to_string)
 }
 
 fn is_gradle_identifier_byte(byte: u8) -> bool {
@@ -1729,102 +1698,6 @@ async fn get_gradle_metadata(
     })
 }
 
-/// Get project properties using gradlew command.
-///
-/// Walks up the directory tree to find `gradlew`, then runs it with the correct
-/// subproject path. For a subproject at `root/libs/core/`, this runs:
-/// `./gradlew :libs:core:properties -q` from the root directory.
-///
-/// Returns `Err` when `gradlew` is not found or Java is not available.
-///
-#[cfg(test)]
-async fn get_gradle_properties(
-    project_dir: &Path,
-    java_available: bool,
-    max_depth: usize,
-) -> Result<GradleProperties> {
-    let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth).await?.context(
-        "Gradle wrapper (gradlew) not found. \
-         Ensure the project root contains gradlew or gradlew.bat.",
-    )?;
-
-    // Gradle requires Java. Error early with a clear message rather than
-    // letting gradlew produce a confusing "JAVA_HOME is not set" wall of text.
-    // The availability probe (`java_is_available`) is async (it awaits
-    // `is_regular_file`), so its result arrives here as the pre-computed
-    // `java_available` local fed to `anyhow::ensure!`.
-    anyhow::ensure!(
-        java_available,
-        "Java is required for Gradle projects but JAVA_HOME is not set and 'java' was not found on PATH.\n\
-         Please set the JAVA_HOME environment variable or add java to your PATH."
-    );
-
-    let args = gradle_properties_args(project_dir, &gradlew_dir)?;
-    let command_spec = GradleCommandSpec::new(&gradlew, &gradlew_dir, args);
-    let output = command_spec
-        .command()
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to execute gradlew for '{}' (gradlew: '{}'): {e}",
-                project_dir.display(),
-                gradlew.display(),
-            )
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr_trimmed = stderr.trim();
-        return Err(anyhow::anyhow!(
-            "Gradle properties failed for '{}' using '{}' with status {}{}",
-            project_dir.display(),
-            gradlew.display(),
-            output.status,
-            if stderr_trimmed.is_empty() {
-                String::new()
-            } else {
-                format!("; stderr: {}", stderr_trimmed)
-            }
-        ));
-    }
-
-    Ok(parse_gradle_properties_output(&String::from_utf8_lossy(
-        &output.stdout,
-    )))
-}
-
-#[cfg(test)]
-fn parse_gradle_properties_output(output: &str) -> GradleProperties {
-    let name = NAME_PATTERN
-        .captures(output)
-        .and_then(|caps| gradle_property_value(&caps));
-    let version = VERSION_PATTERN
-        .captures(output)
-        .and_then(|caps| gradle_property_value(&caps));
-    let has_subprojects = SUBPROJECTS_PATTERN
-        .captures(output)
-        .and_then(|caps| caps.get(1))
-        .is_some_and(|value| value.as_str().trim() != "[]");
-
-    GradleProperties {
-        name,
-        version,
-        has_subprojects,
-        ..GradleProperties::default()
-    }
-}
-
-#[cfg(test)]
-fn gradle_properties_args(project_dir: &Path, gradlew_dir: &Path) -> Result<Vec<OsString>> {
-    Ok(vec![
-        gradle_task_arg_from_project_dir(project_dir, gradlew_dir, "properties")?,
-        OsString::from("-q"),
-    ])
-}
-
 fn gradle_task_arg_from_project_path(project_path: &str, task: &str) -> OsString {
     if project_path == ":" {
         OsString::from(task)
@@ -2150,23 +2023,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_parse_gradle_properties_output_handles_values_and_unspecified() {
-        let props = parse_gradle_properties_output(
-            "name: demo\nversion: unspecified\nsubprojects: [project ':app']\n",
-        );
-
-        assert_eq!(props.name.as_deref(), Some("demo"));
-        assert_eq!(props.version, None);
-        assert!(props.has_subprojects);
-
-        let empty =
-            parse_gradle_properties_output("name: unspecified\nversion: 1.2.3\nsubprojects: []\n");
-        assert_eq!(empty.name, None);
-        assert_eq!(empty.version.as_deref(), Some("1.2.3"));
-        assert!(!empty.has_subprojects);
-    }
-
     // Both `GradleProjectFinder::new()` and `GradleProjectFinder::default()`
     // must yield the same empty finder that recognizes both Kotlin and
     // Groovy Gradle manifests.
@@ -2222,7 +2078,7 @@ mod tests {
         }
     }
 
-    /// Create a mock gradlew in the given directory that outputs Gradle properties.
+    /// Create a mock gradlew in the given directory that emits batched metadata.
     fn create_mock_gradlew(dir: &Path, mock: MockGradlew<'_>) {
         let record = format!(
             "{GRADLE_METADATA_PREFIX}{{\"projectDir\":{},\"projectPath\":\":\",\"name\":{},\"version\":{},\"aggregate\":{},\"hasPublishTask\":{},\"hasPublishToMavenLocalTask\":{}}}",
@@ -2236,32 +2092,14 @@ mod tests {
         if cfg!(windows) {
             fs::write(
                 dir.join("gradlew.bat"),
-                format!(
-                    "@echo off\r\n\
-                     if \"%~1\"==\"-Dorg.gradle.configureondemand=false\" goto metadata\r\n\
-                     echo name: {}\r\n\
-                     echo version: {}\r\n\
-                     echo subprojects: {}\r\n\
-                     exit /b 0\r\n\
-                     :metadata\r\n\
-                     echo {record}\r\n",
-                    mock.name, mock.version, mock.subprojects,
-                ),
+                format!("@echo off\r\necho {record}\r\n"),
             )
             .unwrap();
         } else {
             let gradlew_path = dir.join("gradlew");
             fs::write(
                 &gradlew_path,
-                format!(
-                    "#!/bin/sh\n\
-                     if [ \"$1\" = '-Dorg.gradle.configureondemand=false' ]; then\n\
-                       printf '%s\\n' '{record}'\n\
-                     else\n\
-                       printf '%s\\n' 'name: {}' 'version: {}' \"subprojects: {}\"\n\
-                     fi\n",
-                    mock.name, mock.version, mock.subprojects,
-                ),
+                format!("#!/bin/sh\nprintf '%s\\n' '{record}'\n"),
             )
             .unwrap();
             #[cfg(unix)]
@@ -2349,19 +2187,8 @@ mod tests {
                      if exist \"wrapper-invocations.txt\" set /p count=<\"wrapper-invocations.txt\"\r\n\
                      set /a count+=1\r\n\
                      >\"wrapper-invocations.txt\" echo %count%\r\n\
-                     if \"%~1\"==\"properties\" goto root\r\n\
-                     if \"%~1\"==\"{child_project_path}:properties\" goto child\r\n\
                      {batch_records}\
-                     exit /b 0\r\n\
-                     :root\r\n\
-                     echo name: root project\r\n\
-                     echo version: 1.2.3\r\n\
-                     echo subprojects: [project ':module one']\r\n\
-                     exit /b 0\r\n\
-                     :child\r\n\
-                     echo name: child project\r\n\
-                     echo version: 2.3.4\r\n\
-                     echo subprojects: []\r\n"
+                     exit /b 0\r\n"
                 ),
             )
             .unwrap();
@@ -2376,17 +2203,7 @@ mod tests {
                      count=$(cat wrapper-invocations.txt 2>/dev/null || printf 0)\n\
                      count=$((count + 1))\n\
                      printf '%s\\n' \"$count\" > wrapper-invocations.txt\n\
-                     case \"$1\" in\n\
-                       properties)\n\
-                         printf '%s\\n' 'name: root project' 'version: 1.2.3' \"subprojects: [project ':module one']\"\n\
-                         ;;\n\
-                       '{child_project_path}:properties')\n\
-                         printf '%s\\n' 'name: child project' 'version: 2.3.4' 'subprojects: []'\n\
-                         ;;\n\
-                       *)\n\
-                         {unix_batch_records}\n\
-                         ;;\n\
-                     esac\n"
+                     {unix_batch_records}\n"
                 ),
             )
             .unwrap();
@@ -2766,34 +2583,6 @@ mod tests {
     }
 
     #[test]
-    fn test_gradle_properties_args_root_project() {
-        let root = Path::new("repo");
-
-        let args = gradle_properties_args(root, root).unwrap();
-
-        assert_eq!(
-            args,
-            vec![OsString::from("properties"), OsString::from("-q")]
-        );
-    }
-
-    #[test]
-    fn test_gradle_properties_args_subproject() {
-        let root = Path::new("repo");
-        let subproject = root.join("libs").join("core");
-
-        let args = gradle_properties_args(&subproject, root).unwrap();
-
-        assert_eq!(
-            args,
-            vec![
-                OsString::from(":libs:core:properties"),
-                OsString::from("-q")
-            ]
-        );
-    }
-
-    #[test]
     fn test_gradle_publish_task_args_for_root_project() {
         let args = [
             gradle_task_arg_from_project_path(":", "publish"),
@@ -2852,7 +2641,7 @@ mod tests {
         } else {
             "gradlew"
         });
-        let args = vec![OsString::from("properties"), OsString::from("-q")];
+        let args = vec![OsString::from("--quiet"), OsString::from("help")];
 
         let spec = GradleCommandSpec::new(&gradlew, Path::new("repo"), args);
 
@@ -2860,14 +2649,14 @@ mod tests {
             assert_eq!(spec.program, gradlew.as_os_str());
             assert_eq!(
                 spec.args,
-                vec![OsString::from("properties"), OsString::from("-q")]
+                vec![OsString::from("--quiet"), OsString::from("help")]
             );
         } else {
             assert_eq!(spec.program, OsString::from("sh"));
             assert_eq!(spec.args[0], gradlew.as_os_str());
             assert_eq!(
                 spec.args[1..],
-                [OsString::from("properties"), OsString::from("-q")]
+                [OsString::from("--quiet"), OsString::from("help")]
             );
         }
         assert_eq!(spec.current_dir, PathBuf::from("repo"));
@@ -3029,7 +2818,7 @@ version = "1.0.0"
         )
         .unwrap();
 
-        // Mock gradlew that reports subprojects (this is what makes it a workspace)
+        // Mock Gradle metadata reports subprojects (this is what makes it a workspace).
         create_mock_gradlew(
             &project_dir,
             MockGradlew::workspace(
@@ -3064,7 +2853,7 @@ version = "1.0.0"
     #[tokio::test]
     async fn test_gradle_project_finder_settings_file_does_not_make_workspace() {
         // Regression: settings.gradle.kts presence alone must NOT classify as Workspace.
-        // Only gradlew's subprojects output determines workspace status.
+        // Only evaluated Gradle metadata determines workspace status.
         let temp_dir = TempDir::new().unwrap();
         let project_dir = temp_dir.path().join("myproject");
         fs::create_dir_all(&project_dir).unwrap();
@@ -3072,7 +2861,7 @@ version = "1.0.0"
         let build_gradle = project_dir.join("build.gradle.kts");
         fs::write(&build_gradle, "version = \"1.0.0\"\n").unwrap();
 
-        // settings.gradle.kts exists AND gradlew exists, but subprojects: [] → Package
+        // settings.gradle.kts exists and metadata reports no subprojects, so this is a package.
         fs::write(
             project_dir.join("settings.gradle.kts"),
             "rootProject.name = \"myproject\"\n",
@@ -3295,108 +3084,6 @@ version = "1.0.0"
             result.is_none(),
             "expected a decoy gradlew above the repo root to be ignored, got {result:?}"
         );
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_get_gradle_properties_no_gradlew() {
-        let temp_dir = TempDir::new().unwrap();
-        let subdir = temp_dir.path().join("isolated");
-        fs::create_dir_all(&subdir).unwrap();
-        // No gradlew in `subdir` or its parent. The walk is BOUNDED to
-        // `max_depth`, so with depth 2 it scans only `subdir` and `temp_dir`
-        // and cannot climb to a system gradlew higher up — so it reliably
-        // returns Err ("Gradle wrapper (gradlew) not found").
-        let result = get_gradle_properties(&subdir, true, 2).await;
-        assert!(result.is_err());
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_get_gradle_properties_with_mock() {
-        let temp_dir = TempDir::new().unwrap();
-
-        create_mock_gradlew(temp_dir.path(), MockGradlew::package("myproject", "1.2.3"));
-
-        let props = get_gradle_properties(temp_dir.path(), true, 1)
-            .await
-            .unwrap();
-        assert_eq!(props.name, Some("myproject".to_string()));
-        assert_eq!(props.version, Some("1.2.3".to_string()));
-        assert!(!props.has_subprojects);
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_get_gradle_properties_with_subprojects() {
-        let temp_dir = TempDir::new().unwrap();
-
-        create_mock_gradlew(
-            temp_dir.path(),
-            MockGradlew::workspace("root", "1.0.0", "[project ':app', project ':lib']"),
-        );
-
-        let props = get_gradle_properties(temp_dir.path(), true, 1)
-            .await
-            .unwrap();
-        assert_eq!(props.name, Some("root".to_string()));
-        assert!(props.has_subprojects);
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_get_gradle_properties_empty_subprojects() {
-        let temp_dir = TempDir::new().unwrap();
-
-        create_mock_gradlew(temp_dir.path(), MockGradlew::package("leaf", "1.0.0"));
-
-        let props = get_gradle_properties(temp_dir.path(), true, 1)
-            .await
-            .unwrap();
-        assert_eq!(props.name, Some("leaf".to_string()));
-        assert!(!props.has_subprojects);
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_get_gradle_properties_from_parent_gradlew() {
-        let temp_dir = TempDir::new().unwrap();
-        let subproject = temp_dir.path().join("sub1");
-        fs::create_dir_all(&subproject).unwrap();
-
-        // Place gradlew at root, query from subproject dir
-        // Mock: ignore the :sub1:properties arg, just output properties
-        create_mock_gradlew(temp_dir.path(), MockGradlew::package("sub1", "2.0.0"));
-
-        // Subproject `sub1` is one directory below the repo root → build file
-        // `sub1/build.gradle.kts` (2 components) → `max_depth = 2`.
-        let props = get_gradle_properties(&subproject, true, 2).await.unwrap();
-        assert_eq!(props.name, Some("sub1".to_string()));
-        assert_eq!(props.version, Some("2.0.0".to_string()));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_get_gradle_properties_nested_subproject() {
-        let temp_dir = TempDir::new().unwrap();
-        let subproject = temp_dir.path().join("libs").join("core");
-        fs::create_dir_all(&subproject).unwrap();
-
-        // Place gradlew at root, query from libs/core/
-        // The mock script receives ":libs:core:properties" "-q" as args.
-        create_mock_gradlew(temp_dir.path(), MockGradlew::package("core", "3.1.0"));
-
-        // Nested subproject `libs/core` is two directories below the repo root
-        // → build file `libs/core/build.gradle.kts` (3 components) →
-        // `max_depth = 3` (nesting levels + 1).
-        let props = get_gradle_properties(&subproject, true, 3).await.unwrap();
-        assert_eq!(props.name, Some("core".to_string()));
-        assert_eq!(props.version, Some("3.1.0".to_string()));
 
         temp_dir.close().unwrap();
     }
@@ -4113,62 +3800,6 @@ def second = 20 / 4
     }
 
     #[tokio::test]
-    async fn test_get_gradle_properties_unspecified() {
-        let temp_dir = TempDir::new().unwrap();
-
-        create_mock_gradlew(
-            temp_dir.path(),
-            MockGradlew::package("unspecified", "unspecified"),
-        );
-
-        let props = get_gradle_properties(temp_dir.path(), true, 1)
-            .await
-            .unwrap();
-        assert!(props.name.is_none());
-        assert!(props.version.is_none());
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_get_gradle_properties_gradlew_fails() {
-        let temp_dir = TempDir::new().unwrap();
-
-        create_failing_gradlew(temp_dir.path());
-
-        let result = get_gradle_properties(temp_dir.path(), true, 1).await;
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-
-        // Error contains project path
-        assert!(err_msg.contains(temp_dir.path().to_string_lossy().as_ref()));
-
-        // Error contains exact wrapper path (platform-specific)
-        let expected_wrapper = temp_dir.path().join(if cfg!(windows) {
-            "gradlew.bat"
-        } else {
-            "gradlew"
-        });
-        assert!(
-            err_msg.contains(expected_wrapper.display().to_string().as_str()),
-            "Error should contain exact wrapper path: {}",
-            expected_wrapper.display()
-        );
-
-        // Error contains exit status
-        assert!(err_msg.contains("status"));
-
-        // Error ends with trimmed stderr (proves trailing newline was removed)
-        assert!(
-            err_msg.ends_with("; stderr: broken build script"),
-            "Error should end with trimmed stderr, got: {}",
-            err_msg
-        );
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
     async fn test_which_java_in_none() {
         let result = which_java_in(None).await.unwrap();
         assert!(result.is_none());
@@ -4353,7 +3984,7 @@ def second = 20 / 4
             .visit(&build_gradle, &PathBuf::from("my-project/build.gradle.kts"))
             .await;
 
-        // visit should propagate the error from get_gradle_properties
+        // Visit should propagate the error from batched metadata discovery.
         assert!(result.is_err());
         // No projects should be added when gradlew fails
         assert_eq!(finder.project_count(), 0);
