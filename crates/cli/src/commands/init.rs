@@ -1,7 +1,7 @@
 use changepacks_core::Config;
 use std::{future::poll_fn, io::ErrorKind, path::Path, pin::Pin};
 use tokio::{
-    fs::{File, OpenOptions, create_dir_all},
+    fs::{OpenOptions, create_dir_all},
     io::AsyncWrite,
 };
 
@@ -27,16 +27,47 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
     handle_init_at(args, &current_dir).await
 }
 
-async fn write_all(file: &mut File, mut contents: &[u8]) -> std::io::Result<()> {
-    while !contents.is_empty() {
-        let written = poll_fn(|context| Pin::new(&mut *file).poll_write(context, contents)).await?;
-        if written == 0 {
-            return Err(ErrorKind::WriteZero.into());
+async fn write_claimed_config<W>(
+    mut writer: W,
+    config_file: &Path,
+    mut contents: &[u8],
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let write_result = async {
+        while !contents.is_empty() {
+            let written =
+                poll_fn(|context| Pin::new(&mut writer).poll_write(context, contents)).await?;
+            if written == 0 {
+                return Err(ErrorKind::WriteZero.into());
+            }
+            contents = &contents[written..];
         }
-        contents = &contents[written..];
+
+        poll_fn(|context| Pin::new(&mut writer).poll_flush(context)).await
+    }
+    .await;
+
+    if let Err(error) = write_result {
+        drop(writer);
+        let write_context = format!(
+            "Failed to write changepacks config {}",
+            config_file.display()
+        );
+
+        return match tokio::fs::remove_file(config_file).await {
+            Ok(()) => Err(error).with_context(|| write_context),
+            Err(cleanup_error) => Err(error).with_context(|| {
+                format!(
+                    "{write_context}; additionally failed to remove incomplete config {}: {cleanup_error}",
+                    config_file.display()
+                )
+            }),
+        };
     }
 
-    poll_fn(|context| Pin::new(&mut *file).poll_flush(context)).await
+    Ok(())
 }
 
 async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
@@ -75,7 +106,7 @@ async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
     }
 
     let contents = serde_json::to_string_pretty(&Config::default())?;
-    let mut file = match OpenOptions::new()
+    let file = match OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&config_file)
@@ -94,14 +125,7 @@ async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
             });
         }
     };
-    write_all(&mut file, contents.as_bytes())
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to write changepacks config {}",
-                config_file.display()
-            )
-        })?;
+    write_claimed_config(file, &config_file, contents.as_bytes()).await?;
     println!(
         "changepacks project initialized in {}",
         changepacks_dir.display()
@@ -116,6 +140,10 @@ mod tests {
     use changepacks_utils::test_support::init_git_repo;
     use clap::Parser;
     use rstest::rstest;
+    use std::{
+        io,
+        task::{Context as TaskContext, Poll},
+    };
     use tempfile::{TempDir, tempdir};
 
     #[derive(Parser)]
@@ -143,6 +171,55 @@ mod tests {
         let repository = tempdir().expect("create temporary repository");
         init_git_repo(repository.path());
         repository
+    }
+
+    struct FailAfterPartialWrite<W> {
+        inner: W,
+        wrote_partial: bool,
+    }
+
+    impl<W> FailAfterPartialWrite<W> {
+        fn new(inner: W) -> Self {
+            Self {
+                inner,
+                wrote_partial: false,
+            }
+        }
+    }
+
+    impl<W: AsyncWrite + Unpin> AsyncWrite for FailAfterPartialWrite<W> {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            context: &mut TaskContext<'_>,
+            buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let this = self.get_mut();
+            if this.wrote_partial {
+                return Poll::Ready(Err(io::Error::other(
+                    "injected failure after partial write",
+                )));
+            }
+
+            let partial_len = buffer.len().min(1);
+            match Pin::new(&mut this.inner).poll_write(context, &buffer[..partial_len]) {
+                Poll::Ready(Ok(written)) if written > 0 => {
+                    this.wrote_partial = true;
+                    Poll::Ready(Ok(written))
+                }
+                result => result,
+            }
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, context: &mut TaskContext<'_>) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.get_mut().inner).poll_flush(context)
+        }
+
+        fn poll_shutdown(
+            self: Pin<&mut Self>,
+            context: &mut TaskContext<'_>,
+        ) -> Poll<io::Result<()>> {
+            Pin::new(&mut self.get_mut().inner).poll_shutdown(context)
+        }
     }
 
     #[tokio::test]
@@ -181,6 +258,51 @@ mod tests {
                 "}"
             )
         );
+    }
+
+    #[tokio::test]
+    async fn test_failed_partial_config_write_removes_claim_for_retry() {
+        let repository = temporary_repository();
+        let changepacks_dir = get_changepacks_dir(repository.path())
+            .expect("determine temporary changepacks directory");
+        create_dir_all(&changepacks_dir)
+            .await
+            .expect("create changepacks directory");
+        let config_file = changepacks_dir.join("config.json");
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&config_file)
+            .await
+            .expect("claim config path");
+        let writer = FailAfterPartialWrite::new(file);
+        let contents = serde_json::to_string_pretty(&Config::default())
+            .expect("serialize default changepacks config");
+
+        let error = write_claimed_config(writer, &config_file, contents.as_bytes())
+            .await
+            .expect_err("partial config write must fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to write changepacks config"),
+            "write error retains config context: {error:#}"
+        );
+        assert!(
+            format!("{error:#}").contains("injected failure after partial write"),
+            "write error retains the original I/O failure: {error:#}"
+        );
+        assert!(
+            !tokio::fs::try_exists(&config_file)
+                .await
+                .expect("check failed config claim"),
+            "failed write must remove its claimed config path"
+        );
+
+        handle_init_at(&InitArgs { dry_run: false }, repository.path())
+            .await
+            .expect("init retry succeeds after failed claim cleanup");
     }
 
     #[tokio::test]
