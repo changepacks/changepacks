@@ -60,14 +60,12 @@ fn collect_dispatchable_paths(
 ) -> Result<Vec<PathBuf>> {
     paths
         .into_iter()
+        .filter(|entry| match entry {
+            Ok(path) => should_dispatch_change(gitignore, path),
+            Err(_) => true,
+        })
         .collect::<Result<Vec<_>>>()
         .context(error_context)
-        .map(|paths| {
-            paths
-                .into_iter()
-                .filter(|path| should_dispatch_change(gitignore, path))
-                .collect()
-        })
 }
 
 /// Discover project directories containing specific files from git tracked

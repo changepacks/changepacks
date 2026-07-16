@@ -56,6 +56,19 @@ pub(crate) async fn read_and_parse_package_json(
     Ok((package_json_raw, package_json))
 }
 
+fn serialize_package_json<F: serde_json::ser::Formatter>(
+    value: &serde_json::Value,
+    formatter: F,
+    capacity: usize,
+    path: &Path,
+) -> Result<Vec<u8>> {
+    let mut ser = serde_json::Serializer::with_formatter(Vec::with_capacity(capacity), formatter);
+    value
+        .serialize(&mut ser)
+        .with_context(|| format!("Failed to serialize package.json {}", path.display()))?;
+    Ok(ser.into_inner())
+}
+
 /// Update `package.json` at `path` to set its `version` field to `new_version`,
 /// preserving the file's original indent size (via `detect_indent`) and its
 /// complete trailing-whitespace shape (via `finalize_content`).
@@ -86,21 +99,19 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
         .bytes()
         .any(|byte| matches!(byte, b'\r' | b'\n'));
     let serialized = if compact {
-        let writer = Vec::with_capacity(package_json_raw.len());
-        let mut ser =
-            serde_json::Serializer::with_formatter(writer, serde_json::ser::CompactFormatter);
-        package_json
-            .serialize(&mut ser)
-            .with_context(|| format!("Failed to serialize package.json {}", path.display()))?;
-        ser.into_inner()
+        serialize_package_json(
+            &package_json,
+            serde_json::ser::CompactFormatter,
+            package_json_raw.len(),
+            path,
+        )?
     } else {
-        let formatter = serde_json::ser::PrettyFormatter::with_indent(indent_str.as_bytes());
-        let writer = Vec::with_capacity(package_json_raw.len());
-        let mut ser = serde_json::Serializer::with_formatter(writer, formatter);
-        package_json
-            .serialize(&mut ser)
-            .with_context(|| format!("Failed to serialize package.json {}", path.display()))?;
-        ser.into_inner()
+        serialize_package_json(
+            &package_json,
+            serde_json::ser::PrettyFormatter::with_indent(indent_str.as_bytes()),
+            package_json_raw.len(),
+            path,
+        )?
     };
     write(
         path,

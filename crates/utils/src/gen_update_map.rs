@@ -306,9 +306,7 @@ fn apply_update_on_rules_from(
     }
 
     let mut generated = Vec::new();
-    let mut initial_paths: Vec<_> = expansion_seeds.iter().cloned().collect();
-    initial_paths.sort_by(|left, right| compare_paths(left, right));
-    let mut queued_paths: VecDeque<PathBuf> = initial_paths.into();
+    let mut queued_paths: VecDeque<PathBuf> = expansion_seeds.iter().cloned().collect();
 
     while !queued_paths.is_empty() {
         // Preserve BTreeMap rule precedence within each breadth-first batch so
@@ -322,6 +320,7 @@ fn apply_update_on_rules_from(
             let match_path = normalize_update_on_match_path(&path);
             batch.push((path, match_path));
         }
+        // The per-batch sort establishes canonical path order for every expansion level.
         batch.sort_by(|left, right| compare_paths(&left.0, &right.0));
 
         // `expansion_seeds` records every queued path, including a persisted

@@ -9,6 +9,8 @@
 pub mod finder;
 pub mod package;
 mod properties_version;
+#[cfg(test)]
+pub(crate) mod test_support;
 mod version_lexer;
 pub mod version_updater;
 pub mod workspace;
