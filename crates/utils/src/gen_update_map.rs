@@ -267,7 +267,7 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
 }
 
 fn normalize_update_on_match_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    changepacks_core::normalize_path_separators(&path.to_string_lossy())
 }
 
 #[cfg(test)]

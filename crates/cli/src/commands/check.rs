@@ -1,4 +1,4 @@
-use changepacks_core::{ChangePackResultLog, Project, UpdateType};
+use changepacks_core::{ChangePackResultLog, Project, UpdateType, normalize_path_separators};
 
 use anyhow::Result;
 use changepacks_utils::{
@@ -150,10 +150,7 @@ fn resolved_monorepo_deps<'a>(
                 let mut paths: Vec<String> = candidates
                     .iter()
                     .map(|candidate| {
-                        candidate
-                            .relative_path()
-                            .to_string_lossy()
-                            .replace('\\', "/")
+                        normalize_path_separators(&candidate.relative_path().to_string_lossy())
                     })
                     .collect();
                 paths.sort_unstable();

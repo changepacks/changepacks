@@ -28,7 +28,7 @@ pub use changepack_result::{ChangePackResult, ChangePackResultLog};
 pub use config::Config;
 pub use language::Language;
 pub use package::Package;
-pub use project::{Project, format_version_display};
+pub use project::{Project, cmp_normalized_paths, format_version_display};
 pub use project_finder::{ProjectFinder, has_extension_ignore_ascii_case, is_regular_file};
 pub use publish::{PublishOutput, normalize_path_separators};
 pub use publish_result::PublishResult;

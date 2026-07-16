@@ -93,17 +93,7 @@ impl<'a> ProjectNameAnalysis<'a> {
 }
 
 pub(crate) fn compare_paths(left: &Path, right: &Path) -> Ordering {
-    let left_lossy = left.to_string_lossy();
-    let right_lossy = right.to_string_lossy();
-
-    left_lossy
-        .chars()
-        .map(|character| if character == '\\' { '/' } else { character })
-        .cmp(
-            right_lossy
-                .chars()
-                .map(|character| if character == '\\' { '/' } else { character }),
-        )
+    changepacks_core::cmp_normalized_paths(left, right)
         .then_with(|| left.as_os_str().cmp(right.as_os_str()))
 }
 

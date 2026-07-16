@@ -175,6 +175,19 @@ fn workspace_dependency_aliases(doc: &toml_edit::DocumentMut) -> HashMap<String,
         .unwrap_or_default()
 }
 
+fn nearest_workspace_entry<'a, V>(
+    map: &'a HashMap<PathBuf, V>,
+    member_path: &Path,
+) -> Option<(&'a PathBuf, &'a V)> {
+    map.iter()
+        .filter(|(root_path, _)| {
+            root_path
+                .parent()
+                .is_some_and(|root_dir| member_path.starts_with(root_dir))
+        })
+        .max_by_key(|(root_path, _)| root_path.components().count())
+}
+
 #[derive(Debug, Default)]
 pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
@@ -191,14 +204,7 @@ impl RustProjectFinder {
     }
 
     fn nearest_workspace_package(&self, member_path: &Path) -> Option<(String, PathBuf)> {
-        self.workspace_package_versions
-            .iter()
-            .filter(|(root_path, _)| {
-                root_path
-                    .parent()
-                    .is_some_and(|root_dir| member_path.starts_with(root_dir))
-            })
-            .max_by_key(|(root_path, _)| root_path.components().count())
+        nearest_workspace_entry(&self.workspace_package_versions, member_path)
             .map(|(root_path, version)| (version.clone(), root_path.clone()))
     }
 
@@ -206,14 +212,7 @@ impl RustProjectFinder {
         &self,
         member_path: &Path,
     ) -> Option<&HashMap<String, String>> {
-        self.workspace_dependency_aliases
-            .iter()
-            .filter(|(root_path, _)| {
-                root_path
-                    .parent()
-                    .is_some_and(|root_dir| member_path.starts_with(root_dir))
-            })
-            .max_by_key(|(root_path, _)| root_path.components().count())
+        nearest_workspace_entry(&self.workspace_dependency_aliases, member_path)
             .map(|(_, aliases)| aliases)
     }
 

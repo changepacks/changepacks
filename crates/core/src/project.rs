@@ -11,6 +11,22 @@ use colored::Colorize;
 
 use crate::{config::Config, package::Package, update_type::UpdateType, workspace::Workspace};
 
+/// Compare paths after normalizing backslashes to forward slashes.
+#[must_use]
+pub fn cmp_normalized_paths(left: &Path, right: &Path) -> Ordering {
+    let left_lossy = left.to_string_lossy();
+    let right_lossy = right.to_string_lossy();
+
+    left_lossy
+        .chars()
+        .map(|character| if character == '\\' { '/' } else { character })
+        .cmp(
+            right_lossy
+                .chars()
+                .map(|character| if character == '\\' { '/' } else { character }),
+        )
+}
+
 /// Discriminated union of Package (single project) or Workspace (monorepo root).
 ///
 /// Provides unified interface for operations on both package and workspace projects,
@@ -267,18 +283,7 @@ fn cmp_lang_then_name(
 }
 
 fn cmp_paths(lhs_relative: &Path, lhs_raw: &Path, rhs_relative: &Path, rhs_raw: &Path) -> Ordering {
-    let lhs_lossy = lhs_relative.to_string_lossy();
-    let rhs_lossy = rhs_relative.to_string_lossy();
-
-    lhs_lossy
-        .chars()
-        .map(|character| if character == '\\' { '/' } else { character })
-        .cmp(
-            rhs_lossy
-                .chars()
-                .map(|character| if character == '\\' { '/' } else { character }),
-        )
-        .then_with(|| lhs_raw.cmp(rhs_raw))
+    cmp_normalized_paths(lhs_relative, rhs_relative).then_with(|| lhs_raw.cmp(rhs_raw))
 }
 
 impl Ord for Project {
