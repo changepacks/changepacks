@@ -101,9 +101,8 @@ impl Package for CSharpPackage {
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let path = &self.path;
-        let has_version = self.version.is_some();
         changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
-            crate::write_csproj_version(path, new, has_version).await
+            crate::write_csproj_version(path, new).await
         })
         .await
     }
@@ -499,7 +498,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_update_version_with_stale_has_version_ignores_conditional_version() {
+    async fn test_update_version_with_stale_metadata_ignores_conditional_version() {
         let temp_dir = TempDir::new().unwrap();
         let csproj_path = temp_dir.path().join("StaleVersion.csproj");
         let original_content = b"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>1.2.3</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n  </PropertyGroup>\n</Project>\n";

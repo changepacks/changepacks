@@ -104,6 +104,23 @@ async fn run_language_update(language: &str) -> anyhow::Result<()> {
     .await
 }
 
+fn run_check_json(repo_root: &Path) -> std::process::Output {
+    let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/cli has a workspace root two levels up")
+        .join("Cargo.toml");
+
+    std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"))
+        .args(["run", "--quiet", "-p", "changepacks", "--manifest-path"])
+        .arg(&workspace_manifest)
+        .args(["--", "check", "--format", "json"])
+        .current_dir(repo_root)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("failed to run the changepacks binary")
+}
+
 #[tokio::test]
 #[serial]
 async fn test_cli_init_dry_run() {
@@ -2660,6 +2677,242 @@ mod interactive_tests {
             "changepacks with changed project should succeed"
         );
     }
+}
+
+// --- Python and Dart end-to-end integration tests ---
+
+#[tokio::test]
+#[serial]
+async fn test_cli_language_e2e_python_check_discovers_changed_project() {
+    // Given: a committed Python project with an edited source file.
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "pyproject.toml",
+            "[project]\nname = \"python-e2e\"\nversion = \"1.2.3\"\n",
+        ),
+        ("src/python_e2e/__init__.py", "VALUE = 1\n"),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    tokio::fs::write(temp_path.join("src/python_e2e/__init__.py"), "VALUE = 2\n")
+        .await
+        .unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: the real CLI check command emits its JSON result.
+    let output = run_check_json(&temp_path);
+
+    // Then: the Python manifest is discovered and marked changed.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "Python check exited non-zero ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    let projects: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("check output should be valid JSON");
+    let project = projects
+        .get("pyproject.toml")
+        .expect("check output should contain pyproject.toml");
+    assert_eq!(
+        project.get("name").and_then(serde_json::Value::as_str),
+        Some("python-e2e")
+    );
+    assert_eq!(
+        project.get("changed").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_language_e2e_python_update_preserves_manifest_formatting() {
+    const BEFORE: &str = r#"# Keep this package comment.
+[project]
+name = "python-e2e"
+version = "1.2.3"
+description = "Formatting stays"
+
+[tool.integration]
+preserve = "yes"
+"#;
+    const AFTER: &str = r#"# Keep this package comment.
+[project]
+name = "python-e2e"
+version = "1.2.4"
+description = "Formatting stays"
+
+[tool.integration]
+preserve = "yes"
+"#;
+
+    // Given: a Python manifest and a patch changepack targeting it.
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_python.json",
+            r#"{"changes":{"pyproject.toml":"Patch"},"note":"Python patch","date":"2026-07-16T00:00:00Z"}"#,
+        ),
+        ("pyproject.toml", BEFORE),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: update runs non-interactively for Python.
+    let result = run_language_update("python").await;
+
+    // Then: only the version changes and all surrounding TOML bytes remain intact.
+    assert!(result.is_ok(), "Python update failed: {:?}", result.err());
+    let content = tokio::fs::read_to_string(temp_path.join("pyproject.toml"))
+        .await
+        .unwrap();
+    assert_eq!(content, AFTER);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_language_e2e_python_publish_uses_override() {
+    // Given: a Python project whose configured publish command is hermetic.
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"publish":{"python":"echo publishing-python"}}"#,
+        ),
+        (
+            "pyproject.toml",
+            "[project]\nname = \"python-e2e\"\nversion = \"1.2.3\"\n",
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: publish runs non-interactively with the Python language filter.
+    let result = changepacks_cli::main(&[
+        "changepacks".to_string(),
+        "publish".to_string(),
+        "--yes".to_string(),
+        "--language".to_string(),
+        "python".to_string(),
+    ])
+    .await;
+
+    // Then: the language-level echo override executes successfully.
+    assert!(result.is_ok(), "Python publish failed: {:?}", result.err());
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_language_e2e_dart_check_discovers_changed_project() {
+    // Given: a committed Dart project with an edited source file.
+    let temp_dir = setup_repo_canonical(&[
+        ("pubspec.yaml", "name: dart_e2e\nversion: 1.2.3\n"),
+        ("lib/dart_e2e.dart", "const value = 1;\n"),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    tokio::fs::write(temp_path.join("lib/dart_e2e.dart"), "const value = 2;\n")
+        .await
+        .unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: the real CLI check command emits its JSON result.
+    let output = run_check_json(&temp_path);
+
+    // Then: the Dart manifest is discovered and marked changed.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "Dart check exited non-zero ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    let projects: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("check output should be valid JSON");
+    let project = projects
+        .get("pubspec.yaml")
+        .expect("check output should contain pubspec.yaml");
+    assert_eq!(
+        project.get("name").and_then(serde_json::Value::as_str),
+        Some("dart_e2e")
+    );
+    assert_eq!(
+        project.get("changed").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_language_e2e_dart_update_preserves_manifest_formatting() {
+    const BEFORE: &str = r#"# Keep this package comment.
+name: dart_e2e
+version: 1.2.3
+description: "Formatting stays"
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+"#;
+    const AFTER: &str = r#"# Keep this package comment.
+name: dart_e2e
+version: 1.2.4
+description: "Formatting stays"
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+"#;
+
+    // Given: a Dart manifest and a patch changepack targeting it.
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_dart.json",
+            r#"{"changes":{"pubspec.yaml":"Patch"},"note":"Dart patch","date":"2026-07-16T00:00:00Z"}"#,
+        ),
+        ("pubspec.yaml", BEFORE),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: update runs non-interactively for Dart.
+    let result = run_language_update("dart").await;
+
+    // Then: only the version changes and all surrounding YAML bytes remain intact.
+    assert!(result.is_ok(), "Dart update failed: {:?}", result.err());
+    let content = tokio::fs::read_to_string(temp_path.join("pubspec.yaml"))
+        .await
+        .unwrap();
+    assert_eq!(content, AFTER);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_language_e2e_dart_publish_uses_override() {
+    // Given: a Dart project whose configured publish command is hermetic.
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"publish":{"dart":"echo publishing-dart"}}"#,
+        ),
+        ("pubspec.yaml", "name: dart_e2e\nversion: 1.2.3\n"),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: publish runs non-interactively with the Dart language filter.
+    let result = changepacks_cli::main(&[
+        "changepacks".to_string(),
+        "publish".to_string(),
+        "--yes".to_string(),
+        "--language".to_string(),
+        "dart".to_string(),
+    ])
+    .await;
+
+    // Then: the language-level echo override executes successfully.
+    assert!(result.is_ok(), "Dart publish failed: {:?}", result.err());
 }
 
 // --- Language filter integration tests ---

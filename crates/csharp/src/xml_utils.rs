@@ -116,11 +116,7 @@ fn contains_line_break(whitespace: &str) -> bool {
 /// Update version in csproj XML content using quick-xml
 /// Returns the updated XML content or adds Version if it doesn't exist.
 /// Errors when no supported XML node can be updated.
-pub fn update_version_in_xml(
-    content: &str,
-    new_version: &str,
-    _has_version: bool,
-) -> Result<String> {
+pub fn update_version_in_xml(content: &str, new_version: &str) -> Result<String> {
     let has_version = has_eligible_version(content)?;
     let mut reader = Reader::from_str(content);
     let mut writer = Writer::new(Cursor::new(Vec::with_capacity(content.len())));
@@ -510,14 +506,14 @@ mod tests {
   </PropertyGroup>
 </Project>"#;
 
-        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
         assert!(result.contains("<Version>2.0.0</Version>"));
     }
 
     #[test]
     fn test_update_version_replaces_cdata_payload_in_place() {
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version><![CDATA[1.2.3]]></Version>\n  </PropertyGroup>\n</Project>";
-        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(
             result,
@@ -531,7 +527,7 @@ mod tests {
     #[test]
     fn test_update_version_preserves_whitespace_around_cdata() {
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version>\n      <![CDATA[1.2.3]]>\n    </Version>\n  </PropertyGroup>\n</Project>";
-        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(
             result,
@@ -547,7 +543,7 @@ mod tests {
   </PropertyGroup>
 </Project>"#;
 
-        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        let result = update_version_in_xml(content, "0.0.1").unwrap();
         assert!(result.contains("<Version>0.0.1</Version>"));
     }
 
@@ -556,7 +552,7 @@ mod tests {
         let content = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\n    <Optimize>false</Optimize>\n  </PropertyGroup>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>";
         let expected = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\n    <Optimize>false</Optimize>\n  </PropertyGroup>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n</Project>";
 
-        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(result, expected);
     }
@@ -566,7 +562,7 @@ mod tests {
         let content = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\"/>\n  <PropertyGroup/>\n</Project>";
         let expected = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\"/>\n  <PropertyGroup>\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n</Project>";
 
-        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(result, expected);
     }
@@ -576,7 +572,7 @@ mod tests {
         let content = "<Project>\n  <Target Name=\"Build\">\n    <PropertyGroup>\n      <NestedOnly>true</NestedOnly>\n    </PropertyGroup>\n  </Target>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>";
         let expected = "<Project>\n  <Target Name=\"Build\">\n    <PropertyGroup>\n      <NestedOnly>true</NestedOnly>\n    </PropertyGroup>\n  </Target>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n</Project>";
 
-        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(result, expected);
     }
@@ -586,7 +582,7 @@ mod tests {
         let content = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\n    <Optimize>false</Optimize>\n  </PropertyGroup>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Optimize>true</Optimize>\n  </PropertyGroup>\n</Project>";
         let expected = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\n    <Optimize>false</Optimize>\n  </PropertyGroup>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Optimize>true</Optimize>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n</Project>";
 
-        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(result, expected);
     }
@@ -596,7 +592,7 @@ mod tests {
         let content = "<msb:Project xmlns:msb=\"urn:msbuild\">\n  <msb:PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\n    <msb:Optimize>false</msb:Optimize>\n  </msb:PropertyGroup>\n</msb:Project>";
         let expected = "<msb:Project xmlns:msb=\"urn:msbuild\">\n  <msb:PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\n    <msb:Optimize>false</msb:Optimize>\n  </msb:PropertyGroup>\n  <msb:PropertyGroup>\n    <msb:Version>2.0.0</msb:Version>\n  </msb:PropertyGroup>\n</msb:Project>";
 
-        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(result, expected);
     }
@@ -606,7 +602,7 @@ mod tests {
         let content = "<Project>\r\n    <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\r\n        <Optimize>false</Optimize>\r\n    </PropertyGroup>\r\n</Project>\r\n";
         let expected = "<Project>\r\n    <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\r\n        <Optimize>false</Optimize>\r\n    </PropertyGroup>\r\n    <PropertyGroup>\r\n        <Version>2.0.0</Version>\r\n    </PropertyGroup>\r\n</Project>\r\n";
 
-        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(result, expected);
     }
@@ -616,7 +612,7 @@ mod tests {
         let content = "<Project>\n\t<PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\n\t\t<Optimize>false</Optimize>\n\t</PropertyGroup>\n</Project>";
         let expected = "<Project>\n\t<PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\">\n\t\t<Optimize>false</Optimize>\n\t</PropertyGroup>\n\t<PropertyGroup>\n\t\t<Version>2.0.0</Version>\n\t</PropertyGroup>\n</Project>";
 
-        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(result, expected);
     }
@@ -626,7 +622,7 @@ mod tests {
         let content = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>1.2.3</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>";
         let expected = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>1.2.3</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n</Project>";
 
-        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(result, expected);
     }
@@ -639,7 +635,7 @@ mod tests {
         // `Event::Text` fired to set `version_updated`. It must instead be
         // filled in place, leaving exactly one `<Version>`.
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version></Version>\n  </PropertyGroup>\n</Project>";
-        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        let result = update_version_in_xml(content, "0.0.1").unwrap();
         assert_eq!(
             result.matches("<Version>").count(),
             1,
@@ -658,7 +654,7 @@ mod tests {
         // `<Version>` with the surrounding indentation untouched. Sibling of
         // the `<Version></Version>` case above.
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version/>\n  </PropertyGroup>\n</Project>";
-        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
         // Full-string compare: sibling formatting/indentation preserved.
         assert_eq!(
             result,
@@ -690,7 +686,7 @@ mod tests {
         // original position (right after its sibling property), NOT be
         // appended at the end of the PropertyGroup.
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <Version/>\n  </PropertyGroup>\n</Project>";
-        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
         assert_eq!(
             result,
             "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n</Project>",
@@ -706,7 +702,7 @@ mod tests {
     #[test]
     fn test_update_version_preserves_prefixed_self_closing_version_qname() {
         let content = "<msb:Project xmlns:msb=\"urn:msbuild\">\n  <msb:PropertyGroup>\n    <msb:Version/>\n  </msb:PropertyGroup>\n</msb:Project>";
-        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(
             result,
@@ -717,7 +713,7 @@ mod tests {
     #[test]
     fn test_update_version_preserves_attributes_and_spacing_on_self_closing_version() {
         let content = "<Project>\n  <PropertyGroup>\n    <Version Condition=\"'$(Configuration)' == 'Release'\" />\n  </PropertyGroup>\n</Project>";
-        let result = update_version_in_xml(content, "2.0.0", false).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
 
         assert_eq!(
             result,
@@ -731,7 +727,7 @@ mod tests {
         // the Empty arm's `else` and be emitted unchanged, while the real
         // `<Version>` is still updated.
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version>1.0.0</Version>\n    <Nullable/>\n  </PropertyGroup>\n</Project>";
-        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
         assert_eq!(
             result,
             "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version>2.0.0</Version>\n    <Nullable/>\n  </PropertyGroup>\n</Project>",
@@ -802,7 +798,7 @@ mod tests {
     #[case(XML_WITH_PROCESSING_INSTRUCTION, "xml-stylesheet")]
     #[case(XML_WITH_DOCTYPE, "DOCTYPE")]
     fn test_update_version_preserves_feature(#[case] content: &str, #[case] marker: &str) {
-        let result = update_version_in_xml(content, "2.0.0", true).unwrap();
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
         assert!(result.contains("2.0.0"));
         assert!(result.contains(marker));
     }
@@ -810,7 +806,7 @@ mod tests {
     #[test]
     fn test_update_version_malformed_xml() {
         let content = r#"<Project><PropertyGroup><Version>1.0.0</Version></PropertyGroup"#;
-        let result = update_version_in_xml(content, "2.0.0", true);
+        let result = update_version_in_xml(content, "2.0.0");
         assert!(result.is_err());
         assert!(
             result
@@ -825,7 +821,7 @@ mod tests {
         // XML with entity references like &custom; triggers Event::GeneralRef in quick-xml,
         // exercising the GeneralRef handler (lines 78-79)
         let content = r#"<Project><PropertyGroup><Description>Hello &custom; World</Description><Version>1.0.0</Version></PropertyGroup></Project>"#;
-        let result = update_version_in_xml(content, "2.0.0", true);
+        let result = update_version_in_xml(content, "2.0.0");
         if let Ok(output) = result {
             assert!(output.contains("2.0.0"));
         }
@@ -839,7 +835,7 @@ mod tests {
         // trailing whitespace MUST match the detected indent, not a
         // hardcoded 2-space value.
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n    <PropertyGroup>\n        <OutputType>Exe</OutputType>\n    </PropertyGroup>\n</Project>";
-        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        let result = update_version_in_xml(content, "0.0.1").unwrap();
         // The trailing reindent (`"\n    "` for 4-space files) must not
         // regress to `"\n  "`.
         assert!(
@@ -857,7 +853,7 @@ mod tests {
     fn test_add_new_version_reindent_matches_tab_indent() {
         // Same regression but for tab-indented .csproj files.
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n\t<PropertyGroup>\n\t\t<OutputType>Exe</OutputType>\n\t</PropertyGroup>\n</Project>";
-        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        let result = update_version_in_xml(content, "0.0.1").unwrap();
         assert!(
             result.contains("</Version>\n\t</PropertyGroup>"),
             "expected tab reindent before </PropertyGroup>:\n{result}",
@@ -867,7 +863,7 @@ mod tests {
     #[test]
     fn test_add_new_version_preserves_zero_indent_property_group_close() {
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n<PropertyGroup>\n    <OutputType>Exe</OutputType>\n</PropertyGroup>\n</Project>";
-        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        let result = update_version_in_xml(content, "0.0.1").unwrap();
         assert!(
             result.contains("</Version>\n</PropertyGroup>"),
             "expected zero-indent close tag to stay at column 0:\n{result}",
@@ -877,7 +873,7 @@ mod tests {
     #[test]
     fn test_update_version_without_property_group_creates_unconditional_group() {
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n</Project>\n";
-        let result = update_version_in_xml(content, "0.0.1", false).unwrap();
+        let result = update_version_in_xml(content, "0.0.1").unwrap();
 
         assert_eq!(
             result,
@@ -889,7 +885,7 @@ mod tests {
     fn test_self_closing_project_expands_with_crlf_and_trailing_bytes() -> Result<()> {
         let content = "<Project Sdk=\"Microsoft.NET.Sdk\" />\r\n<!-- trailing -->\r\n";
 
-        let result = update_version_in_xml(content, "1.2.3", false)?;
+        let result = update_version_in_xml(content, "1.2.3")?;
 
         assert_eq!(
             result,
@@ -902,7 +898,7 @@ mod tests {
     fn test_namespaced_self_closing_project_preserves_qualified_names() -> Result<()> {
         let content = "<msb:Project xmlns:msb=\"urn:msbuild\"/>\n";
 
-        let result = update_version_in_xml(content, "2.0.0", false)?;
+        let result = update_version_in_xml(content, "2.0.0")?;
 
         assert_eq!(
             result,

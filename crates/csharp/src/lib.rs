@@ -29,10 +29,9 @@ pub(crate) const PUBLISH_COMMAND: &str = "dotnet pack -c Release && dotnet nuget
 /// Update the `<Version>` element of the `.csproj` XML at `path` to
 /// `new_version`, delegating to [`xml_utils::update_version_in_xml`] to
 /// preserve the file's original formatting (indentation, comments, sibling
-/// elements). The XML is re-scanned at write time instead of trusting the
-/// caller's `has_version` hint. Missing global versions are added under the
-/// first unconditional top-level `<PropertyGroup>`, or under a newly created
-/// group when none is eligible (see `update_version_in_xml`).
+/// elements). The XML is re-scanned at write time so missing global versions
+/// are added under the first unconditional top-level `<PropertyGroup>`, or
+/// under a newly created group when none is eligible (see `update_version_in_xml`).
 ///
 /// Shared by `CSharpPackage::update_version` and `CSharpWorkspace::update_version`
 /// so both paths emit byte-identical output — matching the Node/Python/Dart
@@ -41,15 +40,11 @@ pub(crate) const PUBLISH_COMMAND: &str = "dotnet pack -c Release && dotnet nuget
 /// # Errors
 /// Returns error if the file cannot be read, the XML cannot be parsed, or
 /// no supported version node can be mutated, or the write fails.
-pub(crate) async fn write_csproj_version(
-    path: &Path,
-    new_version: &str,
-    has_version: bool,
-) -> Result<()> {
+pub(crate) async fn write_csproj_version(path: &Path, new_version: &str) -> Result<()> {
     let csproj_raw = read_to_string(path)
         .await
         .with_context(|| format!("Failed to read C# project {}", path.display()))?;
-    let updated = xml_utils::update_version_in_xml(&csproj_raw, new_version, has_version)
+    let updated = xml_utils::update_version_in_xml(&csproj_raw, new_version)
         .with_context(|| format!("Failed to update version in C# project {}", path.display()))?;
     if updated != csproj_raw {
         write(path, updated)
@@ -72,9 +67,7 @@ mod tests {
         let content = b"<Project Sdk=\"Microsoft.NET.Sdk\">\r\n</Project>\r\n";
         tokio::fs::write(&csproj_path, content).await.unwrap();
 
-        write_csproj_version(&csproj_path, "1.2.3", false)
-            .await
-            .unwrap();
+        write_csproj_version(&csproj_path, "1.2.3").await.unwrap();
 
         assert_eq!(
             tokio::fs::read_to_string(&csproj_path).await.unwrap(),

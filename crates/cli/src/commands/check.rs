@@ -132,6 +132,7 @@ enum NameIndexEntry<'a> {
 }
 
 type NameIndex<'a> = HashMap<&'a str, NameIndexEntry<'a>>;
+type ResolvedDeps<'a> = HashMap<&'a Path, Vec<(&'a str, &'a Project)>>;
 
 fn resolved_monorepo_deps<'a>(
     project: &'a Project,
@@ -194,17 +195,21 @@ fn display_tree(
         }
     }
 
-    // Graph nodes use manifest paths as identity; names are only for resolving edges.
-    let mut graph: HashMap<&Path, Vec<&Project>> = HashMap::with_capacity(projects.len());
-
+    let mut resolved_deps = ResolvedDeps::with_capacity(projects.len());
     for project in projects {
         // Resolve every edge before output so ambiguity never produces a partial tree.
-        let monorepo_deps: Vec<&Project> = resolved_monorepo_deps(project, &name_index)?
-            .into_iter()
-            .map(|(_, project)| project)
-            .collect();
+        resolved_deps.insert(
+            project.path(),
+            resolved_monorepo_deps(project, &name_index)?,
+        );
+    }
+
+    // Graph nodes use manifest paths as identity; names are only for resolving edges.
+    let mut graph: HashMap<&Path, Vec<&Project>> = HashMap::with_capacity(projects.len());
+    for (project_path, deps) in &resolved_deps {
+        let monorepo_deps: Vec<&Project> = deps.iter().map(|(_, project)| *project).collect();
         if !monorepo_deps.is_empty() {
-            graph.insert(project.path(), monorepo_deps);
+            graph.insert(*project_path, monorepo_deps);
         }
     }
 
@@ -230,7 +235,7 @@ fn display_tree(
     let mut visited: HashSet<&Path> = HashSet::with_capacity(projects.len());
     let mut ctx = TreeContext {
         graph: &graph,
-        name_index: &name_index,
+        resolved_deps: &resolved_deps,
         repo_root_path,
         update_map,
         line_cache: HashMap::with_capacity(projects.len()),
@@ -253,7 +258,7 @@ fn display_tree(
 /// Context for tree display operations
 struct TreeContext<'a> {
     graph: &'a HashMap<&'a Path, Vec<&'a Project>>,
-    name_index: &'a NameIndex<'a>,
+    resolved_deps: &'a ResolvedDeps<'a>,
     repo_root_path: &'a Path,
     update_map: &'a HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     line_cache: HashMap<&'a Path, String>,
@@ -267,8 +272,12 @@ fn cached_project_line<'a, 'ctx>(
     match ctx.line_cache.entry(project_path) {
         Entry::Occupied(entry) => Ok(entry.into_mut().as_str()),
         Entry::Vacant(entry) => {
-            let line =
-                format_project_line(project, ctx.repo_root_path, ctx.update_map, ctx.name_index)?;
+            let line = format_project_line(
+                project,
+                ctx.repo_root_path,
+                ctx.update_map,
+                ctx.resolved_deps,
+            )?;
             Ok(entry.insert(line).as_str())
         }
     }
@@ -402,7 +411,7 @@ fn format_project_line(
     project: &Project,
     repo_root_path: &std::path::Path,
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-    name_index: &NameIndex<'_>,
+    resolved_deps: &ResolvedDeps<'_>,
 ) -> Result<String> {
     use colored::Colorize;
 
@@ -410,22 +419,12 @@ fn format_project_line(
 
     let changed_marker = changed_marker(project);
 
-    // Collect the monorepo-local deps (sorted) via the shared helper, then
-    // fuse the join into a single `String::push_str` loop, matching the
-    // `format_selected_projects` pattern in `prompter.rs`. Empty-guard shape
-    // preserved: `deps_info` still degrades to `"".normal()` when no
-    // monorepo-local dep survives the filter.
-    //
-    // Preallocate: `String::new().push_str(...)` grows via geometric
-    // doubling on every dep addition. On projects with N monorepo
-    // dependencies (rendered as `\n        core\n        utils\n...`),
-    // that's `log2(total_len)` reallocations per project displayed —
-    // multiplied through every `display_tree_node` visit. Summing
-    // `dep.len() + 9` (each dep name plus its `\n        ` separator, 9
-    // bytes) is a tight upper bound that overshoots by at most one
-    // separator (the first dep skips the leading separator). Matches the
-    // preallocation policy already applied throughout the workspace.
-    let filtered_deps = resolved_monorepo_deps(project, name_index)?;
+    // Reuse the precomputed sorted dependencies so graph construction remains
+    // the only resolution and ambiguity pass.
+    let filtered_deps = resolved_deps
+        .get(project.path())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let mut deps_str =
         String::with_capacity(filtered_deps.iter().map(|(dep, _)| dep.len() + 9).sum());
     for (dep, _) in filtered_deps {
@@ -588,6 +587,17 @@ mod tests {
 
     fn render_tree(projects: &[&Project]) -> String {
         try_render_tree(projects).unwrap()
+    }
+
+    fn format_project_line_for_test<'a>(
+        project: &'a Project,
+        repo_root_path: &Path,
+        update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+        name_index: &NameIndex<'a>,
+    ) -> Result<String> {
+        let mut resolved_deps = ResolvedDeps::with_capacity(1);
+        resolved_deps.insert(project.path(), resolved_monorepo_deps(project, name_index)?);
+        format_project_line(project, repo_root_path, update_map, &resolved_deps)
     }
 
     #[test]
@@ -830,7 +840,8 @@ mod tests {
         let mut name_to_project = NameIndex::new();
         name_to_project.insert("my-lib", NameIndexEntry::Unique(&project));
 
-        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
+        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
+            .unwrap();
         assert!(line.contains("my-lib"));
         assert!(line.contains("v1.2.3"));
     }
@@ -850,7 +861,8 @@ mod tests {
         let mut name_to_project = NameIndex::new();
         name_to_project.insert("my-workspace", NameIndexEntry::Unique(&project));
 
-        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
+        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
+            .unwrap();
         assert!(line.contains("my-workspace"));
         assert!(line.contains("Workspace"));
         assert!(line.contains("v2.0.0"));
@@ -874,7 +886,8 @@ mod tests {
         );
         let name_to_project = NameIndex::new();
 
-        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
+        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
+            .unwrap();
         assert!(line.contains("updated-pkg"));
         // The update display should show version transition
         assert!(line.contains("1.1.0") || line.contains("1.0.0"));
@@ -895,7 +908,8 @@ mod tests {
         let update_map = HashMap::new();
         let name_to_project = NameIndex::new();
 
-        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
+        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
+            .unwrap();
         assert!(line.contains("changed-pkg"));
         assert!(line.contains("changed"));
     }
@@ -927,7 +941,8 @@ mod tests {
         name_to_project.insert("app", NameIndexEntry::Unique(&project));
         name_to_project.insert("core-lib", NameIndexEntry::Unique(&dep_project));
 
-        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
+        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
+            .unwrap();
         assert!(line.contains("app"));
         assert!(line.contains("deps:"));
         assert!(line.contains("core-lib"));
@@ -947,7 +962,8 @@ mod tests {
         let update_map = HashMap::new();
         let name_to_project = NameIndex::new();
 
-        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
+        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
+            .unwrap();
         assert!(line.contains("standalone"));
         assert!(!line.contains("deps:"));
     }
@@ -1002,7 +1018,8 @@ mod tests {
         name_to_project.insert("zebra", NameIndexEntry::Unique(&zebra_project));
         name_to_project.insert("mango", NameIndexEntry::Unique(&mango_project));
 
-        let line = format_project_line(&project, repo_root, &update_map, &name_to_project).unwrap();
+        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
+            .unwrap();
         assert!(line.contains("app"));
         assert!(line.contains("deps:"));
         // Verify sorted order: apple, mango, zebra
@@ -1032,12 +1049,12 @@ mod tests {
 
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let name_to_project = NameIndex::new();
+        let resolved_deps = ResolvedDeps::new();
 
         // Create a TreeContext with an empty line_cache
         let mut ctx = TreeContext {
             graph: &HashMap::new(),
-            name_index: &name_to_project,
+            resolved_deps: &resolved_deps,
             repo_root_path: repo_root,
             update_map: &update_map,
             line_cache: HashMap::new(),

@@ -77,9 +77,8 @@ impl Workspace for CSharpWorkspace {
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let path = &self.path;
-        let has_version = self.version.is_some();
         changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
-            crate::write_csproj_version(path, new, has_version).await
+            crate::write_csproj_version(path, new).await
         })
         .await
     }

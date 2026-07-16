@@ -135,7 +135,6 @@ impl CSharpProjectFinder {
                         }
                     }
                     if in_is_packable
-                        && element_depth == 3
                         && let Ok(text) = e.decode()
                         && text.trim().eq_ignore_ascii_case("false")
                     {
@@ -153,7 +152,6 @@ impl CSharpProjectFinder {
                         }
                     }
                     if in_is_packable
-                        && element_depth == 3
                         && let Ok(text) = e.decode()
                         && text.trim().eq_ignore_ascii_case("false")
                     {
@@ -924,6 +922,27 @@ mod tests {
                 .unwrap()
                 .2;
             assert_eq!(publishable_by_default, expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn test_parse_csproj_metadata_scopes_is_packable_like_version() {
+        let cases = [
+            (
+                "text",
+                "<Root><Project><PropertyGroup><Version>1.2.3</Version><IsPackable>false</IsPackable></PropertyGroup></Project></Root>",
+            ),
+            (
+                "cdata",
+                "<Root><Project><PropertyGroup><Version>1.2.3</Version><IsPackable><![CDATA[false]]></IsPackable></PropertyGroup></Project></Root>",
+            ),
+        ];
+
+        for (label, content) in cases {
+            let (version, _, publishable_by_default) =
+                CSharpProjectFinder::parse_csproj_metadata(content).unwrap();
+            assert_eq!(version.as_deref(), Some("1.2.3"), "{label}");
+            assert!(!publishable_by_default, "{label}");
         }
     }
 
