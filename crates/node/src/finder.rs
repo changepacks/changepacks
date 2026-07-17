@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::{
-    detect_package_manager_recursive_async, package::NodePackage, read_and_parse_package_json,
-    workspace::NodeWorkspace,
+    PackageManager, detect_package_manager_in_ancestors, package::NodePackage,
+    read_and_parse_package_json, workspace::NodeWorkspace,
 };
 
 /// Manifest filenames this finder recognizes. Static because the list is
@@ -94,9 +94,13 @@ impl ProjectFinder for NodeProjectFinder {
         let name = package_json_str(&package_json, "name");
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();
-        let package_manager =
-            detect_package_manager_recursive_async(path, relative_path.components().count())
-                .await?;
+        let package_manager = match path.parent() {
+            Some(parent) => {
+                detect_package_manager_in_ancestors(parent, relative_path.components().count())
+                    .await?
+            }
+            None => PackageManager::Npm,
+        };
         // Workspace detection is short-circuited: a valid `workspaces`
         // array or object in `package.json` (npm / yarn / bun monorepos —
         // the common case) is enough on its own, so only fall back to a

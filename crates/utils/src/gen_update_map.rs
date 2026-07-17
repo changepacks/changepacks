@@ -571,6 +571,11 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
         }
     }
 
+    // With no additions, the canonical rebuild is dead work; RandomState iteration is unobservable either way.
+    if packages_to_add.is_empty() {
+        return Ok(Vec::new());
+    }
+
     // Reinsert every entry in canonical path order. `HashMap` does not promise
     // ordered iteration, but this gives deterministic insertion/serialization
     // whenever the map's chosen hasher supports it.

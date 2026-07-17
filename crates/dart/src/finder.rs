@@ -116,7 +116,10 @@ impl ProjectFinder for DartProjectFinder {
         // unchanged.
         let version = pubspec_str(&pubspec, "version");
         let name = pubspec_str(&pubspec, "name");
-        let publishable_by_default = pubspec_str(&pubspec, "publish_to")
+        // Mirrors the Node finder's borrow-only `private` gate.
+        let publishable_by_default = pubspec
+            .get("publish_to")
+            .and_then(|v| v.as_str())
             .is_none_or(|publish_to| publish_to.trim() != "none");
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();

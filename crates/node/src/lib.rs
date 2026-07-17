@@ -363,6 +363,18 @@ pub async fn detect_package_manager_recursive_async(
         return Ok(PackageManager::Npm);
     };
 
+    detect_package_manager_in_ancestors(start, max_depth).await
+}
+
+/// Detects the package manager by searching asynchronously from a known directory upward.
+///
+/// # Errors
+/// Returns an error when lockfile metadata cannot be read for a reason other
+/// than the path not existing.
+pub(crate) async fn detect_package_manager_in_ancestors(
+    start: &Path,
+    max_depth: usize,
+) -> Result<PackageManager> {
     for dir in start.ancestors().take(max_depth) {
         let pm = detect_package_manager_async(dir).await?;
         if pm != PackageManager::Npm || is_regular_file(&dir.join("package-lock.json")).await? {
@@ -846,6 +858,21 @@ mod tests {
                 .unwrap(),
             PackageManager::Pnpm,
             "expected the nearer pnpm-lock.yaml to beat the ancestor bun.lock"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_detect_package_manager_in_ancestors_starts_at_known_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_dir = temp_dir.path().join("pkg");
+        fs::create_dir(&package_dir).unwrap();
+        fs::write(package_dir.join("pnpm-lock.yaml"), "").unwrap();
+
+        assert_eq!(
+            detect_package_manager_in_ancestors(&package_dir, 1)
+                .await
+                .unwrap(),
+            PackageManager::Pnpm
         );
     }
 

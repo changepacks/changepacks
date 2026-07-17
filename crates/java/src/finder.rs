@@ -1837,27 +1837,30 @@ impl ProjectFinder for GradleProjectFinder {
                         path.display()
                     )
                 })?;
-        let metadata = self
+        let missing_metadata_context = || {
+            format!(
+                "missing Gradle metadata record for project directory '{}' (normalized: '{}') from wrapper '{}'",
+                project_dir.display(),
+                normalized_project_dir.display(),
+                gradlew.display()
+            )
+        };
+        let wrapper_metadata = self
             .metadata_by_wrapper
             .get(&normalized_wrapper_dir)
-            .and_then(|metadata| metadata.by_project_dir.get(&normalized_project_dir))
-            .cloned()
-            .with_context(|| {
-                format!(
-                    "missing Gradle metadata record for project directory '{}' (normalized: '{}') from wrapper '{}'",
-                    project_dir.display(),
-                    normalized_project_dir.display(),
-                    gradlew.display()
-                )
-            })?;
-        let project_path = metadata.project_path;
+            .with_context(missing_metadata_context)?;
+        let metadata = wrapper_metadata
+            .by_project_dir
+            .get(&normalized_project_dir)
+            .with_context(missing_metadata_context)?;
+        let project_path = metadata.project_path.clone();
         let GradleProperties {
             name,
             version,
             has_subprojects,
             has_publish_task,
             has_publish_to_maven_local_task,
-        } = metadata.properties;
+        } = metadata.properties.clone();
 
         // Use directory name as fallback for project name
         let name = name.or_else(|| {
@@ -1867,15 +1870,12 @@ impl ProjectFinder for GradleProjectFinder {
                 .map(std::string::ToString::to_string)
         });
 
-        let project_names_by_path = self
-            .metadata_by_wrapper
-            .get(&normalized_wrapper_dir)
-            .map(|metadata| &metadata.project_names_by_path);
+        let project_names_by_path = &wrapper_metadata.project_names_by_path;
         let dependency_names = dependencies
             .iter()
             .map(|dependency_path| {
                 project_names_by_path
-                    .and_then(|names| names.get(*dependency_path))
+                    .get(*dependency_path)
                     .with_context(|| {
                         format!(
                             "Gradle dependency project path '{}' declared by project '{}' (Gradle path '{}', manifest '{}') is missing from metadata emitted by wrapper '{}'",
