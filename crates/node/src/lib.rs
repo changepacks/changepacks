@@ -21,6 +21,26 @@ use serde::Serialize;
 use tokio::fs::{read_to_string, write};
 
 #[cfg(test)]
+pub(crate) mod test_util {
+    use std::path::Path;
+
+    pub(crate) fn marker_command(marker_name: &str) -> String {
+        if cfg!(target_os = "windows") {
+            format!("echo invoked>{marker_name}")
+        } else {
+            format!("printf invoked > {marker_name}")
+        }
+    }
+
+    pub(crate) fn denied_metadata(_path: &Path) -> std::io::Result<bool> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "deterministic metadata failure",
+        ))
+    }
+}
+
+#[cfg(test)]
 type MetadataProbe = fn(&Path) -> std::io::Result<bool>;
 
 #[cfg(test)]
@@ -455,18 +475,12 @@ pub(crate) async fn run_dry_run_publish_for_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::denied_metadata;
     use changepacks_core::UpdateType;
     use changepacks_utils::test_support;
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
-
-    fn denied_metadata(_path: &Path) -> std::io::Result<bool> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "deterministic metadata failure",
-        ))
-    }
 
     #[test]
     fn test_package_manager_from_lockfile_probes_uses_priority() {

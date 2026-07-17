@@ -119,26 +119,12 @@ impl Package for NodePackage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::{denied_metadata, marker_command};
     use changepacks_core::UpdateType;
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
-
-    fn marker_command(marker_name: &str) -> String {
-        if cfg!(target_os = "windows") {
-            format!("echo invoked>{marker_name}")
-        } else {
-            format!("printf invoked > {marker_name}")
-        }
-    }
-
-    fn denied_metadata(_path: &std::path::Path) -> std::io::Result<bool> {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "deterministic metadata failure",
-        ))
-    }
 
     async fn assert_collection_failure_prevents_command(dry_run: bool) {
         let temp_dir = TempDir::new().unwrap();

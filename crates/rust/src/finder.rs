@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Package, Project, ProjectFinder};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     io::ErrorKind,
     path::{Path, PathBuf},
 };
@@ -193,6 +193,7 @@ pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
     workspace_package_versions: HashMap<PathBuf, String>,
     workspace_dependency_aliases: HashMap<PathBuf, HashMap<String, String>>,
+    non_workspace_manifest_candidates: HashSet<PathBuf>,
     inherited_workspace_members: HashMap<PathBuf, InheritedWorkspaceMembers>,
     pending_workspace_packages: Vec<PendingWorkspacePackage>,
 }
@@ -242,15 +243,18 @@ impl RustProjectFinder {
             if self.workspace_dependency_aliases.contains_key(&candidate) {
                 return Ok(());
             }
-            let parsed = match crate::read_and_parse_cargo_toml(&candidate).await {
-                Ok((_, parsed)) => Some(parsed),
-                Err(error) if cargo_toml_does_not_exist(&error) => None,
-                Err(error) => return Err(error),
-            };
-            if let Some(parsed) = parsed.filter(|parsed| parsed.get("workspace").is_some()) {
-                self.workspace_dependency_aliases
-                    .insert(candidate, workspace_dependency_aliases(&parsed));
-                return Ok(());
+            if !self.non_workspace_manifest_candidates.contains(&candidate) {
+                let parsed = match crate::read_and_parse_cargo_toml(&candidate).await {
+                    Ok((_, parsed)) => Some(parsed),
+                    Err(error) if cargo_toml_does_not_exist(&error) => None,
+                    Err(error) => return Err(error),
+                };
+                if let Some(parsed) = parsed.filter(|parsed| parsed.get("workspace").is_some()) {
+                    self.workspace_dependency_aliases
+                        .insert(candidate, workspace_dependency_aliases(&parsed));
+                    return Ok(());
+                }
+                self.non_workspace_manifest_candidates.insert(candidate);
             }
             let Some(parent) = ancestor.parent() else {
                 return Ok(());
@@ -423,7 +427,7 @@ impl ProjectFinder for RustProjectFinder {
             for dep_name in &dep_names {
                 project.add_dependency(dep_name);
             }
-            self.projects.insert(path_key.clone(), project);
+            self.projects.insert(path_key, project);
         } else {
             // Check if version.workspace = true — same table-like +
             // `workspace = true` shape as `workspace_dep_names`
@@ -2073,11 +2077,14 @@ shared = { workspace = true }
     }
 
     #[tokio::test]
-    async fn test_rust_project_finder_skips_valid_non_workspace_ancestor() {
+    async fn test_rust_project_finder_reuses_non_workspace_manifest_cache_for_siblings() {
+        // Given: sibling members below a valid non-workspace manifest and a workspace root
         let temp_dir = TempDir::new().unwrap();
         let intermediate = temp_dir.path().join("tools");
-        let member_dir = intermediate.join("crates").join("app");
-        fs::create_dir_all(&member_dir).unwrap();
+        let app_dir = intermediate.join("crates/app");
+        let cli_dir = intermediate.join("crates/cli");
+        fs::create_dir_all(&app_dir).unwrap();
+        fs::create_dir_all(&cli_dir).unwrap();
 
         fs::write(
             temp_dir.path().join("Cargo.toml"),
@@ -2089,40 +2096,57 @@ shared = { package = "core", path = "core" }
 "#,
         )
         .unwrap();
+        let intermediate_toml = intermediate.join("Cargo.toml");
         fs::write(
-            intermediate.join("Cargo.toml"),
-            r#"[package]
-name = "tools"
-version = "1.0.0"
-"#,
+            &intermediate_toml,
+            "[package]\nname = \"tools\"\nversion = \"1.0.0\"\n",
         )
         .unwrap();
-        let member_toml = member_dir.join("Cargo.toml");
-        fs::write(
-            &member_toml,
-            r#"[package]
-name = "app"
-version = "1.0.0"
+        let app_toml = app_dir.join("Cargo.toml");
+        let cli_toml = cli_dir.join("Cargo.toml");
+        for (name, manifest) in [("app", &app_toml), ("cli", &cli_toml)] {
+            fs::write(
+                manifest,
+                format!(
+                    "[package]\nname = \"{name}\"\nversion = \"1.0.0\"\n\n[dependencies]\nshared = {{ workspace = true }}\n"
+                ),
+            )
+            .unwrap();
+        }
 
-[dependencies]
-shared = { workspace = true }
-"#,
-        )
-        .unwrap();
-
+        // When: the first visit seeds the negative cache before the second sibling is visited
         let mut finder = RustProjectFinder::new();
         finder
-            .visit(&member_toml, Path::new("tools/crates/app/Cargo.toml"))
+            .visit(&app_toml, Path::new("tools/crates/app/Cargo.toml"))
+            .await
+            .unwrap();
+        let missing_candidate = intermediate.join("crates/Cargo.toml");
+        assert!(
+            finder
+                .non_workspace_manifest_candidates
+                .contains(&missing_candidate)
+        );
+        assert!(
+            finder
+                .non_workspace_manifest_candidates
+                .contains(&intermediate_toml)
+        );
+        fs::write(&intermediate_toml, "invalid toml [[[").unwrap();
+        finder
+            .visit(&cli_toml, Path::new("tools/crates/cli/Cargo.toml"))
             .await
             .unwrap();
 
-        let app = finder
-            .projects()
-            .into_iter()
-            .find(|project| project.name() == Some("app"))
-            .unwrap();
-        assert!(app.dependencies().contains("core"));
-        assert!(!app.dependencies().contains("shared"));
+        // Then: both sibling aliases resolve through the cached workspace root
+        for name in ["app", "cli"] {
+            let project = finder
+                .projects()
+                .into_iter()
+                .find(|project| project.name() == Some(name))
+                .unwrap();
+            assert!(project.dependencies().contains("core"));
+            assert!(!project.dependencies().contains("shared"));
+        }
     }
 
     #[tokio::test]

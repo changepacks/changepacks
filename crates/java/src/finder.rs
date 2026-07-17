@@ -1867,12 +1867,15 @@ impl ProjectFinder for GradleProjectFinder {
                 .map(std::string::ToString::to_string)
         });
 
+        let project_names_by_path = self
+            .metadata_by_wrapper
+            .get(&normalized_wrapper_dir)
+            .map(|metadata| &metadata.project_names_by_path);
         let dependency_names = dependencies
             .iter()
             .map(|dependency_path| {
-                self.metadata_by_wrapper
-                    .get(&normalized_wrapper_dir)
-                    .and_then(|metadata| metadata.project_names_by_path.get(*dependency_path))
+                project_names_by_path
+                    .and_then(|names| names.get(*dependency_path))
                     .with_context(|| {
                         format!(
                             "Gradle dependency project path '{}' declared by project '{}' (Gradle path '{}', manifest '{}') is missing from metadata emitted by wrapper '{}'",
