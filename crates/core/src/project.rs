@@ -12,18 +12,23 @@ use colored::Colorize;
 use crate::{config::Config, package::Package, update_type::UpdateType, workspace::Workspace};
 
 /// Compare paths after normalizing backslashes to forward slashes.
+///
+/// UTF-8 byte-lexicographic order matches Unicode scalar-value order. The
+/// backslash byte cannot occur inside a multibyte sequence, and ASCII byte
+/// values equal their scalar values, so byte-wise normalization preserves the
+/// previous character-wise ordering without decoding each character.
 #[must_use]
 pub fn cmp_normalized_paths(left: &Path, right: &Path) -> Ordering {
     let left_lossy = left.to_string_lossy();
     let right_lossy = right.to_string_lossy();
 
     left_lossy
-        .chars()
-        .map(|character| if character == '\\' { '/' } else { character })
+        .bytes()
+        .map(|byte| if byte == b'\\' { b'/' } else { byte })
         .cmp(
             right_lossy
-                .chars()
-                .map(|character| if character == '\\' { '/' } else { character }),
+                .bytes()
+                .map(|byte| if byte == b'\\' { b'/' } else { byte }),
         )
 }
 

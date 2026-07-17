@@ -16,34 +16,7 @@ pub struct DartWorkspace {
 }
 
 impl DartWorkspace {
-    #[must_use]
-    pub fn new(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-    ) -> Self {
-        Self::new_discovered(name, version, path, relative_path, true)
-    }
-
-    #[must_use]
-    pub(crate) fn new_discovered(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        publishable_by_default: bool,
-    ) -> Self {
-        Self {
-            path,
-            relative_path,
-            version,
-            name,
-            is_changed: false,
-            publishable_by_default,
-            dependencies: HashSet::new(),
-        }
-    }
+    changepacks_core::impl_discovered_new!();
 }
 
 #[async_trait]

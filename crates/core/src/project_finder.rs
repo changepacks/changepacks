@@ -121,6 +121,42 @@ macro_rules! impl_default_new {
     };
 }
 
+/// Generates constructors for discovered package/workspace structs with a
+/// `publishable_by_default` field.
+#[macro_export]
+macro_rules! impl_discovered_new {
+    () => {
+        #[must_use]
+        pub fn new(
+            name: ::std::option::Option<::std::string::String>,
+            version: ::std::option::Option<::std::string::String>,
+            path: ::std::path::PathBuf,
+            relative_path: ::std::path::PathBuf,
+        ) -> Self {
+            Self::new_discovered(name, version, path, relative_path, true)
+        }
+
+        #[must_use]
+        pub(crate) fn new_discovered(
+            name: ::std::option::Option<::std::string::String>,
+            version: ::std::option::Option<::std::string::String>,
+            path: ::std::path::PathBuf,
+            relative_path: ::std::path::PathBuf,
+            publishable_by_default: ::std::primitive::bool,
+        ) -> Self {
+            Self {
+                name,
+                version,
+                path,
+                relative_path,
+                is_changed: false,
+                publishable_by_default,
+                dependencies: ::std::collections::HashSet::new(),
+            }
+        }
+    };
+}
+
 /// Generates `fn language(&self) -> Language` for a fixed language variant.
 #[macro_export]
 macro_rules! impl_language {

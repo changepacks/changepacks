@@ -24,24 +24,14 @@ impl NodeWorkspace {
         path: PathBuf,
         relative_path: PathBuf,
     ) -> Self {
-        Self::new_with_package_manager(
+        Self::new_discovered(
             name,
             version,
             path,
             relative_path,
             crate::PackageManager::Npm,
+            true,
         )
-    }
-
-    #[must_use]
-    pub(crate) fn new_with_package_manager(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        package_manager: crate::PackageManager,
-    ) -> Self {
-        Self::new_discovered(name, version, path, relative_path, package_manager, true)
     }
 
     #[must_use]

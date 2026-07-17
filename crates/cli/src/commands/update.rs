@@ -505,13 +505,11 @@ async fn rollback_update_error(
     }
 }
 
+/// Callers pass pre-canonicalized manifest paths.
 async fn snapshot_update_state(
     manifest_paths: Vec<PathBuf>,
     changepacks_dir: &Path,
 ) -> Result<UpdateStateSnapshot> {
-    let mut manifest_paths = manifest_paths;
-    manifest_paths.sort_unstable();
-    manifest_paths.dedup();
     let manifest_reads =
         futures::future::join_all(manifest_paths.iter().map(tokio::fs::read)).await;
     let mut snapshots = Vec::with_capacity(manifest_paths.len());
