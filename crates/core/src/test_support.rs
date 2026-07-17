@@ -24,7 +24,7 @@
 //! the language crates.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -177,4 +177,112 @@ impl Workspace for MockWorkspace {
         self.language
     }
     impl_test_publish_commands!();
+}
+
+#[derive(Debug)]
+pub struct UnsupportedDryRunProject {
+    pub path: PathBuf,
+    pub dependencies: HashSet<String>,
+}
+
+#[async_trait]
+impl Package for UnsupportedDryRunProject {
+    fn name(&self) -> Option<&str> {
+        Some("unsupported-dry-run")
+    }
+
+    fn version(&self) -> Option<&str> {
+        Some("1.0.0")
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn relative_path(&self) -> &Path {
+        Path::new("project.csproj")
+    }
+
+    async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
+        Ok(())
+    }
+
+    fn is_changed(&self) -> bool {
+        false
+    }
+
+    fn language(&self) -> Language {
+        Language::CSharp
+    }
+
+    fn dependencies(&self) -> &HashSet<String> {
+        &self.dependencies
+    }
+
+    fn add_dependency(&mut self, dependency: &str) {
+        self.dependencies.insert(dependency.to_string());
+    }
+
+    fn set_changed(&mut self, _changed: bool) {}
+
+    fn set_name(&mut self, _name: String) {}
+
+    fn default_publish_command(&self) -> String {
+        "echo publish".to_string()
+    }
+
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        None
+    }
+}
+
+#[async_trait]
+impl Workspace for UnsupportedDryRunProject {
+    fn name(&self) -> Option<&str> {
+        Some("unsupported-dry-run")
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn relative_path(&self) -> &Path {
+        Path::new("project.csproj")
+    }
+
+    fn version(&self) -> Option<&str> {
+        Some("1.0.0")
+    }
+
+    async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
+        Ok(())
+    }
+
+    fn language(&self) -> Language {
+        Language::CSharp
+    }
+
+    fn dependencies(&self) -> &HashSet<String> {
+        &self.dependencies
+    }
+
+    fn add_dependency(&mut self, dependency: &str) {
+        self.dependencies.insert(dependency.to_string());
+    }
+
+    fn is_changed(&self) -> bool {
+        false
+    }
+
+    fn set_changed(&mut self, _changed: bool) {}
+
+    fn set_name(&mut self, _name: String) {}
+
+    fn default_publish_command(&self) -> String {
+        "echo publish".to_string()
+    }
+
+    fn default_dry_run_publish_command(&self) -> Option<String> {
+        None
+    }
 }

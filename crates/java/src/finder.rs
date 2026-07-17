@@ -18,9 +18,16 @@ use crate::{package::GradlePackage, workspace::GradleWorkspace};
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["build.gradle.kts", "build.gradle"];
 
-const GRADLE_METADATA_PREFIX: &str = "__CHANGEPACKS_GRADLE_METADATA_V1__";
+macro_rules! gradle_metadata_prefix {
+    () => {
+        "__CHANGEPACKS_GRADLE_METADATA_V1__"
+    };
+}
 
-const GRADLE_METADATA_INIT_SCRIPT: &str = r#"import groovy.json.JsonOutput
+const GRADLE_METADATA_PREFIX: &str = gradle_metadata_prefix!();
+
+const GRADLE_METADATA_INIT_SCRIPT: &str = concat!(
+    r#"import groovy.json.JsonOutput
 
 gradle.projectsEvaluated { evaluatedGradle ->
     evaluatedGradle.rootProject.allprojects { project ->
@@ -33,10 +40,13 @@ gradle.projectsEvaluated { evaluatedGradle ->
             hasPublishTask: project.tasks.findByName("publish") != null,
             hasPublishToMavenLocalTask: project.tasks.findByName("publishToMavenLocal") != null
         ]
-        println("__CHANGEPACKS_GRADLE_METADATA_V1__" + JsonOutput.toJson(record))
+        println(""#,
+    gradle_metadata_prefix!(),
+    r#"" + JsonOutput.toJson(record))
     }
 }
-"#;
+"#
+);
 
 /// OS-specific Java executable filename, used by `which_java_in` and
 /// `java_home_has_java` to avoid repeating the `cfg!(windows)` branch.
@@ -2154,7 +2164,7 @@ mod tests {
         emit_child_record: bool,
     ) -> PathBuf {
         let invocation_count = dir.join("wrapper-invocations.txt");
-        let prefix = "__CHANGEPACKS_GRADLE_METADATA_V1__";
+        let prefix = GRADLE_METADATA_PREFIX;
         let root_record = format!(
             "{prefix}{{\"projectDir\":{},\"projectPath\":\":\",\"name\":\"root project\",\"version\":\"1.2.3\",\"aggregate\":true,\"hasPublishTask\":true,\"hasPublishToMavenLocalTask\":true}}",
             json_string(root_project_dir.to_string_lossy().as_ref())

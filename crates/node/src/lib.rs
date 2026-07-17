@@ -333,11 +333,19 @@ const fn package_manager_from_lockfile_probes(
 /// Returns an error when lockfile metadata cannot be read for a reason other
 /// than the lockfile not existing.
 pub async fn detect_package_manager_async(dir: &Path) -> Result<PackageManager> {
+    let bun_lockb_path = dir.join("bun.lockb");
+    let bun_lock_path = dir.join("bun.lock");
+    let pnpm_lock_path = dir.join("pnpm-lock.yaml");
+    let yarn_lock_path = dir.join("yarn.lock");
+    let (bun_lockb, bun_lock, pnpm_lock, yarn_lock) = tokio::try_join!(
+        is_regular_file(&bun_lockb_path),
+        is_regular_file(&bun_lock_path),
+        is_regular_file(&pnpm_lock_path),
+        is_regular_file(&yarn_lock_path),
+    )?;
+
     Ok(package_manager_from_lockfile_probes(
-        is_regular_file(&dir.join("bun.lockb")).await?,
-        is_regular_file(&dir.join("bun.lock")).await?,
-        is_regular_file(&dir.join("pnpm-lock.yaml")).await?,
-        is_regular_file(&dir.join("yarn.lock")).await?,
+        bun_lockb, bun_lock, pnpm_lock, yarn_lock,
     ))
 }
 

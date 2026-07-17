@@ -156,69 +156,9 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::MockWorkspace;
+    use crate::test_support::{MockWorkspace, UnsupportedDryRunProject};
     use rstest::rstest;
-    use std::{
-        collections::{BTreeMap, HashSet},
-        path::PathBuf,
-    };
-
-    #[derive(Debug)]
-    struct UnsupportedDryRunWorkspace {
-        path: PathBuf,
-        dependencies: HashSet<String>,
-    }
-
-    #[async_trait]
-    impl Workspace for UnsupportedDryRunWorkspace {
-        fn name(&self) -> Option<&str> {
-            Some("unsupported-dry-run")
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-
-        fn relative_path(&self) -> &Path {
-            Path::new("project.csproj")
-        }
-
-        fn version(&self) -> Option<&str> {
-            Some("1.0.0")
-        }
-
-        async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
-            Ok(())
-        }
-
-        fn language(&self) -> Language {
-            Language::CSharp
-        }
-
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-
-        fn is_changed(&self) -> bool {
-            false
-        }
-
-        fn set_changed(&mut self, _changed: bool) {}
-
-        fn set_name(&mut self, _name: String) {}
-
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            None
-        }
-    }
+    use std::collections::{BTreeMap, HashSet};
 
     #[test]
     fn test_check_changed_already_changed() {
@@ -546,12 +486,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_dry_run_publish_returns_none_when_unsupported() {
-        let workspace = UnsupportedDryRunWorkspace {
+        let workspace = UnsupportedDryRunProject {
             path: std::env::temp_dir().join("project.csproj"),
             dependencies: HashSet::new(),
         };
 
-        let output = workspace.dry_run_publish(&Config::default()).await.unwrap();
+        let output = Workspace::dry_run_publish(&workspace, &Config::default())
+            .await
+            .unwrap();
 
         assert!(output.is_none());
     }

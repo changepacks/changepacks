@@ -15,7 +15,7 @@ async-trait = "0.1"
 serde = "1.0"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 anyhow = "1.0"
-tokio = { version = "1.52", features = ["fs"] }
+tokio = { version = "1.52", features = ["fs", "macros"] }
 
 [dev-dependencies]
 tempfile = "3.27"

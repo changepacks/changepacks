@@ -212,14 +212,14 @@ fn display_tree(
     }
 
     // Manifest paths keep same-named projects distinct in root detection.
-    let has_dependencies_cap: usize = graph.values().map(Vec::len).sum();
-    let mut has_dependencies: HashSet<&Path> = HashSet::with_capacity(has_dependencies_cap);
-    has_dependencies.extend(graph.values().flatten().map(|project| project.path()));
+    let has_dependents_cap: usize = graph.values().map(Vec::len).sum();
+    let mut has_dependents: HashSet<&Path> = HashSet::with_capacity(has_dependents_cap);
+    has_dependents.extend(graph.values().flatten().map(|project| project.path()));
 
     // Root order remains name-first; manifest path breaks ties for duplicates.
     let mut sorted_roots: Vec<&Project> = Vec::with_capacity(projects.len());
     for project in projects {
-        if !has_dependencies.contains(project.path()) {
+        if !has_dependents.contains(project.path()) {
             sorted_roots.push(project);
         }
     }
