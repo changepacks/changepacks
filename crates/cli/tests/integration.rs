@@ -1,29 +1,11 @@
 use changepacks_core::{ChangePackLog, UpdateType};
 use changepacks_utils::{
     collect_changepack_log_paths,
-    test_support::{git_add_and_commit, init_git_repo, run_git},
+    test_support::{DirGuard, git_add_and_commit, init_git_repo, run_git},
 };
 use serial_test::serial;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-
-struct DirGuard {
-    original: PathBuf,
-}
-
-impl DirGuard {
-    fn change_to(path: &Path) -> Self {
-        let original = std::env::current_dir().unwrap();
-        std::env::set_current_dir(path).unwrap();
-        Self { original }
-    }
-}
-
-impl Drop for DirGuard {
-    fn drop(&mut self) {
-        let _ = std::env::set_current_dir(&self.original);
-    }
-}
 
 /// Build a git-repo fixture in a fresh `TempDir` and return that `TempDir`.
 ///
@@ -104,19 +86,22 @@ async fn run_language_update(language: &str) -> anyhow::Result<()> {
     .await
 }
 
-fn run_check_json(repo_root: &Path) -> std::process::Output {
+fn run_check_json(repo_root: &Path, extra_args: &[&str]) -> std::process::Output {
     let workspace_manifest = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
         .expect("crates/cli has a workspace root two levels up")
         .join("Cargo.toml");
 
-    std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"))
+    let mut command = std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"));
+    command
         .args(["run", "--quiet", "-p", "changepacks", "--manifest-path"])
         .arg(&workspace_manifest)
         .args(["--", "check", "--format", "json"])
+        .args(extra_args)
         .current_dir(repo_root)
-        .env("NO_COLOR", "1")
+        .env("NO_COLOR", "1");
+    command
         .output()
         .expect("failed to run the changepacks binary")
 }
@@ -2700,7 +2685,7 @@ async fn test_cli_language_e2e_python_check_discovers_changed_project() {
     let _dir_guard = DirGuard::change_to(&temp_path);
 
     // When: the real CLI check command emits its JSON result.
-    let output = run_check_json(&temp_path);
+    let output = run_check_json(&temp_path, &[]);
 
     // Then: the Python manifest is discovered and marked changed.
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2818,7 +2803,7 @@ async fn test_cli_language_e2e_dart_check_discovers_changed_project() {
     let _dir_guard = DirGuard::change_to(&temp_path);
 
     // When: the real CLI check command emits its JSON result.
-    let output = run_check_json(&temp_path);
+    let output = run_check_json(&temp_path, &[]);
 
     // Then: the Dart manifest is discovered and marked changed.
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2948,6 +2933,45 @@ async fn test_cli_check_with_language_filter() {
         result.is_ok(),
         "check with language filter failed: {:?}",
         result.err()
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_check_language_filter_expands_cross_language_reverse_dependencies() {
+    // Given: a Rust crate with a pending patch and a Node package that depends on it.
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_core.json",
+            r#"{"changes":{"crates/core/Cargo.toml":"Patch"},"note":"Core patch","date":"2026-07-17T00:00:00Z"}"#,
+        ),
+        (
+            "crates/core/Cargo.toml",
+            "[package]\nname = \"core\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+        ),
+        (
+            "bridge/package.json",
+            r#"{"name":"bridge","version":"1.0.0","dependencies":{"core":"workspace:*"}}"#,
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    // When: check filters its JSON output to Node projects.
+    let output = run_check_json(&temp_path, &["--language", "node"]);
+
+    // Then: reverse dependencies still expand over the full project graph, as update does.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "filtered check exited non-zero ({}):\n{stderr}",
+        output.status
+    );
+    let projects: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("check output should be valid JSON");
+    assert_eq!(
+        projects["bridge/package.json"]["nextVersion"].as_str(),
+        Some("1.0.1")
     );
 }
 

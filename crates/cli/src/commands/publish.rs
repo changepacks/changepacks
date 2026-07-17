@@ -650,7 +650,7 @@ mod tests {
     use changepacks_node::NodeProjectFinder;
     use changepacks_python::PythonProjectFinder;
     use changepacks_rust::RustProjectFinder;
-    use changepacks_utils::test_support::{git_add_and_commit, init_git_repo};
+    use changepacks_utils::test_support::{DirGuard, git_add_and_commit, init_git_repo};
     use clap::Parser;
     use rstest::rstest;
     use serial_test::serial;
@@ -1891,14 +1891,6 @@ members = ["packages/*"]
         }
     }
 
-    struct CurrentDirGuard(PathBuf);
-
-    impl Drop for CurrentDirGuard {
-        fn drop(&mut self) {
-            std::env::set_current_dir(&self.0).expect("restore test working directory");
-        }
-    }
-
     #[tokio::test]
     #[serial]
     async fn test_publish_handler_rejects_cycle_before_prompt_dry_run_or_publish_command() {
@@ -1938,9 +1930,7 @@ members = ["packages/*"]
         .expect("write config");
         git_add_and_commit(repository.path(), "cyclic publish fixture");
 
-        let original_dir = std::env::current_dir().expect("read test working directory");
-        let _current_dir_guard = CurrentDirGuard(original_dir);
-        std::env::set_current_dir(repository.path()).expect("enter temporary repository");
+        let _current_dir_guard = DirGuard::change_to(repository.path());
 
         for (dry_run, yes) in [(false, false), (true, true), (false, true)] {
             let args = PublishArgs {

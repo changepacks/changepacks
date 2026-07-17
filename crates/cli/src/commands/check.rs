@@ -73,6 +73,11 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
 
     let mut projects = collect_projects(&ctx.project_finders);
+    let mut update_map = gen_update_map(&ctx.changepacks_dir, &ctx.config).await?;
+
+    // Expand over the full project graph before filtering output, matching update.
+    apply_reverse_dependencies(&mut update_map, &projects, &ctx.repo_root_path)?;
+
     if let Some(filter) = &args.filter {
         projects.retain(|p| filter.matches(p));
     }
@@ -81,10 +86,6 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     if let FormatOptions::Stdout = args.format {
         println!("Found {} projects", projects.len());
     }
-    let mut update_map = gen_update_map(&ctx.changepacks_dir, &ctx.config).await?;
-
-    // Apply reverse dependency updates (workspace:* dependencies)
-    apply_reverse_dependencies(&mut update_map, &projects, &ctx.repo_root_path)?;
 
     if args.tree {
         // Tree mode: show dependencies as a tree

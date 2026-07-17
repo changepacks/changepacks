@@ -164,7 +164,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // gen_changepack_result_map walk and serde_json::to_string_pretty serialization.
     let json_output = if !args.dry_run && matches!(args.format, FormatOptions::Json) {
         let output = serde_json::to_string_pretty(&gen_changepack_result_map(
-            collect_projects(&project_finders).as_slice(),
+            projects.as_slice(),
             &ctx.repo_root_path,
             &update_map,
         )?)?;
@@ -509,11 +509,9 @@ async fn snapshot_update_state(
     manifest_paths: Vec<PathBuf>,
     changepacks_dir: &Path,
 ) -> Result<UpdateStateSnapshot> {
-    let mut seen = HashSet::with_capacity(manifest_paths.len());
-    let manifest_paths = manifest_paths
-        .into_iter()
-        .filter(|path| seen.insert(path.clone()))
-        .collect::<Vec<_>>();
+    let mut manifest_paths = manifest_paths;
+    manifest_paths.sort_unstable();
+    manifest_paths.dedup();
     let manifest_reads =
         futures::future::join_all(manifest_paths.iter().map(tokio::fs::read)).await;
     let mut snapshots = Vec::with_capacity(manifest_paths.len());
@@ -709,7 +707,7 @@ mod tests {
     };
     use changepacks_utils::{
         clear_update_logs, collect_changepack_log_paths,
-        test_support::{git_add_and_commit, init_git_repo},
+        test_support::{DirGuard, git_add_and_commit, init_git_repo},
     };
     use clap::Parser;
     use rstest::rstest;
@@ -980,22 +978,6 @@ mod tests {
         }
     }
 
-    struct CurrentDirGuard(PathBuf);
-
-    impl CurrentDirGuard {
-        fn enter(path: &Path) -> Result<Self> {
-            let previous = std::env::current_dir()?;
-            std::env::set_current_dir(path)?;
-            Ok(Self(previous))
-        }
-    }
-
-    impl Drop for CurrentDirGuard {
-        fn drop(&mut self) {
-            std::env::set_current_dir(&self.0).expect("restore test working directory");
-        }
-    }
-
     async fn ignored_update_fixture(
         ignore_pattern: &str,
         changed_manifest: &str,
@@ -1073,7 +1055,7 @@ mod tests {
         .await?;
         let visible_path = repository.path().join("packages/visible/package.json");
         let ignored_path = repository.path().join("packages/ignored/package.json");
-        let _current_dir = CurrentDirGuard::enter(repository.path())?;
+        let _current_dir = DirGuard::change_to(repository.path());
 
         let result = super::handle_update_with_prompter(
             &update_args(false, true, FormatOptions::Json),
@@ -1120,7 +1102,7 @@ path = "../visible"
         .await?;
         let visible_path = repository.path().join("visible/Cargo.toml");
         let ignored_path = repository.path().join("ignored/Cargo.toml");
-        let _current_dir = CurrentDirGuard::enter(repository.path())?;
+        let _current_dir = DirGuard::change_to(repository.path());
 
         let result = super::handle_update_with_prompter(
             &update_args(false, true, FormatOptions::Json),

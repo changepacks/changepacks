@@ -4,22 +4,55 @@
 //! tests via `#[cfg(test)]`, and it is exported to sibling crates' test suites
 //! (e.g. `changepacks-cli`'s integration tests) via the `test-support` feature.
 //! The feature path deliberately pulls in **no** dev-dependencies — the exported
-//! helpers ([`run_git`], [`init_git_repo`], [`git_add_and_commit`],
-//! [`discover_repo`]) only touch `std` and `gix` (a production dependency), so
-//! they compile in a plain (non-dev) build enabled solely by the feature.
+//! helpers ([`DirGuard`], [`run_git`], [`init_git_repo`],
+//! [`git_add_and_commit`], [`discover_repo`]) only touch `std` and `gix` (a
+//! production dependency), so they compile in a plain (non-dev) build enabled
+//! solely by the feature.
 //!
 //! `create_project` stays test-only (`#[cfg(test)]`, `pub(crate)`) because it
 //! needs the `changepacks-node` dev-dependency, which is unavailable on the
 //! feature path.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use changepacks_core::{Package, Project};
 #[cfg(test)]
 use changepacks_node::package::NodePackage;
-#[cfg(test)]
-use std::path::PathBuf;
+
+/// Restore the original process working directory when dropped.
+///
+/// Tests that use this guard must run serially because the process working
+/// directory is shared by all threads.
+#[must_use = "the guard must be held to restore the original working directory"]
+pub struct DirGuard {
+    original: PathBuf,
+}
+
+impl DirGuard {
+    /// Change the process working directory to `path` until the guard is dropped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the current working directory cannot be read or changed.
+    pub fn change_to(path: &Path) -> Self {
+        let original = std::env::current_dir()
+            .unwrap_or_else(|err| panic!("failed to read the current working directory: {err}"));
+        std::env::set_current_dir(path).unwrap_or_else(|err| {
+            panic!(
+                "failed to change the working directory to {}: {err}",
+                path.display()
+            )
+        });
+        Self { original }
+    }
+}
+
+impl Drop for DirGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.original);
+    }
+}
 
 /// Create a test project (a `NodePackage` at version `1.0.0`) with the given
 /// dependencies.
