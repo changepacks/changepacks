@@ -120,32 +120,20 @@ impl CSharpProjectFinder {
                         .checked_sub(1)
                         .context("unexpected XML end tag")?;
                 }
-                Ok(Event::Text(e)) => {
-                    if ((in_version && version.is_none()) || in_is_packable)
-                        && let Ok(text) = e.decode()
-                    {
-                        record_csproj_text(
-                            text.as_ref(),
-                            in_version,
-                            in_is_packable,
-                            &mut version,
-                            &mut publishable_by_default,
-                        );
-                    }
-                }
-                Ok(Event::CData(e)) => {
-                    if ((in_version && version.is_none()) || in_is_packable)
-                        && let Ok(text) = e.decode()
-                    {
-                        record_csproj_text(
-                            text.as_ref(),
-                            in_version,
-                            in_is_packable,
-                            &mut version,
-                            &mut publishable_by_default,
-                        );
-                    }
-                }
+                Ok(Event::Text(e)) => record_decoded_csproj_text(
+                    e.decode(),
+                    in_version,
+                    in_is_packable,
+                    &mut version,
+                    &mut publishable_by_default,
+                ),
+                Ok(Event::CData(e)) => record_decoded_csproj_text(
+                    e.decode(),
+                    in_version,
+                    in_is_packable,
+                    &mut version,
+                    &mut publishable_by_default,
+                ),
                 Ok(Event::Eof) => {
                     anyhow::ensure!(element_depth == 0, "unexpected end of XML document");
                     break;
@@ -156,6 +144,26 @@ impl CSharpProjectFinder {
             buf.clear();
         }
         Ok((version, projects, publishable_by_default))
+    }
+}
+
+fn record_decoded_csproj_text<E>(
+    decoded: std::result::Result<std::borrow::Cow<'_, str>, E>,
+    in_version: bool,
+    in_is_packable: bool,
+    version: &mut Option<String>,
+    publishable_by_default: &mut bool,
+) {
+    if ((in_version && version.is_none()) || in_is_packable)
+        && let Ok(text) = decoded
+    {
+        record_csproj_text(
+            text.as_ref(),
+            in_version,
+            in_is_packable,
+            version,
+            publishable_by_default,
+        );
     }
 }
 

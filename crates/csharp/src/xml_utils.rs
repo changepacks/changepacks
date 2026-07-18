@@ -11,6 +11,19 @@ struct PropertyGroupContext {
     eligible: bool,
 }
 
+fn clear_scope_close_ws(
+    property_groups: &mut [PropertyGroupContext],
+    project_close_ws: &mut Option<String>,
+    project_depth: Option<usize>,
+    element_depth: usize,
+) {
+    if let Some(property_group) = property_groups.last_mut() {
+        property_group.close_ws = None;
+    } else if project_depth == Some(element_depth) {
+        *project_close_ws = None;
+    }
+}
+
 fn has_condition_attribute(element: &BytesStart<'_>) -> Result<bool> {
     for attribute in element.attributes() {
         let attribute = attribute.context("Failed to parse PropertyGroup attribute")?;
@@ -331,11 +344,12 @@ pub fn update_version_in_xml(content: &str, new_version: &str) -> Result<String>
                 }
             }
             Ok(Event::CData(e)) => {
-                if let Some(property_group) = property_groups.last_mut() {
-                    property_group.close_ws = None;
-                } else if project_depth == Some(element_depth) {
-                    project_close_ws = None;
-                }
+                clear_scope_close_ws(
+                    &mut property_groups,
+                    &mut project_close_ws,
+                    project_depth,
+                    element_depth,
+                );
                 if in_version && !version_updated {
                     writer.write_event(Event::CData(BytesCData::new(new_version)))?;
                     version_updated = true;
@@ -472,11 +486,12 @@ pub fn update_version_in_xml(content: &str, new_version: &str) -> Result<String>
             // DOES need customization must be added above
             // (Start / End / Text / Empty) before this wildcard.
             Ok(event) => {
-                if let Some(property_group) = property_groups.last_mut() {
-                    property_group.close_ws = None;
-                } else if project_depth == Some(element_depth) {
-                    project_close_ws = None;
-                }
+                clear_scope_close_ws(
+                    &mut property_groups,
+                    &mut project_close_ws,
+                    project_depth,
+                    element_depth,
+                );
                 writer.write_event(event)?;
             }
         }
