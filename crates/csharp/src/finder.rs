@@ -157,32 +157,17 @@ fn record_decoded_csproj_text<E>(
     if ((in_version && version.is_none()) || in_is_packable)
         && let Ok(text) = decoded
     {
-        record_csproj_text(
-            text.as_ref(),
-            in_version,
-            in_is_packable,
-            version,
-            publishable_by_default,
-        );
-    }
-}
-
-fn record_csproj_text(
-    text: &str,
-    in_version: bool,
-    in_is_packable: bool,
-    version: &mut Option<String>,
-    publishable_by_default: &mut bool,
-) {
-    // Preserve the previous parser's first-non-empty-wins version semantics.
-    if in_version && version.is_none() {
-        let candidate = text.trim();
-        if !candidate.is_empty() {
-            *version = Some(candidate.to_string());
+        let text = text.as_ref();
+        // Preserve the previous parser's first-non-empty-wins version semantics.
+        if in_version && version.is_none() {
+            let candidate = text.trim();
+            if !candidate.is_empty() {
+                *version = Some(candidate.to_string());
+            }
         }
-    }
-    if in_is_packable && text.trim().eq_ignore_ascii_case("false") {
-        *publishable_by_default = false;
+        if in_is_packable && text.trim().eq_ignore_ascii_case("false") {
+            *publishable_by_default = false;
+        }
     }
 }
 

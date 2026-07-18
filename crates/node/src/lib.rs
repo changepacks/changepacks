@@ -352,6 +352,14 @@ pub async fn detect_package_manager_async(dir: &Path) -> Result<PackageManager> 
     ))
 }
 
+async fn probe_decisive_package_manager(dir: &Path) -> Result<Option<PackageManager>> {
+    let pm = detect_package_manager_async(dir).await?;
+    Ok(
+        (pm != PackageManager::Npm || is_regular_file(&dir.join("package-lock.json")).await?)
+            .then_some(pm),
+    )
+}
+
 /// Detects the package manager by searching asynchronously from a path upward.
 ///
 /// The walk is BOUNDED to the repository root via `max_depth` — the number of
@@ -387,8 +395,7 @@ pub(crate) async fn detect_package_manager_in_ancestors(
     max_depth: usize,
 ) -> Result<PackageManager> {
     for dir in start.ancestors().take(max_depth) {
-        let pm = detect_package_manager_async(dir).await?;
-        if pm != PackageManager::Npm || is_regular_file(&dir.join("package-lock.json")).await? {
+        if let Some(pm) = probe_decisive_package_manager(dir).await? {
             return Ok(pm);
         }
     }
@@ -407,23 +414,16 @@ pub(crate) async fn detect_package_manager_in_ancestors_cached(
     cache: &mut HashMap<PathBuf, Option<PackageManager>>,
 ) -> Result<PackageManager> {
     for dir in start.ancestors().take(max_depth) {
-        let package_manager = match cache.get(dir).copied() {
-            Some(package_manager) => package_manager,
+        let decisive = match cache.get(dir).copied() {
+            Some(decisive) => decisive,
             None => {
-                let package_manager = detect_package_manager_async(dir).await?;
-                let decisive = if package_manager != PackageManager::Npm
-                    || is_regular_file(&dir.join("package-lock.json")).await?
-                {
-                    Some(package_manager)
-                } else {
-                    None
-                };
+                let decisive = probe_decisive_package_manager(dir).await?;
                 cache.insert(dir.to_path_buf(), decisive);
                 decisive
             }
         };
-        if let Some(package_manager) = package_manager {
-            return Ok(package_manager);
+        if let Some(pm) = decisive {
+            return Ok(pm);
         }
     }
 
