@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    PackageManager, detect_package_manager_in_ancestors, package::NodePackage,
+    PackageManager, detect_package_manager_in_ancestors_cached, package::NodePackage,
     read_and_parse_package_json, workspace::NodeWorkspace,
 };
 
@@ -40,6 +40,7 @@ fn package_json_str(doc: &serde_json::Value, field: &str) -> Option<String> {
 #[derive(Debug, Default)]
 pub struct NodeProjectFinder {
     projects: HashMap<PathBuf, Project>,
+    package_manager_probe_cache: HashMap<PathBuf, Option<PackageManager>>,
 }
 
 impl NodeProjectFinder {
@@ -96,8 +97,12 @@ impl ProjectFinder for NodeProjectFinder {
         let relative_path_key = relative_path.to_path_buf();
         let package_manager = match path.parent() {
             Some(parent) => {
-                detect_package_manager_in_ancestors(parent, relative_path.components().count())
-                    .await?
+                detect_package_manager_in_ancestors_cached(
+                    parent,
+                    relative_path.components().count(),
+                    &mut self.package_manager_probe_cache,
+                )
+                .await?
             }
             None => PackageManager::Npm,
         };

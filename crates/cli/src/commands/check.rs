@@ -202,19 +202,15 @@ fn display_tree(
         );
     }
 
-    // Graph nodes use manifest paths as identity; names are only for resolving edges.
-    let mut graph: HashMap<&Path, Vec<&Project>> = HashMap::with_capacity(projects.len());
-    for (project_path, deps) in &resolved_deps {
-        let monorepo_deps: Vec<&Project> = deps.iter().map(|(_, project)| *project).collect();
-        if !monorepo_deps.is_empty() {
-            graph.insert(*project_path, monorepo_deps);
-        }
-    }
-
     // Manifest paths keep same-named projects distinct in root detection.
-    let has_dependents_cap: usize = graph.values().map(Vec::len).sum();
+    let has_dependents_cap: usize = resolved_deps.values().map(Vec::len).sum();
     let mut has_dependents: HashSet<&Path> = HashSet::with_capacity(has_dependents_cap);
-    has_dependents.extend(graph.values().flatten().map(|project| project.path()));
+    has_dependents.extend(
+        resolved_deps
+            .values()
+            .flatten()
+            .map(|(_, project)| project.path()),
+    );
 
     // Root order remains name-first; manifest path breaks ties for duplicates.
     let mut sorted_roots: Vec<&Project> = Vec::with_capacity(projects.len());
@@ -232,7 +228,6 @@ fn display_tree(
     // Display tree starting from roots.
     let mut visited: HashSet<&Path> = HashSet::with_capacity(projects.len());
     let mut ctx = TreeContext {
-        graph: &graph,
         resolved_deps: &resolved_deps,
         repo_root_path,
         update_map,
@@ -255,7 +250,6 @@ fn display_tree(
 
 /// Context for tree display operations
 struct TreeContext<'a> {
-    graph: &'a HashMap<&'a Path, Vec<&'a Project>>,
     resolved_deps: &'a ResolvedDeps<'a>,
     repo_root_path: &'a Path,
     update_map: &'a HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
@@ -327,7 +321,11 @@ fn display_tree_node<'a>(
                     )?;
                 }
 
-                if ctx.graph.contains_key(project_path) {
+                if ctx
+                    .resolved_deps
+                    .get(project_path)
+                    .is_some_and(|deps| !deps.is_empty())
+                {
                     frames.push(TreeFrame::Dependencies {
                         project,
                         prefix: format!("{}{}", prefix, if is_last { "    " } else { "│   " }),
@@ -340,10 +338,10 @@ fn display_tree_node<'a>(
                 prefix,
                 next_index,
             } => {
-                let Some(deps) = ctx.graph.get(project.path()) else {
+                let Some(deps) = ctx.resolved_deps.get(project.path()) else {
                     continue;
                 };
-                let Some(dep_project) = deps.get(next_index).copied() else {
+                let Some(dep_project) = deps.get(next_index).map(|&(_, project)| project) else {
                     continue;
                 };
                 let is_last_dep = next_index == deps.len() - 1;
@@ -1051,7 +1049,6 @@ mod tests {
 
         // Create a TreeContext with an empty line_cache
         let mut ctx = TreeContext {
-            graph: &HashMap::new(),
             resolved_deps: &resolved_deps,
             repo_root_path: repo_root,
             update_map: &update_map,

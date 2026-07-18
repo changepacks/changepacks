@@ -12,7 +12,10 @@ pub mod workspace;
 
 pub use finder::NodeProjectFinder;
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use changepacks_core::{Config, Language, is_regular_file};
@@ -387,6 +390,40 @@ pub(crate) async fn detect_package_manager_in_ancestors(
         let pm = detect_package_manager_async(dir).await?;
         if pm != PackageManager::Npm || is_regular_file(&dir.join("package-lock.json")).await? {
             return Ok(pm);
+        }
+    }
+
+    Ok(PackageManager::Npm)
+}
+
+/// Detects the package manager from a known directory upward while caching each directory probe.
+///
+/// # Errors
+/// Returns an error when lockfile metadata cannot be read for a reason other
+/// than the path not existing.
+pub(crate) async fn detect_package_manager_in_ancestors_cached(
+    start: &Path,
+    max_depth: usize,
+    cache: &mut HashMap<PathBuf, Option<PackageManager>>,
+) -> Result<PackageManager> {
+    for dir in start.ancestors().take(max_depth) {
+        let package_manager = match cache.get(dir).copied() {
+            Some(package_manager) => package_manager,
+            None => {
+                let package_manager = detect_package_manager_async(dir).await?;
+                let decisive = if package_manager != PackageManager::Npm
+                    || is_regular_file(&dir.join("package-lock.json")).await?
+                {
+                    Some(package_manager)
+                } else {
+                    None
+                };
+                cache.insert(dir.to_path_buf(), decisive);
+                decisive
+            }
+        };
+        if let Some(package_manager) = package_manager {
+            return Ok(package_manager);
         }
     }
 
@@ -882,6 +919,41 @@ mod tests {
                 .unwrap(),
             PackageManager::Pnpm
         );
+    }
+
+    #[tokio::test]
+    async fn test_cached_package_manager_detection_matches_recursive_for_nested_manifests() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        fs::write(root.join("pnpm-lock.yaml"), "").unwrap();
+
+        let relative_manifests = [
+            PathBuf::from("packages/app/package.json"),
+            PathBuf::from("packages/tools/cli/package.json"),
+        ];
+        for relative_manifest in &relative_manifests {
+            let manifest = root.join(relative_manifest);
+            fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+            fs::write(&manifest, "{}").unwrap();
+        }
+
+        let mut cache = std::collections::HashMap::new();
+        for relative_manifest in &relative_manifests {
+            let manifest = root.join(relative_manifest);
+            let max_depth = relative_manifest.components().count();
+            let expected = detect_package_manager_recursive_async(&manifest, max_depth)
+                .await
+                .unwrap();
+            let actual = detect_package_manager_in_ancestors_cached(
+                manifest.parent().unwrap(),
+                max_depth,
+                &mut cache,
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(actual, expected);
+        }
     }
 
     /// Regression lock: a decoy lockfile ABOVE the repo root must not flip the

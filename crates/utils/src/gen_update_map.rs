@@ -534,19 +534,22 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
     // Seed a breadth-first worklist in path/name order. Keeping every initial
     // update ahead of generated dependents lets independently bumped direct
     // triggers settle the note winner before transitive propagation begins.
-    let mut initial_paths: Vec<_> = update_map
-        .keys()
-        .filter(|path| context.expansion_seeds.contains(*path))
-        .filter_map(|path| path_to_name.get(path).map(|name| (path, *name)))
-        .collect();
+    let mut initial_paths = Vec::with_capacity(update_map.len());
+    initial_paths.extend(
+        update_map
+            .keys()
+            .filter(|path| context.expansion_seeds.contains(*path))
+            .filter_map(|path| path_to_name.get(path).map(|name| (path, *name))),
+    );
     initial_paths
         .sort_by(|left, right| compare_paths(left.0, right.0).then_with(|| left.1.cmp(right.1)));
     let mut to_process: VecDeque<&str> = initial_paths.into_iter().map(|(_, name)| name).collect();
-    let mut reached_paths = context.expansion_seeds.clone();
+    let mut reached_paths: HashSet<&Path> = HashSet::with_capacity(context.expansion_seeds.len());
+    reached_paths.extend(context.expansion_seeds.iter().map(PathBuf::as_path));
     while let Some(trigger_name) = to_process.pop_front() {
         if let Some(dependents) = reverse_deps.get(trigger_name) {
             for (dependent_path, dependent_name) in dependents {
-                let newly_reached = reached_paths.insert(dependent_path.clone());
+                let newly_reached = reached_paths.insert(dependent_path.as_path());
                 if update_map.contains_key(dependent_path) {
                     if newly_reached && let Some(dependent_name) = dependent_name {
                         to_process.push_back(*dependent_name);

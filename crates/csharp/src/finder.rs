@@ -121,41 +121,29 @@ impl CSharpProjectFinder {
                         .context("unexpected XML end tag")?;
                 }
                 Ok(Event::Text(e)) => {
-                    // Preserve the "first non-empty wins" semantics of the
-                    // previous `extract_version` (which `return`ed early
-                    // on the first hit) — later `<Version>` tags do NOT
-                    // overwrite an earlier value.
-                    if in_version
-                        && version.is_none()
+                    if ((in_version && version.is_none()) || in_is_packable)
                         && let Ok(text) = e.decode()
                     {
-                        let candidate = text.trim();
-                        if !candidate.is_empty() {
-                            version = Some(candidate.to_string());
-                        }
-                    }
-                    if in_is_packable
-                        && let Ok(text) = e.decode()
-                        && text.trim().eq_ignore_ascii_case("false")
-                    {
-                        publishable_by_default = false;
+                        record_csproj_text(
+                            text.as_ref(),
+                            in_version,
+                            in_is_packable,
+                            &mut version,
+                            &mut publishable_by_default,
+                        );
                     }
                 }
                 Ok(Event::CData(e)) => {
-                    if in_version
-                        && version.is_none()
+                    if ((in_version && version.is_none()) || in_is_packable)
                         && let Ok(text) = e.decode()
                     {
-                        let candidate = text.trim();
-                        if !candidate.is_empty() {
-                            version = Some(candidate.to_string());
-                        }
-                    }
-                    if in_is_packable
-                        && let Ok(text) = e.decode()
-                        && text.trim().eq_ignore_ascii_case("false")
-                    {
-                        publishable_by_default = false;
+                        record_csproj_text(
+                            text.as_ref(),
+                            in_version,
+                            in_is_packable,
+                            &mut version,
+                            &mut publishable_by_default,
+                        );
                     }
                 }
                 Ok(Event::Eof) => {
@@ -168,6 +156,25 @@ impl CSharpProjectFinder {
             buf.clear();
         }
         Ok((version, projects, publishable_by_default))
+    }
+}
+
+fn record_csproj_text(
+    text: &str,
+    in_version: bool,
+    in_is_packable: bool,
+    version: &mut Option<String>,
+    publishable_by_default: &mut bool,
+) {
+    // Preserve the previous parser's first-non-empty-wins version semantics.
+    if in_version && version.is_none() {
+        let candidate = text.trim();
+        if !candidate.is_empty() {
+            *version = Some(candidate.to_string());
+        }
+    }
+    if in_is_packable && text.trim().eq_ignore_ascii_case("false") {
+        *publishable_by_default = false;
     }
 }
 
