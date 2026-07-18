@@ -10,7 +10,7 @@ use changepacks_core::{ChangePackLog, ChangePackResultLog, Config, Project, Upda
 use glob::Pattern;
 
 use crate::{
-    collect_changepack_log_paths, get_relative_path,
+    DependencyAmbiguityError, collect_changepack_log_paths, get_relative_path,
     project_names::{ProjectNameAnalysis, ProjectNameResolution, compare_paths},
     read_log_bodies,
 };
@@ -432,16 +432,11 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
 
     let project_names = ProjectNameAnalysis::new(projects);
     if let Some(ambiguity) = project_names.referenced_ambiguity() {
-        let dependency = ambiguity.dependency();
-        let candidate_paths = ambiguity
-            .candidates()
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(anyhow::anyhow!(
-            "ambiguous dependency `{dependency}`: candidates: {candidate_paths}"
-        ));
+        return Err(DependencyAmbiguityError::new(
+            ambiguity.dependency().to_string(),
+            ambiguity.candidates().to_vec(),
+        )
+        .into());
     }
 
     // Ambiguity validation is unconditional. Once it succeeds, an empty map

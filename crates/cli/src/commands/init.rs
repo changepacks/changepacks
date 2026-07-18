@@ -1,8 +1,8 @@
 use changepacks_core::Config;
-use std::{future::poll_fn, io::ErrorKind, path::Path, pin::Pin};
+use std::{io::ErrorKind, path::Path};
 use tokio::{
     fs::{OpenOptions, create_dir_all},
-    io::AsyncWrite,
+    io::{AsyncWrite, AsyncWriteExt},
 };
 
 use anyhow::{Context, Result};
@@ -27,25 +27,13 @@ pub async fn handle_init(args: &InitArgs) -> Result<()> {
     handle_init_at(args, &current_dir).await
 }
 
-async fn write_claimed_config<W>(
-    mut writer: W,
-    config_file: &Path,
-    mut contents: &[u8],
-) -> Result<()>
+async fn write_claimed_config<W>(mut writer: W, config_file: &Path, contents: &[u8]) -> Result<()>
 where
     W: AsyncWrite + Unpin,
 {
     let write_result = async {
-        while !contents.is_empty() {
-            let written =
-                poll_fn(|context| Pin::new(&mut writer).poll_write(context, contents)).await?;
-            if written == 0 {
-                return Err(ErrorKind::WriteZero.into());
-            }
-            contents = &contents[written..];
-        }
-
-        poll_fn(|context| Pin::new(&mut writer).poll_flush(context)).await
+        writer.write_all(contents).await?;
+        writer.flush().await
     }
     .await;
 
@@ -142,6 +130,7 @@ mod tests {
     use rstest::rstest;
     use std::{
         io,
+        pin::Pin,
         task::{Context as TaskContext, Poll},
     };
     use tempfile::{TempDir, tempdir};

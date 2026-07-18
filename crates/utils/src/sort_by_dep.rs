@@ -48,6 +48,13 @@ pub struct DependencyAmbiguityError {
 }
 
 impl DependencyAmbiguityError {
+    pub(crate) fn new(dependency: String, candidates: Vec<PathBuf>) -> Self {
+        Self {
+            dependency,
+            candidates,
+        }
+    }
+
     #[must_use]
     pub fn dependency(&self) -> &str {
         &self.dependency
@@ -232,10 +239,10 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
 
     if let Some(ambiguity) = project_names.referenced_ambiguity() {
         return Err(DependencySortError::AmbiguousDependency(
-            DependencyAmbiguityError {
-                dependency: ambiguity.dependency().to_string(),
-                candidates: ambiguity.candidates().to_vec(),
-            },
+            DependencyAmbiguityError::new(
+                ambiguity.dependency().to_string(),
+                ambiguity.candidates().to_vec(),
+            ),
         ));
     }
 

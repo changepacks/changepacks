@@ -247,9 +247,9 @@ pub async fn clear_applied_update_logs(
     //            concurrently via `try_join_all`, collapsing N sequential
     //            `read_to_string` round-trips into one parallel batch on
     //            IO-bound systems.
-    //   Phase 3: the existing sequential parse+retain+remove-or-rewrite loop is
-    //            unchanged — it must remain sequential because each file may be
-    //            removed or rewritten depending on the `applied_paths` set.
+    //   Phase 3: the sequential parse+retain+remove-or-rewrite loop remains
+    //            ordered because each file may be removed, rewritten, or left
+    //            untouched depending on the `applied_paths` set.
     let paths = collect_changepack_log_paths(changepacks_dir).await?;
     let bodies = read_log_bodies(&paths, "update log").await?;
     for (path, content) in paths.iter().zip(bodies) {
@@ -263,11 +263,14 @@ pub async fn clear_applied_update_logs(
             continue;
         };
 
+        let before = changes.len();
         changes.retain(|change_path, _| !applied_paths.contains(std::path::Path::new(change_path)));
         if changes.is_empty() {
             remove_file(path)
                 .await
                 .with_context(|| format!("Failed to remove update log {}", path.display()))?;
+        } else if changes.len() == before {
+            continue;
         } else {
             let next_content = remove_applied_change_spans(&content, applied_paths)
                 .with_context(|| format!("Failed to rewrite update log {}", path.display()))?;
@@ -555,6 +558,37 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(!log_file.exists(), "fully applied log should be deleted");
+    }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_skips_untouched_readonly_log() {
+        // Given an applied log and a byte-sensitive log with no applied paths.
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        let applied_log = changepacks_dir.join("changepack_log_applied.json");
+        fs::write(
+            &applied_log,
+            r#"{"changes":{"packages/a/package.json":"Patch"},"note":"done"}"#,
+        )
+        .unwrap();
+
+        let untouched_log = changepacks_dir.join("changepack_log_untouched.json");
+        let untouched_bytes =
+            b"{\n  \"changes\": {\"packages/b/package.json\": \"Minor\"},\n  \"note\": \"keep byte-for-byte\"\n}\n";
+        fs::write(&untouched_log, untouched_bytes).unwrap();
+        crate::test_support::set_readonly(&untouched_log, true);
+
+        // When selective cleanup applies only the first log.
+        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
+        crate::test_support::set_readonly(&untouched_log, false);
+
+        // Then cleanup succeeds without rewriting the untouched log.
+        assert!(result.is_ok(), "selective cleanup failed: {result:?}");
+        assert!(!applied_log.exists(), "applied log should be deleted");
+        assert_eq!(fs::read(untouched_log).unwrap(), untouched_bytes);
     }
 
     #[tokio::test]

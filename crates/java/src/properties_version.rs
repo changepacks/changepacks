@@ -52,15 +52,23 @@ pub(crate) fn property_assignments(content: &[u8]) -> Vec<PropertyAssignment> {
             && content.get(cursor..cursor + b"version".len()) == Some(b"version")
         {
             cursor += b"version".len();
+            let separator_start = cursor;
             while cursor < logical_end && is_property_whitespace(content[cursor]) {
                 cursor += 1;
             }
-            if matches!(content.get(cursor), Some(b'=' | b':')) {
+            let had_whitespace_separator = cursor > separator_start;
+            let value_start = if matches!(content.get(cursor), Some(b'=' | b':')) {
                 cursor += 1;
                 while cursor < logical_end && is_property_whitespace(content[cursor]) {
                     cursor += 1;
                 }
-                let value_start = cursor;
+                Some(cursor)
+            } else if had_whitespace_separator && cursor < logical_end {
+                Some(cursor)
+            } else {
+                None
+            };
+            if let Some(value_start) = value_start {
                 let mut value_end = logical_end;
                 let mut scan = value_start;
                 while scan < logical_end {
@@ -101,6 +109,9 @@ pub(crate) fn property_assignments(content: &[u8]) -> Vec<PropertyAssignment> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::version_updater::GradleVersionScope;
+    use crate::write_gradle_version;
+    use rstest::rstest;
 
     #[test]
     fn literal_assignment_returns_exact_value_range() {
@@ -128,5 +139,54 @@ mod tests {
         let assignments = property_assignments(content);
 
         assert!(assignments.is_empty());
+    }
+
+    #[rstest]
+    #[case(
+        b"version 1.2.3\n",
+        &[PropertyAssignment::Literal(8..13)]
+    )]
+    #[case(
+        b"version \t 1.2.3 \t # c\n",
+        &[PropertyAssignment::Literal(10..15)]
+    )]
+    #[case(b"version\n", &[])]
+    #[case(b"versionSuffix 1.0\n", &[])]
+    fn whitespace_separated_assignments_follow_java_properties_rules(
+        #[case] content: &[u8],
+        #[case] expected: &[PropertyAssignment],
+    ) {
+        let assignments = property_assignments(content);
+
+        assert_eq!(assignments, expected);
+    }
+
+    #[tokio::test]
+    async fn write_gradle_version_rejects_equals_and_whitespace_assignments_as_ambiguous() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle.kts");
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let build_content = b"plugins { id(\"java\") }\n";
+        let properties_content = b"version=1.0.0\nversion 2.0.0\n";
+        tokio::fs::write(&build_path, build_content).await.unwrap();
+        tokio::fs::write(&properties_path, properties_content)
+            .await
+            .unwrap();
+
+        let error = write_gradle_version(&build_path, "1.0.1", GradleVersionScope::ScriptOnly)
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Ambiguous active version assignments")
+        );
+        assert!(error.to_string().contains("2"));
+        assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
+        assert_eq!(
+            tokio::fs::read(&properties_path).await.unwrap(),
+            properties_content
+        );
     }
 }
