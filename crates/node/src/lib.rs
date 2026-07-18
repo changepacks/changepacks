@@ -562,8 +562,8 @@ mod tests {
     }
 
     /// Decoy: a `node_modules/.bin` ABOVE the repo root must never reach the
-    /// publish child process's `PATH`. Mirrors
-    /// Mirrors the package-manager detector's repository-boundary contract.
+    /// publish child process's `PATH`. Mirrors the package-manager detector's
+    /// repository-boundary contract.
     ///
     /// Fixture: `<tmp>/outer/node_modules/.bin` (decoy, ABOVE the repo root) +
     /// repo root `<tmp>/outer/repo`, package dir `<tmp>/outer/repo/pkg` (with

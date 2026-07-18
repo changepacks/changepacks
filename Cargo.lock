@@ -286,6 +286,7 @@ dependencies = [
  "changepacks-utils",
  "regex",
  "rstest",
+ "serde_json",
  "tempfile",
  "tokio",
 ]

@@ -121,17 +121,13 @@ fn utf8_or_lossy(bytes: Vec<u8>) -> String {
         .unwrap_or_else(|e| String::from_utf8_lossy(&e.into_bytes()).into_owned())
 }
 
-/// Convert a completed child-process `Output` into a `PublishOutput`.
-///
-/// Shared by both `run_publish_command_with_path_dirs` and
-/// `run_publish_command_os_args` so a future change to output handling (e.g.
-/// lossy → strict UTF-8, extra logging) touches ONE place. The UTF-8 decode
-/// policy lives in [`utf8_or_lossy`].
-fn build_publish_output(output: std::process::Output) -> PublishOutput {
-    PublishOutput {
-        success: output.status.success(),
-        stdout: utf8_or_lossy(output.stdout),
-        stderr: utf8_or_lossy(output.stderr),
+impl From<std::process::Output> for PublishOutput {
+    fn from(output: std::process::Output) -> Self {
+        Self {
+            success: output.status.success(),
+            stdout: utf8_or_lossy(output.stdout),
+            stderr: utf8_or_lossy(output.stderr),
+        }
     }
 }
 
@@ -226,7 +222,7 @@ pub async fn run_publish_command_with_path_dirs(
     }
     cmd.kill_on_drop(true);
     let output = cmd.output().await?;
-    Ok(build_publish_output(output))
+    Ok(output.into())
 }
 
 /// Resolve the parent directory of `manifest_path` and run `command` there.
@@ -299,7 +295,7 @@ where
     cmd.args(args).current_dir(working_dir);
     cmd.kill_on_drop(kill_on_drop);
     let output = cmd.output().await?;
-    Ok(build_publish_output(output))
+    Ok(output.into())
 }
 
 #[cfg(test)]

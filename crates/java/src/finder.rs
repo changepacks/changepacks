@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
+#[cfg(test)]
+use std::process::Stdio;
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
-    process::Stdio,
 };
 use tokio::fs::read_to_string;
 use tokio::process::Command;
@@ -92,217 +93,12 @@ struct GradleWrapperMetadata {
     project_names_by_path: HashMap<String, String>,
 }
 
-#[derive(Debug)]
-enum MetadataJsonValue {
-    String(String),
-    Bool(bool),
-    Null,
-}
-
-struct MetadataJsonParser<'a> {
-    input: &'a str,
-    cursor: usize,
-}
-
-impl<'a> MetadataJsonParser<'a> {
-    fn new(input: &'a str) -> Self {
-        Self { input, cursor: 0 }
-    }
-
-    fn parse_object(mut self) -> Result<HashMap<String, MetadataJsonValue>> {
-        self.skip_whitespace();
-        self.expect_char('{')?;
-        self.skip_whitespace();
-
-        let mut fields = HashMap::new();
-        if self.consume_char('}') {
-            self.ensure_finished()?;
-            return Ok(fields);
-        }
-
-        loop {
-            self.skip_whitespace();
-            let key = self.parse_string()?;
-            self.skip_whitespace();
-            self.expect_char(':')?;
-            self.skip_whitespace();
-            let value = self.parse_value()?;
-            anyhow::ensure!(
-                fields.insert(key.clone(), value).is_none(),
-                "duplicate JSON field '{key}'"
-            );
-            self.skip_whitespace();
-            if self.consume_char('}') {
-                break;
-            }
-            self.expect_char(',')?;
-        }
-
-        self.ensure_finished()?;
-        Ok(fields)
-    }
-
-    fn parse_value(&mut self) -> Result<MetadataJsonValue> {
-        match self.peek_char() {
-            Some('"') => self.parse_string().map(MetadataJsonValue::String),
-            Some('t') => {
-                self.expect_keyword("true")?;
-                Ok(MetadataJsonValue::Bool(true))
-            }
-            Some('f') => {
-                self.expect_keyword("false")?;
-                Ok(MetadataJsonValue::Bool(false))
-            }
-            Some('n') => {
-                self.expect_keyword("null")?;
-                Ok(MetadataJsonValue::Null)
-            }
-            Some(character) => Err(anyhow::anyhow!(
-                "unsupported JSON value starting with '{character}' at byte {}",
-                self.cursor
-            )),
-            None => Err(anyhow::anyhow!("unexpected end of JSON value")),
-        }
-    }
-
-    fn parse_string(&mut self) -> Result<String> {
-        self.expect_char('"')?;
-        let mut value = String::new();
-        loop {
-            let character = self
-                .next_char()
-                .context("unterminated JSON string in Gradle metadata")?;
-            match character {
-                '"' => return Ok(value),
-                '\\' => self.parse_string_escape(&mut value)?,
-                character if character <= '\u{1f}' => {
-                    return Err(anyhow::anyhow!(
-                        "unescaped control character in JSON string"
-                    ));
-                }
-                character => value.push(character),
-            }
-        }
-    }
-
-    fn parse_string_escape(&mut self, value: &mut String) -> Result<()> {
-        let escape = self
-            .next_char()
-            .context("unterminated JSON escape in Gradle metadata")?;
-        match escape {
-            '"' | '\\' | '/' => value.push(escape),
-            'b' => value.push('\u{0008}'),
-            'f' => value.push('\u{000c}'),
-            'n' => value.push('\n'),
-            'r' => value.push('\r'),
-            't' => value.push('\t'),
-            'u' => {
-                let first = self.parse_unicode_escape()?;
-                let code_point = if (0xd800..=0xdbff).contains(&first) {
-                    self.expect_char('\\')?;
-                    self.expect_char('u')?;
-                    let second = self.parse_unicode_escape()?;
-                    anyhow::ensure!(
-                        (0xdc00..=0xdfff).contains(&second),
-                        "invalid low surrogate in JSON string"
-                    );
-                    0x1_0000 + ((u32::from(first) - 0xd800) << 10) + (u32::from(second) - 0xdc00)
-                } else {
-                    anyhow::ensure!(
-                        !(0xdc00..=0xdfff).contains(&first),
-                        "unexpected low surrogate in JSON string"
-                    );
-                    u32::from(first)
-                };
-                value.push(
-                    char::from_u32(code_point)
-                        .context("invalid Unicode code point in JSON string")?,
-                );
-            }
-            escape => return Err(anyhow::anyhow!("invalid JSON escape '\\{escape}'")),
-        }
-        Ok(())
-    }
-
-    fn parse_unicode_escape(&mut self) -> Result<u16> {
-        let start = self.cursor;
-        let end = start
-            .checked_add(4)
-            .context("JSON Unicode escape offset overflow")?;
-        let digits = self
-            .input
-            .get(start..end)
-            .context("incomplete JSON Unicode escape")?;
-        anyhow::ensure!(
-            digits.bytes().all(|byte| byte.is_ascii_hexdigit()),
-            "invalid JSON Unicode escape '{digits}'"
-        );
-        self.cursor = end;
-        u16::from_str_radix(digits, 16).context("invalid JSON Unicode escape")
-    }
-
-    fn expect_keyword(&mut self, keyword: &str) -> Result<()> {
-        anyhow::ensure!(
-            self.input[self.cursor..].starts_with(keyword),
-            "expected JSON keyword '{keyword}' at byte {}",
-            self.cursor
-        );
-        self.cursor += keyword.len();
-        Ok(())
-    }
-
-    fn ensure_finished(&mut self) -> Result<()> {
-        self.skip_whitespace();
-        anyhow::ensure!(
-            self.cursor == self.input.len(),
-            "unexpected trailing JSON content at byte {}",
-            self.cursor
-        );
-        Ok(())
-    }
-
-    fn expect_char(&mut self, expected: char) -> Result<()> {
-        let actual = self.next_char();
-        anyhow::ensure!(
-            actual == Some(expected),
-            "expected '{expected}' at byte {}, found {actual:?}",
-            self.cursor.saturating_sub(actual.map_or(0, char::len_utf8))
-        );
-        Ok(())
-    }
-
-    fn consume_char(&mut self, expected: char) -> bool {
-        if self.peek_char() == Some(expected) {
-            self.cursor += expected.len_utf8();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn skip_whitespace(&mut self) {
-        while self.peek_char().is_some_and(char::is_whitespace) {
-            let _ = self.next_char();
-        }
-    }
-
-    fn peek_char(&self) -> Option<char> {
-        self.input[self.cursor..].chars().next()
-    }
-
-    fn next_char(&mut self) -> Option<char> {
-        let character = self.peek_char()?;
-        self.cursor += character.len_utf8();
-        Some(character)
-    }
-}
-
 fn required_metadata_string(
-    fields: &mut HashMap<String, MetadataJsonValue>,
+    fields: &mut serde_json::Map<String, serde_json::Value>,
     field: &str,
 ) -> Result<String> {
     match fields.remove(field) {
-        Some(MetadataJsonValue::String(value)) => Ok(value),
+        Some(serde_json::Value::String(value)) => Ok(value),
         Some(value) => Err(anyhow::anyhow!(
             "Gradle metadata field '{field}' must be a string, got {value:?}"
         )),
@@ -313,12 +109,12 @@ fn required_metadata_string(
 }
 
 fn optional_metadata_string(
-    fields: &mut HashMap<String, MetadataJsonValue>,
+    fields: &mut serde_json::Map<String, serde_json::Value>,
     field: &str,
 ) -> Result<Option<String>> {
     match fields.remove(field) {
-        Some(MetadataJsonValue::String(value)) => Ok(Some(value)),
-        Some(MetadataJsonValue::Null) => Ok(None),
+        Some(serde_json::Value::String(value)) => Ok(Some(value)),
+        Some(serde_json::Value::Null) => Ok(None),
         Some(value) => Err(anyhow::anyhow!(
             "Gradle metadata field '{field}' must be a string or null, got {value:?}"
         )),
@@ -329,11 +125,11 @@ fn optional_metadata_string(
 }
 
 fn required_metadata_bool(
-    fields: &mut HashMap<String, MetadataJsonValue>,
+    fields: &mut serde_json::Map<String, serde_json::Value>,
     field: &str,
 ) -> Result<bool> {
     match fields.remove(field) {
-        Some(MetadataJsonValue::Bool(value)) => Ok(value),
+        Some(serde_json::Value::Bool(value)) => Ok(value),
         Some(value) => Err(anyhow::anyhow!(
             "Gradle metadata field '{field}' must be a boolean, got {value:?}"
         )),
@@ -350,7 +146,8 @@ fn normalized_gradle_property(value: Option<String>) -> Option<String> {
 }
 
 fn parse_gradle_metadata_record(json: &str) -> Result<GradleMetadataRecord> {
-    let mut fields = MetadataJsonParser::new(json).parse_object()?;
+    let mut fields: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(json).context("invalid Gradle metadata JSON object")?;
     let project_dir = required_metadata_string(&mut fields, "projectDir")?;
     anyhow::ensure!(
         !project_dir.is_empty(),
@@ -534,17 +331,11 @@ pub(crate) async fn run_gradle_publish(
     args.extend_from_slice(additional_args);
     let output = GradleCommandSpec::new(&gradlew, &gradlew_dir, args)
         .command()
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .output()
         .await
         .with_context(|| format!("Failed to execute Gradle wrapper '{}'", gradlew.display()))?;
 
-    Ok(changepacks_core::publish::PublishOutput {
-        success: output.status.success(),
-        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-    })
+    Ok(output.into())
 }
 
 fn gradle_subproject_path(relative: &Path) -> Result<String> {
@@ -1592,12 +1383,7 @@ async fn get_gradle_metadata(
 
     let args = gradle_metadata_args(&init_script_path);
     let command_spec = GradleCommandSpec::new(gradlew, gradlew_dir, args);
-    let output_result = command_spec
-        .command()
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await;
+    let output_result = command_spec.command().output().await;
     let cleanup_failure = init_script.close().err().map(|error| {
         format!(
             "failed to remove temporary Gradle metadata init script '{}': {error}",

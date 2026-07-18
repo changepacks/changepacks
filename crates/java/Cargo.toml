@@ -15,6 +15,7 @@ async-trait = "0.1"
 anyhow = "1.0"
 tokio = { version = "1.52", features = ["fs", "process"] }
 regex = "1"
+serde_json = "1.0"
 tempfile = "3.27"
 
 [dev-dependencies]
