@@ -127,6 +127,30 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
+    async fn test_write_cargo_package_version_preserves_complete_trailing_whitespace() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        // A gnarly suffix (space, tab, CRLF, space, LF) that a plain
+        // `DocumentMut::to_string()` would collapse — only `finalize_content`
+        // restores it byte for byte.
+        let suffix = " \t\r\n \n";
+        fs::write(
+            &cargo_toml,
+            format!("[package]\nname = \"x\"\nversion = \"1.0.0\"{suffix}"),
+        )
+        .unwrap();
+
+        write_cargo_package_version(&cargo_toml, "2.0.0")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&cargo_toml).unwrap(),
+            format!("[package]\nname = \"x\"\nversion = \"2.0.0\"{suffix}")
+        );
+    }
+
+    #[tokio::test]
     async fn test_write_cargo_package_version_error_includes_path() {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");

@@ -2,12 +2,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::publish::PublishOutput;
 use changepacks_core::{Config, Language, UpdateType, Workspace};
-use std::{collections::HashSet, ffi::OsString, future::Future, path::PathBuf};
+use std::{collections::HashSet, path::PathBuf};
 
-use crate::dry_run::{
-    resolve_and_run_dry_run_with_command_runner, resolve_and_run_publish_with_command_runner,
-    run_dotnet_command,
-};
+use crate::dry_run::run_dotnet_command;
 
 #[derive(Debug)]
 pub struct CSharpWorkspace {
@@ -27,43 +24,12 @@ impl CSharpWorkspace {
     // that macro's doc for the exact struct-field contract.
     changepacks_core::impl_default_new!();
 
-    async fn publish_with_command_runner<F, Fut>(
-        &self,
-        config: &Config,
-        runner: F,
-    ) -> Result<PublishOutput>
-    where
-        F: FnMut(&'static str, Vec<OsString>, PathBuf) -> Fut,
-        Fut: Future<Output = Result<PublishOutput>>,
-    {
-        resolve_and_run_publish_with_command_runner(
-            self.path(),
-            self.relative_path(),
-            config,
-            changepacks_core::publish::WORKSPACE_DIR_NOT_FOUND,
-            runner,
-        )
-        .await
-    }
-
-    async fn dry_run_publish_with_command_runner<F, Fut>(
-        &self,
-        config: &Config,
-        runner: F,
-    ) -> Result<Option<PublishOutput>>
-    where
-        F: FnMut(&'static str, Vec<OsString>, PathBuf) -> Fut,
-        Fut: Future<Output = Result<PublishOutput>>,
-    {
-        resolve_and_run_dry_run_with_command_runner(
-            self.path(),
-            self.relative_path(),
-            config,
-            changepacks_core::publish::WORKSPACE_DIR_NOT_FOUND,
-            runner,
-        )
-        .await
-    }
+    // Same byte-identical command-runner wrapper pair as `CSharpPackage`,
+    // differing only in the missing-parent-directory message. See
+    // `crate::dry_run::impl_csharp_command_runner_wrappers!`.
+    crate::dry_run::impl_csharp_command_runner_wrappers!(
+        changepacks_core::publish::WORKSPACE_DIR_NOT_FOUND
+    );
 }
 
 #[async_trait]

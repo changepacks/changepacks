@@ -104,9 +104,8 @@ impl Package for RustPackage {
     // `changepacks-core` alongside the other accessor macros.
     changepacks_core::impl_language!(Language::Rust);
 
-    fn is_publishable_by_default(&self) -> bool {
-        self.publishable_by_default
-    }
+    // Publishability flag accessor.
+    changepacks_core::impl_publishable_by_default!();
 
     // `default_publish_command` / `default_dry_run_publish_command` share
     // their const-based shape with every other const-driven language

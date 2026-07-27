@@ -28,9 +28,8 @@ impl Workspace for DartWorkspace {
     // — expansion is byte-identical to the previous hand-rolled bodies.
     changepacks_core::impl_basic_accessors!();
 
-    fn is_publishable_by_default(&self) -> bool {
-        self.publishable_by_default
-    }
+    // Publishability flag accessor.
+    changepacks_core::impl_publishable_by_default!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
         let path = &self.path;

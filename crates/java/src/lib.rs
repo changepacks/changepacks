@@ -43,6 +43,85 @@ pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = ".\\gradlew.bat publishToMavenL
 #[cfg(not(windows))]
 pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "./gradlew publishToMavenLocal";
 
+/// Expand to the three inherent constructors shared verbatim by
+/// `GradlePackage` and `GradleWorkspace`.
+///
+/// Both structs carry exactly the same nine fields and built the same
+/// three-step constructor chain (`new` -> `new_with_publish_tasks` ->
+/// `new_with_project_path_and_publish_tasks`) from byte-identical bodies;
+/// only the order the fields happened to be declared in differed. The
+/// final struct literal therefore uses field-init shorthand, which is
+/// order-insensitive, so one expansion serves both declaration orders.
+///
+/// Invoked from inside an `impl GradlePackage` or `impl GradleWorkspace`
+/// block. Fully-qualified `::std::option::Option`,
+/// `::std::string::String`, `::std::path::PathBuf` and
+/// `::std::collections::HashSet` keep the macro hygienic — callers do not
+/// need those types in scope at the invocation site.
+///
+/// Consumer requirement: the struct must have `name`, `version`, `path`,
+/// `relative_path`, `project_path`, `is_changed`, `dependencies`,
+/// `has_publish_task` and `has_publish_to_maven_local_task` fields.
+/// `GradlePackage` and `GradleWorkspace` are the only two intended callers.
+macro_rules! impl_gradle_constructors {
+    () => {
+        #[must_use]
+        pub fn new(
+            name: ::std::option::Option<::std::string::String>,
+            version: ::std::option::Option<::std::string::String>,
+            path: ::std::path::PathBuf,
+            relative_path: ::std::path::PathBuf,
+        ) -> Self {
+            Self::new_with_publish_tasks(name, version, path, relative_path, true, true)
+        }
+
+        #[must_use]
+        pub fn new_with_publish_tasks(
+            name: ::std::option::Option<::std::string::String>,
+            version: ::std::option::Option<::std::string::String>,
+            path: ::std::path::PathBuf,
+            relative_path: ::std::path::PathBuf,
+            has_publish_task: bool,
+            has_publish_to_maven_local_task: bool,
+        ) -> Self {
+            Self::new_with_project_path_and_publish_tasks(
+                name,
+                version,
+                path,
+                relative_path,
+                ::std::option::Option::None,
+                has_publish_task,
+                has_publish_to_maven_local_task,
+            )
+        }
+
+        #[must_use]
+        pub(crate) fn new_with_project_path_and_publish_tasks(
+            name: ::std::option::Option<::std::string::String>,
+            version: ::std::option::Option<::std::string::String>,
+            path: ::std::path::PathBuf,
+            relative_path: ::std::path::PathBuf,
+            project_path: ::std::option::Option<::std::string::String>,
+            has_publish_task: bool,
+            has_publish_to_maven_local_task: bool,
+        ) -> Self {
+            Self {
+                name,
+                version,
+                path,
+                relative_path,
+                project_path,
+                is_changed: false,
+                dependencies: ::std::collections::HashSet::new(),
+                has_publish_task,
+                has_publish_to_maven_local_task,
+            }
+        }
+    };
+}
+
+pub(crate) use impl_gradle_constructors;
+
 fn finish_isolated_gradle_dry_run(
     publish_result: Result<changepacks_core::publish::PublishOutput>,
     cleanup_result: Result<()>,

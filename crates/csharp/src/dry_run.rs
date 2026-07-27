@@ -249,6 +249,80 @@ where
     .await
 }
 
+/// Expand the two inherent command-runner wrappers shared byte-for-byte by
+/// [`crate::package::CSharpPackage`] and [`crate::workspace::CSharpWorkspace`].
+///
+/// Both types expose the same `publish_with_command_runner` /
+/// `dry_run_publish_with_command_runner` pair: they forward `self.path()`,
+/// `self.relative_path()` and the injected command runner to
+/// [`resolve_and_run_publish_with_command_runner`] /
+/// [`resolve_and_run_dry_run_with_command_runner`]. The single difference is
+/// the missing-parent-directory message, supplied here as `$missing_dir`
+/// (`PACKAGE_DIR_NOT_FOUND` for the package, `WORKSPACE_DIR_NOT_FOUND` for the
+/// workspace), so the generic bounds and argument order can no longer drift
+/// between the two call sites.
+///
+/// Every path in the expansion is fully qualified (`::std`, `::anyhow`,
+/// `::changepacks_core`, `$crate`) so the macro does not depend on which items
+/// the invoking module happens to import. `self.path()` / `self.relative_path()`
+/// still resolve at the expansion site, i.e. through the `Package` or
+/// `Workspace` trait that module implements.
+macro_rules! impl_csharp_command_runner_wrappers {
+    ($missing_dir:path) => {
+        async fn publish_with_command_runner<F, Fut>(
+            &self,
+            config: &::changepacks_core::Config,
+            runner: F,
+        ) -> ::anyhow::Result<::changepacks_core::publish::PublishOutput>
+        where
+            F: FnMut(
+                &'static str,
+                ::std::vec::Vec<::std::ffi::OsString>,
+                ::std::path::PathBuf,
+            ) -> Fut,
+            Fut: ::std::future::Future<
+                    Output = ::anyhow::Result<::changepacks_core::publish::PublishOutput>,
+                >,
+        {
+            $crate::dry_run::resolve_and_run_publish_with_command_runner(
+                self.path(),
+                self.relative_path(),
+                config,
+                $missing_dir,
+                runner,
+            )
+            .await
+        }
+
+        async fn dry_run_publish_with_command_runner<F, Fut>(
+            &self,
+            config: &::changepacks_core::Config,
+            runner: F,
+        ) -> ::anyhow::Result<::std::option::Option<::changepacks_core::publish::PublishOutput>>
+        where
+            F: FnMut(
+                &'static str,
+                ::std::vec::Vec<::std::ffi::OsString>,
+                ::std::path::PathBuf,
+            ) -> Fut,
+            Fut: ::std::future::Future<
+                    Output = ::anyhow::Result<::changepacks_core::publish::PublishOutput>,
+                >,
+        {
+            $crate::dry_run::resolve_and_run_dry_run_with_command_runner(
+                self.path(),
+                self.relative_path(),
+                config,
+                $missing_dir,
+                runner,
+            )
+            .await
+        }
+    };
+}
+
+pub(crate) use impl_csharp_command_runner_wrappers;
+
 /// External process boundary for the otherwise deterministic managed flow.
 pub(crate) async fn run_dotnet_command(
     program: &'static str,

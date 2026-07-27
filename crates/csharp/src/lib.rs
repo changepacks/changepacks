@@ -60,6 +60,77 @@ mod tests {
     use changepacks_core::UpdateType;
     use tempfile::TempDir;
 
+    /// A realistic `.csproj` shared by the two round-trip tests below: CRLF
+    /// line endings, an XML declaration, a comment, two-space indentation, an
+    /// existing `<Version>1.0.0</Version>` with sibling properties on both
+    /// sides, and a trailing blank line. Every one of those is formatting
+    /// `write_csproj_version` must carry through untouched.
+    const REALISTIC_CSPROJ_CRLF: &str = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<Project Sdk=\"Microsoft.NET.Sdk\">\r\n  <!-- Package metadata -->\r\n  <PropertyGroup>\r\n    <TargetFramework>net8.0</TargetFramework>\r\n    <Version>1.0.0</Version>\r\n    <Nullable>enable</Nullable>\r\n  </PropertyGroup>\r\n</Project>\r\n\r\n";
+
+    /// `write_csproj_version` is the only manifest writer that does not route
+    /// through `finalize_content`; its format preservation rests entirely on
+    /// `xml_utils::update_version_in_xml` round-tripping everything but the
+    /// version text. Lock that end to end at the file boundary: the bytes on
+    /// disk after the bump must equal the input with ONLY `1.0.0` -> `1.0.1`.
+    #[tokio::test]
+    async fn test_write_csproj_version_preserves_surrounding_formatting() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Formatted.csproj");
+        tokio::fs::write(&csproj_path, REALISTIC_CSPROJ_CRLF)
+            .await
+            .unwrap();
+
+        write_csproj_version(&csproj_path, "1.0.1").await.unwrap();
+
+        let expected =
+            REALISTIC_CSPROJ_CRLF.replace("<Version>1.0.0</Version>", "<Version>1.0.1</Version>");
+        assert_eq!(
+            tokio::fs::read_to_string(&csproj_path).await.unwrap(),
+            expected,
+            "only the version text may change; every other byte must survive",
+        );
+        temp_dir.close().unwrap();
+    }
+
+    /// The `if updated != csproj_raw` guard in `write_csproj_version` must
+    /// skip the write entirely when the requested version already matches, so
+    /// a no-op `changepacks update` never rewrites (and never risks
+    /// reformatting or touching the mtime of) an unchanged `.csproj`.
+    #[tokio::test]
+    async fn test_write_csproj_version_skips_write_when_version_unchanged() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Unchanged.csproj");
+        tokio::fs::write(&csproj_path, REALISTIC_CSPROJ_CRLF)
+            .await
+            .unwrap();
+        let modified_before = tokio::fs::metadata(&csproj_path)
+            .await
+            .unwrap()
+            .modified()
+            .unwrap();
+
+        write_csproj_version(&csproj_path, "1.0.0").await.unwrap();
+
+        assert_eq!(
+            tokio::fs::read(&csproj_path).await.unwrap(),
+            REALISTIC_CSPROJ_CRLF.as_bytes(),
+            "an unchanged version must leave the file byte-identical",
+        );
+        // A skipped write cannot move the mtime. (The converse is weaker --
+        // a coarse filesystem clock could hide a real write -- so this only
+        // ever strengthens the byte assertion above, never contradicts it.)
+        assert_eq!(
+            tokio::fs::metadata(&csproj_path)
+                .await
+                .unwrap()
+                .modified()
+                .unwrap(),
+            modified_before,
+            "the write-skip guard must not touch the file at all",
+        );
+        temp_dir.close().unwrap();
+    }
+
     #[tokio::test]
     async fn test_write_csproj_version_creates_property_group_when_missing() {
         let temp_dir = TempDir::new().unwrap();

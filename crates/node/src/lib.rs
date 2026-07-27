@@ -198,6 +198,73 @@ macro_rules! impl_node_publish_wiring {
 
 pub(crate) use impl_node_publish_wiring;
 
+/// Expand to the identical `new` / `new_discovered` constructor pair used by
+/// both `NodePackage` and `NodeWorkspace`.
+///
+/// Node cannot use `changepacks_core::impl_discovered_new!()` because both
+/// Node structs carry an extra `package_manager` field that the core macro
+/// knows nothing about. Field-init shorthand keeps the expansion independent
+/// of each struct's field *declaration* order, which is the only way the two
+/// original hand-written bodies differed.
+///
+/// Invoked from inside an inherent `impl NodePackage` / `impl NodeWorkspace`
+/// block. `new` keeps the public, package-manager-agnostic shape (defaulting
+/// to `PackageManager::Npm` and publishable-by-default); `new_discovered` is
+/// the crate-internal constructor the finder uses to thread a detected
+/// package manager and a discovered publishability flag through.
+///
+/// Fully-qualified `::std::` paths make the macro hygienic — callers do not
+/// need `Option`, `String`, `PathBuf`, `bool` or `HashSet` in scope at the
+/// invocation site.
+///
+/// Consumer requirement: the struct must have exactly the fields `name`,
+/// `version`, `path`, `relative_path`, `is_changed`, `publishable_by_default`,
+/// `dependencies` and `package_manager`. Both `NodePackage` and
+/// `NodeWorkspace` satisfy this — the only two intended callers.
+macro_rules! impl_node_discovered_new {
+    () => {
+        #[must_use]
+        pub fn new(
+            name: ::std::option::Option<::std::string::String>,
+            version: ::std::option::Option<::std::string::String>,
+            path: ::std::path::PathBuf,
+            relative_path: ::std::path::PathBuf,
+        ) -> Self {
+            Self::new_discovered(
+                name,
+                version,
+                path,
+                relative_path,
+                crate::PackageManager::Npm,
+                true,
+            )
+        }
+
+        #[must_use]
+        pub(crate) fn new_discovered(
+            name: ::std::option::Option<::std::string::String>,
+            version: ::std::option::Option<::std::string::String>,
+            path: ::std::path::PathBuf,
+            relative_path: ::std::path::PathBuf,
+            package_manager: crate::PackageManager,
+            publishable_by_default: ::std::primitive::bool,
+        ) -> Self {
+            Self {
+                name,
+                version,
+                path,
+                relative_path,
+                is_changed: false,
+                publishable_by_default,
+                dependencies: ::std::collections::HashSet::new(),
+                package_manager,
+            }
+        }
+    };
+}
+
+pub(crate) use impl_node_discovered_new;
+
 /// Represents the detected Node.js package manager
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageManager {

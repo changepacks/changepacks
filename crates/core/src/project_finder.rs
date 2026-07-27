@@ -35,6 +35,23 @@ macro_rules! impl_dependencies_accessors {
     };
 }
 
+/// Generates `is_publishable_by_default()` for package/workspace structs with a
+/// `publishable_by_default: bool` field.
+///
+/// Contract: the implementing struct MUST own a field named exactly
+/// `publishable_by_default` of type `bool` — the same field
+/// [`impl_discovered_new!`] initializes. Language crates whose publishability
+/// is derived from a differently named field (e.g. Java's `has_publish_task`)
+/// must keep their hand-rolled body instead.
+#[macro_export]
+macro_rules! impl_publishable_by_default {
+    () => {
+        fn is_publishable_by_default(&self) -> ::std::primitive::bool {
+            self.publishable_by_default
+        }
+    };
+}
+
 /// Generates const-backed publish command defaults.
 ///
 /// Two arguments return `Some($dry_run.to_string())`; one argument returns

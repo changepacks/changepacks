@@ -1,14 +1,11 @@
-use std::{collections::HashSet, ffi::OsString, future::Future, path::PathBuf};
+use std::{collections::HashSet, path::PathBuf};
 
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::publish::PublishOutput;
 use changepacks_core::{Config, Language, Package, UpdateType};
 
-use crate::dry_run::{
-    resolve_and_run_dry_run_with_command_runner, resolve_and_run_publish_with_command_runner,
-    run_dotnet_command,
-};
+use crate::dry_run::run_dotnet_command;
 
 #[derive(Debug)]
 pub struct CSharpPackage {
@@ -24,43 +21,14 @@ pub struct CSharpPackage {
 impl CSharpPackage {
     changepacks_core::impl_discovered_new!();
 
-    async fn publish_with_command_runner<F, Fut>(
-        &self,
-        config: &Config,
-        runner: F,
-    ) -> Result<PublishOutput>
-    where
-        F: FnMut(&'static str, Vec<OsString>, PathBuf) -> Fut,
-        Fut: Future<Output = Result<PublishOutput>>,
-    {
-        resolve_and_run_publish_with_command_runner(
-            self.path(),
-            self.relative_path(),
-            config,
-            changepacks_core::publish::PACKAGE_DIR_NOT_FOUND,
-            runner,
-        )
-        .await
-    }
-
-    async fn dry_run_publish_with_command_runner<F, Fut>(
-        &self,
-        config: &Config,
-        runner: F,
-    ) -> Result<Option<PublishOutput>>
-    where
-        F: FnMut(&'static str, Vec<OsString>, PathBuf) -> Fut,
-        Fut: Future<Output = Result<PublishOutput>>,
-    {
-        resolve_and_run_dry_run_with_command_runner(
-            self.path(),
-            self.relative_path(),
-            config,
-            changepacks_core::publish::PACKAGE_DIR_NOT_FOUND,
-            runner,
-        )
-        .await
-    }
+    // `publish_with_command_runner` / `dry_run_publish_with_command_runner`
+    // were byte-identical to `CSharpWorkspace`'s pair apart from the
+    // missing-parent-directory message. Consolidated into
+    // `crate::dry_run::impl_csharp_command_runner_wrappers!` so the generic
+    // bounds and argument order stay in one place.
+    crate::dry_run::impl_csharp_command_runner_wrappers!(
+        changepacks_core::publish::PACKAGE_DIR_NOT_FOUND
+    );
 }
 
 #[async_trait]

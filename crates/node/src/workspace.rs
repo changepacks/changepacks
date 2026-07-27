@@ -17,43 +17,9 @@ pub struct NodeWorkspace {
 }
 
 impl NodeWorkspace {
-    #[must_use]
-    pub fn new(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-    ) -> Self {
-        Self::new_discovered(
-            name,
-            version,
-            path,
-            relative_path,
-            crate::PackageManager::Npm,
-            true,
-        )
-    }
-
-    #[must_use]
-    pub(crate) fn new_discovered(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        package_manager: crate::PackageManager,
-        publishable_by_default: bool,
-    ) -> Self {
-        Self {
-            path,
-            relative_path,
-            version,
-            name,
-            is_changed: false,
-            publishable_by_default,
-            dependencies: HashSet::new(),
-            package_manager,
-        }
-    }
+    // Constructors shared with `NodePackage` (extra `package_manager` field
+    // rules out `changepacks_core::impl_discovered_new!`).
+    crate::impl_node_discovered_new!();
 }
 
 #[async_trait]

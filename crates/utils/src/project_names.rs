@@ -36,10 +36,12 @@ pub(crate) struct ProjectNameAnalysis<'a> {
 impl<'a> ProjectNameAnalysis<'a> {
     pub(crate) fn new(projects: &[&'a Project]) -> Self {
         let mut name_to_index = HashMap::with_capacity(projects.len());
+        let mut has_duplicate_names = false;
         for (index, project) in projects.iter().enumerate() {
             if let Some(name) = project.name() {
                 match name_to_index.entry(name) {
                     Entry::Occupied(entry) => {
+                        has_duplicate_names = true;
                         *entry.into_mut() = None;
                     }
                     Entry::Vacant(entry) => {
@@ -49,13 +51,22 @@ impl<'a> ProjectNameAnalysis<'a> {
             }
         }
 
+        // The `Entry::Occupied` arm above is the only place a map value ever
+        // becomes `None`, so when no project name is duplicated no key maps to
+        // `None` and `name_to_index.get(candidate) == Some(&None)` below is
+        // unsatisfiable. The guarded scan therefore provably cannot set
+        // `dependency`, and skipping it leaves the output byte-identical for
+        // every input while dropping an O(projects x dependencies) hash lookup
+        // from the common no-duplicate case.
         let mut dependency = None;
-        for project in projects {
-            for candidate in project.dependencies() {
-                if name_to_index.get(candidate.as_str()) == Some(&None)
-                    && dependency.is_none_or(|current| candidate.as_str() < current)
-                {
-                    dependency = Some(candidate.as_str());
+        if has_duplicate_names {
+            for project in projects {
+                for candidate in project.dependencies() {
+                    if name_to_index.get(candidate.as_str()) == Some(&None)
+                        && dependency.is_none_or(|current| candidate.as_str() < current)
+                    {
+                        dependency = Some(candidate.as_str());
+                    }
                 }
             }
         }

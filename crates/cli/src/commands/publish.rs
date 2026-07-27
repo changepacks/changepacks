@@ -102,17 +102,17 @@ pub async fn handle_publish_with_prompter(
         return Ok(());
     }
 
-    print_projects_to_publish(&projects, &args.format);
+    print_projects_to_publish(&projects, args.format);
 
     if args.dry_run {
         let (result_map, failed_projects) =
-            execute_dry_run_publish_loop(&projects, &ctx.config, &args.format).await;
+            execute_dry_run_publish_loop(&projects, &ctx.config, args.format).await;
 
         return finish_publish_run(
             &result_map,
             &failed_projects,
             projects.len(),
-            &args.format,
+            args.format,
             "Dry-run failed for",
         );
     }
@@ -129,13 +129,13 @@ pub async fn handle_publish_with_prompter(
     }
 
     let (result_map, failed_projects) =
-        execute_publish_loop(&projects, &ctx.config, &args.format).await;
+        execute_publish_loop(&projects, &ctx.config, args.format).await;
 
     finish_publish_run(
         &result_map,
         &failed_projects,
         projects.len(),
-        &args.format,
+        args.format,
         "Failed to publish",
     )
 }
@@ -165,7 +165,7 @@ fn sort_publishable_projects<'a>(
     Ok(sort_by_dependencies(projects)?)
 }
 
-fn print_projects_to_publish(projects: &[&Project], format: &FormatOptions) {
+fn print_projects_to_publish(projects: &[&Project], format: FormatOptions) {
     if let FormatOptions::Stdout = format {
         println!("Projects to publish:");
         for project in projects {
@@ -174,7 +174,7 @@ fn print_projects_to_publish(projects: &[&Project], format: &FormatOptions) {
     }
 }
 
-fn print_publish_failure_summary(failed_projects: &[String], total: usize, format: &FormatOptions) {
+fn print_publish_failure_summary(failed_projects: &[String], total: usize, format: FormatOptions) {
     if !failed_projects.is_empty()
         && let FormatOptions::Stdout = format
     {
@@ -198,7 +198,7 @@ fn finish_publish_run(
     result_map: &BTreeMap<PathBuf, PublishResult>,
     failed_projects: &[String],
     total: usize,
-    format: &FormatOptions,
+    format: FormatOptions,
     bail_prefix: &str,
 ) -> Result<()> {
     print_publish_failure_summary(failed_projects, total, format);
@@ -277,7 +277,7 @@ fn record_publish_success(
     project: &Project,
     output: PublishOutput,
     success_label: &str,
-    format: &FormatOptions,
+    format: FormatOptions,
 ) {
     if let FormatOptions::Stdout = format {
         print_publish_output(&output);
@@ -312,7 +312,7 @@ fn record_publish_failure(
     project: &Project,
     cause: PublishFailureCause,
     failure_label: &str,
-    format: &FormatOptions,
+    format: FormatOptions,
 ) {
     if let FormatOptions::Stdout = format {
         match &cause {
@@ -357,7 +357,7 @@ fn record_dependency_skip(
     project: &Project,
     dependency: &str,
     failure_label: &str,
-    format: &FormatOptions,
+    format: FormatOptions,
 ) {
     let error = anyhow::anyhow!("skipped because dependency failed: {dependency}");
     record_publish_failure(
@@ -381,7 +381,7 @@ fn record_json_skip(
     result_map: &mut BTreeMap<PathBuf, PublishResult>,
     project: &Project,
     note: &str,
-    format: &FormatOptions,
+    format: FormatOptions,
 ) {
     if let FormatOptions::Json = format {
         result_map.insert(
@@ -431,7 +431,7 @@ fn record_outcome_track_failure(
     project: &Project,
     outcome: ProjectPublishOutcome,
     labels: PublishOutcomeLabels,
-    format: &FormatOptions,
+    format: FormatOptions,
 ) {
     let failed = match outcome {
         ProjectPublishOutcome::Success(output) => {
@@ -469,7 +469,7 @@ fn record_outcome_track_failure(
 async fn execute_dry_run_publish_loop(
     projects: &[&Project],
     config: &Config,
-    format: &FormatOptions,
+    format: FormatOptions,
 ) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
     let mut result_map = BTreeMap::new();
     let mut failed_projects: Vec<String> = Vec::with_capacity(projects.len());
@@ -583,7 +583,7 @@ async fn execute_dry_run_publish_loop(
 async fn execute_publish_loop(
     projects: &[&Project],
     config: &Config,
-    format: &FormatOptions,
+    format: FormatOptions,
 ) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
     let mut result_map = BTreeMap::new();
     let mut failed_projects: Vec<String> = Vec::with_capacity(projects.len());
@@ -1132,7 +1132,7 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) = execute_publish_loop(&projects, &config, &format).await;
+        let (result_map, failed) = execute_publish_loop(&projects, &config, format).await;
 
         assert_eq!(result_map.len(), expected_result_map_len);
         assert_eq!(failed.len(), 1);
@@ -1154,7 +1154,7 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, &format).await;
+        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, format).await;
 
         assert_eq!(result_map.len(), expected_result_map_len);
         assert_eq!(failed.len(), 1);
@@ -1177,7 +1177,7 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, &format).await;
+        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, format).await;
 
         assert_eq!(result_map.len(), expected_result_map_len);
         assert_eq!(failed.len(), 1);
@@ -1200,7 +1200,7 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, &format).await;
+        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, format).await;
 
         assert_eq!(result_map.len(), expected_result_map_len);
         assert!(failed.is_empty());
@@ -1219,7 +1219,7 @@ mod tests {
             &result_map,
             &failed_projects,
             0,
-            &format,
+            format,
             "Dry-run failed for",
         );
 
@@ -1241,7 +1241,7 @@ mod tests {
             &result_map,
             &failed_projects,
             1,
-            &format,
+            format,
             "Dry-run failed for",
         );
 
@@ -1258,7 +1258,7 @@ mod tests {
             &result_map,
             &failed_projects,
             2,
-            &format,
+            format,
             "Dry-run failed for",
         );
 
@@ -1279,7 +1279,7 @@ mod tests {
             &result_map,
             &failed_projects,
             2,
-            &format,
+            format,
             "Failed to publish",
         );
 
@@ -1701,7 +1701,7 @@ members = ["packages/*"]
             vec![Some("leaf"), Some("parent")]
         );
         let (_, failed) =
-            execute_publish_loop(&projects, &Config::default(), &FormatOptions::Json).await;
+            execute_publish_loop(&projects, &Config::default(), FormatOptions::Json).await;
         assert!(failed.is_empty());
         assert_eq!(recorded_publishes(&publish_log), ["leaf", "parent"]);
     }
@@ -1761,7 +1761,7 @@ members = ["packages/*"]
             sort_publishable_projects(vec![&parent, &root, &leaf], &Config::default(), false)
                 .expect("hybrid root member graph should be acyclic");
         let (_, failed) =
-            execute_publish_loop(&projects, &Config::default(), &FormatOptions::Json).await;
+            execute_publish_loop(&projects, &Config::default(), FormatOptions::Json).await;
         assert!(failed.is_empty());
 
         let publishes = recorded_publishes(&publish_log);
@@ -1792,7 +1792,7 @@ members = ["packages/*"]
 
         let projects = sort_publishable_projects(vec![&virtual_root], &config, false)
             .expect("configured virtual root should remain publishable");
-        let (_, failed) = execute_publish_loop(&projects, &config, &FormatOptions::Json).await;
+        let (_, failed) = execute_publish_loop(&projects, &config, FormatOptions::Json).await;
 
         assert!(failed.is_empty());
         assert_eq!(recorded_publishes(&publish_log), ["virtual-root"]);
@@ -1853,7 +1853,7 @@ members = ["packages/*"]
         let config = Config::default();
 
         let (result_map, failed) =
-            execute_publish_loop(&projects, &config, &FormatOptions::Json).await;
+            execute_publish_loop(&projects, &config, FormatOptions::Json).await;
 
         assert_eq!(failed.len(), 2);
         assert!(failed[0].contains("pkg-a"));
@@ -1968,7 +1968,7 @@ members = ["packages/*"]
         let config = Config::default();
 
         let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Json).await;
+            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json).await;
 
         assert_eq!(failed.len(), 2);
         assert!(failed[0].contains("pkg-a"));
@@ -1988,7 +1988,7 @@ members = ["packages/*"]
         let config = Config::default();
 
         let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Json).await;
+            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json).await;
 
         assert_eq!(failed.len(), 2);
         assert!(failed[0].contains("crate-leaf"));
@@ -2054,7 +2054,7 @@ members = ["packages/*"]
         let config = Config::default();
 
         let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Stdout).await;
+            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Stdout).await;
 
         // Stdout mode never populates result_map. Skipped packages MUST
         // not appear in failed_projects — that is the whole point of the
@@ -2071,7 +2071,7 @@ members = ["packages/*"]
         let config = Config::default();
 
         let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Json).await;
+            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json).await;
 
         // `parent` is skipped → recorded as success with the skip note.
         let parent_entry = result_map
@@ -2133,7 +2133,7 @@ members = ["packages/*"]
         let config = Config::default();
 
         let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, &FormatOptions::Json).await;
+            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json).await;
 
         // The Rust crate must run its real dry-run (mock returns
         // "dry-run ok for crate-a"), NOT be recorded as a workspace-internal skip.

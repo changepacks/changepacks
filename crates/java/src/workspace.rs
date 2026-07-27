@@ -19,58 +19,13 @@ pub struct GradleWorkspace {
 }
 
 impl GradleWorkspace {
-    #[must_use]
-    pub fn new(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-    ) -> Self {
-        Self::new_with_publish_tasks(name, version, path, relative_path, true, true)
-    }
-
-    #[must_use]
-    pub fn new_with_publish_tasks(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        has_publish_task: bool,
-        has_publish_to_maven_local_task: bool,
-    ) -> Self {
-        Self::new_with_project_path_and_publish_tasks(
-            name,
-            version,
-            path,
-            relative_path,
-            None,
-            has_publish_task,
-            has_publish_to_maven_local_task,
-        )
-    }
-
-    #[must_use]
-    pub(crate) fn new_with_project_path_and_publish_tasks(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        project_path: Option<String>,
-        has_publish_task: bool,
-        has_publish_to_maven_local_task: bool,
-    ) -> Self {
-        Self {
-            path,
-            relative_path,
-            project_path,
-            version,
-            name,
-            is_changed: false,
-            dependencies: HashSet::new(),
-            has_publish_task,
-            has_publish_to_maven_local_task,
-        }
-    }
+    // Byte-identical to `GradlePackage`'s three-step constructor chain
+    // (`new` -> `new_with_publish_tasks` ->
+    // `new_with_project_path_and_publish_tasks`). Consolidated via
+    // `impl_gradle_constructors!()` in `lib.rs` — the expansion uses
+    // field-init shorthand, so this struct's different field declaration
+    // order is irrelevant.
+    crate::impl_gradle_constructors!();
 }
 
 #[async_trait]
@@ -117,6 +72,10 @@ impl Workspace for GradleWorkspace {
         crate::DRY_RUN_PUBLISH_COMMAND
     );
 
+    // See the matching note on the Java package impl: these four methods
+    // stay hand-written because `#[async_trait]` rewrites the `impl` block
+    // before `macro_rules!` bodies expand, so a macro-emitted `async fn`
+    // no longer matches the desugared trait signature (E0195).
     fn is_publishable_by_default(&self) -> bool {
         self.has_publish_task
     }

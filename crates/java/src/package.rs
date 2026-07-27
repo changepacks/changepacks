@@ -19,58 +19,12 @@ pub struct GradlePackage {
 }
 
 impl GradlePackage {
-    #[must_use]
-    pub fn new(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-    ) -> Self {
-        Self::new_with_publish_tasks(name, version, path, relative_path, true, true)
-    }
-
-    #[must_use]
-    pub fn new_with_publish_tasks(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        has_publish_task: bool,
-        has_publish_to_maven_local_task: bool,
-    ) -> Self {
-        Self::new_with_project_path_and_publish_tasks(
-            name,
-            version,
-            path,
-            relative_path,
-            None,
-            has_publish_task,
-            has_publish_to_maven_local_task,
-        )
-    }
-
-    #[must_use]
-    pub(crate) fn new_with_project_path_and_publish_tasks(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        project_path: Option<String>,
-        has_publish_task: bool,
-        has_publish_to_maven_local_task: bool,
-    ) -> Self {
-        Self {
-            name,
-            version,
-            path,
-            relative_path,
-            project_path,
-            is_changed: false,
-            dependencies: HashSet::new(),
-            has_publish_task,
-            has_publish_to_maven_local_task,
-        }
-    }
+    // The three-step constructor chain (`new` -> `new_with_publish_tasks`
+    // -> `new_with_project_path_and_publish_tasks`) is byte-identical to
+    // `GradleWorkspace`'s. Consolidated via `impl_gradle_constructors!()`
+    // in `lib.rs` — the expansion uses field-init shorthand, so the two
+    // structs' differing field declaration order is irrelevant.
+    crate::impl_gradle_constructors!();
 }
 
 #[async_trait]
@@ -108,6 +62,16 @@ impl Package for GradlePackage {
         crate::DRY_RUN_PUBLISH_COMMAND
     );
 
+    // These four methods are byte-identical to `GradleWorkspace`'s apart
+    // from the directory-not-found message, but they are deliberately NOT
+    // folded into a crate-local macro: `publish` / `dry_run_publish` are
+    // `#[async_trait]` methods, and `async_trait` rewrites the `impl`
+    // block before `macro_rules!` bodies expand, so a macro invocation
+    // here would emit a plain `async fn` that no longer matches the
+    // desugared trait signature (E0195). Emitting the desugared
+    // `Pin<Box<dyn Future>>` form from a macro instead compiles, but costs
+    // more lines than it saves and hides two trivial delegations behind
+    // hand-written `async_trait` boilerplate.
     fn is_publishable_by_default(&self) -> bool {
         self.has_publish_task
     }
