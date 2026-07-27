@@ -355,8 +355,9 @@ impl ProjectFinder for RustProjectFinder {
         // read Cargo.toml
         let (_cargo_toml_raw, cargo_toml) = crate::read_and_parse_cargo_toml(path).await?;
         let publishable_by_default = package_publishable_by_default(&cargo_toml);
+        let is_workspace = cargo_toml.get("workspace").is_some();
 
-        if cargo_toml.get("workspace").is_none() {
+        if !is_workspace {
             self.discover_workspace_dependency_aliases_for_member(path, relative_path)
                 .await?;
         }
@@ -375,7 +376,7 @@ impl ProjectFinder for RustProjectFinder {
             .collect();
 
         // if workspace
-        if cargo_toml.get("workspace").is_some() {
+        if is_workspace {
             let path_key = path.to_path_buf();
 
             self.workspace_dependency_aliases

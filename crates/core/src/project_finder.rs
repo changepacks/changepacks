@@ -23,6 +23,18 @@ macro_rules! impl_projects_hashmap_accessors {
 
 /// Generates `dependencies()` and `add_dependency()` for types with a
 /// `dependencies: HashSet<String>` field.
+///
+/// `add_dependency` probes membership with `contains` before allocating.
+/// `HashSet<String>` borrows its keys as `str`, so the probe is
+/// allocation-free, while the previous unconditional
+/// `insert(dependency.to_string())` heap-allocated a fresh `String` that
+/// `insert` immediately dropped whenever the name was already present.
+/// Callers hit that duplicate path routinely: a manifest that lists the same
+/// package in more than one dependency section (e.g. `dependencies` and
+/// `peerDependencies` in `package.json`) is walked section by section, and
+/// every section after the first re-adds a name already in the set. The set
+/// contents are unchanged either way — a `HashSet` keeps its existing key on
+/// a duplicate insert — so this is purely allocation elision.
 #[macro_export]
 macro_rules! impl_dependencies_accessors {
     () => {
@@ -30,7 +42,10 @@ macro_rules! impl_dependencies_accessors {
             &self.dependencies
         }
         fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
+            if !self.dependencies.contains(dependency) {
+                self.dependencies
+                    .insert(::std::string::ToString::to_string(dependency));
+            }
         }
     };
 }
@@ -315,6 +330,7 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
 mod tests {
     use super::*;
     use crate::test_support::{MockPackage, MockWorkspace};
+    use crate::{Package, Workspace};
     use async_trait::async_trait;
     use rstest::rstest;
     use std::path::PathBuf;
@@ -340,6 +356,48 @@ mod tests {
             expected,
             "has_extension_ignore_ascii_case(Path::new({file:?}), {ext:?})"
         );
+    }
+
+    // `add_dependency` now probes `contains` before allocating. These cases
+    // lock the observable contract the probe must not change: a repeated name
+    // is still stored exactly once, and distinct names all still land.
+    #[test]
+    fn test_add_dependency_deduplicates_repeated_names() {
+        let mut package = MockPackage::same_path("pkg", "/project/package.json");
+
+        // The duplicate path: the same name arrives from two manifest sections.
+        package.add_dependency("serde");
+        package.add_dependency("serde");
+        package.add_dependency("serde");
+
+        assert_eq!(
+            package.dependencies().len(),
+            1,
+            "repeated add_dependency must keep exactly one entry"
+        );
+        assert!(package.dependencies().contains("serde"));
+
+        // Distinct names still insert normally (the miss path is unchanged).
+        package.add_dependency("tokio");
+        package.add_dependency("anyhow");
+        package.add_dependency("tokio");
+
+        let mut names = package.dependencies().iter().cloned().collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, vec!["anyhow", "serde", "tokio"]);
+    }
+
+    #[test]
+    fn test_add_dependency_deduplicates_on_workspace_too() {
+        // The macro backs both the Package and the Workspace impls of all six
+        // language crates, so pin the behaviour at the Workspace surface as well.
+        let mut workspace = MockWorkspace::same_path("root", "/project/package.json");
+
+        workspace.add_dependency("left-pad");
+        workspace.add_dependency("left-pad");
+
+        assert_eq!(workspace.dependencies().len(), 1);
+        assert!(workspace.dependencies().contains("left-pad"));
     }
 
     #[derive(Debug)]

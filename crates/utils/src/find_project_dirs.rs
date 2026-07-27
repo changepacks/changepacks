@@ -90,17 +90,36 @@ pub async fn discover_project_dirs(
     let git_root_path = repo.work_dir().context("Not a working directory")?;
     let gitignore = build_config_gitignore(git_root_path, config)?;
 
-    discover_project_dirs_with_gitignore(repo, project_finders, git_root_path, gitignore.as_ref())
-        .await
+    // Materialize the thread-local `gix::Repository` exactly ONCE per
+    // invocation. `ThreadSafeRepository::to_thread_local()` is not a pointer
+    // copy: it builds a fresh `Repository`, cloning the object store handle,
+    // ref store and config snapshot.
+    discover_project_dirs_with_gitignore(
+        repo.to_thread_local(),
+        project_finders,
+        git_root_path,
+        gitignore.as_ref(),
+    )
+    .await?;
+
+    Ok(())
 }
 
+/// Discovery walk over an already-materialized thread-local repository.
+///
+/// Takes the `gix::Repository` by value and hands it back on success so
+/// [`find_project_dirs`] can reuse the very same handle for its base-branch
+/// diff / merge-base / worktree-status passes instead of paying for a second
+/// `to_thread_local()`. Ownership (rather than `&gix::Repository`) is required
+/// because the handle stays live across the `finder.visit(..).await` points and
+/// `gix::Repository` is `Send` but not `Sync`, so a borrow would make this
+/// future non-`Send` and break the FFI bridges that spawn it.
 async fn discover_project_dirs_with_gitignore(
-    repo: &ThreadSafeRepository,
+    repo: gix::Repository,
     project_finders: &mut [Box<dyn ProjectFinder>],
     git_root_path: &Path,
     gitignore: Option<&Gitignore>,
-) -> Result<()> {
-    let repo = repo.to_thread_local();
+) -> Result<gix::Repository> {
     let index = repo
         .index()
         .context("Failed to get index, Please add files to git")?;
@@ -222,7 +241,7 @@ async fn discover_project_dirs_with_gitignore(
         }
     }
 
-    Ok(())
+    Ok(repo)
 }
 
 /// Find project directories containing specific files from git tracked files
@@ -238,12 +257,21 @@ pub async fn find_project_dirs(
 ) -> Result<()> {
     let git_root_path = repo.work_dir().context("Not a working directory")?;
     let gitignore = build_config_gitignore(git_root_path, config)?;
-    discover_project_dirs_with_gitignore(repo, project_finders, git_root_path, gitignore.as_ref())
-        .await?;
 
-    // Reuse the discovery matcher for the base-branch diff and worktree-status
-    // paths that populate `is_changed`.
-    let repo = repo.to_thread_local();
+    // Materialize the thread-local `gix::Repository` ONCE and reuse it for the
+    // discovery walk, the base-branch diff, the merge base and the worktree
+    // status pass below. `to_thread_local()` rebuilds a full `Repository`
+    // (object store handle, ref store, config snapshot), so calling it once
+    // per entry point instead of once per phase halves that setup cost on
+    // every CLI command. The discovery walk hands the handle back so it can be
+    // reused here without a second materialization.
+    let repo = discover_project_dirs_with_gitignore(
+        repo.to_thread_local(),
+        project_finders,
+        git_root_path,
+        gitignore.as_ref(),
+    )
+    .await?;
 
     // diff from the merge base — compute FIRST so `diff.len()` can seed the
     // `unique_files` capacity below without an intermediate

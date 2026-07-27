@@ -247,29 +247,35 @@ pub async fn clear_applied_update_logs(
     //            concurrently via `try_join_all`, collapsing N sequential
     //            `read_to_string` round-trips into one parallel batch on
     //            IO-bound systems.
-    //   Phase 3: the sequential parse+retain+remove-or-rewrite loop remains
+    //   Phase 3: the sequential parse+classify+remove-or-rewrite loop remains
     //            ordered because each file may be removed, rewritten, or left
     //            untouched depending on the `applied_paths` set.
+    //   The `serde_json::Value` parse below is a read-only CLASSIFIER: it only
+    //   counts how many `changes` entries survive so the branch can pick
+    //   remove / skip / rewrite. It is never the rewriter — the byte-preserving
+    //   output comes from `remove_applied_change_spans` operating on the
+    //   ORIGINAL content string, which is the invariant that protects
+    //   formatting (key order, indentation, trailing newline).
     let paths = collect_changepack_log_paths(changepacks_dir).await?;
     let bodies = read_log_bodies(&paths, "update log").await?;
     for (path, content) in paths.iter().zip(bodies) {
-        let mut value: serde_json::Value = serde_json::from_str(&content)
+        let value: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse update log {}", path.display()))?;
 
-        let Some(changes) = value
-            .get_mut("changes")
-            .and_then(serde_json::Value::as_object_mut)
-        else {
+        let Some(changes) = value.get("changes").and_then(serde_json::Value::as_object) else {
             continue;
         };
 
         let before = changes.len();
-        changes.retain(|change_path, _| !applied_paths.contains(std::path::Path::new(change_path)));
-        if changes.is_empty() {
+        let remaining = changes
+            .keys()
+            .filter(|change_path| !applied_paths.contains(Path::new(change_path.as_str())))
+            .count();
+        if remaining == 0 {
             remove_file(path)
                 .await
                 .with_context(|| format!("Failed to remove update log {}", path.display()))?;
-        } else if changes.len() == before {
+        } else if remaining == before {
             continue;
         } else {
             let next_content = remove_applied_change_spans(&content, applied_paths)
@@ -650,6 +656,52 @@ mod tests {
         let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
 
         assert!(result.is_ok());
+    }
+
+    /// Write `bytes` as a changepack log, run selective cleanup with a
+    /// non-empty applied set, and assert the file survived byte-identical.
+    async fn assert_selective_clear_leaves_log_untouched(bytes: &[u8]) {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        let log_file = changepacks_dir.join("changepack_log_1.json");
+        fs::write(&log_file, bytes).unwrap();
+
+        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
+
+        assert!(result.is_ok(), "selective cleanup failed: {result:?}");
+        assert!(
+            log_file.exists(),
+            "log without a changes object must not be deleted"
+        );
+        assert_eq!(
+            fs::read(&log_file).unwrap(),
+            bytes,
+            "log without a changes object must stay byte-identical"
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_leaves_log_without_changes_key_untouched() {
+        // A hand-edited or future-schema log that carries no `changes` key at
+        // all must be left alone: the cleaner only owns logs it can classify.
+        assert_selective_clear_leaves_log_untouched(
+            b"{\n  \"note\": \"hand written\",\n  \"date\": \"2026-01-01\"\n}\n",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_leaves_log_with_non_object_changes_untouched() {
+        // Same protection when `changes` exists but is not a JSON object
+        // (here an array): it is not the schema the cleaner understands, so
+        // the file must survive byte-identical rather than be deleted.
+        assert_selective_clear_leaves_log_untouched(
+            b"{\n  \"changes\": [],\n  \"note\": \"array schema\",\n  \"date\": \"2026-01-01\"\n}\n",
+        )
+        .await;
     }
 
     #[tokio::test]

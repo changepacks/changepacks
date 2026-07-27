@@ -192,4 +192,33 @@ mod tests {
 
         temp_dir.close().unwrap();
     }
+
+    #[tokio::test]
+    async fn test_get_changepacks_config_unreadable_file_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        let changepacks_dir = temp_path.join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        // Create config.json as a directory so reading it yields a non-NotFound
+        // io error on both Windows and Unix.
+        let config_file = changepacks_dir.join("config.json");
+        fs::create_dir_all(&config_file).unwrap();
+
+        let err = get_changepacks_config_at(&changepacks_dir)
+            .await
+            .unwrap_err();
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("Failed to read changepacks config"),
+            "unexpected error: {rendered}"
+        );
+        assert!(
+            rendered.contains(&config_file.display().to_string()),
+            "unexpected error: {rendered}"
+        );
+
+        temp_dir.close().unwrap();
+    }
 }

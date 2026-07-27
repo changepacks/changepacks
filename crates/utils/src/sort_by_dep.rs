@@ -329,10 +329,10 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
     if sorted_indices.len() < projects.len() {
         let residual: Vec<bool> = in_degree.iter().map(|&degree| degree > 0).collect();
         let cycle_members = cycle_members_in_residual(&adj, &offsets, &residual);
-        let mut members: Vec<_> = in_degree
+        let mut members: Vec<_> = cycle_members
             .iter()
             .enumerate()
-            .filter(|(index, _)| cycle_members[*index])
+            .filter(|&(_, &in_cycle)| in_cycle)
             .map(|(index, _)| DependencyCycleMember {
                 name: projects[index].name().unwrap_or("<unnamed>").to_string(),
                 path: projects[index].relative_path().to_path_buf(),
