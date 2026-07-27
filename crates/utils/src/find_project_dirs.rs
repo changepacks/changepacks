@@ -379,19 +379,22 @@ mod tests {
     use tempfile::TempDir;
     use tokio::fs;
 
+    /// Shared recording of every `check_changed_many` batch a finder observed.
+    type ChangedBatches = Arc<Mutex<Vec<Vec<PathBuf>>>>;
+
     #[derive(Debug)]
     struct RecordingNodeFinder {
         inner: NodeProjectFinder,
         visits: Arc<AtomicUsize>,
         finalizations: Arc<AtomicUsize>,
-        changed_batches: Arc<Mutex<Vec<Vec<PathBuf>>>>,
+        changed_batches: ChangedBatches,
     }
 
     impl RecordingNodeFinder {
         fn new(
             visits: Arc<AtomicUsize>,
             finalizations: Arc<AtomicUsize>,
-            changed_batches: Arc<Mutex<Vec<Vec<PathBuf>>>>,
+            changed_batches: ChangedBatches,
         ) -> Self {
             Self {
                 inner: NodeProjectFinder::new(),
@@ -451,7 +454,7 @@ mod tests {
         }
     }
 
-    fn recording_node_finders() -> (Vec<Box<dyn ProjectFinder>>, Arc<Mutex<Vec<Vec<PathBuf>>>>) {
+    fn recording_node_finders() -> (Vec<Box<dyn ProjectFinder>>, ChangedBatches) {
         let changed_batches = Arc::new(Mutex::new(Vec::new()));
         let finder = RecordingNodeFinder::new(
             Arc::new(AtomicUsize::new(0)),
