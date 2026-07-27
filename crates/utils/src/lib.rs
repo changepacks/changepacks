@@ -41,7 +41,10 @@
 //!   indent width/character of the on-disk JSON so `serde_json` roundtrips
 //!   don't reformat it; the crate-internal `trailing_newline` helper reports
 //!   the trailing-newline convention; [`finalize_content`] rebuilds output
-//!   that matches the original file's trailing-whitespace shape byte-for-byte.
+//!   that matches the original file's trailing-whitespace shape byte-for-byte,
+//!   and [`write_finalized`] is the shared manifest-write tail — finalize the
+//!   body, write it, and attach a `Failed to write <label> <path>` context —
+//!   used by every language crate's manifest rewriter.
 //! - **Result / progress display** — [`display_update`] renders the
 //!   per-project update summary emitted by `changepacks update` / `check`.
 //! - **Config + directory management** — [`get_changepacks_config`] and
@@ -101,4 +104,4 @@ pub use sort_by_dep::{
     sort_by_dependencies,
 };
 pub use split_version::{replace_version_keep_prefix, split_version};
-pub use trailing_newline::finalize_content;
+pub use trailing_newline::{finalize_content, write_finalized};

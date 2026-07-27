@@ -83,12 +83,11 @@ macro_rules! impl_const_publish_commands {
     };
     // CSharp variant: `dotnet nuget push` has no built-in `--dry-run`
     // mode, so the default returns `None`. The actual dry-run flow
-    // lives in `CSharpPackage::dry_run_publish` / `CSharpWorkspace::
-    // dry_run_publish` (see `crates/csharp/src/dry_run.rs::
-    // resolve_and_run_dry_run`), which honors `config.publishDryRun`
-    // overrides first and falls back to a managed `dotnet pack` +
-    // `dotnet nuget push` against ephemeral `tempfile::TempDir`
-    // directories when no override is set.
+    // lives in `CSharpPackage::dry_run_publish` (see
+    // `crates/csharp/src/dry_run.rs::resolve_and_run_dry_run`), which
+    // honors `config.publishDryRun` overrides first and falls back to a
+    // managed `dotnet pack` + `dotnet nuget push` against ephemeral
+    // `tempfile::TempDir` directories when no override is set.
     ($publish:path) => {
         fn default_publish_command(&self) -> ::std::string::String {
             $publish.to_string()
@@ -124,31 +123,6 @@ macro_rules! impl_basic_accessors {
         }
         fn set_name(&mut self, name: ::std::string::String) {
             self.name = ::std::option::Option::Some(name);
-        }
-    };
-}
-
-/// Generates the standard constructor for package/workspace structs with
-/// `name`, `version`, `path`, `relative_path`, `is_changed`, and
-/// `dependencies` fields.
-#[macro_export]
-macro_rules! impl_default_new {
-    () => {
-        #[must_use]
-        pub fn new(
-            name: ::std::option::Option<::std::string::String>,
-            version: ::std::option::Option<::std::string::String>,
-            path: ::std::path::PathBuf,
-            relative_path: ::std::path::PathBuf,
-        ) -> Self {
-            Self {
-                name,
-                version,
-                path,
-                relative_path,
-                is_changed: false,
-                dependencies: ::std::collections::HashSet::new(),
-            }
         }
     };
 }

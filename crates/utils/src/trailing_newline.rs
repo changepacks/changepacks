@@ -1,3 +1,7 @@
+use std::path::Path;
+
+use anyhow::{Context, Result};
+
 /// Return the complete trailing-whitespace suffix of `source`.
 #[must_use]
 fn trailing_whitespace(source: &str) -> &str {
@@ -16,6 +20,28 @@ pub fn finalize_content(mut body: String, original: &str) -> String {
     body.truncate(trimmed_len);
     body.push_str(trailing_whitespace(original));
     body
+}
+
+/// Write the finalized manifest bytes for `path`: run `body` through
+/// [`finalize_content`] against the manifest's `original` on-disk text, then
+/// write the result, attaching a `Failed to write <label> <path>` context to
+/// any I/O failure.
+///
+/// This is the shared tail of every language crate's manifest rewrite
+/// (`package.json`, `pyproject.toml`, `pubspec.yaml`, `Cargo.toml`), which
+/// previously open-coded the identical `write(path, finalize_content(..))
+/// .await.with_context(..)` sequence at six call sites. `label` is the
+/// human-facing manifest name that appears in the error context, and is the
+/// only thing that ever differed between them.
+///
+/// # Errors
+/// Returns an error if the write fails. The error context names both the
+/// manifest kind (`label`) and the path, so a failed write reads as clearly
+/// as the read/parse contexts each caller already attaches.
+pub async fn write_finalized(path: &Path, body: String, original: &str, label: &str) -> Result<()> {
+    tokio::fs::write(path, finalize_content(body, original))
+        .await
+        .with_context(|| format!("Failed to write {label} {}", path.display()))
 }
 
 #[cfg(test)]
@@ -64,5 +90,54 @@ mod tests {
 
         assert_eq!(once, expected_body);
         assert_eq!(twice, expected_body);
+    }
+
+    #[tokio::test]
+    async fn test_write_finalized_writes_body_with_original_trailing_whitespace() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("manifest.toml");
+        let original = "version = \"1.0.0\" \t\r\n \n";
+        std::fs::write(&manifest, original).unwrap();
+
+        write_finalized(
+            &manifest,
+            "version = \"2.0.0\"\n".to_string(),
+            original,
+            "Cargo.toml",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&manifest).unwrap(),
+            "version = \"2.0.0\" \t\r\n \n"
+        );
+    }
+
+    /// The error context must read `Failed to write <label> <path>` so the six
+    /// migrated manifest writers keep emitting byte-identical messages.
+    #[tokio::test]
+    async fn test_write_finalized_error_context_names_label_and_path() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("manifest.json");
+        std::fs::write(&manifest, "{}\n").unwrap();
+
+        // Readonly denies the write-open on every supported platform.
+        crate::test_support::set_readonly(&manifest, true);
+        let result =
+            write_finalized(&manifest, "{\"a\":1}\n".to_string(), "{}\n", "package.json").await;
+        // Restore write permission BEFORE asserting so `TempDir` cleanup
+        // succeeds even if an assertion panics.
+        crate::test_support::set_readonly(&manifest, false);
+
+        let err = result.expect_err("write to a readonly manifest must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to write package.json {}",
+                manifest.display()
+            )),
+            "error chain should carry the label and path context, got: {chain}"
+        );
     }
 }

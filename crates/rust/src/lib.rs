@@ -15,8 +15,7 @@ pub use finder::RustProjectFinder;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use changepacks_utils::finalize_content;
-use tokio::fs::write;
+use changepacks_utils::write_finalized;
 use toml_edit::DocumentMut;
 
 /// Default publish command for a single-crate `Cargo.toml`.
@@ -39,7 +38,7 @@ pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "cargo publish --dry-run";
 /// Read and parse a Cargo.toml file, preserving the raw content for format finalization.
 ///
 /// Returns both the raw file content and the parsed `DocumentMut` to enable
-/// [`finalize_content`] to preserve formatting, comments, and the complete
+/// [`write_finalized`] to preserve formatting, comments, and the complete
 /// trailing-whitespace suffix.
 ///
 /// # Errors
@@ -70,6 +69,12 @@ pub(crate) async fn read_and_parse_cargo_toml(path: &Path) -> Result<(String, Do
 /// the Node/Python/Dart/CSharp convention documented in
 /// `crates/AGENTS.md`.
 ///
+/// An empty `[package]` table is created if missing. The explicit
+/// `Table::new()` matters: plain `doc["package"]["version"] = ...`
+/// auto-creates an INLINE table (`package = { version = ... }`) at the top
+/// of the document instead of a proper `[package]` header — the same hazard
+/// guarded in `changepacks-python`'s `write_pyproject_version`.
+///
 /// # Errors
 /// Returns error if the file cannot be read, the TOML cannot be parsed,
 /// or the write fails.
@@ -84,14 +89,11 @@ pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) 
             path.display()
         );
     }
+    if cargo_toml.get("package").is_none() {
+        cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
     cargo_toml["package"]["version"] = new_version.into();
-    write(
-        path,
-        finalize_content(cargo_toml.to_string(), &cargo_toml_raw),
-    )
-    .await
-    .with_context(|| format!("Failed to write Cargo.toml {}", path.display()))?;
-    Ok(())
+    write_finalized(path, cargo_toml.to_string(), &cargo_toml_raw, "Cargo.toml").await
 }
 
 /// Return `true` for a `toml_edit::Item` whose value is table-like with
@@ -216,6 +218,40 @@ mod tests {
         assert!(
             chain.contains("non-table [package]"),
             "error chain should mention the non-table package item, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_cargo_package_version_creates_proper_package_header() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        // A manifest with NO [package] table at all. Without the explicit
+        // `Table::new()` guard, `doc["package"]["version"] = ...` auto-creates
+        // an INLINE table (`package = { version = "0.0.1" }`) at the top of
+        // the document instead of a proper `[package]` header.
+        fs::write(&cargo_toml, "[workspace]\nmembers = [\"a\"]\n").unwrap();
+
+        write_cargo_package_version(&cargo_toml, "0.0.1")
+            .await
+            .unwrap();
+
+        let written = fs::read_to_string(&cargo_toml).unwrap();
+        assert!(
+            written.lines().any(|line| line.trim() == "[package]"),
+            "output must contain a literal [package] header line, got: {written}"
+        );
+        assert!(
+            written.contains("version = \"0.0.1\""),
+            "output must contain the new version, got: {written}"
+        );
+        assert!(
+            !written.contains("package = {"),
+            "output must not use the inline-table form, got: {written}"
+        );
+        assert!(
+            written.lines().any(|line| line.trim() == "[workspace]")
+                && written.contains("members = [\"a\"]"),
+            "output must preserve the existing [workspace] section, got: {written}"
         );
     }
 }

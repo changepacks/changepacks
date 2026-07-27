@@ -9,7 +9,6 @@
 mod dry_run;
 pub mod finder;
 pub mod package;
-pub mod workspace;
 mod xml_utils;
 
 use std::path::Path;
@@ -33,8 +32,8 @@ pub(crate) const PUBLISH_COMMAND: &str = "dotnet pack -c Release && dotnet nuget
 /// are added under the first unconditional top-level `<PropertyGroup>`, or
 /// under a newly created group when none is eligible (see `update_version_in_xml`).
 ///
-/// Shared by `CSharpPackage::update_version` and `CSharpWorkspace::update_version`
-/// so both paths emit byte-identical output — matching the Node/Python/Dart
+/// Used by `CSharpPackage::update_version`, the only project kind
+/// [`CSharpProjectFinder`] discovers — matching the Node/Python/Dart
 /// convention documented in `crates/AGENTS.md`.
 ///
 /// # Errors

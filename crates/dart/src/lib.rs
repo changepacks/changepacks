@@ -25,12 +25,12 @@ pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "dart pub publish --dry-run";
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use changepacks_utils::finalize_content;
-use tokio::fs::{read_to_string, write};
+use changepacks_utils::write_finalized;
+use tokio::fs::read_to_string;
 
 /// Update `pubspec.yaml` at `path` to set its `version` field to `new_version`,
 /// preserving the file's YAML formatting (via `yamlpatch`/`yamlpath`) and its
-/// complete trailing-whitespace shape (via `finalize_content`).
+/// complete trailing-whitespace shape (via `write_finalized`).
 ///
 /// Shared by `DartPackage::update_version` and `DartWorkspace::update_version`
 /// so both paths emit byte-identical output. When `existing_version` is
@@ -69,13 +69,13 @@ pub(crate) async fn write_pubspec_version(
         &[patch],
     )
     .with_context(|| format!("Failed to update pubspec.yaml {}", path.display()))?;
-    write(
+    write_finalized(
         path,
-        finalize_content(patched.source().to_string(), &pubspec_yaml_raw),
+        patched.source().to_string(),
+        &pubspec_yaml_raw,
+        "pubspec.yaml",
     )
     .await
-    .with_context(|| format!("Failed to write pubspec.yaml {}", path.display()))?;
-    Ok(())
 }
 
 #[cfg(test)]

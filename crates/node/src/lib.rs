@@ -19,9 +19,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use changepacks_core::{Config, Language, is_regular_file};
-use changepacks_utils::{detect_indent_str, finalize_content};
+use changepacks_utils::{detect_indent_str, write_finalized};
 use serde::Serialize;
-use tokio::fs::{read_to_string, write};
+use tokio::fs::read_to_string;
 
 #[cfg(test)]
 pub(crate) mod test_util {
@@ -94,7 +94,7 @@ fn serialize_package_json<F: serde_json::ser::Formatter>(
 
 /// Update `package.json` at `path` to set its `version` field to `new_version`,
 /// preserving the file's original indent size (via `detect_indent`) and its
-/// complete trailing-whitespace shape (via `finalize_content`).
+/// complete trailing-whitespace shape (via `write_finalized`).
 ///
 /// Shared by `NodePackage::update_version` and `NodeWorkspace::update_version`
 /// so both paths emit byte-identical output.
@@ -136,17 +136,14 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
             path,
         )?
     };
-    write(
+    write_finalized(
         path,
-        finalize_content(
-            String::from_utf8(serialized)
-                .with_context(|| format!("Failed to serialize package.json {}", path.display()))?,
-            &package_json_raw,
-        ),
+        String::from_utf8(serialized)
+            .with_context(|| format!("Failed to serialize package.json {}", path.display()))?,
+        &package_json_raw,
+        "package.json",
     )
     .await
-    .with_context(|| format!("Failed to write package.json {}", path.display()))?;
-    Ok(())
 }
 
 /// Expand to the identical `default_publish_command` /

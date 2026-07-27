@@ -249,18 +249,17 @@ where
     .await
 }
 
-/// Expand the two inherent command-runner wrappers shared byte-for-byte by
-/// [`crate::package::CSharpPackage`] and [`crate::workspace::CSharpWorkspace`].
+/// Expand the two inherent command-runner wrappers used by
+/// [`crate::package::CSharpPackage`].
 ///
-/// Both types expose the same `publish_with_command_runner` /
-/// `dry_run_publish_with_command_runner` pair: they forward `self.path()`,
+/// The type exposes a `publish_with_command_runner` /
+/// `dry_run_publish_with_command_runner` pair that forwards `self.path()`,
 /// `self.relative_path()` and the injected command runner to
 /// [`resolve_and_run_publish_with_command_runner`] /
-/// [`resolve_and_run_dry_run_with_command_runner`]. The single difference is
-/// the missing-parent-directory message, supplied here as `$missing_dir`
-/// (`PACKAGE_DIR_NOT_FOUND` for the package, `WORKSPACE_DIR_NOT_FOUND` for the
-/// workspace), so the generic bounds and argument order can no longer drift
-/// between the two call sites.
+/// [`resolve_and_run_dry_run_with_command_runner`]. The
+/// missing-parent-directory message is supplied here as `$missing_dir`
+/// (`PACKAGE_DIR_NOT_FOUND`), keeping the long generic bounds and the argument
+/// order declared in exactly one place.
 ///
 /// Every path in the expansion is fully qualified (`::std`, `::anyhow`,
 /// `::changepacks_core`, `$crate`) so the macro does not depend on which items

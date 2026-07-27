@@ -1,13 +1,12 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
 use changepacks_utils::{
-    finalize_content, next_version, replace_version_keep_prefix, split_version,
+    next_version, replace_version_keep_prefix, split_version, write_finalized,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tokio::fs::write;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct InheritedWorkspaceMemberIdentities {
@@ -230,12 +229,13 @@ impl Workspace for RustWorkspace {
             }
         }
 
-        write(
+        write_finalized(
             &self.path,
-            finalize_content(cargo_toml.to_string(), &cargo_toml_raw),
+            cargo_toml.to_string(),
+            &cargo_toml_raw,
+            "Cargo.toml",
         )
-        .await
-        .with_context(|| format!("Failed to write Cargo.toml {}", self.path.display()))?;
+        .await?;
         self.version = Some(new_version);
         Ok(())
     }
@@ -349,14 +349,13 @@ impl Workspace for RustWorkspace {
             return Ok(());
         }
 
-        write(
+        write_finalized(
             &self.path,
-            finalize_content(cargo_toml.to_string(), &cargo_toml_raw),
+            cargo_toml.to_string(),
+            &cargo_toml_raw,
+            "Cargo.toml",
         )
         .await
-        .with_context(|| format!("Failed to write Cargo.toml {}", self.path.display()))?;
-
-        Ok(())
     }
 }
 

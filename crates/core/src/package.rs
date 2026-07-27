@@ -232,6 +232,8 @@ mod tests {
     #[case(Language::Python, "python", "poetry publish")]
     #[case(Language::Rust, "rust", "cargo publish")]
     #[case(Language::Dart, "dart", "dart pub publish")]
+    #[case(Language::Java, "java", "./gradlew publish")]
+    #[case(Language::CSharp, "csharp", "dotnet nuget push")]
     fn test_get_publish_command_by_language(
         #[case] language: Language,
         #[case] key: &str,

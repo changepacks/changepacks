@@ -8,7 +8,7 @@ use changepacks_rust::RustProjectFinder;
 
 /// Get finder list
 #[must_use]
-pub fn get_finders() -> Vec<Box<dyn ProjectFinder>> {
+pub(crate) fn get_finders() -> Vec<Box<dyn ProjectFinder>> {
     vec![
         Box::new(NodeProjectFinder::new()),
         Box::new(RustProjectFinder::new()),
@@ -21,13 +21,13 @@ pub fn get_finders() -> Vec<Box<dyn ProjectFinder>> {
 
 /// Calculate total project count across all finders for capacity hints.
 #[must_use]
-pub fn total_project_count(finders: &[Box<dyn ProjectFinder>]) -> usize {
+pub(crate) fn total_project_count(finders: &[Box<dyn ProjectFinder>]) -> usize {
     finders.iter().map(|f| f.project_count()).sum()
 }
 
 /// Collect all projects from finders into a single Vec with pre-allocated capacity.
 #[must_use]
-pub fn collect_projects(finders: &[Box<dyn ProjectFinder>]) -> Vec<&Project> {
+pub(crate) fn collect_projects(finders: &[Box<dyn ProjectFinder>]) -> Vec<&Project> {
     let cap = total_project_count(finders);
     let mut projects = Vec::with_capacity(cap);
     projects.extend(finders.iter().flat_map(|finder| finder.projects()));

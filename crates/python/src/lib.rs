@@ -25,8 +25,7 @@ use std::path::Path;
 use tokio::fs::read_to_string;
 
 use anyhow::{Context, Result};
-use changepacks_utils::finalize_content;
-use tokio::fs::write;
+use changepacks_utils::write_finalized;
 use toml_edit::DocumentMut;
 
 /// Read and parse a pyproject.toml file, returning both the raw content
@@ -46,7 +45,7 @@ pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String
 
 /// Update `pyproject.toml` at `path` to set `[project].version` to
 /// `new_version`, preserving the file's complete trailing-whitespace shape
-/// (via `finalize_content`) and its TOML formatting (via `toml_edit`).
+/// (via `write_finalized`) and its TOML formatting (via `toml_edit`).
 ///
 /// Shared by `PythonPackage::update_version` and
 /// `PythonWorkspace::update_version` so both paths emit byte-identical output.
@@ -86,13 +85,13 @@ pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> R
         pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
     pyproject_toml["project"]["version"] = new_version.into();
-    write(
+    write_finalized(
         path,
-        finalize_content(pyproject_toml.to_string(), &pyproject_toml_raw),
+        pyproject_toml.to_string(),
+        &pyproject_toml_raw,
+        "pyproject.toml",
     )
     .await
-    .with_context(|| format!("Failed to write pyproject.toml {}", path.display()))?;
-    Ok(())
 }
 
 #[cfg(test)]

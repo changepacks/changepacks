@@ -22,10 +22,9 @@ impl CSharpPackage {
     changepacks_core::impl_discovered_new!();
 
     // `publish_with_command_runner` / `dry_run_publish_with_command_runner`
-    // were byte-identical to `CSharpWorkspace`'s pair apart from the
-    // missing-parent-directory message. Consolidated into
-    // `crate::dry_run::impl_csharp_command_runner_wrappers!` so the generic
-    // bounds and argument order stay in one place.
+    // live in `crate::dry_run::impl_csharp_command_runner_wrappers!` so the
+    // generic bounds and argument order stay in one place, parameterized by
+    // the missing-parent-directory message.
     crate::dry_run::impl_csharp_command_runner_wrappers!(
         changepacks_core::publish::PACKAGE_DIR_NOT_FOUND
     );
