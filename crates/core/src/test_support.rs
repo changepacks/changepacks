@@ -48,6 +48,64 @@ macro_rules! impl_test_publish_commands {
     };
 }
 
+/// Shared method bodies for [`UnsupportedDryRunProject`]'s two trait impls.
+///
+/// `Package` and `Workspace` declare the same accessor surface here, so the
+/// hand-written `impl Package` / `impl Workspace` blocks were byte-identical
+/// method for method. Emitting both from one macro keeps the fixture's
+/// contract — name `unsupported-dry-run`, version `1.0.0`, relative path
+/// `project.csproj`, language `CSharp`, never changed, and a
+/// `default_dry_run_publish_command` of `None` — at a single surface, so the
+/// two impls cannot drift apart.
+///
+/// `update_version` is deliberately NOT emitted here: these impls are
+/// annotated with `#[async_trait]`, which rewrites `async fn` bodies while
+/// parsing the impl block's tokens. A `macro_rules!` invocation is still an
+/// opaque `ImplItem::Macro` at that point, so an `async fn` produced by this
+/// macro would escape the rewrite and fail to match the desugared trait
+/// signature.
+macro_rules! impl_unsupported_dry_run_accessors {
+    () => {
+        fn name(&self) -> Option<&str> {
+            Some("unsupported-dry-run")
+        }
+
+        fn version(&self) -> Option<&str> {
+            Some("1.0.0")
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn relative_path(&self) -> &Path {
+            Path::new("project.csproj")
+        }
+
+        fn is_changed(&self) -> bool {
+            false
+        }
+
+        fn language(&self) -> Language {
+            Language::CSharp
+        }
+
+        fn set_changed(&mut self, _changed: bool) {}
+
+        fn set_name(&mut self, _name: String) {}
+
+        fn default_publish_command(&self) -> String {
+            "echo publish".to_string()
+        }
+
+        fn default_dry_run_publish_command(&self) -> Option<String> {
+            None
+        }
+
+        crate::impl_dependencies_accessors!();
+    };
+}
+
 /// Declarative macro to generate a mock struct and its inherent impl.
 ///
 /// Expands to:
@@ -187,102 +245,18 @@ pub struct UnsupportedDryRunProject {
 
 #[async_trait]
 impl Package for UnsupportedDryRunProject {
-    fn name(&self) -> Option<&str> {
-        Some("unsupported-dry-run")
-    }
-
-    fn version(&self) -> Option<&str> {
-        Some("1.0.0")
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn relative_path(&self) -> &Path {
-        Path::new("project.csproj")
-    }
+    impl_unsupported_dry_run_accessors!();
 
     async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
         Ok(())
-    }
-
-    fn is_changed(&self) -> bool {
-        false
-    }
-
-    fn language(&self) -> Language {
-        Language::CSharp
-    }
-
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
-    }
-
-    fn set_changed(&mut self, _changed: bool) {}
-
-    fn set_name(&mut self, _name: String) {}
-
-    fn default_publish_command(&self) -> String {
-        "echo publish".to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        None
     }
 }
 
 #[async_trait]
 impl Workspace for UnsupportedDryRunProject {
-    fn name(&self) -> Option<&str> {
-        Some("unsupported-dry-run")
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn relative_path(&self) -> &Path {
-        Path::new("project.csproj")
-    }
-
-    fn version(&self) -> Option<&str> {
-        Some("1.0.0")
-    }
+    impl_unsupported_dry_run_accessors!();
 
     async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
         Ok(())
-    }
-
-    fn language(&self) -> Language {
-        Language::CSharp
-    }
-
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
-    }
-
-    fn is_changed(&self) -> bool {
-        false
-    }
-
-    fn set_changed(&mut self, _changed: bool) {}
-
-    fn set_name(&mut self, _name: String) {}
-
-    fn default_publish_command(&self) -> String {
-        "echo publish".to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        None
     }
 }

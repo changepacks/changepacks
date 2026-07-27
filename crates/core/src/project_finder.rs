@@ -246,9 +246,15 @@ pub async fn is_regular_file(path: &Path) -> Result<bool> {
 pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     fn projects(&self) -> Vec<&Project>;
     fn projects_mut(&mut self) -> Vec<&mut Project>;
-    fn project_count(&self) -> usize {
-        self.projects().len()
-    }
+    /// Number of projects held by this finder.
+    ///
+    /// Required rather than defaulted: a `self.projects().len()` default would
+    /// allocate and immediately drop a whole `Vec<&Project>` just to read a
+    /// length. Every implementor already owns an O(1), allocation-free count
+    /// (the language finders get one from
+    /// [`impl_projects_hashmap_accessors!`]), so the trait demands it instead
+    /// of offering a lossy shortcut.
+    fn project_count(&self) -> usize;
     fn project_files(&self) -> &[&str];
     /// # Errors
     /// Returns error if the file visitation fails.
@@ -429,6 +435,10 @@ mod tests {
 
         fn projects_mut(&mut self) -> Vec<&mut Project> {
             self.projects.iter_mut().collect()
+        }
+
+        fn project_count(&self) -> usize {
+            self.projects.len()
         }
 
         fn project_files(&self) -> &[&str] {

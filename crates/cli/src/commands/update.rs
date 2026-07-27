@@ -939,6 +939,10 @@ mod tests {
             self.projects.iter_mut().collect()
         }
 
+        fn project_count(&self) -> usize {
+            self.projects.len()
+        }
+
         fn project_files(&self) -> &[&str] {
             &["Cargo.toml"]
         }

@@ -327,6 +327,115 @@ mod tests {
     }
 
     #[test]
+    fn test_lookup_by_path_or_language_empty_map_returns_none() {
+        // `lookup_by_path_or_language` is a public cross-crate API (used
+        // directly by changepacks-node and changepacks-java), so its empty-map
+        // contract is pinned here rather than only through the two resolvers.
+        // The control assertion proves the path/language pair really would
+        // match, so the `None` below is caused by emptiness alone and the
+        // `map.is_empty()` fast path stays behaviour-preserving.
+        let path = Path::new("packages/core/package.json");
+        let populated = BTreeMap::from([(
+            "packages/core/package.json".to_string(),
+            "custom publish".to_string(),
+        )]);
+        assert_eq!(
+            lookup_by_path_or_language(&populated, path, Language::Node).as_deref(),
+            Some("custom publish")
+        );
+
+        let empty = BTreeMap::new();
+        assert!(lookup_by_path_or_language(&empty, path, Language::Node).is_none());
+        // Same for a key that would resolve via the language fallback.
+        assert!(
+            lookup_by_path_or_language(&empty, Path::new("package.json"), Language::Node).is_none()
+        );
+    }
+
+    #[test]
+    fn test_lookup_by_path_or_language_path_key_wins_over_language_key() {
+        // Both rungs of the ladder are present in ONE map: the exact
+        // repo-relative path must win over the language `publish_key`.
+        let map = BTreeMap::from([
+            (
+                "packages/core/package.json".to_string(),
+                "path publish".to_string(),
+            ),
+            ("node".to_string(), "language publish".to_string()),
+        ]);
+
+        let result = lookup_by_path_or_language(
+            &map,
+            Path::new("packages/core/package.json"),
+            Language::Node,
+        );
+        assert_eq!(result.as_deref(), Some("path publish"));
+    }
+
+    #[test]
+    fn test_lookup_by_path_or_language_backslash_path_matches_forward_slash_key() {
+        // Windows finders hand back backslash-separated relative paths while
+        // config keys are documented with forward slashes. The normalization
+        // retry must resolve it, and must do so BEFORE the language fallback —
+        // the distinct `language publish` value below is what proves the retry
+        // ran instead of the map.get(publish_key) rung.
+        let map = BTreeMap::from([
+            (
+                "packages/core/package.json".to_string(),
+                "path publish".to_string(),
+            ),
+            ("node".to_string(), "language publish".to_string()),
+        ]);
+
+        let result = lookup_by_path_or_language(
+            &map,
+            Path::new("packages\\core\\package.json"),
+            Language::Node,
+        );
+        assert_eq!(result.as_deref(), Some("path publish"));
+    }
+
+    #[test]
+    fn test_lookup_by_path_or_language_falls_back_to_language_key() {
+        // No path key matches, so the language `publish_key` entry is returned.
+        let map = BTreeMap::from([
+            (
+                "packages/other/package.json".to_string(),
+                "other publish".to_string(),
+            ),
+            ("node".to_string(), "language publish".to_string()),
+        ]);
+
+        let result = lookup_by_path_or_language(
+            &map,
+            Path::new("packages/core/package.json"),
+            Language::Node,
+        );
+        assert_eq!(result.as_deref(), Some("language publish"));
+    }
+
+    #[test]
+    fn test_lookup_by_path_or_language_returns_none_when_neither_matches() {
+        // Non-empty map, but neither the path nor the language key is present:
+        // the ladder falls off its last rung and yields None. The `rust` entry
+        // guards against a fallback that ignores the requested language.
+        let map = BTreeMap::from([
+            (
+                "packages/other/package.json".to_string(),
+                "other publish".to_string(),
+            ),
+            ("rust".to_string(), "cargo publish".to_string()),
+        ]);
+
+        let result = lookup_by_path_or_language(
+            &map,
+            Path::new("packages/core/package.json"),
+            Language::Node,
+        );
+        assert!(result.is_none());
+    }
+
+    #[test]
     fn test_resolve_publish_command_by_path() {
         let mut publish = BTreeMap::new();
         publish.insert(

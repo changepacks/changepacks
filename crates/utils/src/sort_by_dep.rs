@@ -285,13 +285,27 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
         offsets[idx] += offsets[idx - 1];
     }
 
-    let mut cursor = offsets.clone();
+    // In-place counting-sort fill: `offsets[dep_idx]` itself doubles as the
+    // write cursor for source `dep_idx`, so no cloned cursor Vec is allocated
+    // and memcpy'd per call. Edges are still consumed in their original order
+    // and each one lands in the next free slot of its bucket, so the
+    // per-source fill order is byte-for-byte what the cloned cursor produced.
+    // Afterwards `offsets[i]` holds the END of source `i` (the canonical
+    // `offsets[i + 1]`); `offsets[projects.len()]` is untouched because no
+    // edge carries that source index.
     let mut adj: Vec<usize> = vec![0; edges.len()];
     for (dep_idx, dependent_idx) in edges {
-        let slot = cursor[dep_idx];
+        let slot = offsets[dep_idx];
         adj[slot] = dependent_idx;
-        cursor[dep_idx] += 1;
+        offsets[dep_idx] += 1;
     }
+
+    // Restore the canonical start-offset array with a single reverse shift:
+    // every entry moves one slot to the right and `offsets[0]` returns to 0.
+    for idx in (1..offsets.len()).rev() {
+        offsets[idx] = offsets[idx - 1];
+    }
+    offsets[0] = 0;
 
     // Kahn's algorithm for topological sort
     let mut queue: VecDeque<usize> = VecDeque::with_capacity(projects.len());

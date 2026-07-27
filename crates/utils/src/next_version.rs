@@ -277,6 +277,68 @@ mod tests {
         assert_eq!(next_version(version, update_type).unwrap(), expected);
     }
 
+    // `next_version_or_default` is public API (re-exported from `lib.rs`)
+    // consumed by `bump_version_with`, `display_update` and
+    // `gen_changepack_result_map`, but its `None` -> "0.0.0" fallback was
+    // only covered transitively through `display_update`. Pin the fallback
+    // for every bump kind directly on the function that owns it.
+    #[rstest]
+    #[case(UpdateType::Major, "1.0.0")]
+    #[case(UpdateType::Minor, "0.1.0")]
+    #[case(UpdateType::Patch, "0.0.1")]
+    fn test_next_version_or_default_none_falls_back_to_zero(
+        #[case] update_type: UpdateType,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(
+            next_version_or_default(None, update_type).unwrap(),
+            expected
+        );
+    }
+
+    // A present version must be forwarded to `next_version` untouched: the
+    // fallback may never shadow a real current version.
+    #[rstest]
+    #[case("2.5.3", UpdateType::Patch, "2.5.4")]
+    #[case("2.5.3", UpdateType::Minor, "2.6.0")]
+    #[case("2.5.3", UpdateType::Major, "3.0.0")]
+    #[case("1.2.3+build.7", UpdateType::Patch, "1.2.4+build.7")]
+    fn test_next_version_or_default_some_delegates_unchanged(
+        #[case] current: &str,
+        #[case] update_type: UpdateType,
+        #[case] expected: &str,
+    ) {
+        assert_eq!(
+            next_version_or_default(Some(current), update_type).unwrap(),
+            expected
+        );
+        // Same input through the wrapper and through the wrapped function.
+        assert_eq!(
+            next_version_or_default(Some(current), update_type).unwrap(),
+            next_version(current, update_type).unwrap()
+        );
+    }
+
+    // A malformed `Some` must surface `next_version`'s error, NOT silently
+    // degrade to the `"0.0.0"` fallback — that would rewrite a corrupt
+    // manifest version to `0.0.1` instead of aborting the update.
+    #[rstest]
+    #[case("abc", UpdateType::Patch)]
+    #[case("1.2", UpdateType::Minor)]
+    #[case("1.2.3-alpha", UpdateType::Major)]
+    fn test_next_version_or_default_malformed_some_errors(
+        #[case] current: &str,
+        #[case] update_type: UpdateType,
+    ) {
+        let err = next_version_or_default(Some(current), update_type).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "Invalid version format: {current} (expected MAJOR.MINOR.PATCH, optionally with +build metadata)"
+            )
+        );
+    }
+
     // A rejected version (here a pre-release, which `next_version`
     // deliberately does not bump) must explain the ACCEPTED shape, not just
     // report the input as "invalid" — otherwise `1.0.0-alpha.1` reads as a

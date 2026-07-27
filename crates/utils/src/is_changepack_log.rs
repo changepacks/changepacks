@@ -188,4 +188,38 @@ mod tests {
             paths[1]
         );
     }
+
+    // Covers the non-`NotFound` `read_dir` error arm: a MISSING directory is
+    // deliberately mapped to an empty list, but any OTHER `read_dir` failure must
+    // surface as an error carrying `read_dir_context`. Pointing `read_dir` at a
+    // regular file produces a deterministic non-`NotFound` io error on both Windows
+    // (`ERROR_DIRECTORY`) and Unix (`ENOTDIR`), so this exercises the arm without
+    // relying on permission tricks that differ per platform.
+    //
+    // Without this test the arm could silently degrade to `Ok(Vec::new())` — which
+    // would make `update` see zero changepack logs on an unreadable `.changepacks/`
+    // and report "nothing to update" instead of failing loudly.
+    #[tokio::test]
+    async fn test_collect_changepack_log_paths_read_dir_error_is_contextualized() {
+        let temp_dir = TempDir::new().unwrap();
+        let not_a_dir = temp_dir.path().join("not-a-dir");
+        fs::write(&not_a_dir, "regular file, not a directory")
+            .await
+            .unwrap();
+
+        let err = collect_changepack_log_paths(&not_a_dir)
+            .await
+            .expect_err("read_dir on a regular file must not be reported as success");
+
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("Failed to read changepacks directory"),
+            "error chain must carry the read_dir context message, got {rendered}"
+        );
+        assert!(
+            rendered.contains(&not_a_dir.display().to_string()),
+            "error chain must name the offending path {}, got {rendered}",
+            not_a_dir.display()
+        );
+    }
 }

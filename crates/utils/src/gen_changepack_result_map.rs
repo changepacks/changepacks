@@ -20,7 +20,17 @@ pub fn gen_changepack_result_map<S: BuildHasher>(
 ) -> Result<BTreeMap<PathBuf, ChangePackResult>> {
     let mut map = BTreeMap::<PathBuf, ChangePackResult>::new();
     for project in projects {
-        let key = get_relative_path(repo_root_path, project.path())?;
+        // Name the offending manifest on the relative-path failure, matching
+        // the contextual-anyhow shape every other fallible step here and in
+        // `apply_reverse_dependencies_with_provenance` already uses. Without
+        // it a project outside `repo_root_path` surfaced a bare strip_prefix
+        // message with no clue about WHICH project produced it.
+        let key = get_relative_path(repo_root_path, project.path()).with_context(|| {
+            format!(
+                "Failed to build changepack result for project '{}'",
+                project.path().display()
+            )
+        })?;
         let version = project.version().map(std::string::ToString::to_string);
         let name = project.name().map(std::string::ToString::to_string);
         let changed = project.is_changed();
@@ -570,5 +580,49 @@ mod tests {
         );
 
         temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_gen_changepack_result_map_project_outside_repo_root() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo_root = repo_dir.path();
+
+        // The project manifest lives in a DIFFERENT tree than `repo_root`, so
+        // `get_relative_path` cannot strip the prefix and must fail.
+        let outside_dir = TempDir::new().unwrap();
+        let project_path = outside_dir.path().join("outside-project");
+        fs::create_dir_all(&project_path).unwrap();
+        let package_json = project_path.join("package.json");
+        fs::write(
+            &package_json,
+            r#"{"name": "outside-pkg", "version": "1.0.0"}"#,
+        )
+        .unwrap();
+
+        let project = create_test_project(
+            "outside-pkg",
+            "1.0.0",
+            package_json.clone(),
+            PathBuf::from("outside-project/package.json"),
+            true,
+        );
+
+        let update_result = HashMap::new();
+        let projects = vec![&project];
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result);
+
+        let err = result.expect_err("a project outside the repo root must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("Failed to build changepack result for project"),
+            "error chain should carry the changepack-result context, got: {chain}"
+        );
+        assert!(
+            chain.contains(&package_json.display().to_string()),
+            "error chain should name the offending manifest path, got: {chain}"
+        );
+
+        repo_dir.close().unwrap();
+        outside_dir.close().unwrap();
     }
 }
