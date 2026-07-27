@@ -19,9 +19,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use changepacks_core::{Config, Language, is_regular_file};
-use changepacks_utils::{detect_indent_str, write_finalized};
+use changepacks_utils::{detect_indent_str, read_and_parse, write_finalized};
 use serde::Serialize;
-use tokio::fs::read_to_string;
 
 #[cfg(test)]
 pub(crate) mod test_util {
@@ -66,17 +65,16 @@ where
 /// to consolidate the "read file, parse JSON, attach context" sequence into
 /// a single source of truth.
 ///
+/// The sequence itself lives in [`changepacks_utils::read_and_parse`] — the
+/// mirror of [`write_finalized`] — so only the `package.json` label and the
+/// `serde_json` parser stay here.
+///
 /// # Errors
 /// Returns error if the file cannot be read or is not valid JSON.
 pub(crate) async fn read_and_parse_package_json(
     path: &Path,
 ) -> Result<(String, serde_json::Value)> {
-    let package_json_raw = read_to_string(path)
-        .await
-        .with_context(|| format!("Failed to read package.json {}", path.display()))?;
-    let package_json: serde_json::Value = serde_json::from_str(&package_json_raw)
-        .with_context(|| format!("Failed to parse package.json {}", path.display()))?;
-    Ok((package_json_raw, package_json))
+    read_and_parse(path, "package.json", |raw| serde_json::from_str(raw)).await
 }
 
 fn serialize_package_json<F: serde_json::ser::Formatter>(

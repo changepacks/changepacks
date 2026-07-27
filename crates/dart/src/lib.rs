@@ -25,8 +25,7 @@ pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "dart pub publish --dry-run";
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use changepacks_utils::write_finalized;
-use tokio::fs::read_to_string;
+use changepacks_utils::{read_and_parse, write_finalized};
 
 /// Update `pubspec.yaml` at `path` to set its `version` field to `new_version`,
 /// preserving the file's YAML formatting (via `yamlpatch`/`yamlpath`) and its
@@ -46,9 +45,12 @@ pub(crate) async fn write_pubspec_version(
     new_version: &str,
     existing_version: bool,
 ) -> Result<()> {
-    let pubspec_yaml_raw = read_to_string(path)
-        .await
-        .with_context(|| format!("Failed to read pubspec.yaml {}", path.display()))?;
+    // The read + parse head is `changepacks_utils::read_and_parse`, the mirror
+    // of `write_finalized` below, so the `Failed to read pubspec.yaml <path>`
+    // and `Failed to parse pubspec.yaml <path>` contexts are attached in one
+    // place shared with every other language crate.
+    let (pubspec_yaml_raw, document) =
+        read_and_parse(path, "pubspec.yaml", |raw| yamlpath::Document::new(raw)).await?;
     let patch = if existing_version {
         yamlpatch::Patch {
             operation: yamlpatch::Op::Replace(yaml_serde::Value::String(new_version.to_string())),
@@ -63,12 +65,8 @@ pub(crate) async fn write_pubspec_version(
             route: yamlpath::route!(),
         }
     };
-    let patched = yamlpatch::apply_yaml_patches(
-        &yamlpath::Document::new(&pubspec_yaml_raw)
-            .with_context(|| format!("Failed to parse pubspec.yaml {}", path.display()))?,
-        &[patch],
-    )
-    .with_context(|| format!("Failed to update pubspec.yaml {}", path.display()))?;
+    let patched = yamlpatch::apply_yaml_patches(&document, &[patch])
+        .with_context(|| format!("Failed to update pubspec.yaml {}", path.display()))?;
     write_finalized(
         path,
         patched.source().to_string(),

@@ -14,8 +14,8 @@ pub use finder::RustProjectFinder;
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
-use changepacks_utils::write_finalized;
+use anyhow::Result;
+use changepacks_utils::{read_and_parse, write_finalized};
 use toml_edit::DocumentMut;
 
 /// Default publish command for a single-crate `Cargo.toml`.
@@ -41,16 +41,14 @@ pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "cargo publish --dry-run";
 /// [`write_finalized`] to preserve formatting, comments, and the complete
 /// trailing-whitespace suffix.
 ///
+/// The read-then-parse-with-context sequence lives in
+/// [`changepacks_utils::read_and_parse`] — the mirror of [`write_finalized`] —
+/// so only the `Cargo.toml` label and the `toml_edit` parser stay here.
+///
 /// # Errors
 /// Returns error if the file cannot be read or the TOML cannot be parsed.
 pub(crate) async fn read_and_parse_cargo_toml(path: &Path) -> Result<(String, DocumentMut)> {
-    let cargo_toml_raw = tokio::fs::read_to_string(path)
-        .await
-        .with_context(|| format!("Failed to read Cargo.toml {}", path.display()))?;
-    let cargo_toml: DocumentMut = cargo_toml_raw
-        .parse::<DocumentMut>()
-        .with_context(|| format!("Failed to parse Cargo.toml {}", path.display()))?;
-    Ok((cargo_toml_raw, cargo_toml))
+    read_and_parse(path, "Cargo.toml", str::parse::<DocumentMut>).await
 }
 
 /// Update the `[package].version` key of the `Cargo.toml` at `path` to

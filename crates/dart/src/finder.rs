@@ -1,11 +1,10 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
-use tokio::fs::read_to_string;
 
 use crate::{package::DartPackage, workspace::DartWorkspace};
 
@@ -68,12 +67,16 @@ impl ProjectFinder for DartProjectFinder {
         if self.projects.contains_key(path) {
             return Ok(());
         }
-        // read pubspec.yaml
-        let pubspec_yaml = read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read pubspec.yaml {}", path.display()))?;
-        let pubspec: yaml_serde::Value = yaml_serde::from_str(&pubspec_yaml)
-            .with_context(|| format!("Failed to parse pubspec.yaml {}", path.display()))?;
+        // read + parse pubspec.yaml through the shared head
+        // `changepacks_utils::read_and_parse` (the mirror of
+        // `write_finalized`), which attaches the `Failed to read pubspec.yaml
+        // <path>` / `Failed to parse pubspec.yaml <path>` contexts. The raw
+        // text is unused here — only the finder's write path replays it.
+        let (_pubspec_yaml, pubspec): (String, yaml_serde::Value) =
+            changepacks_utils::read_and_parse(path, "pubspec.yaml", |raw| {
+                yaml_serde::from_str(raw)
+            })
+            .await?;
 
         // Check if this is a workspace (melos workspace or similar).
         // Short-circuit: when the pubspec's inline `workspace:` field is a

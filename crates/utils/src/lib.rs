@@ -37,6 +37,12 @@
 //!   `changepack_log_*.json` files after a successful `update`;
 //!   [`gen_changepack_result_map`] aggregates per-project `(UpdateType,
 //!   ChangePackResultLog)` for display / JSON output.
+//! - **Manifest read + parse head** — [`read_and_parse`] is the shared head of
+//!   every language crate's manifest pipeline and the exact mirror of
+//!   [`write_finalized`] below: read the file, hand its text to a
+//!   caller-supplied parser, and attach `Failed to read <label> <path>` /
+//!   `Failed to parse <label> <path>` contexts, returning the raw text next to
+//!   the parsed value.
 //! - **Format-preservation helpers** — [`detect_indent_str`] recovers the
 //!   indent width/character of the on-disk JSON so `serde_json` roundtrips
 //!   don't reformat it; the crate-internal `trailing_newline` helper reports
@@ -68,6 +74,7 @@ mod is_changepack_log;
 mod is_workspace_by_sibling;
 mod next_version;
 mod project_names;
+mod read_and_parse;
 mod sort_by_dep;
 mod split_version;
 #[cfg(any(test, feature = "test-support"))]
@@ -99,6 +106,7 @@ pub use get_relative_path::{get_relative_path, get_relative_path_ref};
 pub use is_changepack_log::collect_changepack_log_paths;
 pub use is_workspace_by_sibling::is_workspace_by_sibling;
 pub use next_version::{next_version, next_version_or_default};
+pub use read_and_parse::read_and_parse;
 pub use sort_by_dep::{
     DependencyAmbiguityError, DependencyCycleError, DependencyCycleMember, DependencySortError,
     sort_by_dependencies,

@@ -22,25 +22,22 @@ pub(crate) const PUBLISH_COMMAND: &str = "uv publish";
 pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "uv publish --dry-run";
 
 use std::path::Path;
-use tokio::fs::read_to_string;
 
-use anyhow::{Context, Result};
-use changepacks_utils::write_finalized;
+use anyhow::Result;
+use changepacks_utils::{read_and_parse, write_finalized};
 use toml_edit::DocumentMut;
 
 /// Read and parse a pyproject.toml file, returning both the raw content
 /// (for trailing-newline preservation) and the parsed TOML document.
 ///
+/// The read-then-parse-with-context sequence lives in
+/// [`changepacks_utils::read_and_parse`] — the mirror of [`write_finalized`] —
+/// so only the `pyproject.toml` label and the `toml_edit` parser stay here.
+///
 /// # Errors
 /// Returns error if the file cannot be read or is not valid TOML.
 pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String, DocumentMut)> {
-    let raw = read_to_string(path)
-        .await
-        .with_context(|| format!("Failed to read pyproject.toml {}", path.display()))?;
-    let parsed = raw
-        .parse::<DocumentMut>()
-        .with_context(|| format!("Failed to parse pyproject.toml {}", path.display()))?;
-    Ok((raw, parsed))
+    read_and_parse(path, "pyproject.toml", str::parse::<DocumentMut>).await
 }
 
 /// Update `pyproject.toml` at `path` to set `[project].version` to

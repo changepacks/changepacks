@@ -92,9 +92,10 @@ pub(crate) fn format_selected_projects<'a>(
         if i > 0 {
             out.push('\n');
         }
-        // Writing into a `String` via `fmt::Write` never returns `Err`, so
-        // the discarded `Result` is `Ok(())` in practice.
-        let _ = write!(&mut out, "{p}");
+        // `fmt::Write for String` is infallible: its `write_str` only calls
+        // `String::push_str` and always returns `Ok(())`. The `expect` documents
+        // that invariant instead of silently discarding the `Result`.
+        write!(&mut out, "{p}").expect("writing into a String via fmt::Write is infallible");
     }
     out
 }

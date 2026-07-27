@@ -4,8 +4,15 @@ use crate::project::Project;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
-/// Generates `projects()`, `projects_mut()`, and `project_count()` for finders backed by a
+/// Generates `projects()`, `projects_mut()`, `project_count()`, and
+/// `extend_projects()` for finders backed by a
 /// `projects: HashMap<PathBuf, Project>` field.
+///
+/// The `extend_projects` body drains `self.projects.values()` straight into
+/// the caller's buffer, so the intermediate `Vec<&Project>` that `projects()`
+/// has to materialize is never built. Yield order is `HashMap::values()` in
+/// both bodies, so overriding is order-preserving with respect to the
+/// defaulted [`ProjectFinder::extend_projects`].
 #[macro_export]
 macro_rules! impl_projects_hashmap_accessors {
     () => {
@@ -17,6 +24,9 @@ macro_rules! impl_projects_hashmap_accessors {
         }
         fn project_count(&self) -> ::std::primitive::usize {
             self.projects.len()
+        }
+        fn extend_projects<'a>(&'a self, out: &mut ::std::vec::Vec<&'a $crate::Project>) {
+            out.extend(self.projects.values());
         }
     };
 }
@@ -229,6 +239,28 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// [`impl_projects_hashmap_accessors!`]), so the trait demands it instead
     /// of offering a lossy shortcut.
     fn project_count(&self) -> usize;
+    /// Append every project held by this finder onto `out`.
+    ///
+    /// Exists for the same reason [`ProjectFinder::project_count`] does:
+    /// callers that merge several finders into one buffer (the CLI's
+    /// `collect_projects`) would otherwise pay one throwaway `Vec<&Project>`
+    /// per finder — allocated by `projects()` and dropped one line later —
+    /// on every `check`, `update`, `publish`, and default-changepack run.
+    /// Pushing into the caller's buffer removes that per-finder allocation.
+    ///
+    /// The default body is the compatibility path for external implementors:
+    /// it forwards to `projects()`, so an implementor that only supplies the
+    /// required accessors keeps compiling and keeps identical behaviour, and
+    /// merely forfeits the allocation elision. Implementors backed by a
+    /// `HashMap<PathBuf, Project>` get the elided override for free from
+    /// [`impl_projects_hashmap_accessors!`].
+    ///
+    /// Contract for overrides: append in exactly `projects()` order and never
+    /// clear or reorder what `out` already holds — callers rely on the merged
+    /// order for their output (e.g. `changepacks check`).
+    fn extend_projects<'a>(&'a self, out: &mut Vec<&'a Project>) {
+        out.extend(self.projects());
+    }
     fn project_files(&self) -> &[&str];
     /// # Errors
     /// Returns error if the file visitation fails.
@@ -422,6 +454,108 @@ mod tests {
         async fn visit(&mut self, _path: &Path, _relative_path: &Path) -> Result<()> {
             Ok(())
         }
+    }
+
+    /// HashMap-backed finder that takes its accessors from
+    /// [`impl_projects_hashmap_accessors!`], so the macro's `extend_projects`
+    /// override is exercised inside `core` (the six language finders use the
+    /// exact same expansion).
+    #[derive(Debug)]
+    struct HashMapProjectFinder {
+        projects: std::collections::HashMap<PathBuf, Project>,
+    }
+
+    impl HashMapProjectFinder {
+        fn with_packages(names: &[(&str, &str)]) -> Self {
+            let mut projects = std::collections::HashMap::new();
+            for (name, path) in names {
+                projects.insert(
+                    PathBuf::from(*path),
+                    Project::Package(Box::new(MockPackage::same_path(name, path))),
+                );
+            }
+            Self { projects }
+        }
+    }
+
+    #[async_trait]
+    impl ProjectFinder for HashMapProjectFinder {
+        crate::impl_projects_hashmap_accessors!();
+
+        fn project_files(&self) -> &[&str] {
+            &["package.json"]
+        }
+
+        async fn visit(&mut self, _path: &Path, _relative_path: &Path) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn project_names(projects: &[&Project]) -> Vec<String> {
+        projects
+            .iter()
+            .map(|project| project.name().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    // The defaulted `extend_projects` body is the compatibility path for
+    // external implementors: `MockProjectFinder` does NOT override it, so this
+    // pins that the default appends exactly `projects()`, in `projects()`
+    // order, without disturbing what the buffer already holds.
+    #[test]
+    fn test_extend_projects_default_matches_projects_and_preserves_buffer() {
+        let finder = MockProjectFinder::new()
+            .with_package(MockPackage::same_path("pkg1", "/project1/package.json"))
+            .with_workspace(MockWorkspace::same_path("root", "/project2/package.json"))
+            .with_package(MockPackage::same_path("pkg2", "/project3/package.json"));
+
+        let seed = MockProjectFinder::new()
+            .with_package(MockPackage::same_path("seed", "/seed/package.json"));
+        let mut out = seed.projects();
+        finder.extend_projects(&mut out);
+
+        let mut expected = vec!["seed".to_string()];
+        expected.extend(project_names(&finder.projects()));
+        assert_eq!(project_names(&out), expected);
+    }
+
+    #[test]
+    fn test_extend_projects_default_on_empty_finder_is_a_no_op() {
+        let finder = MockProjectFinder::new();
+        let mut out: Vec<&Project> = Vec::new();
+        finder.extend_projects(&mut out);
+        assert!(out.is_empty());
+    }
+
+    // The macro override skips the intermediate Vec that `projects()` builds;
+    // both must still yield the same projects in the same `HashMap::values()`
+    // order, so a caller can swap one for the other without reordering output.
+    #[test]
+    fn test_extend_projects_macro_override_matches_projects_order() {
+        let finder = HashMapProjectFinder::with_packages(&[
+            ("pkg1", "/project1/package.json"),
+            ("pkg2", "/project2/package.json"),
+            ("pkg3", "/project3/package.json"),
+        ]);
+
+        let mut out: Vec<&Project> = Vec::new();
+        finder.extend_projects(&mut out);
+
+        assert_eq!(out.len(), finder.project_count());
+        assert_eq!(project_names(&out), project_names(&finder.projects()));
+    }
+
+    #[test]
+    fn test_extend_projects_macro_override_preserves_existing_buffer_contents() {
+        let first = HashMapProjectFinder::with_packages(&[("pkg1", "/project1/package.json")]);
+        let second = HashMapProjectFinder::with_packages(&[("pkg2", "/project2/package.json")]);
+
+        // Mirrors the CLI's `collect_projects`: one buffer, several finders.
+        let mut out: Vec<&Project> = Vec::new();
+        first.extend_projects(&mut out);
+        second.extend_projects(&mut out);
+
+        assert_eq!(project_names(&out), vec!["pkg1", "pkg2"]);
     }
 
     #[test]

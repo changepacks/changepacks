@@ -173,19 +173,25 @@ impl Workspace for RustWorkspace {
             *ws_pkg_version = toml_edit::value(new_version.as_str());
         }
 
-        let inherited_workspace_members = self
-            .inherited_workspace_members
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-
         // Sync [workspace.dependencies] only for discovered members that inherit
         // the workspace package version and whose local dependency version matched
         // the old workspace version.
         if let Some(ws_deps) = crate::workspace_dependencies_table_mut(&mut cargo_toml) {
-            // `old_version` hoisted to the top of this function so both the
-            // `next_version_or_default` fallback and this workspace-deps
-            // sync share the same "reserve 0.0.0 when unversioned" source.
+            // Hold the lock GUARD instead of deep-cloning the two
+            // `HashSet<String>` behind it: the clone used to run on every
+            // workspace bump even when this `if let` did not fire. Taken
+            // inside the block so the guard is dropped at its closing brace,
+            // strictly before the `.await` below — that keeps this future
+            // `Send` for the N-API and PyO3 bridges. Auto-deref makes
+            // `contains_dependency` read unchanged through the guard.
+            //
+            // `old_version` is hoisted to the top of this function so both the
+            // `next_version` fallback and this workspace-deps sync share the
+            // same "reserve 0.0.0 when unversioned" source.
+            let inherited_workspace_members = self
+                .inherited_workspace_members
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             for (dependency_key, value) in ws_deps.iter_mut() {
                 let dependency_key = dependency_key.get();
                 let package_name = crate::finder::effective_dependency_name(dependency_key, value);
@@ -710,6 +716,93 @@ serde = { version = "1.0.0" }
         );
 
         temp_dir.close().unwrap();
+    }
+
+    /// Fixture shared by the two fast-path guard tests below: writes a
+    /// `[workspace.dependencies]` manifest whose entries carry BOTH `path` and
+    /// `version` keys, i.e. exactly the shape the update loop would rewrite if
+    /// it ever ran, and returns it together with its raw bytes.
+    fn write_path_dep_workspace_manifest(dir: &TempDir) -> (PathBuf, Vec<u8>) {
+        let cargo_toml = dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+core = { version = "1.0.0", path = "crates/core" }
+utils = { version = "2.0.0", path = "crates/utils" }
+"#,
+        )
+        .unwrap();
+        let bytes = fs::read(&cargo_toml).unwrap();
+        (cargo_toml, bytes)
+    }
+
+    /// Asserts the two observable effects of the fast-path guard in
+    /// `update_workspace_dependencies` for a `packages` slice holding zero
+    /// eligible Rust entries: the manifest is left byte-identical (no write),
+    /// and a workspace whose manifest does not exist on disk still returns
+    /// `Ok(())` (no read/parse at all — removing the guard turns this second
+    /// case into the `read_and_parse_cargo_toml` error).
+    async fn assert_workspace_dependencies_fast_path(packages: &[&dyn Package]) {
+        let temp_dir = TempDir::new().unwrap();
+        let (cargo_toml, before) = write_path_dep_workspace_manifest(&temp_dir);
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+        workspace
+            .update_workspace_dependencies(packages)
+            .await
+            .expect("fast path must succeed");
+        assert_eq!(
+            fs::read(&cargo_toml).unwrap(),
+            before,
+            "fast path must leave the manifest byte-identical"
+        );
+
+        // No manifest on disk: only the guard's early return can keep this
+        // `Ok(())`, so this pins "the fast path never reads or parses".
+        let missing = temp_dir.path().join("missing").join("Cargo.toml");
+        let absent_workspace = RustWorkspace::new(
+            Some("absent-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            missing.clone(),
+            PathBuf::from("missing/Cargo.toml"),
+        );
+        absent_workspace
+            .update_workspace_dependencies(packages)
+            .await
+            .expect("fast path must not touch the filesystem");
+        assert!(
+            !missing.exists(),
+            "fast path must not create the missing manifest"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_workspace_dependencies_empty_packages() {
+        assert_workspace_dependencies_fast_path(&[]).await;
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_workspace_dependencies_no_rust_packages() {
+        let node_pkg = changepacks_core::test_support::MockPackage::with_all(
+            Some("core"),
+            Some("9.9.9"),
+            "/test/packages/core/package.json",
+            "packages/core/package.json",
+            Language::Node,
+        );
+        let packages: Vec<&dyn Package> = vec![&node_pkg];
+
+        assert_workspace_dependencies_fast_path(&packages).await;
     }
 
     #[tokio::test]

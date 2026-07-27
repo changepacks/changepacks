@@ -99,14 +99,19 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         // Preallocate: `HashMap::from_iter` (via `collect`) does NOT use
         // `size_hint` to reserve capacity (unlike `Vec`), so on a
         // language-filtered `changepacks update -l rust` against a large
-        // monorepo the map hits geometric-doubling reallocations. Summing
-        // `finder.projects().len()` yields a tight upper bound (the
-        // `filter_map` below can only shrink it when a project path lies
-        // outside the repo root). Matches the preallocation policy already
-        // applied in `sort_by_dep.rs` and `find_project_dirs.rs`.
-        let cap: usize = total_project_count(&project_finders);
-        let mut path_to_language: HashMap<&Path, Language> = HashMap::with_capacity(cap);
-        for project in project_finders.iter().flat_map(|finder| finder.projects()) {
+        // monorepo the map hits geometric-doubling reallocations.
+        // `projects.len()` yields a tight upper bound (the loop below can only
+        // shrink it when a project path lies outside the repo root). Matches
+        // the preallocation policy already applied in `sort_by_dep.rs` and
+        // `find_project_dirs.rs`.
+        //
+        // Iterates the `projects` slice collected above instead of re-running
+        // `flat_map(|finder| finder.projects())`, which rebuilt one throwaway
+        // `Vec<&Project>` per finder. `projects` is `collect_projects(&project_finders)`
+        // over the same, still-unmutated finders, so the visited set and its
+        // order are identical.
+        let mut path_to_language: HashMap<&Path, Language> = HashMap::with_capacity(projects.len());
+        for project in &projects {
             if let Ok(rel) = get_relative_path_ref(&ctx.repo_root_path, project.path()) {
                 path_to_language.insert(rel, project.language());
             }
