@@ -350,29 +350,6 @@ fn failed_dependency<'a>(
         .map(String::as_str)
 }
 
-fn record_dependency_skip(
-    result_map: &mut BTreeMap<PathBuf, PublishResult>,
-    failed_projects: &mut Vec<String>,
-    failed_project_names: &mut HashSet<String>,
-    project: &Project,
-    dependency: &str,
-    failure_label: &str,
-    format: FormatOptions,
-) {
-    let error = anyhow::anyhow!("skipped because dependency failed: {dependency}");
-    record_publish_failure(
-        result_map,
-        failed_projects,
-        project,
-        PublishFailureCause::Error(&error),
-        failure_label,
-        format,
-    );
-    if let Some(name) = project.name() {
-        failed_project_names.insert(name.to_string());
-    }
-}
-
 /// Records a dry-run skip as a JSON success entry with the provided note.
 /// For JSON format, inserts a `PublishResult` with `success = true`, the given
 /// `note` as the error message, and empty stdout/stderr. For Stdout format,
@@ -419,53 +396,6 @@ struct PublishOutcomeLabels {
     failure: &'static str,
 }
 
-/// Records `outcome` into `result_map` / `failed_projects` via
-/// `record_publish_success` / `record_publish_failure`, then — on failure —
-/// inserts `project.name()` into `failed_project_names` if the project has a
-/// name. Collapses the four identical "record the outcome, then track its name
-/// on failure" blocks that appeared in both publish loops.
-fn record_outcome_track_failure(
-    result_map: &mut BTreeMap<PathBuf, PublishResult>,
-    failed_projects: &mut Vec<String>,
-    failed_project_names: &mut HashSet<String>,
-    project: &Project,
-    outcome: ProjectPublishOutcome,
-    labels: PublishOutcomeLabels,
-    format: FormatOptions,
-) {
-    let failed = match outcome {
-        ProjectPublishOutcome::Success(output) => {
-            record_publish_success(result_map, project, output, labels.success, format);
-            false
-        }
-        ProjectPublishOutcome::Failure(output) => {
-            record_publish_failure(
-                result_map,
-                failed_projects,
-                project,
-                PublishFailureCause::Output(output),
-                labels.failure,
-                format,
-            );
-            true
-        }
-        ProjectPublishOutcome::Error(error) => {
-            record_publish_failure(
-                result_map,
-                failed_projects,
-                project,
-                PublishFailureCause::Error(&error),
-                labels.failure,
-                format,
-            );
-            true
-        }
-    };
-    if failed && let Some(name) = project.name() {
-        failed_project_names.insert(name.to_string());
-    }
-}
-
 /// The three collections both publish loops carry from the first project to
 /// the last: the per-project JSON results, the ordered list of failed project
 /// display names, and the set of failed project *package* names consulted by
@@ -491,13 +421,88 @@ impl PublishLoopState {
         }
     }
 
+    /// Records `outcome` into `result_map` / `failed_projects` via
+    /// `record_publish_success` / `record_publish_failure`, then — on failure —
+    /// inserts `project.name()` into `failed_project_names` if the project has
+    /// a name. Collapses the four identical "record the outcome, then track its
+    /// name on failure" blocks that appeared in both publish loops.
+    fn record_outcome_track_failure(
+        &mut self,
+        project: &Project,
+        outcome: ProjectPublishOutcome,
+        labels: PublishOutcomeLabels,
+        format: FormatOptions,
+    ) {
+        let failed = match outcome {
+            ProjectPublishOutcome::Success(output) => {
+                record_publish_success(
+                    &mut self.result_map,
+                    project,
+                    output,
+                    labels.success,
+                    format,
+                );
+                false
+            }
+            ProjectPublishOutcome::Failure(output) => {
+                record_publish_failure(
+                    &mut self.result_map,
+                    &mut self.failed_projects,
+                    project,
+                    PublishFailureCause::Output(output),
+                    labels.failure,
+                    format,
+                );
+                true
+            }
+            ProjectPublishOutcome::Error(error) => {
+                record_publish_failure(
+                    &mut self.result_map,
+                    &mut self.failed_projects,
+                    project,
+                    PublishFailureCause::Error(&error),
+                    labels.failure,
+                    format,
+                );
+                true
+            }
+        };
+        if failed && let Some(name) = project.name() {
+            self.failed_project_names.insert(name.to_string());
+        }
+    }
+
+    /// Records `project` as failed-by-association with an already-failed
+    /// `dependency`, then tracks its package name so its own dependents are
+    /// skipped in turn.
+    fn record_dependency_skip(
+        &mut self,
+        project: &Project,
+        dependency: &str,
+        failure_label: &str,
+        format: FormatOptions,
+    ) {
+        let error = anyhow::anyhow!("skipped because dependency failed: {dependency}");
+        record_publish_failure(
+            &mut self.result_map,
+            &mut self.failed_projects,
+            project,
+            PublishFailureCause::Error(&error),
+            failure_label,
+            format,
+        );
+        if let Some(name) = project.name() {
+            self.failed_project_names.insert(name.to_string());
+        }
+    }
+
     /// Records `project` as skipped when any of its dependencies already
     /// failed, returning `true` when the caller should `continue`.
     ///
     /// `failure_label` is the only thing that differed between the two loops
     /// (`"Dry-run skipped for"` vs `"Skipped publish for"`) and is passed
-    /// through to `record_dependency_skip` unchanged, so every user-visible
-    /// string stays byte-identical.
+    /// through to `Self::record_dependency_skip` unchanged, so every
+    /// user-visible string stays byte-identical.
     fn skip_if_dependency_failed(
         &mut self,
         project: &Project,
@@ -507,15 +512,10 @@ impl PublishLoopState {
         let Some(dependency) = failed_dependency(project, &self.failed_project_names) else {
             return false;
         };
-        record_dependency_skip(
-            &mut self.result_map,
-            &mut self.failed_projects,
-            &mut self.failed_project_names,
-            project,
-            dependency,
-            failure_label,
-            format,
-        );
+        // `failed_dependency` returns a `&str` borrowed from `project`, not
+        // from `self.failed_project_names`, so the shared borrow of `self`
+        // ends at the call and `&mut self` is free here.
+        self.record_dependency_skip(project, dependency, failure_label, format);
         true
     }
 
@@ -579,15 +579,7 @@ async fn execute_dry_run_publish_loop(
         match project.dry_run_publish(config).await {
             Ok(Some(output)) => {
                 let outcome = ProjectPublishOutcome::from_output(output);
-                record_outcome_track_failure(
-                    &mut state.result_map,
-                    &mut state.failed_projects,
-                    &mut state.failed_project_names,
-                    project,
-                    outcome,
-                    DRY_RUN_LABELS,
-                    format,
-                );
+                state.record_outcome_track_failure(project, outcome, DRY_RUN_LABELS, format);
             }
             Ok(None) => {
                 // Ok(None) stays inline: dry-run unsupported is a warning,
@@ -611,10 +603,7 @@ async fn execute_dry_run_publish_loop(
                 );
             }
             Err(e) => {
-                record_outcome_track_failure(
-                    &mut state.result_map,
-                    &mut state.failed_projects,
-                    &mut state.failed_project_names,
+                state.record_outcome_track_failure(
                     project,
                     ProjectPublishOutcome::Error(e),
                     DRY_RUN_LABELS,
@@ -649,21 +638,10 @@ async fn execute_publish_loop(
         match project.publish(config).await {
             Ok(output) => {
                 let outcome = ProjectPublishOutcome::from_output(output);
-                record_outcome_track_failure(
-                    &mut state.result_map,
-                    &mut state.failed_projects,
-                    &mut state.failed_project_names,
-                    project,
-                    outcome,
-                    PUBLISH_LABELS,
-                    format,
-                );
+                state.record_outcome_track_failure(project, outcome, PUBLISH_LABELS, format);
             }
             Err(e) => {
-                record_outcome_track_failure(
-                    &mut state.result_map,
-                    &mut state.failed_projects,
-                    &mut state.failed_project_names,
+                state.record_outcome_track_failure(
                     project,
                     ProjectPublishOutcome::Error(e),
                     PUBLISH_LABELS,

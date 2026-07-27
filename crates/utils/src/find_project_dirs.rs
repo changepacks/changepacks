@@ -68,43 +68,6 @@ fn collect_dispatchable_paths(
         .context(error_context)
 }
 
-/// Discover project directories containing specific files from git tracked
-/// files — the discovery-only walk, with NO git change detection.
-///
-/// This is the first half of [`find_project_dirs`]: build the gitignore
-/// matcher from `config.ignore`, walk the git index dispatching each tracked
-/// file to every finder that can visit it, run post-visit finalization, and
-/// apply the remote-origin / directory-name fallback for projects with no
-/// name. It deliberately skips the base-branch diff / worktree-status pass, so
-/// `is_changed` is never populated — use it for callers that only read the
-/// discovered paths/names/deps/versions and never inspect `is_changed`.
-///
-/// # Errors
-/// Returns error if git operations fail, gitignore parsing fails, or project visiting fails.
-///
-pub async fn discover_project_dirs(
-    repo: &ThreadSafeRepository,
-    project_finders: &mut [Box<dyn ProjectFinder>],
-    config: &Config,
-) -> Result<()> {
-    let git_root_path = repo.work_dir().context("Not a working directory")?;
-    let gitignore = build_config_gitignore(git_root_path, config)?;
-
-    // Materialize the thread-local `gix::Repository` exactly ONCE per
-    // invocation. `ThreadSafeRepository::to_thread_local()` is not a pointer
-    // copy: it builds a fresh `Repository`, cloning the object store handle,
-    // ref store and config snapshot.
-    discover_project_dirs_with_gitignore(
-        repo.to_thread_local(),
-        project_finders,
-        git_root_path,
-        gitignore.as_ref(),
-    )
-    .await?;
-
-    Ok(())
-}
-
 /// Discovery walk over an already-materialized thread-local repository.
 ///
 /// Takes the `gix::Repository` by value and hands it back on success so
@@ -496,15 +459,13 @@ mod tests {
     #[test]
     fn discovery_entry_points_are_included_in_coverage() {
         let source = include_str!("find_project_dirs.rs");
-        let discover_marker = "#[cfg(not(tarpaulin_include))]\npub async fn discover_project_dirs";
         let find_marker = "#[cfg(not(tarpaulin_include))]\npub async fn find_project_dirs";
 
-        assert!(!source.contains(discover_marker));
         assert!(!source.contains(find_marker));
     }
 
     #[tokio::test]
-    async fn discover_dispatches_negated_manifest_and_invokes_finalizer() {
+    async fn find_dispatches_negated_manifest_and_invokes_finalizer() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
         init_git_repo(temp_path);
@@ -541,7 +502,7 @@ mod tests {
             ..Config::default()
         };
 
-        discover_project_dirs(&discover_repo(temp_path), &mut finders, &config)
+        find_project_dirs(&discover_repo(temp_path), &mut finders, &config, false)
             .await
             .unwrap();
 
@@ -553,7 +514,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discover_uses_directory_name_when_origin_is_absent() {
+    async fn find_uses_directory_name_when_origin_is_absent() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
         init_git_repo(temp_path);
@@ -564,9 +525,14 @@ mod tests {
 
         let expected = temp_path.file_name().unwrap().to_str().unwrap();
         let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
-        discover_project_dirs(&discover_repo(temp_path), &mut finders, &Config::default())
-            .await
-            .unwrap();
+        find_project_dirs(
+            &discover_repo(temp_path),
+            &mut finders,
+            &Config::default(),
+            false,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(finders[0].projects()[0].name(), Some(expected));
     }

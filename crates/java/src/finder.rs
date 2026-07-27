@@ -93,50 +93,58 @@ struct GradleWrapperMetadata {
     project_names_by_path: HashMap<String, String>,
 }
 
-fn required_metadata_string(
+/// Removes `field` from a Gradle metadata record and converts it with `extract`.
+///
+/// The three typed accessors below only differ in the accepted
+/// `serde_json::Value` variants and in the type name quoted by the error, so the
+/// shared missing-field and wrong-type reporting lives here. `extract` hands the
+/// value back through `Err` when it does not match, which keeps the rejected
+/// value available for the message without formatting it on the success path.
+fn metadata_field<T>(
     fields: &mut serde_json::Map<String, serde_json::Value>,
     field: &str,
-) -> Result<String> {
+    expected: &str,
+    extract: impl FnOnce(serde_json::Value) -> std::result::Result<T, serde_json::Value>,
+) -> Result<T> {
     match fields.remove(field) {
-        Some(serde_json::Value::String(value)) => Ok(value),
-        Some(value) => Err(anyhow::anyhow!(
-            "Gradle metadata field '{field}' must be a string, got {value:?}"
-        )),
+        Some(value) => extract(value).map_err(|value| {
+            anyhow::anyhow!("Gradle metadata field '{field}' must be {expected}, got {value:?}")
+        }),
         None => Err(anyhow::anyhow!(
             "Gradle metadata record is missing required field '{field}'"
         )),
     }
+}
+
+fn required_metadata_string(
+    fields: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<String> {
+    metadata_field(fields, field, "a string", |value| match value {
+        serde_json::Value::String(value) => Ok(value),
+        other => Err(other),
+    })
 }
 
 fn optional_metadata_string(
     fields: &mut serde_json::Map<String, serde_json::Value>,
     field: &str,
 ) -> Result<Option<String>> {
-    match fields.remove(field) {
-        Some(serde_json::Value::String(value)) => Ok(Some(value)),
-        Some(serde_json::Value::Null) => Ok(None),
-        Some(value) => Err(anyhow::anyhow!(
-            "Gradle metadata field '{field}' must be a string or null, got {value:?}"
-        )),
-        None => Err(anyhow::anyhow!(
-            "Gradle metadata record is missing required field '{field}'"
-        )),
-    }
+    metadata_field(fields, field, "a string or null", |value| match value {
+        serde_json::Value::String(value) => Ok(Some(value)),
+        serde_json::Value::Null => Ok(None),
+        other => Err(other),
+    })
 }
 
 fn required_metadata_bool(
     fields: &mut serde_json::Map<String, serde_json::Value>,
     field: &str,
 ) -> Result<bool> {
-    match fields.remove(field) {
-        Some(serde_json::Value::Bool(value)) => Ok(value),
-        Some(value) => Err(anyhow::anyhow!(
-            "Gradle metadata field '{field}' must be a boolean, got {value:?}"
-        )),
-        None => Err(anyhow::anyhow!(
-            "Gradle metadata record is missing required field '{field}'"
-        )),
-    }
+    metadata_field(fields, field, "a boolean", |value| match value {
+        serde_json::Value::Bool(value) => Ok(value),
+        other => Err(other),
+    })
 }
 
 fn normalized_gradle_property(value: Option<String>) -> Option<String> {
@@ -2178,6 +2186,38 @@ mod tests {
         assert!(error.to_string().contains("line 1"));
         assert!(error.to_string().contains("hasPublishToMavenLocalTask"));
         assert!(error.to_string().contains("must be a boolean"));
+    }
+
+    #[test]
+    fn test_metadata_field_accessors_report_exact_type_and_missing_wording() {
+        let mut fields: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(r#"{"name":7,"version":true,"aggregate":"yes"}"#).unwrap();
+
+        assert_eq!(
+            required_metadata_string(&mut fields, "name")
+                .unwrap_err()
+                .to_string(),
+            "Gradle metadata field 'name' must be a string, got Number(7)"
+        );
+        assert_eq!(
+            optional_metadata_string(&mut fields, "version")
+                .unwrap_err()
+                .to_string(),
+            "Gradle metadata field 'version' must be a string or null, got Bool(true)"
+        );
+        assert_eq!(
+            required_metadata_bool(&mut fields, "aggregate")
+                .unwrap_err()
+                .to_string(),
+            "Gradle metadata field 'aggregate' must be a boolean, got String(\"yes\")"
+        );
+        assert_eq!(
+            required_metadata_string(&mut fields, "name")
+                .unwrap_err()
+                .to_string(),
+            "Gradle metadata record is missing required field 'name'"
+        );
+        assert!(fields.is_empty());
     }
 
     #[test]

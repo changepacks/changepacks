@@ -178,20 +178,38 @@ fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], residual: &[bool]
         reverse_offsets[index] += reverse_offsets[index - 1];
     }
 
-    let mut reverse_cursor = reverse_offsets.clone();
-    let mut reverse_adj = vec![0; reverse_offsets[node_count]];
+    // In-place counting-sort fill, mirroring `sort_by_dependencies`:
+    // `reverse_offsets[target]` itself doubles as the write cursor for target
+    // `target`, so no cloned cursor Vec is allocated and memcpy'd per call.
+    // Sources are still visited in ascending order and each edge lands in the
+    // next free slot of its bucket, so the per-target fill order (and therefore
+    // the SCC traversal order and the reported cycle members) is byte-for-byte
+    // what the cloned cursor produced. Afterwards `reverse_offsets[i]` holds
+    // the END of target `i` (the canonical `reverse_offsets[i + 1]`);
+    // `reverse_offsets[node_count]` is untouched because no edge carries that
+    // source index, so it still holds the total edge count.
+    let reverse_len = reverse_offsets[node_count];
+    let mut reverse_adj = vec![0; reverse_len];
     for source in 0..node_count {
         if !residual[source] {
             continue;
         }
         for &target in &adj[offsets[source]..offsets[source + 1]] {
             if residual[target] {
-                let slot = reverse_cursor[target];
+                let slot = reverse_offsets[target];
                 reverse_adj[slot] = source;
-                reverse_cursor[target] += 1;
+                reverse_offsets[target] += 1;
             }
         }
     }
+
+    // Restore the canonical start-offset array with a single reverse shift:
+    // every entry moves one slot to the right and `reverse_offsets[0]`
+    // returns to 0.
+    for index in (1..reverse_offsets.len()).rev() {
+        reverse_offsets[index] = reverse_offsets[index - 1];
+    }
+    reverse_offsets[0] = 0;
 
     let mut assigned = vec![false; node_count];
     let mut cycle_members = vec![false; node_count];

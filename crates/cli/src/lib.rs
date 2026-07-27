@@ -114,7 +114,7 @@ pub async fn main(args: &[String]) -> Result<()> {
             Commands::Init(args) => handle_init(&args).await?,
             Commands::Check(args) => handle_check(&args).await?,
             Commands::Update(args) => handle_update(&args).await?,
-            Commands::Config(args) => handle_config(&args).await?,
+            Commands::Config(_) => handle_config().await?,
             Commands::Publish(args) => handle_publish(&args).await?,
         }
     } else {

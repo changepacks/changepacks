@@ -48,6 +48,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_bump_version_with_writer_error_leaves_version_untouched() {
+        let path = Path::new("/tmp/changepacks-utils/writer-fail/package.json");
+        let mut version = Some(String::from("1.2.3"));
+
+        let err = bump_version_with(&mut version, path, UpdateType::Minor, async |_| {
+            Err(anyhow::anyhow!("boom"))
+        })
+        .await
+        .expect_err("writer failure must propagate");
+        let chain = format!("{err:#}");
+
+        assert!(
+            chain.contains("boom"),
+            "error chain should surface the writer error, got: {chain}"
+        );
+        assert_eq!(
+            version.as_deref(),
+            Some("1.2.3"),
+            "a failed write must leave the in-memory version untouched"
+        );
+    }
+
+    #[tokio::test]
     async fn test_bump_version_with_bump_error_includes_path() {
         let path = Path::new("/nonexistent/utils-bump/package.json");
         let mut version = Some("abc".to_string());

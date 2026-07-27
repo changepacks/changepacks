@@ -10,7 +10,7 @@ pub struct ConfigArgs {}
 ///
 /// # Errors
 /// Returns error if reading the configuration fails.
-pub async fn handle_config(_args: &ConfigArgs) -> Result<()> {
+pub async fn handle_config() -> Result<()> {
     let current_dir =
         std::env::current_dir().context("Failed to determine current working directory")?;
     let config = get_changepacks_config(&current_dir).await?;
