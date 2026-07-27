@@ -12,10 +12,10 @@ readme = "../../README.md"
 test-support = []
 
 [dependencies]
-gix = { version = "0.85", default-features = false, features = ["index", "status", "parallel", "revision", "sha1"] }
+gix = { version = "0.86", default-features = false, features = ["index", "status", "parallel", "revision", "sha1"] }
 anyhow = "1.0"
 changepacks-core.workspace = true
-tokio = { version = "1.52", features = ["fs"] }
+tokio = { version = "1.53", features = ["fs"] }
 futures = "0.3"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 ignore = "0.4"
@@ -24,7 +24,7 @@ glob = "0.3"
 [dev-dependencies]
 rstest = "0.26"
 tempfile = "3.27"
-tokio = { version = "1.52", features = ["test-util", "macros"] }
+tokio = { version = "1.53", features = ["test-util", "macros"] }
 changepacks-node = { path = "../node" }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 

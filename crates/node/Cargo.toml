@@ -15,11 +15,11 @@ async-trait = "0.1"
 serde = "1.0"
 serde_json = { version = "1.0", features = ["preserve_order"] }
 anyhow = "1.0"
-tokio = { version = "1.52", features = ["fs", "macros"] }
+tokio = { version = "1.53", features = ["fs", "macros"] }
 
 [dev-dependencies]
 tempfile = "3.27"
-tokio = { version = "1.52", features = ["test-util", "macros"] }
+tokio = { version = "1.53", features = ["test-util", "macros"] }
 rstest = "0.26"
 changepacks-utils = { workspace = true, features = ["test-support"] }
 

@@ -13,13 +13,13 @@ changepacks-core.workspace = true
 changepacks-utils.workspace = true
 async-trait = "0.1"
 anyhow = "1.0"
-tokio = { version = "1.52", features = ["fs", "process"] }
+tokio = { version = "1.53", features = ["fs", "process"] }
 regex = "1"
 serde_json = "1.0"
 tempfile = "3.27"
 
 [dev-dependencies]
-tokio = { version = "1.52", features = ["test-util", "macros"] }
+tokio = { version = "1.53", features = ["test-util", "macros"] }
 rstest = "0.26"
 
 [lints]

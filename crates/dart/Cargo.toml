@@ -14,13 +14,13 @@ changepacks-utils.workspace = true
 async-trait = "0.1"
 yaml_serde = "0.10"
 anyhow = "1.0"
-tokio = { version = "1.52", features = ["fs"] }
-yamlpatch = "1.26"
-yamlpath = "1.26"
+tokio = { version = "1.53", features = ["fs"] }
+yamlpatch = "1.28"
+yamlpath = "1.28"
 
 [dev-dependencies]
 tempfile = "3.27"
-tokio = { version = "1.52", features = ["test-util", "macros"] }
+tokio = { version = "1.53", features = ["test-util", "macros"] }
 rstest = "0.26"
 changepacks-utils = { workspace = true, features = ["test-support"] }
 

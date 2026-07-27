@@ -24,15 +24,15 @@ thiserror = "2"
 inquire = "0.9"
 colored = "3"
 serde_json = "1.0"
-tokio = { version = "1.52", features = ["fs", "io-util"] }
+tokio = { version = "1.53", features = ["fs", "io-util"] }
 futures = "0.3"
 
 [dev-dependencies]
 async-trait = "0.1"
 rstest = "0.26"
 tempfile = "3"
-serial_test = "3"
-tokio = { version = "1.52", features = ["fs", "rt-multi-thread", "macros"] }
+serial_test = "4"
+tokio = { version = "1.53", features = ["fs", "rt-multi-thread", "macros"] }
 changepacks-utils = { workspace = true, features = ["test-support"] }
 changepacks-core = { workspace = true, features = ["test-support"] }
 
