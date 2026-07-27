@@ -119,6 +119,29 @@ pub(crate) fn is_workspace_marker(item: &toml_edit::Item) -> bool {
         .unwrap_or(false)
 }
 
+/// Look up the `[workspace.dependencies]` table for mutation, mirroring the
+/// `doc.get_mut("workspace").and_then(|w| w.get_mut("dependencies")).and_then(|d| d.as_table_mut())`
+/// chain that was previously open-coded twice in
+/// [`workspace`](crate::workspace): once in `RustWorkspace::update_version`
+/// (the workspace-version fan-out into path deps) and once in
+/// `RustWorkspace::update_workspace_dependencies` (the member-version sync).
+/// Extracted so the manifest-shape assumption lives in ONE place, matching the
+/// precedent set by `workspace_package_str` in [`finder`](crate::finder).
+///
+/// Returns `None` on any missing hop — no `[workspace]`, no
+/// `[workspace.dependencies]`, or a non-table `dependencies` item — leaving
+/// each caller free to keep its own control flow (`if let Some(..)` vs a
+/// `let ... else { return Ok(()) }`). Returning the borrowed `toml_edit`
+/// handle rather than an owned copy is what keeps formatting, indentation, and
+/// key order untouched.
+pub(crate) fn workspace_dependencies_table_mut(
+    doc: &mut DocumentMut,
+) -> Option<&mut toml_edit::Table> {
+    doc.get_mut("workspace")
+        .and_then(|w| w.get_mut("dependencies"))
+        .and_then(|d| d.as_table_mut())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

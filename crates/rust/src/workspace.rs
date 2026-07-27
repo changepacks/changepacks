@@ -183,11 +183,7 @@ impl Workspace for RustWorkspace {
         // Sync [workspace.dependencies] only for discovered members that inherit
         // the workspace package version and whose local dependency version matched
         // the old workspace version.
-        if let Some(ws_deps) = cargo_toml
-            .get_mut("workspace")
-            .and_then(|w| w.get_mut("dependencies"))
-            .and_then(|d| d.as_table_mut())
-        {
+        if let Some(ws_deps) = crate::workspace_dependencies_table_mut(&mut cargo_toml) {
             // `old_version` hoisted to the top of this function so both the
             // `next_version_or_default` fallback and this workspace-deps
             // sync share the same "reserve 0.0.0 when unversioned" source.
@@ -295,18 +291,17 @@ impl Workspace for RustWorkspace {
 
         // check has workspace.dependencies section
         //
-        // Single-lookup `let-else` over the `get_mut` chain: previously we
-        // did TWO independent `get("workspace")` walks (one guard, one grab)
-        // plus a `.context("Dependencies section not found")?` that could
-        // never fire because the guard above already ensured the chain
-        // resolved. The refutable chain here returns `Ok(())` on any missing
-        // hop (no workspace, no dependencies, non-table) — byte-identical
-        // semantics with one fewer HashMap-style lookup per invocation.
-        let Some(dependencies) = cargo_toml
-            .get_mut("workspace")
-            .and_then(|w| w.get_mut("dependencies"))
-            .and_then(|d| d.as_table_mut())
-        else {
+        // Single-lookup `let-else` over the shared
+        // `crate::workspace_dependencies_table_mut` chain (the same helper
+        // `update_version` above uses): previously we did TWO independent
+        // `get("workspace")` walks (one guard, one grab) plus a
+        // `.context("Dependencies section not found")?` that could never fire
+        // because the guard above already ensured the chain resolved. The
+        // refutable helper returns `None` on any missing hop (no workspace, no
+        // dependencies, non-table), so this returns `Ok(())` there —
+        // byte-identical semantics with one fewer HashMap-style lookup per
+        // invocation.
+        let Some(dependencies) = crate::workspace_dependencies_table_mut(&mut cargo_toml) else {
             return Ok(());
         };
 

@@ -151,7 +151,11 @@ fn resolved_monorepo_deps<'a>(
                 let mut paths: Vec<String> = candidates
                     .iter()
                     .map(|candidate| {
-                        normalize_path_separators(&candidate.relative_path().to_string_lossy())
+                        // Bind the `to_string_lossy` temporary so the borrowed
+                        // `Cow` returned by `normalize_path_separators` cannot
+                        // outlive the string it points at.
+                        let lossy = candidate.relative_path().to_string_lossy();
+                        normalize_path_separators(&lossy).into_owned()
                     })
                     .collect();
                 paths.sort_unstable();

@@ -836,6 +836,51 @@ mod tests {
     }
 
     #[test]
+    fn test_sort_error_accessors_are_variant_specific_and_expose_a_source() {
+        let alpha = create_project("alpha", vec!["beta"]);
+        let beta = create_project("beta", vec!["alpha"]);
+        let cycle = sort_by_dependencies(vec![&alpha, &beta]).expect_err("cycle must fail");
+
+        let core_a = create_project_at("core", "packages/core/package.json");
+        let core_b = create_project_at("core", "crates/core/Cargo.toml");
+        let app = create_project("app", vec!["core"]);
+        let ambiguity = sort_by_dependencies(vec![&app, &core_a, &core_b])
+            .expect_err("ambiguous edge must fail");
+
+        // The cross-variant fallbacks: a cycle carries no ambiguity details, and
+        // an ambiguity carries no cycle members.
+        assert!(cycle.ambiguity().is_none());
+        assert!(ambiguity.members().is_empty());
+
+        // Both variants delegate `source` to their inner error, so the inner
+        // Display is reachable through the trait object.
+        let cycle_source = std::error::Error::source(&cycle).expect("cycle source");
+        let ambiguity_source = std::error::Error::source(&ambiguity).expect("ambiguity source");
+        assert_eq!(cycle_source.to_string(), cycle.to_string());
+        assert_eq!(ambiguity_source.to_string(), ambiguity.to_string());
+        assert!(
+            cycle_source
+                .downcast_ref::<DependencyCycleError>()
+                .is_some()
+        );
+        assert!(
+            ambiguity_source
+                .downcast_ref::<DependencyAmbiguityError>()
+                .is_some()
+        );
+
+        // Sanity: each fixture really is the variant it claims to be.
+        assert_eq!(cycle.members().len(), 2);
+        assert_eq!(
+            ambiguity
+                .ambiguity()
+                .expect("ambiguity details")
+                .dependency(),
+            "core"
+        );
+    }
+
+    #[test]
     fn test_large_cycle_reports_every_member() {
         const SIZE: usize = 4_096;
         let mut projects: Vec<_> = (0..SIZE)

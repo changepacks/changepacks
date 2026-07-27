@@ -1,5 +1,6 @@
 use crate::{Config, Language};
 use anyhow::{Context, Result};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::{
     ffi::{OsStr, OsString},
@@ -29,9 +30,19 @@ pub struct PublishOutput {
 /// slashes. This helper normalizes Windows backslashes to forward slashes so
 /// that filesystem-derived paths (which carry backslashes on Windows) can be
 /// compared against config keys without silent misses.
+///
+/// Returns [`Cow::Borrowed`] when the input already contains no backslash — the
+/// case for every path on non-Windows platforms and for most already-normalized
+/// paths on Windows — so the common case costs no allocation at all. Only a
+/// backslash-carrying path pays for the rewritten [`Cow::Owned`] string. Call
+/// `.into_owned()` at sites that genuinely need to store a `String`.
 #[must_use]
-pub fn normalize_path_separators(s: &str) -> String {
-    s.replace('\\', "/")
+pub fn normalize_path_separators(s: &str) -> Cow<'_, str> {
+    if s.contains('\\') {
+        Cow::Owned(s.replace('\\', "/"))
+    } else {
+        Cow::Borrowed(s)
+    }
 }
 
 /// Shared 2-step lookup: first by the project's relative path, then by the
@@ -63,7 +74,7 @@ pub fn lookup_by_path_or_language(
     // silently miss. See `normalize_path_separators` for the shared normalization
     // policy used across the CLI and core.
     if lossy.contains('\\')
-        && let Some(cmd) = map.get(&normalize_path_separators(lossy.as_ref()))
+        && let Some(cmd) = map.get(normalize_path_separators(lossy.as_ref()).as_ref())
     {
         return Some(cmd.clone());
     }
@@ -870,5 +881,25 @@ mod tests {
             normalize_path_separators("packages/core/package.json"),
             "packages/core/package.json"
         );
+    }
+
+    #[test]
+    fn test_normalize_path_separators_borrows_when_no_backslash() {
+        // The allocation-free fast path is the contract, not an accident: a
+        // backslash-free path (every path on non-Windows, and an already
+        // normalized path on Windows) must come back borrowed. Asserting the
+        // `Cow` variant keeps a future refactor from silently reintroducing an
+        // unconditional `String` allocation on the hot path.
+        let input = "packages/core/package.json";
+        let normalized = normalize_path_separators(input);
+        assert!(matches!(normalized, Cow::Borrowed(_)));
+        assert!(std::ptr::eq(normalized.as_ref(), input));
+    }
+
+    #[test]
+    fn test_normalize_path_separators_owns_when_backslash_present() {
+        let normalized = normalize_path_separators("packages\\core\\package.json");
+        assert!(matches!(normalized, Cow::Owned(_)));
+        assert_eq!(normalized, "packages/core/package.json");
     }
 }

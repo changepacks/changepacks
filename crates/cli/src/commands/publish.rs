@@ -76,19 +76,19 @@ pub async fn handle_publish_with_prompter(
         // `rust_batch_names` a few lines below and to every other
         // `HashSet` preallocation site in the workspace.
         let mut normalized_args: HashSet<String> = HashSet::with_capacity(args.project.len());
-        normalized_args.extend(args.project.iter().map(|p| normalize_path_separators(p)));
+        normalized_args.extend(
+            args.project
+                .iter()
+                .map(|p| normalize_path_separators(p).into_owned()),
+        );
         projects.retain(|project| {
             let relative_path = project.relative_path().to_string_lossy();
-            // Only pay the `replace` allocation when the path actually
+            // `normalize_path_separators` only allocates when the path actually
             // contains a backslash. Every `/`-only path (all Unix paths, and
-            // Windows paths already using `/`) is looked up by borrowed slice
-            // instead — `HashSet<String>::contains` accepts a `&str` via
-            // `Borrow<str>`, so the no-backslash branch is allocation-free.
-            if relative_path.contains('\\') {
-                normalized_args.contains(&normalize_path_separators(relative_path.as_ref()))
-            } else {
-                normalized_args.contains(relative_path.as_ref())
-            }
+            // Windows paths already using `/`) comes back as a borrowed slice,
+            // and `HashSet<String>::contains` accepts a `&str` via
+            // `Borrow<str>`, so the no-backslash lookup is allocation-free.
+            normalized_args.contains(normalize_path_separators(&relative_path).as_ref())
         });
     }
 
@@ -466,14 +466,70 @@ fn record_outcome_track_failure(
     }
 }
 
+/// The three collections both publish loops carry from the first project to
+/// the last: the per-project JSON results, the ordered list of failed project
+/// display names, and the set of failed project *package* names consulted by
+/// `failed_dependency`.
+///
+/// Bundling them keeps the invariant "a project recorded in `failed_projects`
+/// is also recorded in `failed_project_names`" expressible in one place —
+/// `skip_if_dependency_failed` — instead of once per loop. `result_map` starts
+/// empty (a `BTreeMap` has no meaningful pre-sizing); the two others are
+/// pre-sized to the batch length exactly as the loops did inline.
+struct PublishLoopState {
+    result_map: BTreeMap<PathBuf, PublishResult>,
+    failed_projects: Vec<String>,
+    failed_project_names: HashSet<String>,
+}
+
+impl PublishLoopState {
+    fn with_capacity(capacity: usize) -> Self {
+        Self {
+            result_map: BTreeMap::new(),
+            failed_projects: Vec::with_capacity(capacity),
+            failed_project_names: HashSet::with_capacity(capacity),
+        }
+    }
+
+    /// Records `project` as skipped when any of its dependencies already
+    /// failed, returning `true` when the caller should `continue`.
+    ///
+    /// `failure_label` is the only thing that differed between the two loops
+    /// (`"Dry-run skipped for"` vs `"Skipped publish for"`) and is passed
+    /// through to `record_dependency_skip` unchanged, so every user-visible
+    /// string stays byte-identical.
+    fn skip_if_dependency_failed(
+        &mut self,
+        project: &Project,
+        failure_label: &str,
+        format: FormatOptions,
+    ) -> bool {
+        let Some(dependency) = failed_dependency(project, &self.failed_project_names) else {
+            return false;
+        };
+        record_dependency_skip(
+            &mut self.result_map,
+            &mut self.failed_projects,
+            &mut self.failed_project_names,
+            project,
+            dependency,
+            failure_label,
+            format,
+        );
+        true
+    }
+
+    fn finish(self) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
+        (self.result_map, self.failed_projects)
+    }
+}
+
 async fn execute_dry_run_publish_loop(
     projects: &[&Project],
     config: &Config,
     format: FormatOptions,
 ) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
-    let mut result_map = BTreeMap::new();
-    let mut failed_projects: Vec<String> = Vec::with_capacity(projects.len());
-    let mut failed_project_names: HashSet<String> = HashSet::with_capacity(projects.len());
+    let mut state = PublishLoopState::with_capacity(projects.len());
 
     const DRY_RUN_LABELS: PublishOutcomeLabels = PublishOutcomeLabels {
         success: "Dry-run succeeded for",
@@ -497,16 +553,7 @@ async fn execute_dry_run_publish_loop(
     );
 
     for project in projects {
-        if let Some(dependency) = failed_dependency(project, &failed_project_names) {
-            record_dependency_skip(
-                &mut result_map,
-                &mut failed_projects,
-                &mut failed_project_names,
-                project,
-                dependency,
-                "Dry-run skipped for",
-                format,
-            );
+        if state.skip_if_dependency_failed(project, "Dry-run skipped for", format) {
             continue;
         }
         if skip_dry_run_due_to_workspace_internal_dep(project, &rust_batch_names) {
@@ -519,7 +566,7 @@ async fn execute_dry_run_publish_loop(
                 );
             }
             record_json_skip(
-                &mut result_map,
+                &mut state.result_map,
                 project,
                 "dry-run skipped (workspace-internal dep)",
                 format,
@@ -533,9 +580,9 @@ async fn execute_dry_run_publish_loop(
             Ok(Some(output)) => {
                 let outcome = ProjectPublishOutcome::from_output(output);
                 record_outcome_track_failure(
-                    &mut result_map,
-                    &mut failed_projects,
-                    &mut failed_project_names,
+                    &mut state.result_map,
+                    &mut state.failed_projects,
+                    &mut state.failed_project_names,
                     project,
                     outcome,
                     DRY_RUN_LABELS,
@@ -557,7 +604,7 @@ async fn execute_dry_run_publish_loop(
                     );
                 }
                 record_json_skip(
-                    &mut result_map,
+                    &mut state.result_map,
                     project,
                     "dry-run not supported; skipped",
                     format,
@@ -565,9 +612,9 @@ async fn execute_dry_run_publish_loop(
             }
             Err(e) => {
                 record_outcome_track_failure(
-                    &mut result_map,
-                    &mut failed_projects,
-                    &mut failed_project_names,
+                    &mut state.result_map,
+                    &mut state.failed_projects,
+                    &mut state.failed_project_names,
                     project,
                     ProjectPublishOutcome::Error(e),
                     DRY_RUN_LABELS,
@@ -577,7 +624,7 @@ async fn execute_dry_run_publish_loop(
         }
     }
 
-    (result_map, failed_projects)
+    state.finish()
 }
 
 async fn execute_publish_loop(
@@ -585,9 +632,7 @@ async fn execute_publish_loop(
     config: &Config,
     format: FormatOptions,
 ) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
-    let mut result_map = BTreeMap::new();
-    let mut failed_projects: Vec<String> = Vec::with_capacity(projects.len());
-    let mut failed_project_names: HashSet<String> = HashSet::with_capacity(projects.len());
+    let mut state = PublishLoopState::with_capacity(projects.len());
 
     const PUBLISH_LABELS: PublishOutcomeLabels = PublishOutcomeLabels {
         success: "Successfully published",
@@ -595,16 +640,7 @@ async fn execute_publish_loop(
     };
 
     for project in projects {
-        if let Some(dependency) = failed_dependency(project, &failed_project_names) {
-            record_dependency_skip(
-                &mut result_map,
-                &mut failed_projects,
-                &mut failed_project_names,
-                project,
-                dependency,
-                "Skipped publish for",
-                format,
-            );
+        if state.skip_if_dependency_failed(project, "Skipped publish for", format) {
             continue;
         }
         if let FormatOptions::Stdout = format {
@@ -614,9 +650,9 @@ async fn execute_publish_loop(
             Ok(output) => {
                 let outcome = ProjectPublishOutcome::from_output(output);
                 record_outcome_track_failure(
-                    &mut result_map,
-                    &mut failed_projects,
-                    &mut failed_project_names,
+                    &mut state.result_map,
+                    &mut state.failed_projects,
+                    &mut state.failed_project_names,
                     project,
                     outcome,
                     PUBLISH_LABELS,
@@ -625,9 +661,9 @@ async fn execute_publish_loop(
             }
             Err(e) => {
                 record_outcome_track_failure(
-                    &mut result_map,
-                    &mut failed_projects,
-                    &mut failed_project_names,
+                    &mut state.result_map,
+                    &mut state.failed_projects,
+                    &mut state.failed_project_names,
                     project,
                     ProjectPublishOutcome::Error(e),
                     PUBLISH_LABELS,
@@ -637,7 +673,7 @@ async fn execute_publish_loop(
         }
     }
 
-    (result_map, failed_projects)
+    state.finish()
 }
 
 #[cfg(test)]

@@ -267,7 +267,8 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
 }
 
 fn normalize_update_on_match_path(path: &Path) -> String {
-    changepacks_core::normalize_path_separators(&path.to_string_lossy())
+    let lossy = path.to_string_lossy();
+    changepacks_core::normalize_path_separators(&lossy).into_owned()
 }
 
 #[cfg(test)]
@@ -334,16 +335,30 @@ fn apply_update_on_rules_from(
 
                 for dependent in *dependents {
                     let dependent_path = PathBuf::from(dependent);
-                    if let Entry::Vacant(entry) = update_map.entry(dependent_path.clone()) {
+                    // Probe before allocating: `entry(key.clone())` and
+                    // `HashSet::insert(key.clone())` both take the key by value, so
+                    // they clone the `PathBuf` even when the key is already present
+                    // -- the steady state here, because this breadth-first expansion
+                    // revisits the same dependents across batches. `contains_key` /
+                    // `contains` borrow the key instead, so the hit path allocates
+                    // nothing while the miss path still clones exactly once.
+                    // Semantics are byte-identical: a `HashMap` keeps its existing
+                    // entry on a duplicate `entry()` and a `HashSet` keeps its
+                    // existing key on a duplicate `insert`.
+                    if !update_map.contains_key(&dependent_path) {
                         let note =
                             format!("Auto-update triggered by updateOn rule: {trigger_pattern}");
-                        entry.insert((
-                            UpdateType::Patch,
-                            vec![ChangePackResultLog::new(UpdateType::Patch, note.clone())],
-                        ));
+                        update_map.insert(
+                            dependent_path.clone(),
+                            (
+                                UpdateType::Patch,
+                                vec![ChangePackResultLog::new(UpdateType::Patch, note.clone())],
+                            ),
+                        );
                         generated.push((dependent_path.clone(), note));
                     }
-                    if expansion_seeds.insert(dependent_path.clone()) {
+                    if !expansion_seeds.contains(&dependent_path) {
+                        expansion_seeds.insert(dependent_path.clone());
                         queued_paths.push_back(dependent_path);
                     }
                 }
