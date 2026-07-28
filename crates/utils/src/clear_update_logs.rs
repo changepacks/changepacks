@@ -58,11 +58,10 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Result<usize> {
                         cursor += 1;
                     }
                     b'}' | b']' => {
-                        let expected =
-                            closers.pop().context("unexpected JSON closing delimiter")?;
-                        if bytes[cursor] != expected {
+                        if closers.last() != Some(&bytes[cursor]) {
                             bail!("mismatched JSON closing delimiter at byte {cursor}");
                         }
+                        closers.pop();
                         cursor += 1;
                         if closers.is_empty() {
                             return Ok(cursor);

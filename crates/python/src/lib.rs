@@ -181,7 +181,7 @@ mod tests {
             "error chain should name the manifest path, got: {chain}"
         );
         assert!(
-            chain.contains("project.dynamic"),
+            chain.contains("has backend-managed version in project.dynamic"),
             "error chain should mention project.dynamic, got: {chain}"
         );
 
@@ -218,6 +218,29 @@ mod tests {
             after,
             content.as_bytes(),
             "file bytes must be unchanged after rejection"
+        );
+    }
+
+    /// Pins the boundary of the `project.dynamic` guard: only the literal
+    /// `"version"` entry hands version ownership to the build backend, so a
+    /// `dynamic` array listing anything else must still be bumped normally.
+    #[tokio::test]
+    async fn test_write_pyproject_version_allows_dynamic_without_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            "[project]\nname = \"demo\"\nversion = \"1.0.0\"\ndynamic = [\"readme\"]\n",
+        )
+        .unwrap();
+
+        write_pyproject_version(&pyproject_toml, "1.1.0")
+            .await
+            .expect("dynamic without a version entry must still be writable");
+
+        assert_eq!(
+            fs::read_to_string(&pyproject_toml).unwrap(),
+            "[project]\nname = \"demo\"\nversion = \"1.1.0\"\ndynamic = [\"readme\"]\n"
         );
     }
 }

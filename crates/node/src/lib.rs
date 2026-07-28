@@ -338,7 +338,7 @@ impl PackageManager {
 /// # Errors
 /// Returns an error when a candidate directory cannot be inspected for a
 /// reason other than it not existing. The error includes the candidate path.
-pub async fn node_modules_bin_dirs_async(
+pub(crate) async fn node_modules_bin_dirs_async(
     start_dir: &Path,
     max_depth: usize,
 ) -> Result<Vec<PathBuf>> {
@@ -397,7 +397,7 @@ const fn package_manager_from_lockfile_probes(
 /// # Errors
 /// Returns an error when lockfile metadata cannot be read for a reason other
 /// than the lockfile not existing.
-pub async fn detect_package_manager_async(dir: &Path) -> Result<PackageManager> {
+pub(crate) async fn detect_package_manager_async(dir: &Path) -> Result<PackageManager> {
     let bun_lockb_path = dir.join("bun.lockb");
     let bun_lock_path = dir.join("bun.lock");
     let pnpm_lock_path = dir.join("pnpm-lock.yaml");
@@ -431,7 +431,7 @@ async fn probe_decisive_package_manager(dir: &Path) -> Result<Option<PackageMana
 /// # Errors
 /// Returns an error when manifest or lockfile metadata cannot be read for a
 /// reason other than the path not existing.
-pub async fn detect_package_manager_recursive_async(
+pub(crate) async fn detect_package_manager_recursive_async(
     path: &Path,
     max_depth: usize,
 ) -> Result<PackageManager> {

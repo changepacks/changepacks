@@ -494,10 +494,8 @@ pub(crate) fn candidate_ranges(
                 } else if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
                     if depth == 1 {
                         contexts.pop();
-                    } else {
-                        if let Some(LexContext::BlockComment(depth)) = contexts.last_mut() {
-                            *depth -= 1;
-                        }
+                    } else if let Some(LexContext::BlockComment(depth)) = contexts.last_mut() {
+                        *depth -= 1;
                     }
                     index += 2;
                 } else {

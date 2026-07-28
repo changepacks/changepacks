@@ -11,7 +11,7 @@ use std::{
 use tokio::fs::read_to_string;
 use tokio::process::Command;
 
-use crate::{package::GradlePackage, workspace::GradleWorkspace};
+use crate::{package::GradlePackage, version_lexer::GradleDialect, workspace::GradleWorkspace};
 
 /// Manifest filenames this finder recognizes. Static because the list is
 /// compile-time constant — no per-instance heap `Vec` is needed and the
@@ -713,7 +713,7 @@ fn quoted_gradle_literal_end(
     bytes: &[u8],
     start: usize,
     triple: bool,
-    dialect: GradleDependencyDialect,
+    dialect: GradleDialect,
 ) -> Option<usize> {
     let quote = *bytes.get(start)?;
     if !matches!(quote, b'\'' | b'"') {
@@ -735,7 +735,7 @@ fn quoted_gradle_literal_end(
                     previous -= 1;
                     backslash_count += 1;
                 }
-                if dialect == GradleDependencyDialect::Kotlin || backslash_count.is_multiple_of(2) {
+                if dialect == GradleDialect::Kotlin || backslash_count.is_multiple_of(2) {
                     return Some(cursor);
                 }
             }
@@ -743,7 +743,7 @@ fn quoted_gradle_literal_end(
         }
 
         match bytes[cursor] {
-            b'\\' if !triple || dialect == GradleDependencyDialect::Groovy => {
+            b'\\' if !triple || dialect == GradleDialect::Groovy => {
                 cursor = (cursor + 2).min(bytes.len());
             }
             byte if byte == quote => return Some(cursor + 1),
@@ -788,30 +788,24 @@ enum GradleLiteralScan {
     Unterminated,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum GradleDependencyDialect {
-    Kotlin,
-    Groovy,
-}
-
-fn gradle_dependency_dialect(manifest_path: &Path) -> GradleDependencyDialect {
+fn gradle_dependency_dialect(manifest_path: &Path) -> GradleDialect {
     if manifest_path
         .file_name()
         .is_some_and(|name| name == "build.gradle.kts")
     {
-        GradleDependencyDialect::Kotlin
+        GradleDialect::Kotlin
     } else {
-        GradleDependencyDialect::Groovy
+        GradleDialect::Groovy
     }
 }
 
 fn scan_gradle_literal(
     bytes: &[u8],
     start: usize,
-    dialect: GradleDependencyDialect,
+    dialect: GradleDialect,
     slashy_allowed: bool,
 ) -> GradleLiteralScan {
-    if dialect == GradleDependencyDialect::Groovy && bytes.get(start..start + 2) == Some(b"$/") {
+    if dialect == GradleDialect::Groovy && bytes.get(start..start + 2) == Some(b"$/") {
         return dollar_slashy_gradle_literal_end(bytes, start)
             .map_or(GradleLiteralScan::Unterminated, GradleLiteralScan::Complete);
     }
@@ -822,10 +816,7 @@ fn scan_gradle_literal(
             .map_or(GradleLiteralScan::Unterminated, GradleLiteralScan::Complete);
     }
 
-    if dialect == GradleDependencyDialect::Groovy
-        && slashy_allowed
-        && bytes.get(start) == Some(&b'/')
-    {
+    if dialect == GradleDialect::Groovy && slashy_allowed && bytes.get(start) == Some(&b'/') {
         // Groovy `/` is slashy only where the bounded previous-token state
         // allows an expression to start. A slash after a number, identifier,
         // literal, or closing delimiter remains division.
@@ -836,11 +827,7 @@ fn scan_gradle_literal(
     GradleLiteralScan::NotLiteral
 }
 
-fn skip_gradle_comment(
-    bytes: &[u8],
-    start: usize,
-    dialect: GradleDependencyDialect,
-) -> Option<usize> {
+fn skip_gradle_comment(bytes: &[u8], start: usize, dialect: GradleDialect) -> Option<usize> {
     match (bytes.get(start), bytes.get(start + 1)) {
         (Some(b'/'), Some(b'/')) => {
             let mut cursor = start + 2;
@@ -854,7 +841,7 @@ fn skip_gradle_comment(
             let mut depth = 1usize;
             while cursor + 1 < bytes.len() {
                 match (bytes[cursor], bytes[cursor + 1]) {
-                    (b'/', b'*') if dialect == GradleDependencyDialect::Kotlin => {
+                    (b'/', b'*') if dialect == GradleDialect::Kotlin => {
                         depth += 1;
                         cursor += 2;
                     }
@@ -878,7 +865,7 @@ fn skip_gradle_trivia(
     bytes: &[u8],
     mut cursor: usize,
     end: usize,
-    dialect: GradleDependencyDialect,
+    dialect: GradleDialect,
 ) -> usize {
     loop {
         while cursor < end && bytes.get(cursor).is_some_and(u8::is_ascii_whitespace) {
@@ -894,7 +881,7 @@ fn skip_gradle_trivia(
     }
 }
 
-fn looks_like_statement_call(bytes: &[u8], start: usize, dialect: GradleDependencyDialect) -> bool {
+fn looks_like_statement_call(bytes: &[u8], start: usize, dialect: GradleDialect) -> bool {
     let mut cursor = skip_gradle_trivia(bytes, start, bytes.len(), dialect);
     if !bytes
         .get(cursor)
@@ -925,7 +912,7 @@ fn gradle_line_break_end(bytes: &[u8], cursor: usize) -> Option<usize> {
 fn verified_blank_line_resume(
     bytes: &[u8],
     cursor: usize,
-    dialect: GradleDependencyDialect,
+    dialect: GradleDialect,
 ) -> Option<usize> {
     let mut next = gradle_line_break_end(bytes, cursor)?;
     while matches!(bytes.get(next), Some(b' ' | b'\t')) {
@@ -950,7 +937,7 @@ enum GradleCallScan {
 fn gradle_quarantine_resume(
     bytes: &[u8],
     start: usize,
-    dialect: GradleDependencyDialect,
+    dialect: GradleDialect,
     mut expected_closers: Vec<u8>,
 ) -> usize {
     let mut cursor = start;
@@ -1026,7 +1013,7 @@ fn gradle_quarantine_resume(
 fn malformed_gradle_call(
     bytes: &[u8],
     quarantine_start: usize,
-    dialect: GradleDependencyDialect,
+    dialect: GradleDialect,
     expected_closers: Vec<u8>,
 ) -> GradleCallScan {
     GradleCallScan::Malformed {
@@ -1034,7 +1021,7 @@ fn malformed_gradle_call(
     }
 }
 
-fn scan_gradle_call(bytes: &[u8], open: usize, dialect: GradleDependencyDialect) -> GradleCallScan {
+fn scan_gradle_call(bytes: &[u8], open: usize, dialect: GradleDialect) -> GradleCallScan {
     let mut cursor = open + 1;
     let mut expected_closers = vec![b')'];
     let mut arguments = Vec::new();
@@ -1137,7 +1124,7 @@ fn gradle_assignment(
     content: &str,
     start: usize,
     end: usize,
-    dialect: GradleDependencyDialect,
+    dialect: GradleDialect,
 ) -> Option<(&str, usize)> {
     let bytes = content.as_bytes();
     let mut cursor = skip_gradle_trivia(bytes, start, end, dialect);
@@ -1165,7 +1152,7 @@ fn plain_gradle_project_path(
     content: &str,
     start: usize,
     end: usize,
-    dialect: GradleDependencyDialect,
+    dialect: GradleDialect,
 ) -> Option<&str> {
     let bytes = content.as_bytes();
     let string_start = skip_gradle_trivia(bytes, start, end, dialect);
@@ -1189,7 +1176,7 @@ fn plain_gradle_project_path(
 fn gradle_dependency_from_arguments<'a>(
     content: &'a str,
     arguments: &[(usize, usize)],
-    dialect: GradleDependencyDialect,
+    dialect: GradleDialect,
 ) -> Option<&'a str> {
     let bytes = content.as_bytes();
     let mut candidate_count = 0usize;
@@ -1227,10 +1214,7 @@ fn gradle_dependency_from_arguments<'a>(
     (candidate_count == 1).then_some(project_path).flatten()
 }
 
-fn extract_gradle_project_dependencies(
-    content: &str,
-    dialect: GradleDependencyDialect,
-) -> Vec<&str> {
+fn extract_gradle_project_dependencies(content: &str, dialect: GradleDialect) -> Vec<&str> {
     const PROJECT_CALL: &[u8] = b"project";
 
     let bytes = content.as_bytes();
@@ -1770,7 +1754,7 @@ mod tests {
     }
 
     fn extract_gradle_project_dependencies(content: &str) -> Vec<&str> {
-        super::extract_gradle_project_dependencies(content, GradleDependencyDialect::Groovy)
+        super::extract_gradle_project_dependencies(content, GradleDialect::Groovy)
     }
 
     async fn dependencies_for_manifest(manifest_name: &str, content: &str) -> HashSet<String> {
@@ -3099,7 +3083,7 @@ dependencies {
 dependencies { implementation(project(":real-groovy")) }
 "#;
         assert_eq!(
-            super::extract_gradle_project_dependencies(groovy, GradleDependencyDialect::Groovy),
+            super::extract_gradle_project_dependencies(groovy, GradleDialect::Groovy),
             vec![":real-groovy"]
         );
 
@@ -3111,7 +3095,7 @@ dependencies { implementation(project(":real-groovy")) }
 dependencies { implementation(project(":real-kotlin")) }
 "#;
         assert_eq!(
-            super::extract_gradle_project_dependencies(kotlin, GradleDependencyDialect::Kotlin),
+            super::extract_gradle_project_dependencies(kotlin, GradleDialect::Kotlin),
             vec![":real-kotlin"]
         );
     }
@@ -3124,16 +3108,12 @@ val raw = """project(":kotlin-raw-decoy") \"""
 dependencies { implementation(project(":real-kotlin")) }
 "####;
         let raw_start = kotlin.find("\"\"\"").unwrap();
-        let raw_end = quoted_gradle_literal_end(
-            kotlin.as_bytes(),
-            raw_start,
-            true,
-            GradleDependencyDialect::Kotlin,
-        )
-        .unwrap();
+        let raw_end =
+            quoted_gradle_literal_end(kotlin.as_bytes(), raw_start, true, GradleDialect::Kotlin)
+                .unwrap();
         assert!(kotlin[raw_end..].starts_with("\ndependencies"));
         assert_eq!(
-            super::extract_gradle_project_dependencies(kotlin, GradleDependencyDialect::Kotlin),
+            super::extract_gradle_project_dependencies(kotlin, GradleDialect::Kotlin),
             vec![":real-kotlin"]
         );
 
@@ -3142,7 +3122,7 @@ def triple = """before \""" project(":groovy-triple-decoy") after"""
 dependencies { implementation(project(":real-groovy")) }
 "####;
         assert_eq!(
-            super::extract_gradle_project_dependencies(groovy, GradleDependencyDialect::Groovy),
+            super::extract_gradle_project_dependencies(groovy, GradleDialect::Groovy),
             vec![":real-groovy"]
         );
     }

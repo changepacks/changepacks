@@ -566,6 +566,54 @@ version = "1.0.0"
     }
 
     #[tokio::test]
+    async fn test_rust_workspace_update_version_non_table_package_leaves_state_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        // A scalar top-level `package` key. The sibling test above pins the
+        // ERROR TEXT; this one pins the guard's actual reason for existing — it
+        // must reject BEFORE the `cargo_toml["package"]["version"] = ...`
+        // assignment reaches `write_finalized` AND before `self.version` is
+        // advanced, so neither the manifest on disk nor the in-memory version
+        // moves. Mirrors the package-side
+        // `test_write_cargo_package_version_non_table_package_leaves_file_untouched`
+        // in `lib.rs`.
+        let original = "package = \"not-a-table\"\n\n[workspace]\nmembers = [\"crates/*\"]\n";
+        fs::write(&cargo_toml, original).unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let err = workspace
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("non-table package item must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("has a non-table [package] item"),
+            "error chain should name the non-table package guard, got: {chain}"
+        );
+
+        // Byte-for-byte, not line-for-line: a partial or reformatted write is
+        // exactly the manifest destruction the guard prevents.
+        assert_eq!(
+            fs::read(&cargo_toml).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+        assert_eq!(
+            workspace.version(),
+            Some("1.0.0"),
+            "a rejected bump must not advance the in-memory version"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
     async fn test_rust_workspace_update_version_without_package_section() {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");

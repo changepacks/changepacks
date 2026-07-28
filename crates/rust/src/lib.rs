@@ -220,6 +220,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_write_cargo_package_version_non_table_package_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        // A scalar top-level `package` key. The sibling test above pins the
+        // ERROR TEXT; this one pins the guard's actual reason for existing —
+        // it must reject BEFORE the `cargo_toml["package"]["version"] = ...`
+        // assignment ever runs, so the manifest on disk is never clobbered.
+        let original = "package = \"not-a-table\"\n\n[dependencies]\nserde = \"1\"\n";
+        fs::write(&cargo_toml, original).unwrap();
+
+        let err = write_cargo_package_version(&cargo_toml, "1.0.1")
+            .await
+            .expect_err("non-table package item must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("has a non-table [package] item"),
+            "error chain should name the non-table package guard, got: {chain}"
+        );
+
+        // Byte-for-byte, not line-for-line: a partial or reformatted write is
+        // exactly the manifest destruction the guard prevents.
+        assert_eq!(
+            fs::read(&cargo_toml).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+    }
+
+    #[tokio::test]
     async fn test_write_cargo_package_version_creates_proper_package_header() {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");
