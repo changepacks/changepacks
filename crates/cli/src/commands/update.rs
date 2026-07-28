@@ -277,12 +277,22 @@ fn preview_and_confirm(
     projects: &[UpdateProjectMut<'_>],
 ) -> Result<bool> {
     if let FormatOptions::Stdout = args.format {
+        // Acquire the stdout lock once for the whole preview instead of
+        // re-locking (and re-flushing) per project as `println!` does. The
+        // explicit `writeln!` also surfaces a broken-pipe / full-disk write
+        // failure as an `anyhow` error through the existing `Result<bool>`
+        // signature, where `println!` would panic.
+        use std::io::Write as _;
+
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
         for (project, update_type) in projects {
-            println!(
+            writeln!(
+                out,
                 "{} {}",
                 **project,
                 display_update(project.version(), *update_type)?
-            );
+            )?;
         }
     }
 

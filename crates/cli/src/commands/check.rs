@@ -14,7 +14,7 @@ use crate::{
     CommandContext,
     commands::changepack_result_json,
     finders::collect_projects,
-    options::{CliLanguage, FilterOptions, FormatOptions, retain_by_language},
+    options::{CliLanguage, FilterOptions, FormatOptions, retain_by_filters},
 };
 
 /// Format the "(changed)" marker for a project, colored bright yellow if changed.
@@ -79,24 +79,21 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     // Expand over the full project graph before filtering output, matching update.
     update_map.apply_reverse_dependencies(&projects, &ctx.repo_root_path)?;
 
-    if let Some(filter) = &args.filter {
-        projects.retain(|p| filter.matches(p));
-    }
-    retain_by_language(&args.language, &mut projects);
+    retain_by_filters(&mut projects, args.filter.as_ref(), &args.language);
     projects.sort();
+    // One stdout lock for the whole render: `println!` re-acquires the global
+    // lock per line and panics on a write failure (a broken pipe from
+    // `changepacks check | head`), while a held `StdoutLock` writes through the
+    // same `LineWriter` and lets an io error propagate as a typed error.
+    let mut out = std::io::stdout().lock();
+
     if let FormatOptions::Stdout = args.format {
-        println!("Found {} projects", projects.len());
+        writeln!(out, "Found {} projects", projects.len())?;
     }
 
     if args.tree {
         // Tree mode: show dependencies as a tree
-        let stdout = std::io::stdout();
-        display_tree(
-            &projects,
-            &ctx.repo_root_path,
-            &update_map,
-            &mut stdout.lock(),
-        )?;
+        display_tree(&projects, &ctx.repo_root_path, &update_map, &mut out)?;
     } else {
         match args.format {
             FormatOptions::Stdout => {
@@ -104,17 +101,18 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                     let changed_marker = changed_marker(project);
                     let version_str =
                         version_display_with_update(project, &ctx.repo_root_path, &update_map)?;
-                    println!(
+                    writeln!(
+                        out,
                         "{}{}",
                         project.format_line(Some(&version_str)),
                         changed_marker
-                    );
+                    )?;
                 }
             }
             FormatOptions::Json => {
                 let json =
                     changepack_result_json(projects.as_slice(), &ctx.repo_root_path, &update_map)?;
-                println!("{json}");
+                writeln!(out, "{json}")?;
             }
         }
     }

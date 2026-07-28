@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use crate::{
     CommandContext,
     finders::collect_projects,
-    options::{CliLanguage, FilterOptions, retain_by_language},
+    options::{CliLanguage, FilterOptions, retain_by_filters},
     prompter::{InquirePrompter, Prompter},
 };
 
@@ -43,10 +43,7 @@ fn select_changepack(
     // They are updated automatically when the workspace version bumps.
     projects.retain(|p| !matches!(p, Project::Package(pkg) if pkg.inherits_workspace_version()));
 
-    if let Some(filter) = &args.filter {
-        projects.retain(|p| filter.matches(p));
-    }
-    retain_by_language(&args.language, &mut projects);
+    retain_by_filters(&mut projects, args.filter.as_ref(), &args.language);
 
     println!("Found {} projects", projects.len());
     // workspace first

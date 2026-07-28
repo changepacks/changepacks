@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashSet},
+    io::Write as _,
     path::PathBuf,
 };
 
@@ -102,7 +103,7 @@ pub async fn handle_publish_with_prompter(
         return Ok(());
     }
 
-    print_projects_to_publish(&projects, args.format);
+    print_projects_to_publish(&projects, args.format)?;
 
     if args.dry_run {
         let (result_map, failed_projects) =
@@ -162,13 +163,24 @@ fn sort_publishable_projects<'a>(
     Ok(sort_by_dependencies(projects)?)
 }
 
-fn print_projects_to_publish(projects: &[&Project], format: FormatOptions) {
+/// Renders the "Projects to publish:" header and one indented line per project.
+///
+/// One stdout lock is held for the whole render: `println!` re-acquires the
+/// global lock per line and panics on a write failure (a broken pipe from
+/// `changepacks publish | head`), while a held `StdoutLock` writes through the
+/// same `LineWriter` and lets an io error propagate as a typed error.
+///
+/// # Errors
+/// Returns an error if writing to stdout fails.
+fn print_projects_to_publish(projects: &[&Project], format: FormatOptions) -> Result<()> {
     if let FormatOptions::Stdout = format {
-        println!("Projects to publish:");
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "Projects to publish:")?;
         for project in projects {
-            println!("  {project}");
+            writeln!(out, "  {project}")?;
         }
     }
+    Ok(())
 }
 
 fn print_publish_failure_summary(failed_projects: &[String], total: usize, format: FormatOptions) {

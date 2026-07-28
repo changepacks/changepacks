@@ -68,9 +68,14 @@ pub async fn clear_applied_update_logs(
     //            concurrently via `try_join_all`, collapsing N sequential
     //            `read_to_string` round-trips into one parallel batch on
     //            IO-bound systems.
-    //   Phase 3: the sequential parse+classify+remove-or-rewrite loop remains
-    //            ordered because each file may be removed, rewritten, or left
-    //            untouched depending on the `applied_paths` set.
+    //   Phase 3: the parse+classify loop is CPU-only — it decides
+    //            remove / skip / rewrite per log and buffers the decisions,
+    //            performing no IO of its own.
+    //   Phase 4: the buffered decisions are executed as two batches —
+    //            `try_join_all` over the removals, then over the rewrites —
+    //            so N sequential `remove_file`/`write` round-trips collapse
+    //            into two parallel batches, matching the batched read half
+    //            and the sibling `clear_update_logs`.
     //   The `serde_json::Value` parse below is a read-only CLASSIFIER: it only
     //   counts how many `changes` entries survive so the branch can pick
     //   remove / skip / rewrite. It is never the rewriter — the byte-preserving
@@ -79,6 +84,8 @@ pub async fn clear_applied_update_logs(
     //   formatting (key order, indentation, trailing newline).
     let paths = collect_changepack_log_paths(changepacks_dir).await?;
     let bodies = read_log_bodies(&paths, "update log").await?;
+    let mut removals: Vec<&PathBuf> = Vec::new();
+    let mut rewrites: Vec<(&PathBuf, String)> = Vec::new();
     for (path, content) in paths.iter().zip(bodies) {
         let value: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse update log {}", path.display()))?;
@@ -93,19 +100,28 @@ pub async fn clear_applied_update_logs(
             .filter(|change_path| !applied_paths.contains(Path::new(change_path.as_str())))
             .count();
         if remaining == 0 {
-            remove_file(path)
-                .await
-                .with_context(|| format!("Failed to remove update log {}", path.display()))?;
+            removals.push(path);
         } else if remaining == before {
             continue;
         } else {
             let next_content = remove_applied_change_spans(&content, applied_paths)
                 .with_context(|| format!("Failed to rewrite update log {}", path.display()))?;
-            write(path, next_content)
-                .await
-                .with_context(|| format!("Failed to rewrite update log {}", path.display()))?;
+            rewrites.push((path, next_content));
         }
     }
+
+    futures::future::try_join_all(removals.into_iter().map(|path| async move {
+        remove_file(path)
+            .await
+            .with_context(|| format!("Failed to remove update log {}", path.display()))
+    }))
+    .await?;
+    futures::future::try_join_all(rewrites.into_iter().map(|(path, next_content)| async move {
+        write(path, next_content)
+            .await
+            .with_context(|| format!("Failed to rewrite update log {}", path.display()))
+    }))
+    .await?;
 
     Ok(())
 }
@@ -477,6 +493,39 @@ mod tests {
         let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn clear_applied_update_logs_reports_parse_failure_with_path() {
+        // A malformed changepack log must fail LOUDLY: the classifier parse is
+        // the only thing standing between a corrupt log and a silent no-op, so
+        // the error chain has to name both the failing step and the file.
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        let log_file = changepacks_dir.join("changepack_log_broken.json");
+        fs::write(&log_file, r#"{"changes":{"packages/a/package.json":"#).unwrap();
+
+        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let err = clear_applied_update_logs(&changepacks_dir, &applied_paths)
+            .await
+            .expect_err("a malformed changepack log must not be reported as success");
+
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("Failed to parse update log"),
+            "error chain must carry the parse context message, got {rendered}"
+        );
+        assert!(
+            rendered.contains(&log_file.display().to_string()),
+            "error chain must name the offending path {}, got {rendered}",
+            log_file.display()
+        );
+        assert!(
+            log_file.exists(),
+            "a log that failed to parse must not be deleted"
+        );
     }
 
     /// Write `bytes` as a changepack log, run selective cleanup with a
