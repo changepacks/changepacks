@@ -28,6 +28,11 @@
 //! - **Dependency ordering** — [`sort_by_dependencies`] runs Kahn's
 //!   algorithm over the project graph so publish walks touch dependencies
 //!   before dependents.
+//! - **Name resolution** — [`ProjectNameAnalysis`] is the single index from a
+//!   dependency name to the unique project providing it (or
+//!   [`ProjectNameResolution::Ambiguous`] when several share the name), shared
+//!   by [`sort_by_dependencies`], [`apply_reverse_dependencies`] and the CLI
+//!   `check --tree` renderer.
 //! - **Reverse-dep DFS + updateOn rules** — [`gen_update_map`] materializes
 //!   the `changepack_log_*.json` → `(UpdateType, notes)` map for every
 //!   changed package (including `updateOn` triggers), and
@@ -107,6 +112,7 @@ pub use get_relative_path::{get_relative_path, get_relative_path_ref};
 pub use is_changepack_log::collect_changepack_log_paths;
 pub use is_workspace_by_sibling::is_workspace_by_sibling;
 pub use next_version::{next_version, next_version_or_default};
+pub use project_names::{ProjectNameAnalysis, ProjectNameResolution};
 pub use read_and_parse::read_and_parse;
 pub use sort_by_dep::{
     DependencyAmbiguityError, DependencyCycleError, DependencyCycleMember, DependencySortError,

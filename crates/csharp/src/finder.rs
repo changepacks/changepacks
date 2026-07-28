@@ -8,7 +8,6 @@ use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
-use tokio::fs::read_to_string;
 
 use crate::{package::CSharpPackage, xml_utils::is_unconditional_project_property_group};
 
@@ -277,9 +276,7 @@ impl ProjectFinder for CSharpProjectFinder {
         }
 
         // Read .csproj content
-        let csproj_content = read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read C# project {}", path.display()))?;
+        let csproj_content = crate::read_csproj(path).await?;
 
         let name = Self::extract_name_from_path(path);
         // Single-pass metadata extraction — replaces the previous

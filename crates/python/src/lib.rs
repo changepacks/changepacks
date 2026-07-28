@@ -65,17 +65,12 @@ pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String
 /// fails.
 pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> Result<()> {
     let (pyproject_toml_raw, mut pyproject_toml) = read_and_parse_pyproject_toml(path).await?;
-    if pyproject_toml
-        .get("project")
-        .is_some_and(|project| !project.is_table_like())
-    {
-        anyhow::bail!(
-            "pyproject.toml {} has a non-table [project] item",
-            path.display()
-        );
-    }
-    let has_dynamic_version = pyproject_toml
-        .get("project")
+    let has_project = ensure_project_table_like(&pyproject_toml, path)?;
+    // One lookup, reused by both reads below: `Option<&Item>` is `Copy`, and
+    // the borrow ends at its last use, so the mutations that follow still
+    // type-check without re-walking the document.
+    let project = pyproject_toml.get("project");
+    let has_dynamic_version = project
         .and_then(|project| project.get("dynamic"))
         .and_then(toml_edit::Item::as_array)
         .is_some_and(|dynamic| dynamic.iter().any(|item| item.as_str() == Some("version")));
@@ -85,14 +80,16 @@ pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> R
             path.display()
         );
     }
-    if pyproject_toml.get("project").is_none() {
-        pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-    let previous_decor = pyproject_toml
-        .get("project")
+    let previous_decor = project
         .and_then(|project| project.get("version"))
         .and_then(toml_edit::Item::as_value)
         .map(|version| version.decor().clone());
+    // Strictly after the decor capture: creating the table takes `&mut`, which
+    // would invalidate `project`. A missing `[project]` has no version and so
+    // no decor to preserve, leaving behaviour identical to the previous order.
+    if !has_project {
+        pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
     pyproject_toml["project"]["version"] = new_version.into();
     if let (Some(decor), Some(version)) = (
         previous_decor,
@@ -107,6 +104,35 @@ pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> R
         "pyproject.toml",
     )
     .await
+}
+
+/// Reject a `pyproject.toml` whose top-level `project` key exists but is NOT
+/// table-like (e.g. `project = 3`), and report whether the key is present at
+/// all.
+///
+/// The mirror of `changepacks_rust`'s `ensure_package_table_like` for
+/// `Cargo.toml`: [`write_pyproject_version`] needs the SAME two facts before
+/// touching the document — "is the existing `project` item safe to index
+/// into?" and "does it already exist?" — and previously answered them with two
+/// separate `get("project")` walks. Folding both into one call keeps the
+/// manifest-shape assumption AND its user-visible message in ONE place, and
+/// the returned flag drives the missing-`[project]` creation so no extra
+/// lookup is introduced.
+///
+/// Guarding BEFORE any mutation is the point: `toml_edit` indexing assignment
+/// would otherwise silently replace the scalar and rewrite the manifest.
+///
+/// # Errors
+/// Returns an error naming `path` when `project` is present but not table-like.
+pub(crate) fn ensure_project_table_like(doc: &DocumentMut, path: &Path) -> Result<bool> {
+    let project = doc.get("project");
+    if project.is_some_and(|project| !project.is_table_like()) {
+        anyhow::bail!(
+            "pyproject.toml {} has a non-table [project] item",
+            path.display()
+        );
+    }
+    Ok(project.is_some())
 }
 
 #[cfg(test)]

@@ -25,6 +25,24 @@ pub use finder::CSharpProjectFinder;
 /// preserves the existing public accessor value for callers that display it.
 pub(crate) const PUBLISH_COMMAND: &str = "dotnet pack -c Release && dotnet nuget push";
 
+/// Read the `.csproj` file at `path` into a `String`, attaching the shared
+/// read-failure context naming that path on failure.
+///
+/// Single source of the read + error-context pair used by both `.csproj`
+/// entry points: [`write_csproj_version`] here and
+/// [`CSharpProjectFinder::visit`](finder::CSharpProjectFinder) during
+/// discovery. Keeping one copy keeps the two call sites' error messages
+/// from drifting apart.
+///
+/// # Errors
+/// Returns an error if the file cannot be read (missing, unreadable, or not
+/// valid UTF-8).
+pub(crate) async fn read_csproj(path: &Path) -> Result<String> {
+    read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read C# project {}", path.display()))
+}
+
 /// Update the `<Version>` element of the `.csproj` XML at `path` to
 /// `new_version`, delegating to [`xml_utils::update_version_in_xml`] to
 /// preserve the file's original formatting (indentation, comments, sibling
@@ -40,9 +58,7 @@ pub(crate) const PUBLISH_COMMAND: &str = "dotnet pack -c Release && dotnet nuget
 /// Returns error if the file cannot be read, the XML cannot be parsed, or
 /// no supported version node can be mutated, or the write fails.
 pub(crate) async fn write_csproj_version(path: &Path, new_version: &str) -> Result<()> {
-    let csproj_raw = read_to_string(path)
-        .await
-        .with_context(|| format!("Failed to read C# project {}", path.display()))?;
+    let csproj_raw = read_csproj(path).await?;
     let updated = xml_utils::update_version_in_xml(&csproj_raw, new_version)
         .with_context(|| format!("Failed to update version in C# project {}", path.display()))?;
     if updated != csproj_raw {

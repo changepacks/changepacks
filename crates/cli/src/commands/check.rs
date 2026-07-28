@@ -2,7 +2,8 @@ use changepacks_core::{ChangePackResultLog, Project, UpdateType, normalize_path_
 
 use anyhow::Result;
 use changepacks_utils::{
-    display_update, gen_changepack_result_map, gen_update_map, get_relative_path_ref,
+    ProjectNameAnalysis, ProjectNameResolution, display_update, gen_changepack_result_map,
+    gen_update_map, get_relative_path_ref,
 };
 use clap::Args;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
@@ -122,48 +123,45 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     Ok(())
 }
 
+type ResolvedDeps<'a> = HashMap<&'a Path, Vec<(&'a str, &'a Project)>>;
+
 /// Resolve and sort a project's monorepo-local dependencies.
 ///
 /// Unknown dependency names are external and ignored. A local name must map
 /// to exactly one manifest; ambiguous names are rejected before rendering.
-enum NameIndexEntry<'a> {
-    Unique(&'a Project),
-    Ambiguous(Vec<&'a Project>),
-}
-
-type NameIndex<'a> = HashMap<&'a str, NameIndexEntry<'a>>;
-type ResolvedDeps<'a> = HashMap<&'a Path, Vec<(&'a str, &'a Project)>>;
-
+/// `analysis` must have been built from `projects`, so a `Unique` index is
+/// always in bounds.
 fn resolved_monorepo_deps<'a>(
     project: &'a Project,
-    name_index: &NameIndex<'a>,
+    projects: &[&'a Project],
+    analysis: &ProjectNameAnalysis<'a>,
 ) -> Result<Vec<(&'a str, &'a Project)>> {
     let mut deps: Vec<&str> = project.dependencies().iter().map(String::as_str).collect();
     deps.sort_unstable();
     let mut resolved = Vec::with_capacity(deps.len());
     for dep in deps {
-        match name_index.get(dep) {
-            Some(NameIndexEntry::Unique(dep_project)) => {
-                resolved.push((dep, *dep_project));
+        match analysis.resolve(dep) {
+            ProjectNameResolution::Unique(index) => {
+                resolved.push((dep, projects[index]));
             }
-            Some(NameIndexEntry::Ambiguous(candidates)) => {
-                let mut paths: Vec<String> = candidates
+            ProjectNameResolution::Ambiguous => {
+                let paths: Vec<String> = analysis
+                    .candidates_for(projects, dep)
                     .iter()
                     .map(|candidate| {
                         // Bind the `to_string_lossy` temporary so the borrowed
                         // `Cow` returned by `normalize_path_separators` cannot
                         // outlive the string it points at.
-                        let lossy = candidate.relative_path().to_string_lossy();
+                        let lossy = candidate.to_string_lossy();
                         normalize_path_separators(&lossy).into_owned()
                     })
                     .collect();
-                paths.sort_unstable();
                 anyhow::bail!(
                     "dependency `{dep}` is ambiguous; candidate manifests: {}",
                     paths.join(", ")
                 );
             }
-            None => {}
+            ProjectNameResolution::Missing => {}
         }
     }
     Ok(resolved)
@@ -177,31 +175,17 @@ fn display_tree(
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     writer: &mut impl Write,
 ) -> Result<()> {
-    let mut name_index = NameIndex::with_capacity(projects.len());
-    for project in projects {
-        let Some(name) = project.name() else {
-            continue;
-        };
-        match name_index.entry(name) {
-            Entry::Vacant(entry) => {
-                entry.insert(NameIndexEntry::Unique(project));
-            }
-            Entry::Occupied(mut entry) => match entry.get_mut() {
-                NameIndexEntry::Unique(existing) => {
-                    let existing = *existing;
-                    entry.insert(NameIndexEntry::Ambiguous(vec![existing, project]));
-                }
-                NameIndexEntry::Ambiguous(candidates) => candidates.push(project),
-            },
-        }
-    }
+    // One shared name index, identical to the one `sort_by_dependencies` and
+    // `apply_reverse_dependencies` build, so `check --tree` cannot drift from
+    // how the rest of the tool resolves a dependency name.
+    let analysis = ProjectNameAnalysis::new(projects);
 
     let mut resolved_deps = ResolvedDeps::with_capacity(projects.len());
     for project in projects {
         // Resolve every edge before output so ambiguity never produces a partial tree.
         resolved_deps.insert(
             project.path(),
-            resolved_monorepo_deps(project, &name_index)?,
+            resolved_monorepo_deps(project, projects, &analysis)?,
         );
     }
 
@@ -596,10 +580,14 @@ mod tests {
         project: &'a Project,
         repo_root_path: &Path,
         update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-        name_index: &NameIndex<'a>,
+        projects: &[&'a Project],
     ) -> Result<String> {
+        let analysis = ProjectNameAnalysis::new(projects);
         let mut resolved_deps = ResolvedDeps::with_capacity(1);
-        resolved_deps.insert(project.path(), resolved_monorepo_deps(project, name_index)?);
+        resolved_deps.insert(
+            project.path(),
+            resolved_monorepo_deps(project, projects, &analysis)?,
+        );
         format_project_line(project, repo_root_path, update_map, &resolved_deps)
     }
 
@@ -840,11 +828,10 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut name_to_project = NameIndex::new();
-        name_to_project.insert("my-lib", NameIndexEntry::Unique(&project));
+        let projects = [&project];
 
-        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
-            .unwrap();
+        let line =
+            format_project_line_for_test(&project, repo_root, &update_map, &projects).unwrap();
         assert!(line.contains("my-lib"));
         assert!(line.contains("v1.2.3"));
     }
@@ -861,11 +848,10 @@ mod tests {
         let project = Project::Workspace(Box::new(ws));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut name_to_project = NameIndex::new();
-        name_to_project.insert("my-workspace", NameIndexEntry::Unique(&project));
+        let projects = [&project];
 
-        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
-            .unwrap();
+        let line =
+            format_project_line_for_test(&project, repo_root, &update_map, &projects).unwrap();
         assert!(line.contains("my-workspace"));
         assert!(line.contains("Workspace"));
         assert!(line.contains("v2.0.0"));
@@ -887,10 +873,7 @@ mod tests {
             PathBuf::from("packages/foo/package.json"),
             (UpdateType::Minor, vec![]),
         );
-        let name_to_project = NameIndex::new();
-
-        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
-            .unwrap();
+        let line = format_project_line_for_test(&project, repo_root, &update_map, &[]).unwrap();
         assert!(line.contains("updated-pkg"));
         // The update display should show version transition
         assert!(line.contains("1.1.0") || line.contains("1.0.0"));
@@ -909,10 +892,7 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let name_to_project = NameIndex::new();
-
-        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
-            .unwrap();
+        let line = format_project_line_for_test(&project, repo_root, &update_map, &[]).unwrap();
         assert!(line.contains("changed-pkg"));
         assert!(line.contains("changed"));
     }
@@ -940,12 +920,10 @@ mod tests {
 
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut name_to_project = NameIndex::new();
-        name_to_project.insert("app", NameIndexEntry::Unique(&project));
-        name_to_project.insert("core-lib", NameIndexEntry::Unique(&dep_project));
+        let projects = [&project, &dep_project];
 
-        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
-            .unwrap();
+        let line =
+            format_project_line_for_test(&project, repo_root, &update_map, &projects).unwrap();
         assert!(line.contains("app"));
         assert!(line.contains("deps:"));
         assert!(line.contains("core-lib"));
@@ -963,10 +941,7 @@ mod tests {
         let project = Project::Package(Box::new(pkg));
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let name_to_project = NameIndex::new();
-
-        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
-            .unwrap();
+        let line = format_project_line_for_test(&project, repo_root, &update_map, &[]).unwrap();
         assert!(line.contains("standalone"));
         assert!(!line.contains("deps:"));
     }
@@ -1015,14 +990,10 @@ mod tests {
 
         let repo_root = Path::new("/repo");
         let update_map = HashMap::new();
-        let mut name_to_project = NameIndex::new();
-        name_to_project.insert("app", NameIndexEntry::Unique(&project));
-        name_to_project.insert("apple", NameIndexEntry::Unique(&apple_project));
-        name_to_project.insert("zebra", NameIndexEntry::Unique(&zebra_project));
-        name_to_project.insert("mango", NameIndexEntry::Unique(&mango_project));
+        let projects = [&project, &apple_project, &zebra_project, &mango_project];
 
-        let line = format_project_line_for_test(&project, repo_root, &update_map, &name_to_project)
-            .unwrap();
+        let line =
+            format_project_line_for_test(&project, repo_root, &update_map, &projects).unwrap();
         assert!(line.contains("app"));
         assert!(line.contains("deps:"));
         // Verify sorted order: apple, mango, zebra

@@ -319,6 +319,32 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     fn extend_projects<'a>(&'a self, out: &mut Vec<&'a Project>) {
         out.extend(self.projects());
     }
+    /// The manifest patterns this finder claims, in one of TWO forms.
+    ///
+    /// 1. A bare **file name** (`"package.json"`, `"Cargo.toml"`,
+    ///    `"pyproject.toml"`, `"pubspec.yaml"`, `"build.gradle.kts"`). Five of
+    ///    the six language finders use only this form.
+    /// 2. A leading-dot **extension** (`".csproj"`), used when the manifest
+    ///    name varies per project. `CSharpProjectFinder` is the only
+    ///    in-tree implementor of this form.
+    ///
+    /// Only the discovery walk understands both: `find_project_dirs`'s
+    /// `project_files_can_visit_path` (in `changepacks-utils`) first compares
+    /// the entry to `path.file_name()` and, on a miss, retries any entry that
+    /// starts with `.` as a case-insensitive extension match.
+    ///
+    /// The defaulted [`ProjectFinder::matches_project_file`] deliberately
+    /// implements ONLY form 1 — it compares `path.file_name()` against this
+    /// list — so an extension entry such as `".csproj"` can never match there
+    /// (`Path::new("App.csproj").file_name()` is `"App.csproj"`, never
+    /// `".csproj"`). An implementor that returns extension entries therefore
+    /// MUST NOT gate `visit()` on `matches_project_file`; it must do its own
+    /// extension check with [`has_extension_ignore_ascii_case`] plus
+    /// [`is_regular_file`], exactly as `CSharpProjectFinder::visit` does.
+    ///
+    /// The two forms also differ in case sensitivity: a file-name entry is
+    /// compared byte-for-byte, while an extension entry matches
+    /// case-insensitively (`App.CSPROJ` is accepted).
     fn project_files(&self) -> &[&str];
     /// # Errors
     /// Returns error if the file visitation fails.
@@ -327,9 +353,16 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     ///
     /// Returns `false` for directories and files whose name is not in
     /// `project_files()`. Used by language-specific `visit()` implementations
-    /// to gate manifest parsing on file-name matching. `CSharpProjectFinder`
-    /// intentionally uses `.extension()` matching instead and does not call
-    /// this method.
+    /// to gate manifest parsing on file-name matching.
+    ///
+    /// This gate implements ONLY the bare-file-name form of
+    /// [`ProjectFinder::project_files`]. A leading-dot extension entry such as
+    /// `".csproj"` can never match here, because `path.file_name()` yields the
+    /// whole name (`"App.csproj"`) and never the extension alone. That is why
+    /// `CSharpProjectFinder` gates `visit()` on
+    /// [`has_extension_ignore_ascii_case`] + [`is_regular_file`] instead of
+    /// calling this method — any future extension-based finder must do the
+    /// same.
     ///
     /// Check order is name-first, stat-last: on a monorepo with N tracked
     /// files where only K match any recognized manifest name (typically
@@ -889,6 +922,61 @@ mod tests {
             !finder.matches_project_file(&path).await.unwrap(),
             "a non-UTF-8 file name cannot match an ASCII manifest name"
         );
+    }
+
+    /// Finder that returns the leading-dot EXTENSION form of
+    /// [`ProjectFinder::project_files`], the same shape `CSharpProjectFinder`
+    /// uses.
+    #[derive(Debug)]
+    struct ExtensionProjectFinder;
+
+    #[async_trait]
+    impl ProjectFinder for ExtensionProjectFinder {
+        fn projects(&self) -> Vec<&Project> {
+            vec![]
+        }
+
+        fn projects_mut(&mut self) -> Vec<&mut Project> {
+            vec![]
+        }
+
+        fn project_count(&self) -> usize {
+            0
+        }
+
+        fn project_files(&self) -> &[&str] {
+            &[".csproj"]
+        }
+
+        async fn visit(&mut self, _path: &Path, _relative_path: &Path) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    // Pins the documented half of the dual contract: the defaulted
+    // `matches_project_file` implements ONLY the bare-file-name form, so an
+    // extension entry can never match through it — not even for a real
+    // `.csproj` file on disk, in any casing. This is exactly why
+    // `CSharpProjectFinder::visit` gates on `has_extension_ignore_ascii_case`
+    // + `is_regular_file` instead of calling this method; if that ever
+    // changed, C# discovery would silently stop finding projects.
+    #[tokio::test]
+    async fn test_matches_project_file_never_matches_an_extension_entry() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let finder = ExtensionProjectFinder;
+
+        for name in ["App.csproj", "App.CSPROJ"] {
+            let manifest = temp_dir.path().join(name);
+            std::fs::write(&manifest, "<Project/>").unwrap();
+
+            assert!(
+                !finder.matches_project_file(&manifest).await.unwrap(),
+                "{name} must not match through the file-name-only gate"
+            );
+            // The extension-aware check is the one that accepts it.
+            assert!(has_extension_ignore_ascii_case(&manifest, "csproj"));
+            assert!(is_regular_file(&manifest).await.unwrap());
+        }
     }
 
     // Recognized name, nothing on disk: `is_regular_file` maps NotFound to

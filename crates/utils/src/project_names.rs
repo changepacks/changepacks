@@ -6,10 +6,15 @@ use std::{
 
 use changepacks_core::Project;
 
+/// Outcome of resolving a dependency name against the discovered project set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProjectNameResolution {
+pub enum ProjectNameResolution {
+    /// No discovered project carries this name (an external dependency).
     Missing,
+    /// More than one discovered project carries this name.
     Ambiguous,
+    /// Exactly one project carries this name, at the given index in the
+    /// slice that built the analysis.
     Unique(usize),
 }
 
@@ -28,13 +33,18 @@ impl<'a> ReferencedDependencyAmbiguity<'a> {
     }
 }
 
-pub(crate) struct ProjectNameAnalysis<'a> {
+/// Name-to-project index shared by every consumer that has to turn a
+/// dependency name into the project that provides it: `sort_by_dependencies`,
+/// `apply_reverse_dependencies` and the CLI `check --tree` renderer.
+pub struct ProjectNameAnalysis<'a> {
     name_to_index: HashMap<&'a str, Option<usize>>,
     referenced_ambiguity: Option<ReferencedDependencyAmbiguity<'a>>,
 }
 
 impl<'a> ProjectNameAnalysis<'a> {
-    pub(crate) fn new(projects: &[&'a Project]) -> Self {
+    /// Index `projects` by name, marking every duplicated name ambiguous.
+    #[must_use]
+    pub fn new(projects: &[&'a Project]) -> Self {
         let mut name_to_index = HashMap::with_capacity(projects.len());
         let mut has_duplicate_names = false;
         for (index, project) in projects.iter().enumerate() {
@@ -71,17 +81,9 @@ impl<'a> ProjectNameAnalysis<'a> {
             }
         }
 
-        let referenced_ambiguity = dependency.map(|dependency| {
-            let mut candidates: Vec<_> = projects
-                .iter()
-                .filter(|project| project.name() == Some(dependency))
-                .map(|project| project.relative_path().to_path_buf())
-                .collect();
-            candidates.sort_by(|left, right| compare_paths(left, right));
-            ReferencedDependencyAmbiguity {
-                dependency,
-                candidates,
-            }
+        let referenced_ambiguity = dependency.map(|dependency| ReferencedDependencyAmbiguity {
+            dependency,
+            candidates: sorted_candidates(projects, dependency),
         });
 
         Self {
@@ -90,7 +92,9 @@ impl<'a> ProjectNameAnalysis<'a> {
         }
     }
 
-    pub(crate) fn resolve(&self, name: &str) -> ProjectNameResolution {
+    /// Resolve one dependency name against the indexed projects.
+    #[must_use]
+    pub fn resolve(&self, name: &str) -> ProjectNameResolution {
         match self.name_to_index.get(name) {
             Some(Some(index)) => ProjectNameResolution::Unique(*index),
             Some(None) => ProjectNameResolution::Ambiguous,
@@ -98,9 +102,33 @@ impl<'a> ProjectNameAnalysis<'a> {
         }
     }
 
+    /// Relative manifest paths of every project carrying `name`, ordered by
+    /// [`compare_paths`] so a lossy-colliding non-UTF-8 pair still reports
+    /// deterministically. Pass the same slice that built the analysis.
+    ///
+    /// A name the index never saw provably has no carrier, so that case skips
+    /// the scan entirely.
+    #[must_use]
+    pub fn candidates_for(&self, projects: &[&Project], name: &str) -> Vec<PathBuf> {
+        if self.resolve(name) == ProjectNameResolution::Missing {
+            return Vec::new();
+        }
+        sorted_candidates(projects, name)
+    }
+
     pub(crate) const fn referenced_ambiguity(&self) -> Option<&ReferencedDependencyAmbiguity<'a>> {
         self.referenced_ambiguity.as_ref()
     }
+}
+
+fn sorted_candidates(projects: &[&Project], name: &str) -> Vec<PathBuf> {
+    let mut candidates: Vec<PathBuf> = projects
+        .iter()
+        .filter(|project| project.name() == Some(name))
+        .map(|project| project.relative_path().to_path_buf())
+        .collect();
+    candidates.sort_by(|left, right| compare_paths(left, right));
+    candidates
 }
 
 pub(crate) fn compare_paths(left: &Path, right: &Path) -> Ordering {
@@ -220,6 +248,59 @@ mod tests {
         // Then
         assert_eq!(analysis.resolve("core"), ProjectNameResolution::Unique(0));
         assert!(analysis.referenced_ambiguity().is_none());
+    }
+
+    #[test]
+    fn candidates_for_orders_duplicates_and_stays_empty_for_unknown_names() {
+        // Given
+        let mut shared_zeta = create_project("zeta", vec![]);
+        shared_zeta.set_name("shared".to_string());
+        let mut shared_alpha = create_project("alpha", vec![]);
+        shared_alpha.set_name("shared".to_string());
+        let app = create_project("app", vec!["shared"]);
+        let projects = [&shared_zeta, &app, &shared_alpha];
+
+        // When
+        let analysis = ProjectNameAnalysis::new(&projects);
+
+        // Then
+        assert_eq!(
+            analysis.candidates_for(&projects, "shared"),
+            [
+                PathBuf::from("alpha/package.json"),
+                PathBuf::from("zeta/package.json"),
+            ]
+        );
+        assert_eq!(
+            analysis.candidates_for(&projects, "app"),
+            [PathBuf::from("app/package.json")]
+        );
+        assert!(analysis.candidates_for(&projects, "external").is_empty());
+    }
+
+    #[test]
+    fn candidates_for_breaks_lossy_collisions_with_the_shared_path_order() {
+        // Given
+        let (left_path, right_path) = lossy_collision_paths();
+        let left = Project::Package(Box::new(NodePackage::new(
+            Some("shared".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/left/package.json"),
+            left_path.clone(),
+        )));
+        let right = Project::Package(Box::new(NodePackage::new(
+            Some("shared".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/right/package.json"),
+            right_path.clone(),
+        )));
+        let projects = [&right, &left];
+
+        // When
+        let candidates = ProjectNameAnalysis::new(&projects).candidates_for(&projects, "shared");
+
+        // Then
+        assert_eq!(candidates, [left_path, right_path]);
     }
 
     #[test]

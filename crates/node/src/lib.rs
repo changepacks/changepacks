@@ -102,7 +102,6 @@ fn serialize_package_json<F: serde_json::ser::Formatter>(
 /// fails.
 pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -> Result<()> {
     let (package_json_raw, mut package_json) = read_and_parse_package_json(path).await?;
-    let indent_str = detect_indent_str(&package_json_raw);
     let Some(obj) = package_json.as_object_mut() else {
         anyhow::bail!(
             "package.json {} does not have a top-level JSON object",
@@ -129,7 +128,9 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
     } else {
         serialize_package_json(
             &package_json,
-            serde_json::ser::PrettyFormatter::with_indent(indent_str.as_bytes()),
+            serde_json::ser::PrettyFormatter::with_indent(
+                detect_indent_str(&package_json_raw).as_bytes(),
+            ),
             package_json_raw.len(),
             path,
         )?

@@ -14,6 +14,24 @@ fn peel_to_commit_id(mut reference: gix::Reference<'_>) -> Result<gix::ObjectId>
     Ok(reference.peel_to_commit()?.id)
 }
 
+/// Whether any entry of `project_files` claims `path` (whose file name is the
+/// already-decoded `file_name`).
+///
+/// This is the ONLY place that understands both forms
+/// [`ProjectFinder::project_files`] may return:
+///
+/// - a bare **file name** (`"package.json"`, `"Cargo.toml"`, ...), compared
+///   byte-for-byte against `file_name`; and
+/// - a leading-dot **extension** (`".csproj"`, returned only by
+///   `CSharpProjectFinder`), compared case-insensitively against the path's
+///   extension so `App.CSPROJ` is claimed alongside `App.csproj`.
+///
+/// The extension form exists solely for the dispatch decision here. The
+/// defaulted [`ProjectFinder::matches_project_file`] implements only the
+/// file-name form, so it can never match an extension entry — an
+/// extension-based finder must therefore re-check the extension itself inside
+/// `visit()` (see `CSharpProjectFinder::visit`), because being dispatched here
+/// is not the same as being validated there.
 fn project_files_can_visit_path(project_files: &[&str], path: &Path, file_name: &str) -> bool {
     project_files.iter().any(|project_file| {
         if *project_file == file_name {
@@ -833,11 +851,61 @@ mod tests {
             Path::new("src/App.CSPROJ"),
             "App.CSPROJ"
         ));
+        assert!(project_files_can_visit_path(
+            &project_files,
+            Path::new("src/App.CsProj"),
+            "App.CsProj"
+        ));
         assert!(!project_files_can_visit_path(
             &project_files,
             Path::new("src/App.sln"),
             "App.sln"
         ));
+    }
+
+    // The extension form is scoped to the extension: it must NOT sweep up an
+    // unrelated manifest that another finder owns. If it did, the C# finder
+    // would be dispatched every `package.json` in the tree.
+    #[test]
+    fn test_finder_can_visit_path_extension_entry_ignores_other_manifest_names() {
+        let project_files = [".csproj"];
+
+        for (path, file_name) in [
+            ("apps/a/package.json", "package.json"),
+            ("crates/a/Cargo.toml", "Cargo.toml"),
+            ("src/csproj", "csproj"),
+        ] {
+            assert!(
+                !project_files_can_visit_path(&project_files, Path::new(path), file_name),
+                "extension entry \".csproj\" must not claim {path}"
+            );
+        }
+    }
+
+    // The bare-file-name form is an exact, case-sensitive whole-name compare —
+    // never a suffix or extension match. `settings.package.json` shares the
+    // extension and ends with the manifest name, yet is not a manifest.
+    #[test]
+    fn test_finder_can_visit_path_plain_name_entry_matches_only_exact_name() {
+        let project_files = ["package.json"];
+
+        assert!(project_files_can_visit_path(
+            &project_files,
+            Path::new("apps/a/package.json"),
+            "package.json"
+        ));
+
+        for (path, file_name) in [
+            ("apps/a/settings.package.json", "settings.package.json"),
+            ("apps/a/package.json.bak", "package.json.bak"),
+            ("apps/a/tsconfig.json", "tsconfig.json"),
+            ("apps/a/Package.json", "Package.json"),
+        ] {
+            assert!(
+                !project_files_can_visit_path(&project_files, Path::new(path), file_name),
+                "file-name entry \"package.json\" must not claim {path}"
+            );
+        }
     }
 
     #[tokio::test]
