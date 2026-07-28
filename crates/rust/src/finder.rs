@@ -342,7 +342,13 @@ impl ProjectFinder for RustProjectFinder {
         if !self.matches_project_file(path).await? {
             return Ok(());
         }
-        if self.projects.contains_key(path)
+        // The already-discovered half now goes through the shared
+        // `ProjectFinder::contains_project` probe; the extra
+        // `pending_workspace_packages` scan is Rust-only (members whose
+        // version is still deferred to `resolve_pending_workspace_packages`)
+        // and stays open-coded here, so `should_visit_manifest` is not usable
+        // for this finder.
+        if self.contains_project(path)
             || self
                 .pending_workspace_packages
                 .iter()

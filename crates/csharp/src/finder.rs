@@ -262,7 +262,13 @@ impl ProjectFinder for CSharpProjectFinder {
             return Ok(());
         }
 
-        if self.projects.contains_key(path) {
+        // Already-discovered probe, shared with every other finder via
+        // `ProjectFinder::contains_project`. It stays a separate statement
+        // here (rather than folding into `should_visit_manifest`) because
+        // this finder claims an EXTENSION entry, which the name-based
+        // `matches_project_file` gate can never match — see its docs.
+        // Extension-first ordering is therefore preserved exactly.
+        if self.contains_project(path) {
             return Ok(());
         }
 

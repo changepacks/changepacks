@@ -1,5 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
+    fmt::Write,
     path::{Path, PathBuf},
 };
 
@@ -385,14 +386,24 @@ fn validate_update_project_paths(
         return Ok(());
     }
 
-    bail!(
-        "unresolved changepack update paths: {}",
-        unresolved_paths
-            .iter()
-            .map(|path| path.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ")
-    )
+    // Build the joined list in a single running `String` instead of
+    // `.map(|p| p.display().to_string()).collect::<Vec<_>>().join(", ")`, which
+    // allocated one `String` per path plus the `Vec` spine plus the joined
+    // `String`. `Path::display()` is a `Display` adapter, so it writes straight
+    // into the buffer and the per-element `to_string` was pure waste.
+    let mut rendered_paths = String::new();
+    for (i, path) in unresolved_paths.iter().enumerate() {
+        if i > 0 {
+            rendered_paths.push_str(", ");
+        }
+        // `fmt::Write for String` is infallible: its `write_str` only calls
+        // `String::push_str` and always returns `Ok(())`. The `expect` documents
+        // that invariant instead of silently discarding the `Result`.
+        write!(&mut rendered_paths, "{}", path.display())
+            .expect("writing into a String via fmt::Write is infallible");
+    }
+
+    bail!("unresolved changepack update paths: {rendered_paths}")
 }
 
 fn collect_update_project_refs<'a>(

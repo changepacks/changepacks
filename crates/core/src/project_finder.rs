@@ -4,8 +4,8 @@ use crate::project::Project;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 
-/// Generates `projects()`, `projects_mut()`, `project_count()`, and
-/// `extend_projects()` for finders backed by a
+/// Generates `projects()`, `projects_mut()`, `project_count()`,
+/// `extend_projects()`, and `contains_project()` for finders backed by a
 /// `projects: HashMap<PathBuf, Project>` field.
 ///
 /// The `extend_projects` body drains `self.projects.values()` straight into
@@ -13,6 +13,11 @@ use async_trait::async_trait;
 /// has to materialize is never built. Yield order is `HashMap::values()` in
 /// both bodies, so overriding is order-preserving with respect to the
 /// defaulted [`ProjectFinder::extend_projects`].
+///
+/// The `contains_project` body is the O(1) hashed probe the map already
+/// offers, replacing the defaulted linear scan over `projects()` — see
+/// [`ProjectFinder::contains_project`]. `HashMap<PathBuf, Project>` borrows
+/// its keys as `Path`, so the probe neither allocates nor clones.
 #[macro_export]
 macro_rules! impl_projects_hashmap_accessors {
     () => {
@@ -27,6 +32,9 @@ macro_rules! impl_projects_hashmap_accessors {
         }
         fn extend_projects<'a>(&'a self, out: &mut ::std::vec::Vec<&'a $crate::Project>) {
             out.extend(self.projects.values());
+        }
+        fn contains_project(&self, path: &::std::path::Path) -> ::std::primitive::bool {
+            self.projects.contains_key(path)
         }
     };
 }
@@ -413,6 +421,55 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     fn extend_projects<'a>(&'a self, out: &mut Vec<&'a Project>) {
         out.extend(self.projects());
     }
+    /// Whether a project keyed by exactly `path` has already been discovered
+    /// by this finder.
+    ///
+    /// `path` is the manifest path a `visit()` call was handed — the same
+    /// value every finder uses as its storage key — so this is the
+    /// "already visited, do not re-parse" probe. It exists so the six
+    /// language finders stop reaching into their private `projects` field
+    /// from inside `visit()`; the gate now belongs to the trait that defines
+    /// the visit protocol.
+    ///
+    /// The default body is the compatibility path for external implementors,
+    /// exactly like [`ProjectFinder::extend_projects`]: it linearly scans
+    /// `projects()` for a project whose [`Project::path`] equals `path`, so
+    /// an implementor that only supplies the required accessors keeps
+    /// compiling and keeps identical behaviour, and merely forfeits the
+    /// hashed lookup. Implementors backed by a `HashMap<PathBuf, Project>`
+    /// get the O(1) override for free from
+    /// [`impl_projects_hashmap_accessors!`].
+    fn contains_project(&self, path: &Path) -> bool {
+        self.projects()
+            .into_iter()
+            .any(|project| project.path() == path)
+    }
+    /// Whether `visit()` should parse `path`, or bail out early.
+    ///
+    /// This is the two-guard prelude every language finder open-coded at the
+    /// top of its `visit()`: `path` must be a manifest this finder claims AND
+    /// must not have been discovered already.
+    ///
+    /// Guard order is deliberate and preserved from the hand-rolled copies:
+    /// the name/stat gate ([`ProjectFinder::matches_project_file`]) runs
+    /// FIRST and the map probe ([`ProjectFinder::contains_project`]) second.
+    /// `&&` short-circuits, so a path that is not a manifest never pays for
+    /// the second probe — and, more importantly, the ordering keeps the
+    /// error surface unchanged: a metadata error on a recognized manifest
+    /// name still propagates even when that path is already known.
+    ///
+    /// Only finders whose [`ProjectFinder::project_files`] uses the bare
+    /// file-name form may gate on this. An extension-based finder (the
+    /// `".csproj"` form) must keep its own
+    /// [`has_extension_ignore_ascii_case`] + [`is_regular_file`] check and
+    /// call [`ProjectFinder::contains_project`] directly, for the reason
+    /// spelled out on [`ProjectFinder::matches_project_file`].
+    ///
+    /// # Errors
+    /// Propagates whatever [`ProjectFinder::matches_project_file`] returns.
+    async fn should_visit_manifest(&self, path: &Path) -> Result<bool> {
+        Ok(self.matches_project_file(path).await? && !self.contains_project(path))
+    }
     /// The manifest patterns this finder claims, in one of TWO forms.
     ///
     /// 1. A bare **file name** (`"package.json"`, `"Cargo.toml"`,
@@ -728,6 +785,134 @@ mod tests {
 
         assert_eq!(out.len(), finder.project_count());
         assert_eq!(project_names(&out), project_names(&finder.projects()));
+    }
+
+    // `contains_project` has the same two-body shape as `extend_projects`: a
+    // defaulted linear scan for external implementors and a hashed override
+    // from the macro. `MockProjectFinder` does NOT override it, so this pins
+    // the compatibility path — hit on the exact stored manifest path, miss on
+    // an unknown one and on a merely-similar one.
+    #[test]
+    fn test_contains_project_default_scans_projects_by_path() {
+        let finder = MockProjectFinder::new()
+            .with_package(MockPackage::same_path("pkg1", "/project1/package.json"))
+            .with_workspace(MockWorkspace::same_path("root", "/project2/package.json"));
+
+        assert!(finder.contains_project(Path::new("/project1/package.json")));
+        // Workspace projects count too, not just packages.
+        assert!(finder.contains_project(Path::new("/project2/package.json")));
+        assert!(!finder.contains_project(Path::new("/project3/package.json")));
+        // The probe keys on the whole manifest path, never on the directory.
+        assert!(!finder.contains_project(Path::new("/project1")));
+    }
+
+    #[test]
+    fn test_contains_project_default_on_empty_finder_is_always_false() {
+        let finder = MockProjectFinder::new();
+        assert!(!finder.contains_project(Path::new("/project1/package.json")));
+    }
+
+    // The macro override must answer identically to the default for every
+    // probe — that equivalence is what lets the six language finders swap
+    // their open-coded `self.projects.contains_key(path)` for the trait
+    // method without changing behaviour.
+    #[test]
+    fn test_contains_project_macro_override_matches_default_answers() {
+        let entries = [
+            ("pkg1", "/project1/package.json"),
+            ("pkg2", "/project2/package.json"),
+        ];
+        let hashed = HashMapProjectFinder::with_packages(&entries);
+        let mut scanned = MockProjectFinder::new();
+        for (name, path) in entries {
+            scanned = scanned.with_package(MockPackage::same_path(name, path));
+        }
+
+        for probe in [
+            "/project1/package.json",
+            "/project2/package.json",
+            "/project3/package.json",
+            "/project1",
+            "",
+        ] {
+            assert_eq!(
+                hashed.contains_project(Path::new(probe)),
+                scanned.contains_project(Path::new(probe)),
+                "hashed and scanned answers diverged for {probe:?}"
+            );
+        }
+    }
+
+    // `should_visit_manifest` is the consolidated two-guard prelude. Its
+    // documented order is name/stat gate FIRST, already-discovered probe
+    // SECOND, and it returns `true` only when both agree the manifest is new.
+    #[tokio::test]
+    async fn test_should_visit_manifest_accepts_new_recognized_manifest() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        std::fs::write(&manifest, "{}").unwrap();
+
+        let finder = MockProjectFinder::new();
+        assert!(finder.should_visit_manifest(&manifest).await.unwrap());
+    }
+
+    // The duplicate-visit half: same manifest, but already discovered.
+    #[tokio::test]
+    async fn test_should_visit_manifest_rejects_already_discovered_manifest() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        std::fs::write(&manifest, "{}").unwrap();
+
+        let finder = MockProjectFinder::new()
+            .with_package(MockPackage::same_path("pkg", manifest.to_str().unwrap()));
+        assert!(
+            !finder.should_visit_manifest(&manifest).await.unwrap(),
+            "a manifest already in the finder must not be visited twice"
+        );
+    }
+
+    // The name/stat half: an unrecognized name and a directory that merely
+    // shares a manifest name are both rejected before anything is parsed.
+    #[tokio::test]
+    async fn test_should_visit_manifest_rejects_non_manifest_and_directory() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let other = temp_dir.path().join("Cargo.toml");
+        std::fs::write(&other, "[package]\n").unwrap();
+        let dir_path = temp_dir.path().join("package.json");
+        std::fs::create_dir(&dir_path).unwrap();
+
+        let finder = MockProjectFinder::new();
+        assert!(!finder.should_visit_manifest(&other).await.unwrap());
+        assert!(!finder.should_visit_manifest(&dir_path).await.unwrap());
+    }
+
+    // Equivalence with the hand-rolled prelude the language finders used to
+    // open-code: `matches_project_file(path)? && !contains_project(path)`.
+    #[tokio::test]
+    async fn test_should_visit_manifest_equals_the_open_coded_two_guard_prelude() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        std::fs::write(&manifest, "{}").unwrap();
+        let unrecognized = temp_dir.path().join("Cargo.toml");
+        std::fs::write(&unrecognized, "[package]\n").unwrap();
+        let missing = temp_dir.path().join("nested").join("package.json");
+
+        let known = MockProjectFinder::new()
+            .with_package(MockPackage::same_path("pkg", manifest.to_str().unwrap()));
+        let empty = MockProjectFinder::new();
+
+        for finder in [&known, &empty] {
+            for probe in [&manifest, &unrecognized, &missing] {
+                let open_coded = finder.matches_project_file(probe).await.unwrap()
+                    && !finder.contains_project(probe);
+                assert_eq!(
+                    finder.should_visit_manifest(probe).await.unwrap(),
+                    open_coded,
+                    "consolidated gate diverged from the open-coded prelude for {}",
+                    probe.display()
+                );
+            }
+        }
     }
 
     #[test]

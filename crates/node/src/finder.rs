@@ -76,11 +76,11 @@ impl ProjectFinder for NodeProjectFinder {
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        // Parse this manifest if it is a recognized project file not already visited.
-        if !self.matches_project_file(path).await? {
-            return Ok(());
-        }
-        if self.projects.contains_key(path) {
+        // Parse this manifest if it is a recognized project file not already
+        // visited. Both guards live in `ProjectFinder::should_visit_manifest`
+        // (name/stat gate first, already-discovered map probe second) so the
+        // prelude is written once for every file-name-based finder.
+        if !self.should_visit_manifest(path).await? {
             return Ok(());
         }
         // read package.json

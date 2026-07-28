@@ -531,6 +531,44 @@ mod tests {
         assert_eq!(projects[0].name(), Some("kept"));
     }
 
+    // A malformed `ignore` entry in `.changepacks/config.json` is the first
+    // error a user hits after a typo, so the message that names the offending
+    // pattern must survive refactors of `build_config_gitignore`. A reversed
+    // character-class range (`[z-a]`) is rejected by
+    // `GitignoreBuilder::add_line`, which drives the `with_context` arm.
+    // (An unterminated `[` is NOT rejected — globset accepts it as a literal.)
+    #[tokio::test]
+    async fn find_project_dirs_reports_invalid_ignore_pattern_from_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        init_git_repo(temp_path);
+        fs::write(
+            temp_path.join("package.json"),
+            r#"{"name":"root","version":"1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+        let config = Config {
+            ignore: vec!["packages/[z-a]*.js".to_string()],
+            ..Config::default()
+        };
+
+        let error = find_project_dirs(&discover_repo(temp_path), &mut finders, &config, false)
+            .await
+            .expect_err("malformed ignore pattern must abort discovery");
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("Invalid ignore pattern in config: packages/[z-a]*.js"),
+            "unexpected error context: {message}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     #[tokio::test]
     async fn find_uses_directory_name_when_origin_is_absent() {
         let temp_dir = TempDir::new().unwrap();
