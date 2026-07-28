@@ -10,13 +10,14 @@ use changepacks_core::{
 };
 use changepacks_utils::{
     CARRY_FORWARD_LOG_PREFIX, clear_applied_update_logs, clear_update_logs,
-    collect_changepack_log_paths, display_update, gen_changepack_result_map, gen_update_map,
-    get_relative_path, get_relative_path_ref,
+    collect_changepack_log_paths, display_update, gen_update_map, get_relative_path,
+    get_relative_path_ref,
 };
 use clap::Args;
 
 use crate::{
     CommandContext,
+    commands::changepack_result_json,
     finders::collect_projects,
     options::{CliLanguage, FormatOptions, language_slice_contains},
     prompter::{InquirePrompter, Prompter},
@@ -165,11 +166,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // early (line ~202-204), so json_output is never printed. Skip the expensive
     // gen_changepack_result_map walk and serde_json::to_string_pretty serialization.
     let json_output = if !args.dry_run && matches!(args.format, FormatOptions::Json) {
-        let output = serde_json::to_string_pretty(&gen_changepack_result_map(
-            projects.as_slice(),
-            &ctx.repo_root_path,
-            &update_map,
-        )?)?;
+        let output = changepack_result_json(projects.as_slice(), &ctx.repo_root_path, &update_map)?;
         Some(output)
     } else {
         None
@@ -295,11 +292,8 @@ fn preview_and_confirm(
     }
 
     // confirm
-    let confirm = if args.yes {
-        true
-    } else {
-        prompter.confirm("Are you sure you want to update the projects?")?
-    };
+    let confirm =
+        prompter.confirm_unless(args.yes, "Are you sure you want to update the projects?")?;
 
     if !confirm {
         args.format.print("Update cancelled");

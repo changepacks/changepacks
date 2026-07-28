@@ -43,6 +43,25 @@ pub trait Prompter: Send + Sync {
     /// Returns error if user cancels the confirmation or interaction fails.
     fn confirm(&self, message: &str) -> Result<bool>;
 
+    /// Confirm `message` unless `skip` short-circuits the prompt to "yes".
+    ///
+    /// Encodes the `--yes` flag contract shared by `changepacks update` and
+    /// `changepacks publish`, each of which previously carried its own inline
+    /// `let confirm = if args.yes { true } else { prompter.confirm(msg)? };`.
+    /// Keeping the short-circuit in one provided method means the flag can
+    /// never drift between commands, and no prompt is issued (nothing is
+    /// written to the terminal) when `skip` is `true`.
+    ///
+    /// # Errors
+    /// Returns error if user cancels the confirmation or interaction fails.
+    /// Never fails when `skip` is `true`, because no prompt is issued.
+    fn confirm_unless(&self, skip: bool, message: &str) -> Result<bool> {
+        if skip {
+            return Ok(true);
+        }
+        self.confirm(message)
+    }
+
     /// # Errors
     /// Returns error if user cancels the input or interaction fails.
     fn text(&self, message: &str) -> Result<String>;
@@ -175,6 +194,7 @@ mod tests {
     use changepacks_core::Language;
     use changepacks_core::test_support::MockPackage;
     use rstest::rstest;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[test]
     fn test_mock_prompter_default() {
@@ -191,6 +211,98 @@ mod tests {
             ..Default::default()
         };
         assert!(!prompter.confirm("test").unwrap());
+    }
+
+    /// Prompter that records how many times `confirm` was invoked, so
+    /// `confirm_unless(true, _)` can be asserted to short-circuit *without
+    /// prompting* rather than merely returning `true`.
+    ///
+    /// Uses `AtomicUsize` rather than `Cell<usize>` because `Prompter`
+    /// requires `Sync`; the counter is single-threaded in practice, so a
+    /// `Mutex` would add locking noise for no benefit.
+    struct CountingPrompter {
+        confirm_value: bool,
+        confirm_calls: AtomicUsize,
+    }
+
+    impl Prompter for CountingPrompter {
+        fn multi_select<'a>(
+            &self,
+            _message: &str,
+            options: Vec<&'a Project>,
+            _defaults: Vec<usize>,
+        ) -> Result<Vec<&'a Project>> {
+            Ok(options)
+        }
+
+        fn confirm(&self, _message: &str) -> Result<bool> {
+            self.confirm_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.confirm_value)
+        }
+
+        fn text(&self, _message: &str) -> Result<String> {
+            Ok(String::new())
+        }
+    }
+
+    // `skip == true` is the `--yes` path: it must answer "yes" and must never
+    // reach `confirm`, because reaching it would draw a prompt in a
+    // non-interactive run.
+    #[test]
+    fn test_confirm_unless_skip_does_not_call_confirm() {
+        let prompter = CountingPrompter {
+            confirm_value: false,
+            confirm_calls: AtomicUsize::new(0),
+        };
+        assert!(prompter.confirm_unless(true, "message").unwrap());
+        assert_eq!(prompter.confirm_calls.load(Ordering::SeqCst), 0);
+    }
+
+    // `skip == false` must delegate: exactly one `confirm` call, and the
+    // answer is whatever `confirm` returned (both polarities).
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn test_confirm_unless_delegates_to_confirm(#[case] answer: bool) {
+        let prompter = CountingPrompter {
+            confirm_value: answer,
+            confirm_calls: AtomicUsize::new(0),
+        };
+        assert_eq!(prompter.confirm_unless(false, "message").unwrap(), answer);
+        assert_eq!(prompter.confirm_calls.load(Ordering::SeqCst), 1);
+    }
+
+    // A failing `confirm` must propagate through `confirm_unless` unchanged —
+    // cancellation still downcasts to `UserCancelled`.
+    #[test]
+    fn test_confirm_unless_propagates_confirm_error() {
+        struct CancellingPrompter;
+
+        impl Prompter for CancellingPrompter {
+            fn multi_select<'a>(
+                &self,
+                _message: &str,
+                options: Vec<&'a Project>,
+                _defaults: Vec<usize>,
+            ) -> Result<Vec<&'a Project>> {
+                Ok(options)
+            }
+
+            fn confirm(&self, _message: &str) -> Result<bool> {
+                Err(UserCancelled.into())
+            }
+
+            fn text(&self, _message: &str) -> Result<String> {
+                Ok(String::new())
+            }
+        }
+
+        let err = CancellingPrompter
+            .confirm_unless(false, "message")
+            .unwrap_err();
+        assert!(err.downcast_ref::<UserCancelled>().is_some());
+        // The skip path never touches `confirm`, so it cannot fail.
+        assert!(CancellingPrompter.confirm_unless(true, "message").unwrap());
     }
 
     #[test]

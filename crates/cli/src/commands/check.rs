@@ -2,8 +2,8 @@ use changepacks_core::{ChangePackResultLog, Project, UpdateType, normalize_path_
 
 use anyhow::Result;
 use changepacks_utils::{
-    ProjectNameAnalysis, ProjectNameResolution, display_update, gen_changepack_result_map,
-    gen_update_map, get_relative_path_ref,
+    ProjectNameAnalysis, ProjectNameResolution, display_update, gen_update_map,
+    get_relative_path_ref,
 };
 use clap::Args;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{
     CommandContext,
+    commands::changepack_result_json,
     finders::collect_projects,
     options::{CliLanguage, FilterOptions, FormatOptions, retain_by_language},
 };
@@ -111,11 +112,8 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
                 }
             }
             FormatOptions::Json => {
-                let json = serde_json::to_string_pretty(&gen_changepack_result_map(
-                    projects.as_slice(),
-                    &ctx.repo_root_path,
-                    &update_map,
-                )?)?;
+                let json =
+                    changepack_result_json(projects.as_slice(), &ctx.repo_root_path, &update_map)?;
                 println!("{json}");
             }
         }

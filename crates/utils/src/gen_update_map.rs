@@ -282,7 +282,18 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
 
 fn normalize_update_on_match_path(path: &Path) -> String {
     let lossy = path.to_string_lossy();
-    changepacks_core::normalize_path_separators(&lossy).into_owned()
+    if lossy.contains('\\') {
+        // Only a backslash-carrying path needs the rewrite; delegate it to the
+        // single shared implementation in core.
+        return changepacks_core::normalize_path_separators(&lossy).into_owned();
+    }
+    // Nothing to rewrite. `normalize_path_separators` would hand back
+    // `Cow::Borrowed` here, so the old `.into_owned()` copied the string even
+    // when `to_string_lossy` had already produced an owned `String` (a
+    // non-UTF-8 path). Consuming the lossy `Cow` instead moves that `String`
+    // out untouched and allocates only for the borrowed case, which is exactly
+    // what the previous code did. The bytes returned are identical either way.
+    lossy.into_owned()
 }
 
 #[cfg(test)]

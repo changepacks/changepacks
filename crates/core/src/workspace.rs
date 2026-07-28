@@ -1,8 +1,6 @@
 use std::{collections::HashSet, path::Path};
 
-use crate::{
-    Config, Language, Package, change_detection::should_mark_changed, update_type::UpdateType,
-};
+use crate::{Language, Package, change_detection::should_mark_changed, update_type::UpdateType};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -65,46 +63,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
         self.is_publishable_by_default()
     }
 
-    /// Publish the workspace using the configured command or default
-    ///
-    /// # Errors
-    /// Returns error if the publish command fails to spawn or the workspace directory is missing.
-    /// A non-zero exit code is reported via `PublishOutput::success = false`.
-    async fn publish(&self, config: &Config) -> Result<crate::publish::PublishOutput> {
-        let command = self.get_publish_command(config);
-        crate::publish::run_publish_flow(
-            &command,
-            self.path(),
-            &[],
-            crate::publish::WORKSPACE_DIR_NOT_FOUND,
-        )
-        .await
-    }
-
-    /// Run the publish command in dry-run mode to verify the pre-release flow
-    /// works without actually publishing.
-    ///
-    /// Returns `Ok(Some(output))` with the captured command output, or
-    /// `Ok(None)` when the language does not support a dry-run mode and the
-    /// user has not provided an override in `config.publish_dry_run`.
-    ///
-    /// # Errors
-    /// Returns error if the dry-run command fails to spawn or the workspace
-    /// directory is missing. A non-zero exit code is reported via
-    /// `PublishOutput::success = false`.
-    async fn dry_run_publish(
-        &self,
-        config: &Config,
-    ) -> Result<Option<crate::publish::PublishOutput>> {
-        let command = self.get_dry_run_publish_command(config);
-        crate::publish::run_dry_run_publish_flow(
-            command.as_deref(),
-            self.path(),
-            &[],
-            crate::publish::WORKSPACE_DIR_NOT_FOUND,
-        )
-        .await
-    }
+    crate::impl_publish_flows!(crate::publish::WORKSPACE_DIR_NOT_FOUND);
 
     crate::impl_publish_command_resolvers!();
 
@@ -125,6 +84,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Config;
     use crate::test_support::{MockWorkspace, UnsupportedDryRunProject};
     use rstest::rstest;
     use std::collections::{BTreeMap, HashSet};

@@ -19,5 +19,19 @@ changepacks-csharp = { path = "crates/csharp", version = "^0.2.21" }
 changepacks-java = { path = "crates/java", version = "^0.2.25" }
 changepacks-utils = { path = "crates/utils", version = "^0.2.22" }
 
+# Third-party dependencies shared by two or more workspace crates.
+# Version requirements only: each crate keeps its own `features` list, which
+# Cargo unions with the (empty) workspace feature set.
+anyhow = "1.0"
+async-trait = "0.1"
+colored = "3.1"
+futures = "0.3"
+rstest = "0.26"
+serde = "1.0"
+serde_json = "1.0"
+tempfile = "3.27"
+tokio = "1.53"
+toml_edit = "0.25"
+
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }

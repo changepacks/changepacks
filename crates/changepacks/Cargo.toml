@@ -11,7 +11,7 @@ default-run = "changepacks"
 
 [dependencies]
 changepacks-cli.workspace = true
-tokio = { version = "1.53", features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.5"

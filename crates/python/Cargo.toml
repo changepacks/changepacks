@@ -11,15 +11,15 @@ readme = "../../README.md"
 [dependencies]
 changepacks-core.workspace = true
 changepacks-utils.workspace = true
-anyhow = "1.0"
-tokio = { version = "1.53", features = ["fs"] }
-async-trait = "0.1"
-toml_edit = "0.25"
+anyhow.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+async-trait.workspace = true
+toml_edit.workspace = true
 
 [dev-dependencies]
-tempfile = "3.27"
-tokio = { version = "1.53", features = ["test-util", "macros"] }
-rstest = "0.26"
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }
+rstest.workspace = true
 changepacks-utils = { workspace = true, features = ["test-support"] }
 
 [lints]

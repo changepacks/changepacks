@@ -118,11 +118,8 @@ pub async fn handle_publish_with_prompter(
     }
 
     // confirm
-    let confirm = if args.yes {
-        true
-    } else {
-        prompter.confirm("Are you sure you want to publish the packages?")?
-    };
+    let confirm =
+        prompter.confirm_unless(args.yes, "Are you sure you want to publish the packages?")?;
     if !confirm {
         args.format.print("Publish cancelled");
         return Ok(());

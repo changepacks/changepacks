@@ -121,9 +121,9 @@ macro_rules! impl_const_publish_commands {
 /// `language()`, `default_publish_command()`, and
 /// `default_dry_run_publish_command()`.
 ///
-/// The sibling `publish` / `dry_run_publish` defaults are deliberately NOT
-/// generated here: they differ by the `PACKAGE_DIR_NOT_FOUND` vs
-/// `WORKSPACE_DIR_NOT_FOUND` message constant.
+/// The sibling `publish` / `dry_run_publish` defaults live in
+/// [`impl_publish_flows!`], which takes the differing missing-directory
+/// message constant as an argument.
 #[macro_export]
 macro_rules! impl_publish_command_resolvers {
     () => {
@@ -162,6 +162,100 @@ macro_rules! impl_publish_command_resolvers {
                 || self.default_dry_run_publish_command(),
                 config,
             )
+        }
+    };
+}
+
+/// Generates the `publish` / `dry_run_publish` trait defaults shared by
+/// [`Package`](crate::Package) and [`Workspace`](crate::Workspace).
+///
+/// `$dir_not_found` is the only thing that differed between the two hand-kept
+/// copies: [`crate::publish::PACKAGE_DIR_NOT_FOUND`] for `Package`,
+/// [`crate::publish::WORKSPACE_DIR_NOT_FOUND`] for `Workspace`.
+///
+/// Contract: the invoking trait MUST already declare `path()`,
+/// `get_publish_command()`, and `get_dry_run_publish_command()` — the latter
+/// two come from [`impl_publish_command_resolvers!`].
+///
+/// The two methods are emitted in the shape `#[async_trait]` would produce
+/// rather than as `async fn`, because an attribute macro cannot see through a
+/// `macro_rules!` invocation in a trait body: `#[async_trait]` runs BEFORE
+/// this macro expands, so an `async fn` emitted here would survive as a
+/// native RPITIT method and make `Package` / `Workspace` dyn-incompatible,
+/// breaking `Box<dyn Package>` in `crate::Project`. Emitting the boxed-future
+/// signature keeps the defaults object safe and keeps them overridable by
+/// `#[async_trait]` impls in the language crates (Node, Java, C#), whose
+/// generated signatures this shape matches.
+#[macro_export]
+macro_rules! impl_publish_flows {
+    ($dir_not_found:path) => {
+        /// Publish this project using the configured command or default.
+        ///
+        /// # Errors
+        /// Returns error if the publish command fails to spawn or the project
+        /// directory is missing. A non-zero exit code is reported via
+        /// `PublishOutput::success = false`.
+        fn publish<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            config: &'life1 $crate::Config,
+        ) -> ::core::pin::Pin<
+            ::std::boxed::Box<
+                dyn ::core::future::Future<
+                        Output = ::anyhow::Result<$crate::publish::PublishOutput>,
+                    > + ::core::marker::Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            ::std::boxed::Box::pin(async move {
+                let command = self.get_publish_command(config);
+                $crate::publish::run_publish_flow(&command, self.path(), &[], $dir_not_found).await
+            })
+        }
+
+        /// Run the publish command in dry-run mode to verify the pre-release
+        /// flow works without actually publishing.
+        ///
+        /// Returns `Ok(Some(output))` with the captured command output, or
+        /// `Ok(None)` when the language does not support a dry-run mode and
+        /// the user has not provided an override in `config.publish_dry_run`.
+        ///
+        /// # Errors
+        /// Returns error if the dry-run command fails to spawn or the project
+        /// directory is missing. A non-zero exit code is reported via
+        /// `PublishOutput::success = false`.
+        fn dry_run_publish<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            config: &'life1 $crate::Config,
+        ) -> ::core::pin::Pin<
+            ::std::boxed::Box<
+                dyn ::core::future::Future<
+                        Output = ::anyhow::Result<
+                            ::std::option::Option<$crate::publish::PublishOutput>,
+                        >,
+                    > + ::core::marker::Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            ::std::boxed::Box::pin(async move {
+                let command = self.get_dry_run_publish_command(config);
+                $crate::publish::run_dry_run_publish_flow(
+                    command.as_deref(),
+                    self.path(),
+                    &[],
+                    $dir_not_found,
+                )
+                .await
+            })
         }
     };
 }

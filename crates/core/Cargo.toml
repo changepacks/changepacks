@@ -12,18 +12,18 @@ readme = "../../README.md"
 test-support = []
 
 [dependencies]
-anyhow = "1.0"
+anyhow.workspace = true
 chrono = { version = "0.4", features = ["serde"] }
-serde = { version = "1.0", features = ["derive"] }
-tokio = { version = "1.53", features = ["fs", "process"] }
-async-trait = "0.1"
-colored = "3.1"
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["fs", "process"] }
+async-trait.workspace = true
+colored.workspace = true
 
 [dev-dependencies]
-rstest = "0.26"
-serde_json = "1.0"
-tempfile = "3.27"
-tokio = { version = "1.53", features = ["macros", "rt"] }
+rstest.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt"] }
 
 [lints]
 workspace = true
