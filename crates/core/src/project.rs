@@ -52,9 +52,13 @@ pub enum Project {
 /// current-version rendering. A future rewording (e.g. "no version" instead of
 /// "unknown", or a different prefix) now lands in exactly one place across both
 /// crates. Byte-identical to the previously open-coded `map_or_else` copies.
+///
+/// Returns [`Cow`] so the `None` branch borrows the `"unknown"` literal instead
+/// of allocating a `String` for a constant; only the `Some` branch, which must
+/// build `v{version}`, allocates.
 #[must_use]
-pub fn format_version_display(version: Option<&str>) -> String {
-    version.map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
+pub fn format_version_display(version: Option<&str>) -> Cow<'static, str> {
+    version.map_or(Cow::Borrowed("unknown"), |v| Cow::Owned(format!("v{v}")))
 }
 
 impl Project {
@@ -210,9 +214,13 @@ impl Project {
     /// is supplied) and `check.rs::format_project_line` (the CLI's tree /
     /// stdout display). A future rewording (e.g. "no version" instead of
     /// "unknown", or a different prefix) now lands in exactly one place.
+    ///
+    /// Kept returning an owned `String` so callers outside this crate are
+    /// unaffected by [`format_version_display`]'s `Cow` return type; callers
+    /// that can accept a borrow should call `format_version_display` directly.
     #[must_use]
     pub fn version_display(&self) -> String {
-        format_version_display(self.version())
+        format_version_display(self.version()).into_owned()
     }
 
     /// Render the project's canonical one-line label (`[Workspace - Node] name
@@ -233,12 +241,13 @@ impl Project {
             Self::Workspace(w) => ("Workspace - ", w.language(), w.relative_path()),
             Self::Package(p) => ("", p.language(), p.relative_path()),
         };
-        // Route the None-override branch through `self.version_display()` so
+        // Route the None-override branch through `format_version_display` so
         // the "unknown"/"v{v}" formatting policy lives in exactly one place —
         // shared with `check.rs::format_project_line`'s CLI display path.
-        // Borrowed via Cow to skip a per-line String copy when an override is supplied.
+        // Borrowed via Cow to skip a per-line String copy when an override is
+        // supplied, and to skip the allocation entirely for the "unknown" case.
         let version: Cow<'_, str> =
-            version_override.map_or_else(|| Cow::Owned(self.version_display()), Cow::Borrowed);
+            version_override.map_or_else(|| format_version_display(self.version()), Cow::Borrowed);
         format!(
             "{} {} {} {} {}",
             format!("[{label_prefix}{lang}]").bright_blue().bold(),

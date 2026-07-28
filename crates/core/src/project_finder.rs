@@ -108,6 +108,64 @@ macro_rules! impl_const_publish_commands {
     };
 }
 
+/// Generates the `get_publish_command` / `get_dry_run_publish_command`
+/// trait defaults shared by [`Package`](crate::Package) and
+/// [`Workspace`](crate::Workspace).
+///
+/// Both traits resolve their publish commands through the exact same
+/// [`crate::publish`] ladder — only the surrounding doc prose used to
+/// differ — so the bodies live here once instead of being kept
+/// byte-identical by hand in two files.
+///
+/// Contract: the invoking trait MUST already declare `relative_path()`,
+/// `language()`, `default_publish_command()`, and
+/// `default_dry_run_publish_command()`.
+///
+/// The sibling `publish` / `dry_run_publish` defaults are deliberately NOT
+/// generated here: they differ by the `PACKAGE_DIR_NOT_FOUND` vs
+/// `WORKSPACE_DIR_NOT_FOUND` message constant.
+#[macro_export]
+macro_rules! impl_publish_command_resolvers {
+    () => {
+        /// Get the publish command for this project, checking config first.
+        ///
+        /// The `default_publish_command()` closure is `FnOnce`, so the
+        /// project's language-specific default (e.g. Node's
+        /// `detect_package_manager_recursive`, which walks the ancestor chain
+        /// with sync filesystem stats) is only invoked when config supplies
+        /// neither a per-path nor a per-language override — the common case
+        /// where the user configures a custom publish command in
+        /// `.changepacks/config.json` now avoids one `String` allocation and,
+        /// for Node, the ancestor-walking probe.
+        fn get_publish_command(&self, config: &$crate::Config) -> ::std::string::String {
+            $crate::publish::resolve_publish_command(
+                self.relative_path(),
+                self.language(),
+                || self.default_publish_command(),
+                config,
+            )
+        }
+
+        /// Get the dry-run publish command for this project, checking config
+        /// first, then falling back to the project's
+        /// `default_dry_run_publish_command`.
+        ///
+        /// Mirrors `get_publish_command` — the default closure is `FnOnce` so
+        /// it is only invoked on the cache-miss path.
+        fn get_dry_run_publish_command(
+            &self,
+            config: &$crate::Config,
+        ) -> ::std::option::Option<::std::string::String> {
+            $crate::publish::resolve_dry_run_publish_command(
+                self.relative_path(),
+                self.language(),
+                || self.default_dry_run_publish_command(),
+                config,
+            )
+        }
+    };
+}
+
 /// Generates the shared basic accessors for package/workspace structs with
 /// `name`, `version`, `path`, `relative_path`, and `is_changed` fields.
 #[macro_export]

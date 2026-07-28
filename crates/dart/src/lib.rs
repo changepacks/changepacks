@@ -100,6 +100,119 @@ mod tests {
         );
     }
 
+    /// A realistic `pubspec.yaml` exercising every formatting feature the
+    /// `yamlpatch` round-trip has to survive: a leading comment, an
+    /// interleaved comment, blank lines, a quoted scalar, a nested
+    /// `dependencies` map containing a `path` entry, and a `dev_dependencies`
+    /// block.
+    const PUBSPEC_WITH_VERSION: &str = concat!(
+        "# Widget package manifest.\n",
+        "name: widget\n",
+        "description: A widget package.\n",
+        "version: 1.2.3\n",
+        "\n",
+        "# The SDK constraint must survive the rewrite untouched.\n",
+        "environment:\n",
+        "  sdk: '>=3.0.0 <4.0.0'\n",
+        "\n",
+        "dependencies:\n",
+        "  collection: ^1.18.0\n",
+        "  local_helper:\n",
+        "    path: ../local_helper\n",
+        "\n",
+        "dev_dependencies:\n",
+        "  test: ^1.24.0\n",
+    );
+
+    /// Replacing an existing `version` must rewrite ONLY the version literal:
+    /// every comment, blank line, quoting style and nesting level is compared
+    /// with full-file equality, so any formatting damage fails the test.
+    #[tokio::test]
+    async fn test_write_pubspec_version_round_trip_preserves_comments_and_layout() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_yaml = temp_dir.path().join("pubspec.yaml");
+        fs::write(&pubspec_yaml, PUBSPEC_WITH_VERSION).unwrap();
+
+        write_pubspec_version(&pubspec_yaml, "2.0.0", true)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&pubspec_yaml).unwrap(),
+            concat!(
+                "# Widget package manifest.\n",
+                "name: widget\n",
+                "description: A widget package.\n",
+                "version: 2.0.0\n",
+                "\n",
+                "# The SDK constraint must survive the rewrite untouched.\n",
+                "environment:\n",
+                "  sdk: '>=3.0.0 <4.0.0'\n",
+                "\n",
+                "dependencies:\n",
+                "  collection: ^1.18.0\n",
+                "  local_helper:\n",
+                "    path: ../local_helper\n",
+                "\n",
+                "dev_dependencies:\n",
+                "  test: ^1.24.0\n",
+            )
+        );
+    }
+
+    /// The `existing_version == false` branch routes through `yamlpatch::Op::Add`
+    /// at the document root (workspace roots that declare no `version`). The
+    /// key must be inserted while every pre-existing line and comment survives
+    /// byte-for-byte, so this too asserts on the whole file.
+    #[tokio::test]
+    async fn test_write_pubspec_version_add_branch_preserves_existing_lines() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_yaml = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_yaml,
+            concat!(
+                "# Workspace root manifest.\n",
+                "name: my_workspace\n",
+                "\n",
+                "environment:\n",
+                "  sdk: '>=3.0.0 <4.0.0'\n",
+                "\n",
+                "# Members of the workspace.\n",
+                "workspace:\n",
+                "  - packages/alpha\n",
+                "  - packages/beta\n",
+                "\n",
+                "dev_dependencies:\n",
+                "  test: ^1.24.0\n",
+            ),
+        )
+        .unwrap();
+
+        write_pubspec_version(&pubspec_yaml, "0.1.0", false)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&pubspec_yaml).unwrap(),
+            concat!(
+                "# Workspace root manifest.\n",
+                "name: my_workspace\n",
+                "\n",
+                "environment:\n",
+                "  sdk: '>=3.0.0 <4.0.0'\n",
+                "\n",
+                "# Members of the workspace.\n",
+                "workspace:\n",
+                "  - packages/alpha\n",
+                "  - packages/beta\n",
+                "\n",
+                "dev_dependencies:\n",
+                "  test: ^1.24.0\n",
+                "version: 0.1.0\n",
+            )
+        );
+    }
+
     #[tokio::test]
     async fn test_write_pubspec_version_error_includes_path() {
         let temp_dir = TempDir::new().unwrap();

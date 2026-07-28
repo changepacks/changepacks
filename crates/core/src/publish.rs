@@ -53,19 +53,25 @@ pub fn normalize_path_separators(s: &str) -> Cow<'_, str> {
 ///
 /// Language crates delegate their own config lookup to this helper to avoid
 /// duplicating the path-first, language-fallback logic.
+///
+/// Returns a borrow into `map` rather than an owned `String`: the hottest
+/// caller (`sort_publishable_projects` in the CLI) only needs
+/// `Option::is_some`, so an owning return allocated and immediately dropped a
+/// command string once per candidate project. Callers that genuinely need
+/// ownership opt in with an explicit `.cloned()`.
 #[must_use]
-pub fn lookup_by_path_or_language(
-    map: &BTreeMap<String, String>,
+pub fn lookup_by_path_or_language<'a>(
+    map: &'a BTreeMap<String, String>,
     relative_path: &Path,
     language: Language,
-) -> Option<String> {
+) -> Option<&'a String> {
     // Empty publish maps can only miss; avoid path conversion and lookup/comparison work.
     if map.is_empty() {
         return None;
     }
     let lossy = relative_path.to_string_lossy();
     if let Some(cmd) = map.get(lossy.as_ref()) {
-        return Some(cmd.clone());
+        return Some(cmd);
     }
     // Config keys are documented/written with forward slashes, but the Rust
     // finder's filesystem-derived relative paths carry backslashes on Windows.
@@ -76,9 +82,9 @@ pub fn lookup_by_path_or_language(
     if lossy.contains('\\')
         && let Some(cmd) = map.get(normalize_path_separators(lossy.as_ref()).as_ref())
     {
-        return Some(cmd.clone());
+        return Some(cmd);
     }
-    map.get(language.publish_key()).cloned()
+    map.get(language.publish_key())
 }
 
 /// Resolve the publish command from config, language, or default.
@@ -93,6 +99,7 @@ pub fn resolve_publish_command<F: FnOnce() -> String>(
     config: &Config,
 ) -> String {
     lookup_by_path_or_language(&config.publish, relative_path, language)
+        .cloned()
         .unwrap_or_else(default_command_fn)
 }
 
@@ -115,6 +122,7 @@ pub fn resolve_dry_run_publish_command<F: FnOnce() -> Option<String>>(
     config: &Config,
 ) -> Option<String> {
     lookup_by_path_or_language(&config.publish_dry_run, relative_path, language)
+        .cloned()
         .or_else(default_dry_run_command_fn)
 }
 
@@ -342,7 +350,7 @@ mod tests {
             "custom publish".to_string(),
         )]);
         assert_eq!(
-            lookup_by_path_or_language(&populated, path, Language::Node).as_deref(),
+            lookup_by_path_or_language(&populated, path, Language::Node).map(String::as_str),
             Some("custom publish")
         );
 
@@ -371,7 +379,7 @@ mod tests {
             Path::new("packages/core/package.json"),
             Language::Node,
         );
-        assert_eq!(result.as_deref(), Some("path publish"));
+        assert_eq!(result.map(String::as_str), Some("path publish"));
     }
 
     #[test]
@@ -394,7 +402,7 @@ mod tests {
             Path::new("packages\\core\\package.json"),
             Language::Node,
         );
-        assert_eq!(result.as_deref(), Some("path publish"));
+        assert_eq!(result.map(String::as_str), Some("path publish"));
     }
 
     #[test]
@@ -413,7 +421,7 @@ mod tests {
             Path::new("packages/core/package.json"),
             Language::Node,
         );
-        assert_eq!(result.as_deref(), Some("language publish"));
+        assert_eq!(result.map(String::as_str), Some("language publish"));
     }
 
     #[test]

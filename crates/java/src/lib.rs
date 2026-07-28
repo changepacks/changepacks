@@ -239,6 +239,7 @@ fn resolve_publish_override(
         relative_path,
         changepacks_core::Language::Java,
     )
+    .cloned()
 }
 
 #[cfg(test)]

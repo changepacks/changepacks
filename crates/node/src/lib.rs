@@ -505,7 +505,7 @@ async fn command_for_path(
     if let Some(command) =
         changepacks_core::publish::lookup_by_path_or_language(map, relative_path, Language::Node)
     {
-        return Ok(command);
+        return Ok(command.clone());
     }
     Ok(default_fn(
         detect_package_manager_recursive_async(path, relative_path.components().count()).await?,

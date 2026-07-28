@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use anyhow::Result;
 use changepacks_core::UpdateType;
 
@@ -14,7 +16,11 @@ pub fn display_update(current_version: Option<&str>, update_type: UpdateType) ->
     // The `Some` vs `None` split now only carries the `"v"`-prefix vs
     // `"unknown"` DISPLAY distinction.
     let next_version = next_version_or_default(current_version, update_type)?;
-    let current_display = changepacks_core::format_version_display(current_version);
+    // `format_version_display` returns a `Cow`, so the `None` ("unknown") case
+    // borrows a static literal instead of allocating; `Cow` renders through
+    // `Display` exactly like the `String` it replaced.
+    let current_display: Cow<'static, str> =
+        changepacks_core::format_version_display(current_version);
     Ok(format!("{current_display} → v{next_version}"))
 }
 

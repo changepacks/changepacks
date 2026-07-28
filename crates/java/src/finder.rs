@@ -65,6 +65,11 @@ pub struct GradleProjectFinder {
     projects: HashMap<PathBuf, Project>,
     java_available: Option<bool>,
     metadata_by_wrapper: HashMap<PathBuf, GradleWrapperMetadata>,
+    /// Raw `gradlew_dir` (as returned by `find_gradlew`) to its canonicalized
+    /// form. Every subproject of a Gradle monorepo resolves to the SAME wrapper
+    /// root, so without this cache each visited manifest repeats an identical
+    /// `canonicalize` syscall just to build the `metadata_by_wrapper` key.
+    wrapper_dir_canonical: HashMap<PathBuf, PathBuf>,
 }
 
 impl GradleProjectFinder {
@@ -654,16 +659,26 @@ impl ProjectFinder for GradleProjectFinder {
             "Gradle wrapper (gradlew) not found. \
              Ensure the project root contains gradlew or gradlew.bat.",
         )?;
-        let normalized_wrapper_dir =
-            tokio::fs::canonicalize(&gradlew_dir)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Failed to normalize Gradle wrapper root '{}' for '{}'",
-                        gradlew_dir.display(),
-                        path.display()
-                    )
-                })?;
+        // Sibling subprojects all report the same `gradlew_dir`, so canonicalize
+        // it once per wrapper root instead of once per manifest.
+        let normalized_wrapper_dir = match self.wrapper_dir_canonical.get(&gradlew_dir) {
+            Some(cached) => cached.clone(),
+            None => {
+                let normalized =
+                    tokio::fs::canonicalize(&gradlew_dir)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to normalize Gradle wrapper root '{}' for '{}'",
+                                gradlew_dir.display(),
+                                path.display()
+                            )
+                        })?;
+                self.wrapper_dir_canonical
+                    .insert(gradlew_dir.clone(), normalized.clone());
+                normalized
+            }
+        };
 
         if !self
             .metadata_by_wrapper
@@ -1325,6 +1340,74 @@ mod tests {
         assert!(matches!(child, Project::Package(_)));
         assert_eq!(child.version(), Some("2.3.4"));
         assert_eq!(fs::read_to_string(invocation_count).unwrap().trim(), "1");
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_gradle_finder_canonicalizes_shared_wrapper_root_once() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path().join("repo with spaces");
+        let alpha_dir = repo.join("alpha");
+        let beta_dir = repo.join("beta");
+        fs::create_dir_all(&alpha_dir).unwrap();
+        fs::create_dir_all(&beta_dir).unwrap();
+        let root_manifest = repo.join("build.gradle.kts");
+        let alpha_manifest = alpha_dir.join("build.gradle.kts");
+        let beta_manifest = beta_dir.join("build.gradle.kts");
+        for manifest in [&root_manifest, &alpha_manifest, &beta_manifest] {
+            fs::write(manifest, "plugins { java }\n").unwrap();
+        }
+        create_metadata_gradlew(
+            &repo,
+            &[
+                metadata_record(&repo, ":", "root project", true),
+                metadata_record(&alpha_dir, ":alpha", "alpha", false),
+                metadata_record(&beta_dir, ":beta", "beta", false),
+            ],
+        )
+        .await;
+
+        let mut finder = finder_with_java_available();
+        for (manifest, relative) in [
+            (&root_manifest, PathBuf::from("build.gradle.kts")),
+            (&alpha_manifest, Path::new("alpha").join("build.gradle.kts")),
+            (&beta_manifest, Path::new("beta").join("build.gradle.kts")),
+        ] {
+            finder.visit(manifest, &relative).await.unwrap();
+        }
+
+        // One wrapper root shared by three manifests: exactly one canonicalize
+        // result is cached, and it is the canonical repository root.
+        let normalized_repo = tokio::fs::canonicalize(&repo).await.unwrap();
+        assert_eq!(
+            finder.wrapper_dir_canonical.values().collect::<Vec<_>>(),
+            vec![&normalized_repo]
+        );
+        assert_eq!(
+            finder.metadata_by_wrapper.keys().collect::<Vec<_>>(),
+            vec![&normalized_repo]
+        );
+
+        // Both siblings still resolve their own metadata record through that
+        // single shared wrapper root.
+        let mut names = finder
+            .projects()
+            .iter()
+            .map(|project| project.name().unwrap().to_string())
+            .collect::<Vec<_>>();
+        names.sort();
+        assert_eq!(names, vec!["alpha", "beta", "root project"]);
+        for name in ["alpha", "beta"] {
+            let project = finder
+                .projects()
+                .iter()
+                .copied()
+                .find(|project| project.name() == Some(name))
+                .unwrap();
+            assert!(matches!(project, Project::Package(_)));
+            assert_eq!(project.version(), Some("1.0.0"));
+        }
 
         temp_dir.close().unwrap();
     }

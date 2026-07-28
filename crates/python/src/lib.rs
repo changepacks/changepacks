@@ -53,6 +53,13 @@ pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String
 /// table (`project = { version = ... }`) at the top of the document instead
 /// of a proper `[project]` header.
 ///
+/// The existing value's [`toml_edit::Decor`] is captured and re-applied after
+/// the assignment. Assigning a freshly built value replaces the whole
+/// `Item`, and a fresh value carries default (empty) decor, so without this
+/// the surrounding trivia — most visibly an end-of-line comment such as
+/// `version = "1.2.3" # pinned` — would be silently deleted from the user's
+/// manifest by a routine version bump.
+///
 /// # Errors
 /// Returns error if the file cannot be read, is not valid TOML, or the write
 /// fails.
@@ -81,7 +88,18 @@ pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> R
     if pyproject_toml.get("project").is_none() {
         pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
+    let previous_decor = pyproject_toml
+        .get("project")
+        .and_then(|project| project.get("version"))
+        .and_then(toml_edit::Item::as_value)
+        .map(|version| version.decor().clone());
     pyproject_toml["project"]["version"] = new_version.into();
+    if let (Some(decor), Some(version)) = (
+        previous_decor,
+        pyproject_toml["project"]["version"].as_value_mut(),
+    ) {
+        *version.decor_mut() = decor;
+    }
     write_finalized(
         path,
         pyproject_toml.to_string(),
@@ -274,6 +292,59 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&pyproject_toml).unwrap(),
             "[project]\nname = \"demo\"\nversion = \"1.1.0\"\ndynamic = [\"readme\"]\n"
+        );
+    }
+
+    /// Renders a realistically formatted `pyproject.toml` at `version`.
+    ///
+    /// Every construct here is one a re-serializing TOML writer silently
+    /// normalizes away: a header comment, `[build-system]` declared BEFORE
+    /// `[project]` (non-alphabetical, non-canonical table order), an
+    /// end-of-line comment on the version line, a multi-line array with a
+    /// trailing comma and an inline table with custom spacing.
+    fn round_trip_manifest(version: &str) -> String {
+        format!(
+            concat!(
+                "# demo package manifest - this header comment must survive a bump\n",
+                "\n",
+                "[build-system]\n",
+                "requires = [\"hatchling>=1.18\"]\n",
+                "build-backend = \"hatchling.build\"\n",
+                "\n",
+                "[project]\n",
+                "name = \"demo\"\n",
+                "version = \"{version}\" # bumped by changepacks\n",
+                "dependencies = [\n",
+                "    \"httpx>=0.27\",\n",
+                "    \"rich>=13\",\n",
+                "]\n",
+                "\n",
+                "[tool.uv.sources]\n",
+                "demo-core = {{ path = \"../core\", editable = true }}\n",
+            ),
+            version = version
+        )
+    }
+
+    /// Format preservation is a hard project constraint, but until now only
+    /// trailing whitespace was pinned. This asserts COMPLETE-FILE equality
+    /// (not a `contains` check) so any reformatting `toml_edit` performs -
+    /// dropped comment, reordered table, collapsed array or inline table -
+    /// fails the test rather than silently rewriting a user's manifest.
+    #[tokio::test]
+    async fn test_write_pyproject_version_preserves_comments_and_table_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(&pyproject_toml, round_trip_manifest("1.2.3")).unwrap();
+
+        write_pyproject_version(&pyproject_toml, "2.0.0")
+            .await
+            .expect("a well-formed manifest must be writable");
+
+        assert_eq!(
+            fs::read_to_string(&pyproject_toml).unwrap(),
+            round_trip_manifest("2.0.0"),
+            "only the version literal may change; everything else must be byte-identical"
         );
     }
 }

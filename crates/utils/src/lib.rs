@@ -59,6 +59,7 @@
 //!   [`get_changepacks_dir`] resolves the `.changepacks` directory path
 //!   from the git repository root.
 
+mod applied_change_spans;
 mod bump_version_with;
 mod clear_update_logs;
 mod detect_indent;

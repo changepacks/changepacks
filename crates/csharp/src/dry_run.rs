@@ -191,7 +191,7 @@ where
     resolve_and_run_with(
         path,
         missing_dir_msg,
-        lookup_by_path_or_language(&config.publish, relative_path, Language::CSharp),
+        lookup_by_path_or_language(&config.publish, relative_path, Language::CSharp).cloned(),
         managed_runner,
     )
     .await

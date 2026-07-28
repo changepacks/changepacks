@@ -2,8 +2,7 @@ use changepacks_core::{ChangePackResultLog, Project, UpdateType, normalize_path_
 
 use anyhow::Result;
 use changepacks_utils::{
-    apply_reverse_dependencies, display_update, gen_changepack_result_map, gen_update_map,
-    get_relative_path_ref,
+    display_update, gen_changepack_result_map, gen_update_map, get_relative_path_ref,
 };
 use clap::Args;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
@@ -76,7 +75,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     let mut update_map = gen_update_map(&ctx.changepacks_dir, &ctx.config).await?;
 
     // Expand over the full project graph before filtering output, matching update.
-    apply_reverse_dependencies(&mut update_map, &projects, &ctx.repo_root_path)?;
+    update_map.apply_reverse_dependencies(&projects, &ctx.repo_root_path)?;
 
     if let Some(filter) = &args.filter {
         projects.retain(|p| filter.matches(p));
