@@ -8,6 +8,7 @@
 
 pub mod finder;
 mod gradle_dependency_lexer;
+mod gradle_metadata;
 pub mod package;
 mod properties_version;
 #[cfg(test)]

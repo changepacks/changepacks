@@ -13,6 +13,7 @@ use tokio::process::Command;
 
 use crate::{
     gradle_dependency_lexer::{extract_gradle_project_dependencies, gradle_dependency_dialect},
+    gradle_metadata::{GradleProperties, GradleWrapperMetadata, get_gradle_metadata},
     package::GradlePackage,
     workspace::GradleWorkspace,
 };
@@ -22,36 +23,6 @@ use crate::{
 /// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["build.gradle.kts", "build.gradle"];
-
-macro_rules! gradle_metadata_prefix {
-    () => {
-        "__CHANGEPACKS_GRADLE_METADATA_V1__"
-    };
-}
-
-const GRADLE_METADATA_PREFIX: &str = gradle_metadata_prefix!();
-
-const GRADLE_METADATA_INIT_SCRIPT: &str = concat!(
-    r#"import groovy.json.JsonOutput
-
-gradle.projectsEvaluated { evaluatedGradle ->
-    evaluatedGradle.rootProject.allprojects { project ->
-        def record = [
-            projectDir: project.projectDir.toPath().toAbsolutePath().normalize().toString(),
-            projectPath: project.path,
-            name: project.name,
-            version: project.version == null ? null : project.version.toString(),
-            aggregate: !project.childProjects.isEmpty(),
-            hasPublishTask: project.tasks.findByName("publish") != null,
-            hasPublishToMavenLocalTask: project.tasks.findByName("publishToMavenLocal") != null
-        ]
-        println(""#,
-    gradle_metadata_prefix!(),
-    r#"" + JsonOutput.toJson(record))
-    }
-}
-"#
-);
 
 /// OS-specific Java executable filename, used by `which_java_in` and
 /// `java_home_has_java` to avoid repeating the `cfg!(windows)` branch.
@@ -77,153 +48,6 @@ impl GradleProjectFinder {
     pub fn new() -> Self {
         Self::default()
     }
-}
-
-/// Project info obtained from batched Gradle metadata.
-#[derive(Clone, Debug, Default)]
-struct GradleProperties {
-    name: Option<String>,
-    version: Option<String>,
-    has_subprojects: bool,
-    has_publish_task: bool,
-    has_publish_to_maven_local_task: bool,
-}
-
-#[derive(Clone, Debug)]
-struct GradleMetadataRecord {
-    project_dir: PathBuf,
-    project_path: String,
-    properties: GradleProperties,
-}
-
-#[derive(Debug)]
-struct GradleWrapperMetadata {
-    by_project_dir: HashMap<PathBuf, GradleMetadataRecord>,
-    project_names_by_path: HashMap<String, String>,
-}
-
-/// Removes `field` from a Gradle metadata record and converts it with `extract`.
-///
-/// The three typed accessors below only differ in the accepted
-/// `serde_json::Value` variants and in the type name quoted by the error, so the
-/// shared missing-field and wrong-type reporting lives here. `extract` hands the
-/// value back through `Err` when it does not match, which keeps the rejected
-/// value available for the message without formatting it on the success path.
-fn metadata_field<T>(
-    fields: &mut serde_json::Map<String, serde_json::Value>,
-    field: &str,
-    expected: &str,
-    extract: impl FnOnce(serde_json::Value) -> std::result::Result<T, serde_json::Value>,
-) -> Result<T> {
-    match fields.remove(field) {
-        Some(value) => extract(value).map_err(|value| {
-            anyhow::anyhow!("Gradle metadata field '{field}' must be {expected}, got {value:?}")
-        }),
-        None => Err(anyhow::anyhow!(
-            "Gradle metadata record is missing required field '{field}'"
-        )),
-    }
-}
-
-fn required_metadata_string(
-    fields: &mut serde_json::Map<String, serde_json::Value>,
-    field: &str,
-) -> Result<String> {
-    metadata_field(fields, field, "a string", |value| match value {
-        serde_json::Value::String(value) => Ok(value),
-        other => Err(other),
-    })
-}
-
-fn optional_metadata_string(
-    fields: &mut serde_json::Map<String, serde_json::Value>,
-    field: &str,
-) -> Result<Option<String>> {
-    metadata_field(fields, field, "a string or null", |value| match value {
-        serde_json::Value::String(value) => Ok(Some(value)),
-        serde_json::Value::Null => Ok(None),
-        other => Err(other),
-    })
-}
-
-fn required_metadata_bool(
-    fields: &mut serde_json::Map<String, serde_json::Value>,
-    field: &str,
-) -> Result<bool> {
-    metadata_field(fields, field, "a boolean", |value| match value {
-        serde_json::Value::Bool(value) => Ok(value),
-        other => Err(other),
-    })
-}
-
-/// Trims a Gradle property and drops Gradle's `unspecified` sentinel.
-///
-/// The owned `String` is reused when it is already trimmed, which is the common
-/// case, so only a value carrying surrounding whitespace pays for a new
-/// allocation. An empty string is a legitimate value and is kept.
-fn normalized_gradle_property(value: Option<String>) -> Option<String> {
-    value.and_then(|mut value| {
-        let trimmed = value.trim();
-        if trimmed == "unspecified" {
-            return None;
-        }
-        if trimmed.len() != value.len() {
-            value = trimmed.to_owned();
-        }
-        Some(value)
-    })
-}
-
-fn parse_gradle_metadata_record(json: &str) -> Result<GradleMetadataRecord> {
-    let mut fields: serde_json::Map<String, serde_json::Value> =
-        serde_json::from_str(json).context("invalid Gradle metadata JSON object")?;
-    let project_dir = required_metadata_string(&mut fields, "projectDir")?;
-    anyhow::ensure!(
-        !project_dir.is_empty(),
-        "Gradle metadata field 'projectDir' must not be empty"
-    );
-    let project_path = required_metadata_string(&mut fields, "projectPath")?;
-    anyhow::ensure!(
-        project_path.starts_with(':'),
-        "Gradle metadata field 'projectPath' must be a qualified Gradle path"
-    );
-    let name = required_metadata_string(&mut fields, "name")?;
-    let version = optional_metadata_string(&mut fields, "version")?;
-    let has_subprojects = required_metadata_bool(&mut fields, "aggregate")?;
-    let has_publish_task = required_metadata_bool(&mut fields, "hasPublishTask")?;
-    let has_publish_to_maven_local_task =
-        required_metadata_bool(&mut fields, "hasPublishToMavenLocalTask")?;
-
-    Ok(GradleMetadataRecord {
-        project_dir: PathBuf::from(project_dir),
-        project_path,
-        properties: GradleProperties {
-            name: normalized_gradle_property(Some(name)),
-            version: normalized_gradle_property(version),
-            has_subprojects,
-            has_publish_task,
-            has_publish_to_maven_local_task,
-        },
-    })
-}
-
-fn parse_gradle_metadata_records(output: &str) -> Result<Vec<GradleMetadataRecord>> {
-    output
-        .lines()
-        .enumerate()
-        .filter_map(|(line_index, line)| {
-            line.strip_prefix(GRADLE_METADATA_PREFIX)
-                .map(|record| (line_index, record))
-        })
-        .map(|(line_index, record)| {
-            parse_gradle_metadata_record(record).map_err(|error| {
-                anyhow::anyhow!(
-                    "malformed Gradle metadata record at line {}: {error:#}",
-                    line_index + 1
-                )
-            })
-        })
-        .collect()
 }
 
 async fn is_java_executable_candidate(path: &Path) -> Result<bool> {
@@ -309,6 +133,23 @@ fn gradle_wrapper_name(windows: bool) -> &'static str {
     if windows { "gradlew.bat" } else { "gradlew" }
 }
 
+/// Single source of truth for the "wrapper missing" error message.
+///
+/// Both the discovery path (`GradleProjectFinder::visit`) and the publish path
+/// (`run_gradle_publish`) fail here, and each names the offending manifest the
+/// same way every other fallible step in those functions does. The leading
+/// sentence is a stability contract: `crates/java/src/lib.rs` and
+/// `crates/java/src/package.rs` assert on
+/// `.contains("Gradle wrapper (gradlew) not found")`, so the prefix must stay
+/// byte-identical and the manifest path is appended after it.
+fn gradlew_not_found(manifest: &Path) -> String {
+    format!(
+        "Gradle wrapper (gradlew) not found for '{}'. \
+         Ensure the project root contains gradlew or gradlew.bat.",
+        manifest.display()
+    )
+}
+
 async fn find_gradlew(start_dir: &Path, max_depth: usize) -> Result<Option<(PathBuf, PathBuf)>> {
     find_gradlew_named(start_dir, max_depth, gradle_wrapper_name(cfg!(windows))).await
 }
@@ -348,10 +189,9 @@ pub(crate) async fn run_gradle_publish(
 ) -> Result<changepacks_core::publish::PublishOutput> {
     let project_dir = manifest_path.parent().context(missing_dir_ctx)?;
     let max_depth = relative_path.components().count();
-    let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth).await?.context(
-        "Gradle wrapper (gradlew) not found. \
-         Ensure the project root contains gradlew or gradlew.bat.",
-    )?;
+    let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth)
+        .await?
+        .with_context(|| gradlew_not_found(manifest_path))?;
     let mut args = Vec::with_capacity(additional_args.len() + 1);
     args.push(match project_path {
         Some(project_path) => gradle_task_arg_from_project_path(project_path, task),
@@ -400,156 +240,6 @@ async fn java_is_available() -> Result<bool> {
     Ok(which_java_in(path.as_deref()).await?.is_some())
 }
 
-fn gradle_metadata_args(init_script_path: &Path) -> Vec<OsString> {
-    vec![
-        OsString::from("-Dorg.gradle.configureondemand=false"),
-        OsString::from("-Dorg.gradle.configuration-cache=false"),
-        OsString::from("--init-script"),
-        init_script_path.as_os_str().to_owned(),
-        OsString::from("--quiet"),
-        OsString::from("help"),
-    ]
-}
-
-async fn get_gradle_metadata(
-    gradlew: &Path,
-    gradlew_dir: &Path,
-    java_available: bool,
-) -> Result<GradleWrapperMetadata> {
-    anyhow::ensure!(
-        java_available,
-        "Java is required for Gradle projects but JAVA_HOME is not set and 'java' was not found on PATH.\n\
-         Please set the JAVA_HOME environment variable or add java to your PATH."
-    );
-
-    let init_script = tempfile::Builder::new()
-        .prefix("changepacks-gradle-metadata-")
-        .suffix(".gradle")
-        .tempfile()
-        .context("Failed to create temporary Gradle metadata init script")?;
-    let init_script_path = init_script.path().to_path_buf();
-    tokio::fs::write(&init_script_path, GRADLE_METADATA_INIT_SCRIPT)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to write temporary Gradle metadata init script '{}'",
-                init_script_path.display()
-            )
-        })?;
-
-    let args = gradle_metadata_args(&init_script_path);
-    let command_spec = GradleCommandSpec::new(gradlew, gradlew_dir, args);
-    let output_result = command_spec.command().output().await;
-    let cleanup_failure = init_script.close().err().map(|error| {
-        format!(
-            "failed to remove temporary Gradle metadata init script '{}': {error}",
-            init_script_path.display()
-        )
-    });
-    let cleanup_suffix = cleanup_failure
-        .as_deref()
-        .map_or_else(String::new, |failure| format!("; additionally, {failure}"));
-    let output = match output_result {
-        Ok(output) => output,
-        Err(error) => {
-            return Err(anyhow::anyhow!(
-                "Failed to execute Gradle metadata discovery for wrapper root '{}' (gradlew: '{}'): {error}{cleanup_suffix}",
-                gradlew_dir.display(),
-                gradlew.display(),
-            ));
-        }
-    };
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stderr_trimmed = stderr.trim();
-        return Err(anyhow::anyhow!(
-            "Gradle metadata discovery failed for wrapper root '{}' using '{}' with status {}{}{}",
-            gradlew_dir.display(),
-            gradlew.display(),
-            output.status,
-            if stderr_trimmed.is_empty() {
-                String::new()
-            } else {
-                format!("; stderr: {stderr_trimmed}")
-            },
-            cleanup_suffix
-        ));
-    }
-
-    if let Some(cleanup_failure) = cleanup_failure {
-        return Err(anyhow::anyhow!(
-            "Temporary Gradle metadata init-script cleanup failed: {cleanup_failure}"
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let records = parse_gradle_metadata_records(&stdout).map_err(|error| {
-        anyhow::anyhow!(
-            "Failed to parse Gradle metadata emitted by '{}' for wrapper root '{}': {error:#}",
-            gradlew.display(),
-            gradlew_dir.display()
-        )
-    })?;
-    let mut by_project_dir = HashMap::with_capacity(records.len());
-    let mut project_names_by_path = HashMap::with_capacity(records.len());
-    for record in records {
-        let normalized_dir = tokio::fs::canonicalize(&record.project_dir)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to normalize Gradle metadata directory '{}' for project '{}' emitted by '{}'",
-                    record.project_dir.display(),
-                    record.project_path,
-                    gradlew.display()
-                )
-            })?;
-        let project_path = record.project_path.clone();
-        let project_name = record
-            .properties
-            .name
-            .clone()
-            .or_else(|| {
-                normalized_dir
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .map(str::to_owned)
-            })
-            .with_context(|| {
-                format!(
-                    "Gradle metadata project '{}' from '{}' has no usable evaluated project name",
-                    project_path,
-                    gradlew.display()
-                )
-            })?;
-        if let Some(previous_name) =
-            project_names_by_path.insert(project_path.clone(), project_name.clone())
-        {
-            return Err(anyhow::anyhow!(
-                "Duplicate Gradle metadata project path '{}' from '{}': projects '{}' and '{}'",
-                project_path,
-                gradlew.display(),
-                previous_name,
-                project_name
-            ));
-        }
-        if let Some(previous) = by_project_dir.insert(normalized_dir.clone(), record) {
-            return Err(anyhow::anyhow!(
-                "Duplicate Gradle metadata records for normalized directory '{}' from '{}': projects '{}' and '{}'",
-                normalized_dir.display(),
-                gradlew.display(),
-                previous.project_path,
-                project_path
-            ));
-        }
-    }
-
-    Ok(GradleWrapperMetadata {
-        by_project_dir,
-        project_names_by_path,
-    })
-}
-
 fn gradle_task_arg_from_project_path(project_path: &str, task: &str) -> OsString {
     if project_path == ":" {
         OsString::from(task)
@@ -574,15 +264,19 @@ fn gradle_task_arg_from_project_dir(
     Ok(OsString::from(format!(":{gradle_path}:{task}")))
 }
 
+/// Argument/working-directory bundle for one Gradle wrapper invocation.
+///
+/// Shared by `finder.rs` (publish tasks) and `gradle_metadata.rs` (batched
+/// metadata discovery), so it stays here as `pub(crate)`.
 #[derive(Debug)]
-struct GradleCommandSpec {
+pub(crate) struct GradleCommandSpec {
     program: OsString,
     args: Vec<OsString>,
     current_dir: PathBuf,
 }
 
 impl GradleCommandSpec {
-    fn new(gradlew: &Path, gradlew_dir: &Path, gradle_args: Vec<OsString>) -> Self {
+    pub(crate) fn new(gradlew: &Path, gradlew_dir: &Path, gradle_args: Vec<OsString>) -> Self {
         let mut args = Vec::with_capacity(gradle_args.len() + usize::from(!cfg!(windows)));
         let program = if cfg!(windows) {
             gradlew.as_os_str().to_owned()
@@ -599,7 +293,7 @@ impl GradleCommandSpec {
         }
     }
 
-    fn command(&self) -> Command {
+    pub(crate) fn command(&self) -> Command {
         let mut command = Command::new(&self.program);
         command
             .args(&self.args)
@@ -655,10 +349,9 @@ impl ProjectFinder for GradleProjectFinder {
         // Mirrors the C# finder's `is_workspace` bound.
         let max_depth = relative_path.components().count();
 
-        let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth).await?.context(
-            "Gradle wrapper (gradlew) not found. \
-             Ensure the project root contains gradlew or gradlew.bat.",
-        )?;
+        let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth)
+            .await?
+            .with_context(|| gradlew_not_found(path))?;
         // Sibling subprojects all report the same `gradlew_dir`, so canonicalize
         // it once per wrapper root instead of once per manifest.
         let normalized_wrapper_dir = match self.wrapper_dir_canonical.get(&gradlew_dir) {
@@ -802,6 +495,7 @@ impl ProjectFinder for GradleProjectFinder {
 mod tests {
     use super::*;
     use crate::gradle_dependency_lexer::quoted_gradle_literal_end;
+    use crate::gradle_metadata::GRADLE_METADATA_PREFIX;
     use crate::version_lexer::GradleDialect;
     use changepacks_core::{Project, UpdateType};
     use changepacks_utils::{apply_reverse_dependencies, sort_by_dependencies};
@@ -1166,135 +860,6 @@ mod tests {
         );
 
         temp_dir.close().unwrap();
-    }
-
-    #[test]
-    fn test_gradle_metadata_init_script_reports_publish_task_availability() {
-        assert!(
-            GRADLE_METADATA_INIT_SCRIPT
-                .contains("hasPublishTask: project.tasks.findByName(\"publish\") != null")
-        );
-        assert!(GRADLE_METADATA_INIT_SCRIPT.contains(
-            "hasPublishToMavenLocalTask: project.tasks.findByName(\"publishToMavenLocal\") != null"
-        ));
-    }
-
-    #[test]
-    fn test_parse_gradle_metadata_records_handles_spaces_unicode_and_unrelated_output() {
-        let output = concat!(
-            "Gradle configuration output\n",
-            "unrelated __CHANGEPACKS_GRADLE_METADATA_V1__{not a record}\n",
-            "__CHANGEPACKS_GRADLE_METADATA_V1__{\"projectDir\":\"C:\\\\repo with spaces\\\\모듈\",",
-            "\"projectPath\":\":module one:유니코드\",\"name\":\"이름 with spaces\",",
-            "\"version\":\"1.2.3-β\",\"aggregate\":false,",
-            "\"hasPublishTask\":true,\"hasPublishToMavenLocalTask\":false}\n",
-            "> Task :help\n",
-        );
-
-        let records = parse_gradle_metadata_records(output).unwrap();
-
-        assert_eq!(records.len(), 1);
-        let record = &records[0];
-        assert_eq!(
-            record.project_dir,
-            PathBuf::from(r"C:\repo with spaces\모듈")
-        );
-        assert_eq!(record.project_path, ":module one:유니코드");
-        assert_eq!(record.properties.name.as_deref(), Some("이름 with spaces"));
-        assert_eq!(record.properties.version.as_deref(), Some("1.2.3-β"));
-        assert!(!record.properties.has_subprojects);
-        assert!(record.properties.has_publish_task);
-        assert!(!record.properties.has_publish_to_maven_local_task);
-    }
-
-    #[test]
-    fn test_parse_gradle_metadata_records_ignores_unknown_protocol_versions() {
-        let output = concat!(
-            "__CHANGEPACKS_GRADLE_METADATA_V0__{not current metadata}\n",
-            "__CHANGEPACKS_GRADLE_METADATA_V2__{not current metadata}\n",
-            "ordinary __CHANGEPACKS_GRADLE_METADATA_V1__{not line-prefixed metadata}\n",
-        );
-
-        assert!(parse_gradle_metadata_records(output).unwrap().is_empty());
-    }
-
-    #[test]
-    fn test_parse_gradle_metadata_records_rejects_missing_publish_task_field() {
-        let output = concat!(
-            "__CHANGEPACKS_GRADLE_METADATA_V1__{\"projectDir\":\"/repo\",",
-            "\"projectPath\":\":\",\"name\":\"root\",\"version\":\"1.0.0\",",
-            "\"aggregate\":false,\"hasPublishToMavenLocalTask\":true}\n",
-        );
-
-        let error = parse_gradle_metadata_records(output).unwrap_err();
-
-        assert!(error.to_string().contains("line 1"));
-        assert!(error.to_string().contains("hasPublishTask"));
-    }
-
-    #[test]
-    fn test_parse_gradle_metadata_records_rejects_non_boolean_local_publish_task_field() {
-        let output = concat!(
-            "__CHANGEPACKS_GRADLE_METADATA_V1__{\"projectDir\":\"/repo\",",
-            "\"projectPath\":\":\",\"name\":\"root\",\"version\":\"1.0.0\",",
-            "\"aggregate\":false,\"hasPublishTask\":true,",
-            "\"hasPublishToMavenLocalTask\":\"yes\"}\n",
-        );
-
-        let error = parse_gradle_metadata_records(output).unwrap_err();
-
-        assert!(error.to_string().contains("line 1"));
-        assert!(error.to_string().contains("hasPublishToMavenLocalTask"));
-        assert!(error.to_string().contains("must be a boolean"));
-    }
-
-    #[test]
-    fn test_metadata_field_accessors_report_exact_type_and_missing_wording() {
-        let mut fields: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(r#"{"name":7,"version":true,"aggregate":"yes"}"#).unwrap();
-
-        assert_eq!(
-            required_metadata_string(&mut fields, "name")
-                .unwrap_err()
-                .to_string(),
-            "Gradle metadata field 'name' must be a string, got Number(7)"
-        );
-        assert_eq!(
-            optional_metadata_string(&mut fields, "version")
-                .unwrap_err()
-                .to_string(),
-            "Gradle metadata field 'version' must be a string or null, got Bool(true)"
-        );
-        assert_eq!(
-            required_metadata_bool(&mut fields, "aggregate")
-                .unwrap_err()
-                .to_string(),
-            "Gradle metadata field 'aggregate' must be a boolean, got String(\"yes\")"
-        );
-        assert_eq!(
-            required_metadata_string(&mut fields, "name")
-                .unwrap_err()
-                .to_string(),
-            "Gradle metadata record is missing required field 'name'"
-        );
-        assert!(fields.is_empty());
-    }
-
-    #[test]
-    fn test_parse_gradle_metadata_records_rejects_malformed_prefixed_record() {
-        let output = concat!(
-            "ordinary output\n",
-            "__CHANGEPACKS_GRADLE_METADATA_V1__{\"projectDir\":\"/repo\",\"aggregate\":wat}\n",
-        );
-
-        let error = parse_gradle_metadata_records(output).unwrap_err();
-
-        assert!(error.to_string().contains("line 2"));
-        assert!(
-            error
-                .to_string()
-                .contains("malformed Gradle metadata record")
-        );
     }
 
     #[tokio::test]
@@ -2050,6 +1615,50 @@ version = "1.0.0"
         assert!(
             result.is_none(),
             "expected a decoy gradlew above the repo root to be ignored, got {result:?}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    /// Regression: the DISCOVERY-side wrapper lookup must name the offending
+    /// manifest. `find_gradlew` returning `Ok(None)` is covered by
+    /// `test_find_gradlew_not_found`, but `GradleProjectFinder::visit` turning
+    /// that `None` into a user-facing error was untested, so a message that
+    /// dropped the manifest path (as the old hard-coded literal did) went
+    /// unnoticed. Asserts BOTH halves of the contract: the stable leading
+    /// sentence that `lib.rs` / `package.rs` match with `.contains(..)`, and
+    /// the interpolated manifest path.
+    #[tokio::test]
+    async fn test_gradle_project_finder_visit_missing_wrapper_names_manifest() {
+        let temp_dir = TempDir::new().unwrap();
+        let project_dir = temp_dir.path().join("myproject");
+        fs::create_dir_all(&project_dir).unwrap();
+
+        let build_gradle = project_dir.join("build.gradle.kts");
+        fs::write(&build_gradle, "version = \"1.0.0\"\n").unwrap();
+
+        // Deliberately NO gradlew/gradlew.bat: the bounded ancestor walk
+        // (`max_depth = 2` from `myproject/build.gradle.kts`) scans only
+        // `project_dir` and `temp_dir`, both freshly created and wrapper-free.
+
+        let mut finder = finder_with_java_available();
+        let error = finder
+            .visit(&build_gradle, &PathBuf::from("myproject/build.gradle.kts"))
+            .await
+            .unwrap_err();
+
+        let flattened = error
+            .chain()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(": ");
+        assert!(
+            flattened.contains("Gradle wrapper (gradlew) not found"),
+            "{flattened}"
+        );
+        assert!(
+            flattened.contains(&build_gradle.display().to_string()),
+            "{flattened}"
         );
 
         temp_dir.close().unwrap();
@@ -2953,36 +2562,5 @@ def second = 20 / 4
         assert_eq!(finder.project_count(), 0);
 
         temp_dir.close().unwrap();
-    }
-
-    #[rstest]
-    #[case(None, None)]
-    #[case(Some("1.0"), Some("1.0"))]
-    #[case(Some("  1.0  "), Some("1.0"))]
-    #[case(Some("\t1.0\n"), Some("1.0"))]
-    #[case(Some("unspecified"), None)]
-    #[case(Some("  unspecified  "), None)]
-    #[case(Some(""), Some(""))]
-    #[case(Some("   "), Some(""))]
-    #[case(Some("unspecified-core"), Some("unspecified-core"))]
-    fn test_normalized_gradle_property(
-        #[case] input: Option<&str>,
-        #[case] expected: Option<&str>,
-    ) {
-        assert_eq!(
-            normalized_gradle_property(input.map(str::to_owned)).as_deref(),
-            expected
-        );
-    }
-
-    #[test]
-    fn test_normalized_gradle_property_reuses_already_trimmed_allocation() {
-        let value = String::from("1.0.0");
-        let original_ptr = value.as_ptr();
-
-        let normalized = normalized_gradle_property(Some(value)).unwrap();
-
-        assert_eq!(normalized, "1.0.0");
-        assert_eq!(normalized.as_ptr(), original_ptr);
     }
 }
