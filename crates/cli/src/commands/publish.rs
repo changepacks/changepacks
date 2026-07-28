@@ -403,7 +403,7 @@ struct PublishOutcomeLabels {
 ///
 /// Bundling them keeps the invariant "a project recorded in `failed_projects`
 /// is also recorded in `failed_project_names`" expressible in one place —
-/// `skip_if_dependency_failed` — instead of once per loop. `result_map` starts
+/// `track_failed_name` — instead of once per loop. `result_map` starts
 /// empty (a `BTreeMap` has no meaningful pre-sizing); the two others are
 /// pre-sized to the batch length exactly as the loops did inline.
 struct PublishLoopState {
@@ -421,10 +421,21 @@ impl PublishLoopState {
         }
     }
 
+    /// Tracks `project`'s package name as failed so `failed_dependency` skips
+    /// its dependents. Nameless projects contribute nothing to the set and are
+    /// ignored. This is the single place that upholds the invariant documented
+    /// on `PublishLoopState`: every project appended to `failed_projects` also
+    /// has its package name recorded here.
+    fn track_failed_name(&mut self, project: &Project) {
+        if let Some(name) = project.name() {
+            self.failed_project_names.insert(name.to_string());
+        }
+    }
+
     /// Records `outcome` into `result_map` / `failed_projects` via
     /// `record_publish_success` / `record_publish_failure`, then — on failure —
-    /// inserts `project.name()` into `failed_project_names` if the project has
-    /// a name. Collapses the four identical "record the outcome, then track its
+    /// tracks the project's package name via `Self::track_failed_name`.
+    /// Collapses the four identical "record the outcome, then track its
     /// name on failure" blocks that appeared in both publish loops.
     fn record_outcome_track_failure(
         &mut self,
@@ -467,8 +478,8 @@ impl PublishLoopState {
                 true
             }
         };
-        if failed && let Some(name) = project.name() {
-            self.failed_project_names.insert(name.to_string());
+        if failed {
+            self.track_failed_name(project);
         }
     }
 
@@ -491,9 +502,7 @@ impl PublishLoopState {
             failure_label,
             format,
         );
-        if let Some(name) = project.name() {
-            self.failed_project_names.insert(name.to_string());
-        }
+        self.track_failed_name(project);
     }
 
     /// Records `project` as skipped when any of its dependencies already

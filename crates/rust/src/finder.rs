@@ -290,9 +290,7 @@ impl RustProjectFinder {
                 .inherited_workspace_members
                 .entry(root_path.clone())
                 .or_default();
-            let mut inherited_members = inherited_members
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut inherited_members = crate::workspace::lock_recovering(inherited_members);
             inherited_members.record(package_name, aliases);
         }
         if let Some(root_path) = workspace_root_path.as_ref()

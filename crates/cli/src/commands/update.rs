@@ -20,7 +20,7 @@ use clap::Args;
 
 use crate::{
     CommandContext,
-    finders::{collect_projects, total_project_count},
+    finders::collect_projects,
     options::{CliLanguage, FormatOptions, language_slice_contains},
     prompter::{InquirePrompter, Prompter},
 };
@@ -394,14 +394,26 @@ fn collect_update_project_refs<'a>(
     ))
 }
 
+/// Collect every workspace root held by `finders`, in finder order and, within
+/// a finder, in `projects()` order.
+///
+/// Merges through [`collect_projects`] — which drives
+/// [`ProjectFinder::extend_projects`] into one pre-sized buffer — instead of
+/// looping `finder.projects()` per finder. The per-finder shape allocated and
+/// immediately dropped one intermediate `Vec<&Project>` for each of the six
+/// language finders, and `collect_workspace_projects` runs twice per `update`
+/// invocation (dry-run preview and the real apply), so that was 12 throwaway
+/// allocations per run. The merged buffer is still presized to
+/// `total_project_count(finders)` inside `collect_projects`, and the result
+/// buffer inherits that same capacity, so the previous capacity hint is
+/// preserved exactly.
 fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<WorkspaceRef<'a>> {
-    let mut workspace_projects = Vec::with_capacity(total_project_count(finders));
+    let projects = collect_projects(finders);
+    let mut workspace_projects = Vec::with_capacity(projects.len());
 
-    for finder in finders {
-        for project in finder.projects() {
-            if let Project::Workspace(workspace) = project {
-                workspace_projects.push(workspace.as_ref());
-            }
+    for project in projects {
+        if let Project::Workspace(workspace) = project {
+            workspace_projects.push(workspace.as_ref());
         }
     }
 
@@ -515,8 +527,20 @@ async fn snapshot_update_state(
     manifest_paths: Vec<PathBuf>,
     changepacks_dir: &Path,
 ) -> Result<UpdateStateSnapshot> {
-    let manifest_reads =
-        futures::future::join_all(manifest_paths.iter().map(tokio::fs::read)).await;
+    // The manifest batch and the changepack-log batch touch disjoint paths and
+    // have no data dependency, so overlap the two I/O batches instead of
+    // finishing every manifest read before the `.changepacks` directory walk
+    // even starts. The result-decoding loops below stay in their original
+    // order, so a manifest failure is still the first error surfaced.
+    let (manifest_reads, log_batch) = tokio::join!(
+        futures::future::join_all(manifest_paths.iter().map(tokio::fs::read)),
+        async {
+            let log_paths = collect_changepack_log_paths(changepacks_dir).await?;
+            let log_reads = futures::future::join_all(log_paths.iter().map(tokio::fs::read)).await;
+            anyhow::Ok((log_paths, log_reads))
+        }
+    );
+
     let mut snapshots = Vec::with_capacity(manifest_paths.len());
     for (path, result) in manifest_paths.into_iter().zip(manifest_reads) {
         let bytes = match result {
@@ -530,8 +554,7 @@ async fn snapshot_update_state(
         snapshots.push(FileSnapshot { path, bytes });
     }
 
-    let log_paths = collect_changepack_log_paths(changepacks_dir).await?;
-    let log_reads = futures::future::join_all(log_paths.iter().map(tokio::fs::read)).await;
+    let (log_paths, log_reads) = log_batch?;
     let mut logs = Vec::with_capacity(log_paths.len());
     for (path, result) in log_paths.into_iter().zip(log_reads) {
         let bytes = result
@@ -639,35 +662,35 @@ fn merge_workspace_inherited_updates(
     projects: &[&Project],
     repo_root_path: &Path,
 ) -> Vec<(PathBuf, PathBuf)> {
-    // Collect (pkg_rel_path, ws_rel_path) pairs to merge.
-    // Preallocate: the loop below pushes AT MOST one entry per project
-    // in the slice, so `projects.len()` is a tight upper bound that
-    // avoids `Vec`'s geometric-doubling reallocations on vespera-shaped
-    // monorepos with many workspace-inheriting members. Matches the
-    // preallocation policy already applied throughout `sort_by_dep.rs`,
-    // `find_project_dirs`, and the sibling `apply_reverse_dependencies`.
-    let mut merge_targets: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(projects.len());
+    // Single pass: fold each workspace-inheriting member into its workspace
+    // root as soon as it is discovered, instead of staging the candidate pairs
+    // in an intermediate `Vec` and re-walking it. The split was never required
+    // by the borrow checker (`rel_path` borrows from `pkg.path()`, not from
+    // `update_map`), and fusing is observationally equivalent: every project
+    // owns a distinct manifest path, and a `Project` is either a `Package` or a
+    // `Workspace` but never both, so a member's `rel_path` can never collide
+    // with a workspace root path inserted earlier in the same pass. Each
+    // iteration therefore only ever touches keys no other iteration reads.
+    // Fusing removes one `Vec` allocation and the redundant `contains_key`
+    // probe that preceded every `remove`.
+    //
+    // The returned pairs are the folds that actually happened, so the caller can
+    // clear each member's changepack log alongside its workspace root.
+    // `projects.len()` is a tight upper bound (each project folds at most once),
+    // matching the preallocation policy applied throughout this file and in
+    // `sort_by_dep.rs`, `find_project_dirs`, and `apply_reverse_dependencies`.
+    let mut merged_pairs: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(projects.len());
 
     for &project in projects {
         if let Project::Package(pkg) = project
             && pkg.inherits_workspace_version()
             && let Ok(rel_path) = get_relative_path_ref(repo_root_path, pkg.path())
-            && update_map.contains_key(rel_path)
             && let Some(ws_root) = pkg.workspace_root_path()
-            && let Ok(ws_rel_path) = get_relative_path(repo_root_path, ws_root)
+            && let Ok(ws_path) = get_relative_path(repo_root_path, ws_root)
+            // `remove` doubles as the presence check: it takes ownership of the
+            // member entry, avoiding a `Clone` requirement on the logs.
+            && let Some((update_type, logs)) = update_map.remove(rel_path)
         {
-            merge_targets.push((rel_path.to_path_buf(), ws_rel_path));
-        }
-    }
-
-    // Return the pairs actually folded so the caller can clear each member's
-    // changepack log alongside its workspace root. `merge_targets.len()` is a
-    // tight upper bound (each fold pushes at most one pair), matching the
-    // preallocation policy applied throughout this file.
-    let mut merged_pairs: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(merge_targets.len());
-    for (pkg_path, ws_path) in merge_targets {
-        // Remove takes ownership, avoiding Clone requirement
-        if let Some((update_type, logs)) = update_map.remove(&pkg_path) {
             // Fast-path: `HashMap::get_mut` on an existing key is zero-alloc,
             // whereas `entry(ws_path.clone()).or_insert(...)` unconditionally
             // clones the `PathBuf` even when the workspace root is already a
@@ -688,7 +711,7 @@ fn merge_workspace_inherited_updates(
                 ws_entry.0 = update_type;
             }
             ws_entry.1.extend(logs);
-            merged_pairs.push((pkg_path, ws_path));
+            merged_pairs.push((rel_path.to_path_buf(), ws_path));
         }
     }
     merged_pairs

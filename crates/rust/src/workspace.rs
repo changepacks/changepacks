@@ -6,7 +6,7 @@ use changepacks_utils::{
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct InheritedWorkspaceMemberIdentities {
@@ -27,6 +27,23 @@ impl InheritedWorkspaceMemberIdentities {
 }
 
 pub(crate) type InheritedWorkspaceMembers = Arc<Mutex<InheritedWorkspaceMemberIdentities>>;
+
+/// Lock the shared inherited-member identities, recovering from poisoning.
+///
+/// The map only ever accumulates member names/aliases, so a panic while a
+/// writer held the guard cannot leave it logically inconsistent — taking the
+/// inner value keeps discovery working instead of cascading the panic. This is
+/// the single definition of that policy: every lock site in this crate goes
+/// through here, so the recovery strategy changes in exactly one place.
+///
+/// A free function rather than an inherent method because
+/// `InheritedWorkspaceMembers` is an alias for `Arc<Mutex<_>>`, and inherent
+/// impls are not allowed on types from another crate.
+pub(crate) fn lock_recovering(
+    members: &InheritedWorkspaceMembers,
+) -> MutexGuard<'_, InheritedWorkspaceMemberIdentities> {
+    members.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 #[derive(Debug)]
 pub struct RustWorkspace {
@@ -188,10 +205,7 @@ impl Workspace for RustWorkspace {
             // `old_version` is hoisted to the top of this function so both the
             // `next_version` fallback and this workspace-deps sync share the
             // same "reserve 0.0.0 when unversioned" source.
-            let inherited_workspace_members = self
-                .inherited_workspace_members
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let inherited_workspace_members = lock_recovering(&self.inherited_workspace_members);
             for (dependency_key, value) in ws_deps.iter_mut() {
                 let dependency_key = dependency_key.get();
                 let package_name = crate::finder::effective_dependency_name(dependency_key, value);
@@ -377,9 +391,7 @@ mod tests {
     fn inherited_members(names: &[&str]) -> InheritedWorkspaceMembers {
         let members = InheritedWorkspaceMembers::default();
         {
-            let mut identities = members
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut identities = lock_recovering(&members);
             for name in names {
                 identities.record(name, std::iter::empty());
             }

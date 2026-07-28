@@ -334,18 +334,24 @@ fn apply_update_on_rules_from(
                 }
 
                 for dependent in *dependents {
-                    let dependent_path = PathBuf::from(dependent);
-                    // Probe before allocating: `entry(key.clone())` and
-                    // `HashSet::insert(key.clone())` both take the key by value, so
-                    // they clone the `PathBuf` even when the key is already present
-                    // -- the steady state here, because this breadth-first expansion
-                    // revisits the same dependents across batches. `contains_key` /
-                    // `contains` borrow the key instead, so the hit path allocates
-                    // nothing while the miss path still clones exactly once.
-                    // Semantics are byte-identical: a `HashMap` keeps its existing
-                    // entry on a duplicate `entry()` and a `HashSet` keeps its
-                    // existing key on a duplicate `insert`.
-                    if !update_map.contains_key(&dependent_path) {
+                    // Probe by borrow before allocating: `HashMap::insert` and
+                    // `HashSet::insert` take their key by value, so reaching them at
+                    // all needs an owned `PathBuf` even when the key is already
+                    // present -- the steady state here, because this breadth-first
+                    // expansion revisits the same dependents across batches.
+                    // `contains_key` / `contains` accept a `&Path` through `Borrow`
+                    // (and `Path` hashes identically to `PathBuf`), so a doubly-hit
+                    // dependent allocates nothing and only a genuine miss builds the
+                    // `PathBuf` the insert bodies below consume.
+                    let dependent_ref = Path::new(dependent.as_str());
+                    let needs_update = !update_map.contains_key(dependent_ref);
+                    let needs_seed = !expansion_seeds.contains(dependent_ref);
+                    if !needs_update && !needs_seed {
+                        continue;
+                    }
+
+                    let dependent_path = PathBuf::from(dependent_ref);
+                    if needs_update {
                         let note =
                             format!("Auto-update triggered by updateOn rule: {trigger_pattern}");
                         update_map.insert(
@@ -357,7 +363,7 @@ fn apply_update_on_rules_from(
                         );
                         generated.push((dependent_path.clone(), note));
                     }
-                    if !expansion_seeds.contains(&dependent_path) {
+                    if needs_seed {
                         expansion_seeds.insert(dependent_path.clone());
                         queued_paths.push_back(dependent_path);
                     }

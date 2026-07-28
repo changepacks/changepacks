@@ -147,10 +147,22 @@ fn required_metadata_bool(
     })
 }
 
+/// Trims a Gradle property and drops Gradle's `unspecified` sentinel.
+///
+/// The owned `String` is reused when it is already trimmed, which is the common
+/// case, so only a value carrying surrounding whitespace pays for a new
+/// allocation. An empty string is a legitimate value and is kept.
 fn normalized_gradle_property(value: Option<String>) -> Option<String> {
-    value
-        .map(|value| value.trim().to_owned())
-        .filter(|value| value != "unspecified")
+    value.and_then(|mut value| {
+        let trimmed = value.trim();
+        if trimmed == "unspecified" {
+            return None;
+        }
+        if trimmed.len() != value.len() {
+            value = trimmed.to_owned();
+        }
+        Some(value)
+    })
 }
 
 fn parse_gradle_metadata_record(json: &str) -> Result<GradleMetadataRecord> {
@@ -3829,5 +3841,36 @@ def second = 20 / 4
         assert_eq!(finder.project_count(), 0);
 
         temp_dir.close().unwrap();
+    }
+
+    #[rstest]
+    #[case(None, None)]
+    #[case(Some("1.0"), Some("1.0"))]
+    #[case(Some("  1.0  "), Some("1.0"))]
+    #[case(Some("\t1.0\n"), Some("1.0"))]
+    #[case(Some("unspecified"), None)]
+    #[case(Some("  unspecified  "), None)]
+    #[case(Some(""), Some(""))]
+    #[case(Some("   "), Some(""))]
+    #[case(Some("unspecified-core"), Some("unspecified-core"))]
+    fn test_normalized_gradle_property(
+        #[case] input: Option<&str>,
+        #[case] expected: Option<&str>,
+    ) {
+        assert_eq!(
+            normalized_gradle_property(input.map(str::to_owned)).as_deref(),
+            expected
+        );
+    }
+
+    #[test]
+    fn test_normalized_gradle_property_reuses_already_trimmed_allocation() {
+        let value = String::from("1.0.0");
+        let original_ptr = value.as_ptr();
+
+        let normalized = normalized_gradle_property(Some(value)).unwrap();
+
+        assert_eq!(normalized, "1.0.0");
+        assert_eq!(normalized.as_ptr(), original_ptr);
     }
 }
