@@ -24,8 +24,33 @@ pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "uv publish --dry-run";
 use std::path::Path;
 
 use anyhow::Result;
+use changepacks_core::UpdateType;
 use changepacks_utils::{read_and_parse, write_finalized};
 use toml_edit::DocumentMut;
+
+/// Compute the next version for `update_type`, write it into the
+/// `pyproject.toml` at `path`, and store it back into `version`.
+///
+/// `PythonPackage::update_version` and `PythonWorkspace::update_version` had
+/// byte-identical bodies; this holds that body once so the two trait impls
+/// cannot drift. Both `update_version` signatures stay hand-written rather
+/// than macro-generated: `async_trait` rewrites the `impl` block before a
+/// `macro_rules!` body expands, so a macro would emit a plain `async fn` that
+/// no longer matches the desugared trait signature (E0195) — the same reason
+/// documented at `crates/java/src/package.rs:65-74`.
+///
+/// # Errors
+/// Returns an error when semver calculation fails or the manifest write fails.
+pub(crate) async fn bump_pyproject_version(
+    version: &mut Option<String>,
+    path: &Path,
+    update_type: UpdateType,
+) -> Result<()> {
+    changepacks_utils::bump_version_with(version, path, update_type, async |new| {
+        crate::write_pyproject_version(path, new).await
+    })
+    .await
+}
 
 /// Read and parse a pyproject.toml file, returning both the raw content
 /// (for trailing-newline preservation) and the parsed TOML document.

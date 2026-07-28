@@ -31,11 +31,10 @@ impl Package for NodePackage {
     changepacks_core::impl_publishable_by_default!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let path = &self.path;
-        changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
-            crate::write_package_json_version(path, new).await
-        })
-        .await
+        // Shared with `NodeWorkspace::update_version` (see the note on
+        // `crate::bump_package_json_version` for why this is a function call
+        // and not a macro).
+        crate::bump_package_json_version(&mut self.version, &self.path, update_type).await
     }
 
     // Fixed language accessor.

@@ -18,7 +18,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use changepacks_core::{Config, Language, is_regular_file};
+use changepacks_core::{Config, Language, UpdateType, is_regular_file};
 use changepacks_utils::{detect_indent_str, read_and_parse, write_finalized};
 use serde::Serialize;
 
@@ -142,6 +142,35 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
         &package_json_raw,
         "package.json",
     )
+    .await
+}
+
+/// Bump `version` in place for the `package.json` at `path` and write the
+/// result back, preserving the file's original formatting.
+///
+/// This is the whole body of both `NodePackage::update_version` and
+/// `NodeWorkspace::update_version`, which were previously
+/// character-for-character identical. Both trait impls keep their
+/// hand-written `async fn update_version` signature and delegate here, so
+/// the version-bump semantics live in exactly one place.
+///
+/// Deliberately a plain function rather than a `macro_rules!` helper:
+/// `async_trait` rewrites the impl block before a macro body would expand,
+/// so a macro-emitted `async fn` would not match the desugared trait
+/// signature (E0195). A call inside the existing hand-written `async fn` has
+/// no such interaction.
+///
+/// # Errors
+/// Returns an error if the current version cannot be parsed, or if the
+/// `package.json` cannot be read, parsed, or written.
+pub(crate) async fn bump_package_json_version(
+    version: &mut Option<String>,
+    path: &Path,
+    update_type: UpdateType,
+) -> Result<()> {
+    changepacks_utils::bump_version_with(version, path, update_type, async |new| {
+        crate::write_package_json_version(path, new).await
+    })
     .await
 }
 
@@ -596,7 +625,6 @@ pub(crate) async fn run_dry_run_publish_for_path(
 mod tests {
     use super::*;
     use crate::test_util::denied_metadata;
-    use changepacks_core::UpdateType;
     use changepacks_utils::test_support;
     use rstest::rstest;
     use std::fs;

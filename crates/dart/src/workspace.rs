@@ -32,12 +32,7 @@ impl Workspace for DartWorkspace {
     changepacks_core::impl_publishable_by_default!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let path = &self.path;
-        let existing_version = self.version.is_some();
-        changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
-            crate::write_pubspec_version(path, new, existing_version).await
-        })
-        .await
+        crate::bump_pubspec_version(&mut self.version, &self.path, update_type).await
     }
 
     // Byte-identical `fn language(&self) -> Language { Language::Dart }`

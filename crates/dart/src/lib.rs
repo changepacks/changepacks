@@ -25,7 +25,33 @@ pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "dart pub publish --dry-run";
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use changepacks_core::UpdateType;
 use changepacks_utils::{read_and_parse, write_finalized};
+
+/// Bump `version` by `update_type` and write the result into the `pubspec.yaml`
+/// at `path`, preserving the file's YAML formatting.
+///
+/// Shared by `DartPackage::update_version` and `DartWorkspace::update_version`,
+/// whose bodies were byte-identical. The `existing_version` flag MUST be read
+/// before `bump_version_with` runs: that call mutates `version` to `Some(..)`
+/// unconditionally, while `write_pubspec_version` needs to know whether the
+/// manifest already carried a `version` key (replace) or not (add at the
+/// document root).
+///
+/// # Errors
+/// Returns an error when semver calculation fails, or when the manifest cannot
+/// be read, parsed or written.
+pub(crate) async fn bump_pubspec_version(
+    version: &mut Option<String>,
+    path: &Path,
+    update_type: UpdateType,
+) -> Result<()> {
+    let existing_version = version.is_some();
+    changepacks_utils::bump_version_with(version, path, update_type, async |new| {
+        write_pubspec_version(path, new, existing_version).await
+    })
+    .await
+}
 
 /// Update `pubspec.yaml` at `path` to set its `version` field to `new_version`,
 /// preserving the file's YAML formatting (via `yamlpatch`/`yamlpath`) and its

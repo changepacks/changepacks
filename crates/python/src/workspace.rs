@@ -27,12 +27,11 @@ impl Workspace for PythonWorkspace {
     // Publishability flag accessor.
     changepacks_core::impl_publishable_by_default!();
 
+    // Body shared with `PythonPackage::update_version` via the crate-local
+    // helper; the signature stays hand-written because `async_trait` forbids
+    // generating it from a macro (see `bump_pyproject_version` in `lib.rs`).
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let path = &self.path;
-        changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
-            crate::write_pyproject_version(path, new).await
-        })
-        .await
+        crate::bump_pyproject_version(&mut self.version, &self.path, update_type).await
     }
 
     // Fixed language accessor.
