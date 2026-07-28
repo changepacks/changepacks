@@ -966,6 +966,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_run_publish_command_os_args_non_zero_exit() {
+        // The documented contract of `run_publish_command_os_args` is that a
+        // non-zero exit code comes back as `Ok(PublishOutput { success: false })`
+        // and NOT as an `Err`. The shell-based sibling pins this via
+        // `test_run_publish_command_failure`; the argv-based runner backs the
+        // whole C# managed dry-run pipeline, so it needs the same guard.
+        let temp_dir = std::env::temp_dir();
+        let (program, args) = if cfg!(target_os = "windows") {
+            ("cmd", ["/C", "exit 1"])
+        } else {
+            ("sh", ["-c", "exit 1"])
+        };
+        let output = run_publish_command_os_args(program, args, &temp_dir, false)
+            .await
+            .expect("non-zero exit must be Ok, not Err");
+        assert!(
+            !output.success,
+            "expected success=false for a non-zero exit, stdout: {}, stderr: {}",
+            output.stdout, output.stderr
+        );
+    }
+
     #[test]
     fn test_utf8_or_lossy_valid_utf8_passthrough() {
         assert_eq!(utf8_or_lossy("héllo".as_bytes().to_vec()), "héllo");

@@ -729,4 +729,85 @@ mod tests {
             "error chain should name the path whose metadata failed, got: {chain}"
         );
     }
+
+    // `matches_project_file` is the defaulted gate every non-CSharp language
+    // finder calls before parsing a manifest. `MockProjectFinder::project_files`
+    // returns exactly `["package.json"]`, so these cases pin all four exits of
+    // its documented name-first / stat-last order.
+
+    // Exit 4 (the only `true`): recognized name AND a real regular file.
+    #[tokio::test]
+    async fn test_matches_project_file_accepts_recognized_regular_file() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let manifest = temp_dir.path().join("package.json");
+        std::fs::write(&manifest, "{}").unwrap();
+
+        let finder = MockProjectFinder::new();
+        assert!(
+            finder.matches_project_file(&manifest).await.unwrap(),
+            "a real file named package.json must be recognized"
+        );
+    }
+
+    // Exit 4 again, negative half: the name matches but the entry is a
+    // DIRECTORY, so the stat must veto it. This is why the stat cannot simply
+    // be dropped once the name check is in place.
+    #[tokio::test]
+    async fn test_matches_project_file_rejects_directory_with_recognized_name() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let dir_path = temp_dir.path().join("package.json");
+        std::fs::create_dir(&dir_path).unwrap();
+
+        let finder = MockProjectFinder::new();
+        assert!(
+            !finder.matches_project_file(&dir_path).await.unwrap(),
+            "a directory named package.json must not be treated as a manifest"
+        );
+    }
+
+    // Exit 3: an unrecognized name is rejected even though the file really
+    // exists — the name guard, not the stat, is what filters it out.
+    #[tokio::test]
+    async fn test_matches_project_file_rejects_unrecognized_name() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let other = temp_dir.path().join("Cargo.toml");
+        std::fs::write(&other, "[package]\n").unwrap();
+
+        let finder = MockProjectFinder::new();
+        assert!(
+            !finder.matches_project_file(&other).await.unwrap(),
+            "Cargo.toml is not in this finder's project_files()"
+        );
+    }
+
+    // Exit 1: `file_name()` is `None` for a path ending in `..`, even though
+    // that path resolves to an existing directory. The early return must fire
+    // before any stat.
+    #[tokio::test]
+    async fn test_matches_project_file_rejects_path_without_file_name() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let parent_ref = temp_dir.path().join("..");
+        assert!(parent_ref.file_name().is_none());
+
+        let finder = MockProjectFinder::new();
+        assert!(
+            !finder.matches_project_file(&parent_ref).await.unwrap(),
+            "a path with no file name cannot match a manifest name"
+        );
+    }
+
+    // Recognized name, nothing on disk: `is_regular_file` maps NotFound to
+    // `Ok(false)` rather than an error, so the gate stays quiet for deleted
+    // manifests still listed in the git index.
+    #[tokio::test]
+    async fn test_matches_project_file_rejects_missing_manifest() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let missing = temp_dir.path().join("package.json");
+
+        let finder = MockProjectFinder::new();
+        assert!(
+            !finder.matches_project_file(&missing).await.unwrap(),
+            "a package.json that does not exist must not match"
+        );
+    }
 }

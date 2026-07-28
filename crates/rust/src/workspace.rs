@@ -140,16 +140,10 @@ impl Workspace for RustWorkspace {
 
         let (cargo_toml_raw, mut cargo_toml) = crate::read_and_parse_cargo_toml(&self.path).await?;
 
-        if cargo_toml
-            .get("package")
-            .is_some_and(|package| !package.is_table_like())
-        {
-            anyhow::bail!(
-                "Cargo.toml {} has a non-table [package] item",
-                self.path.display()
-            );
-        }
-        let has_package = cargo_toml.get("package").is_some();
+        // Shared guard: rejects a non-table `package` item before any mutation
+        // and reports whether the key exists. Same check (and same message) the
+        // package writer uses — see `crate::ensure_package_table_like`.
+        let has_package = crate::ensure_package_table_like(&cargo_toml, &self.path)?;
 
         if has_package {
             // A hybrid workspace root can inherit its OWN version via

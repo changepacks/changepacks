@@ -78,20 +78,46 @@ pub(crate) async fn read_and_parse_cargo_toml(path: &Path) -> Result<(String, Do
 /// or the write fails.
 pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) -> Result<()> {
     let (cargo_toml_raw, mut cargo_toml) = read_and_parse_cargo_toml(path).await?;
-    if cargo_toml
-        .get("package")
-        .is_some_and(|package| !package.is_table_like())
-    {
+    if !ensure_package_table_like(&cargo_toml, path)? {
+        cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    cargo_toml["package"]["version"] = new_version.into();
+    write_finalized(path, cargo_toml.to_string(), &cargo_toml_raw, "Cargo.toml").await
+}
+
+/// Reject a `Cargo.toml` whose top-level `package` key exists but is NOT
+/// table-like (e.g. `package = 3` or `package = "not-a-table"`), and report
+/// whether the key is present at all.
+///
+/// Both writers that materialize `[package]` need the SAME two facts before
+/// touching the document — "is the existing `package` item safe to index
+/// into?" and "does it already exist?" — and both previously open-coded the
+/// identical `is_some_and(|package| !package.is_table_like())` check plus a
+/// byte-identical `bail!`: once in [`write_cargo_package_version`] above and
+/// once in [`crate::workspace::RustWorkspace::update_version`]. Extracted here
+/// beside [`is_workspace_marker`] and [`workspace_dependencies_table_mut`] so
+/// the manifest-shape assumption AND its user-visible message live in ONE
+/// place, matching the repo-wide "one decoder, one place" convention.
+///
+/// Callers reuse the returned flag for their own control flow — creating the
+/// missing `[package]` table in the package writer, or driving the
+/// hybrid/virtual-root branch in the workspace writer — so the extraction adds
+/// no extra lookup relative to the previous hand-rolled pairs.
+///
+/// Guarding BEFORE any mutation is the point: `toml_edit` indexing assignment
+/// would otherwise silently replace the scalar and rewrite the manifest.
+///
+/// # Errors
+/// Returns an error naming `path` when `package` is present but not table-like.
+pub(crate) fn ensure_package_table_like(doc: &DocumentMut, path: &Path) -> Result<bool> {
+    let package = doc.get("package");
+    if package.is_some_and(|package| !package.is_table_like()) {
         anyhow::bail!(
             "Cargo.toml {} has a non-table [package] item",
             path.display()
         );
     }
-    if cargo_toml.get("package").is_none() {
-        cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-    cargo_toml["package"]["version"] = new_version.into();
-    write_finalized(path, cargo_toml.to_string(), &cargo_toml_raw, "Cargo.toml").await
+    Ok(package.is_some())
 }
 
 /// Return `true` for a `toml_edit::Item` whose value is table-like with

@@ -7,6 +7,7 @@
 //! Requires the Gradle wrapper (gradlew) for dynamic version detection.
 
 pub mod finder;
+mod gradle_dependency_lexer;
 pub mod package;
 mod properties_version;
 #[cfg(test)]

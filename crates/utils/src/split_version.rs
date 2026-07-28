@@ -67,6 +67,15 @@ mod tests {
     #[case("~1.2.3", "4.5.6", "~4.5.6")]
     #[case(">=1.0.0", "2.0.0", ">=2.0.0")]
     #[case("helloworld-1.0.2", "2.0.0", "helloworld-2.0.0")]
+    // A digit-less specifier ("latest", "*", "") has no prefix, so the whole
+    // specifier is replaced wholesale by `new_version`. The Cargo
+    // workspace-dependency rewrite in `changepacks-rust` relies on exactly this:
+    // a non-numeric requirement is overwritten rather than concatenated.
+    #[case("latest", "2.0.0", "2.0.0")]
+    #[case("*", "2.0.0", "2.0.0")]
+    #[case("", "2.0.0", "2.0.0")]
+    // A multi-byte prefix is preserved byte-for-byte alongside the new tail.
+    #[case("λ-1.0.0", "2.0.0", "λ-2.0.0")]
     fn test_replace_version_keep_prefix(
         #[case] spec: &str,
         #[case] new_version: &str,

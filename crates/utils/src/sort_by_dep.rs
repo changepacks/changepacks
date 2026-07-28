@@ -134,14 +134,18 @@ impl std::error::Error for DependencySortError {
 /// A node is cyclic when it belongs to an SCC with multiple nodes, or when its
 /// singleton SCC has a self-edge. Residual nodes outside those SCCs are merely
 /// blocked dependents and are intentionally left unmarked.
-fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], residual: &[bool]) -> Vec<bool> {
-    let node_count = residual.len();
+///
+/// `in_degree` is Kahn's leftover degree array: a node is residual exactly when
+/// its entry is still non-zero, so the residual mask is read straight off it
+/// instead of being materialized into a throwaway `Vec<bool>`.
+fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], in_degree: &[usize]) -> Vec<bool> {
+    let node_count = in_degree.len();
     let mut visited = vec![false; node_count];
     let mut finish_order = Vec::with_capacity(node_count);
     let mut dfs_stack: Vec<(usize, usize)> = Vec::new();
 
     for root in 0..node_count {
-        if !residual[root] || visited[root] {
+        if in_degree[root] == 0 || visited[root] {
             continue;
         }
 
@@ -151,7 +155,7 @@ fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], residual: &[bool]
             if *next_edge < offsets[*node + 1] {
                 let target = adj[*next_edge];
                 *next_edge += 1;
-                if residual[target] && !visited[target] {
+                if in_degree[target] > 0 && !visited[target] {
                     visited[target] = true;
                     dfs_stack.push((target, offsets[target]));
                 }
@@ -165,11 +169,11 @@ fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], residual: &[bool]
     // Build the transpose CSR for residual edges only.
     let mut reverse_offsets = vec![0; node_count + 1];
     for source in 0..node_count {
-        if !residual[source] {
+        if in_degree[source] == 0 {
             continue;
         }
         for &target in &adj[offsets[source]..offsets[source + 1]] {
-            if residual[target] {
+            if in_degree[target] > 0 {
                 reverse_offsets[target + 1] += 1;
             }
         }
@@ -191,11 +195,11 @@ fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], residual: &[bool]
     let reverse_len = reverse_offsets[node_count];
     let mut reverse_adj = vec![0; reverse_len];
     for source in 0..node_count {
-        if !residual[source] {
+        if in_degree[source] == 0 {
             continue;
         }
         for &target in &adj[offsets[source]..offsets[source + 1]] {
-            if residual[target] {
+            if in_degree[target] > 0 {
                 let slot = reverse_offsets[target];
                 reverse_adj[slot] = source;
                 reverse_offsets[target] += 1;
@@ -382,8 +386,7 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
     }
 
     if sorted_indices.len() < projects.len() {
-        let residual: Vec<bool> = in_degree.iter().map(|&degree| degree > 0).collect();
-        let cycle_members = cycle_members_in_residual(&adj, &offsets, &residual);
+        let cycle_members = cycle_members_in_residual(&adj, &offsets, &in_degree);
         let mut members: Vec<_> = cycle_members
             .iter()
             .enumerate()
@@ -837,10 +840,11 @@ mod tests {
         // and 4 is an acyclic residual singleton.
         let offsets = vec![0, 1, 3, 4, 5, 5];
         let adj = vec![1, 0, 2, 4, 3];
-        let residual = vec![true; 5];
+        // Every node is residual, i.e. Kahn left a non-zero in-degree behind.
+        let in_degree = vec![1usize; 5];
 
         assert_eq!(
-            cycle_members_in_residual(&adj, &offsets, &residual),
+            cycle_members_in_residual(&adj, &offsets, &in_degree),
             vec![true, true, false, true, false]
         );
     }
