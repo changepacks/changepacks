@@ -173,26 +173,28 @@ fn prepend_path_dirs(extra_path_dirs: &[PathBuf]) -> Result<Option<OsString>> {
     if extra_path_dirs.is_empty() {
         return Ok(None);
     }
-    // Materialize the split-paths side into `Vec<PathBuf>` because
-    // `std::env::split_paths` yields owned `PathBuf`s that must live for the
-    // duration of the borrow below. The caller-supplied `extra_path_dirs`
-    // slice already holds owned `PathBuf`s we can borrow from directly, so
-    // borrowing skips the per-entry `PathBuf::clone` the previous shape paid
-    // on every publish/dry-run (Node projects can carry several
-    // `node_modules/.bin` ancestors from `node_modules_bin_dirs`).
-    // `std::env::join_paths` accepts `IntoIterator<Item: AsRef<OsStr>>`, and
-    // `&Path` satisfies `AsRef<OsStr>` directly — so the chained iterator
-    // goes straight in without the previous intermediate `Vec<&Path>`
-    // allocation. Joined output stays byte-identical.
-    let existing_paths: Vec<PathBuf> = std::env::var_os("PATH")
-        .as_ref()
-        .map(|e| std::env::split_paths(e).collect())
-        .unwrap_or_default();
+    // Stream both sides lazily instead of materializing the process `PATH`
+    // into a throwaway `Vec<PathBuf>` spine (commonly 30-60 entries) whose
+    // only job was to own the `split_paths` output for the duration of the
+    // borrow. Only `path_var` is bound so the `OsString` outlives the
+    // `split_paths` iterator borrowing it; the entries themselves are
+    // consumed one at a time. The caller-supplied `extra_path_dirs` are
+    // borrowed (`Cow::Borrowed`) so no per-entry `PathBuf::clone` is paid,
+    // while `split_paths` yields owned `PathBuf`s that become `Cow::Owned`
+    // without a copy. `std::env::join_paths` still performs the separator
+    // validation and the joined output stays byte-identical.
+    let path_var = std::env::var_os("PATH");
+    let existing = path_var.as_deref().map(std::env::split_paths);
     let path = std::env::join_paths(
         extra_path_dirs
             .iter()
-            .map(PathBuf::as_path)
-            .chain(existing_paths.iter().map(PathBuf::as_path)),
+            .map(|dir| Cow::Borrowed(dir.as_os_str()))
+            .chain(
+                existing
+                    .into_iter()
+                    .flatten()
+                    .map(|dir| Cow::<OsStr>::Owned(dir.into_os_string())),
+            ),
     )
     .context("failed to construct PATH from injected and existing directories")?;
     Ok(Some(path))

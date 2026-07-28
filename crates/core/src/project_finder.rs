@@ -796,6 +796,43 @@ mod tests {
         );
     }
 
+    // Exit 2: `to_str()` is `None` for a non-UTF-8 file name. Such a name
+    // cannot equal any ASCII manifest name, so the guard must short-circuit to
+    // `Ok(false)` before any stat — exactly what the method doc reasons about.
+    // The path deliberately does not exist: the early return fires first.
+    #[tokio::test]
+    async fn test_matches_project_file_rejects_non_utf8_file_name() {
+        #[cfg(unix)]
+        let name: std::ffi::OsString = {
+            use std::os::unix::ffi::OsStrExt;
+            std::ffi::OsStr::from_bytes(b"\xFF\xFEpackage.json").to_os_string()
+        };
+        #[cfg(windows)]
+        let name: std::ffi::OsString = {
+            use std::os::windows::ffi::OsStringExt;
+            // Unpaired high surrogate — unrepresentable in UTF-8.
+            std::ffi::OsString::from_wide(&[0xD800, u16::from(b'x')])
+        };
+
+        // Stay honest if a platform ever normalizes the name away.
+        assert!(
+            Path::new(&name)
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_none(),
+            "fixture must really be a non-UTF-8 file name"
+        );
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let path = temp_dir.path().join(&name);
+
+        let finder = MockProjectFinder::new();
+        assert!(
+            !finder.matches_project_file(&path).await.unwrap(),
+            "a non-UTF-8 file name cannot match an ASCII manifest name"
+        );
+    }
+
     // Recognized name, nothing on disk: `is_regular_file` maps NotFound to
     // `Ok(false)` rather than an error, so the gate stays quiet for deleted
     // manifests still listed in the git index.

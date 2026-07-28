@@ -22,6 +22,20 @@ fn is_gradle_identifier_start(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || matches!(byte, b'_' | b'$') || !byte.is_ascii()
 }
 
+/// Maps a Gradle bracket opener to the closer the scanner must see to balance it.
+///
+/// Every call site gates on `byte @ (b'(' | b'[' | b'{')`, so only those three
+/// bytes ever reach this function. The wildcard arm therefore stands in for
+/// `b'{'` while keeping the mapping total, which avoids an unreachable panic
+/// branch.
+const fn gradle_closer_for(open: u8) -> u8 {
+    match open {
+        b'(' => b')',
+        b'[' => b']',
+        _ => b'}',
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct SignificantBytes {
     before_last: Option<u8>,
@@ -616,12 +630,7 @@ fn gradle_quarantine_resume(
                 }
             }
             byte @ (b'(' | b'[' | b'{') => {
-                expected_closers.push(match byte {
-                    b'(' => b')',
-                    b'[' => b']',
-                    b'{' => b'}',
-                    _ => unreachable!(),
-                });
+                expected_closers.push(gradle_closer_for(byte));
                 lexical.mark_byte(byte);
                 cursor += 1;
             }
@@ -706,12 +715,7 @@ fn scan_gradle_call(bytes: &[u8], open: usize, dialect: GradleDialect) -> Gradle
                 cursor = gradle_line_break_end(bytes, cursor).unwrap_or(cursor + 1);
             }
             byte @ (b'(' | b'[' | b'{') => {
-                expected_closers.push(match byte {
-                    b'(' => b')',
-                    b'[' => b']',
-                    b'{' => b'}',
-                    _ => unreachable!(),
-                });
+                expected_closers.push(gradle_closer_for(byte));
                 lexical.mark_byte(byte);
                 cursor += 1;
             }

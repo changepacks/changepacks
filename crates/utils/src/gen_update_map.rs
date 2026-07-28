@@ -226,8 +226,20 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
                     },
                 }
             } else {
-                provenance.insert(project_path.clone(), UpdateProvenance::Explicit);
-                expansion_seeds.insert(project_path.clone());
+                // Probe by borrow before allocating, exactly as the `update_map`
+                // fast-path below and `apply_update_on_rules_from` already do.
+                // Overwrite semantics are preserved: an explicit log still
+                // REPLACES an existing `Generated` provenance, the write just
+                // reuses the key already stored in the map instead of cloning a
+                // second `PathBuf` the insert would immediately drop.
+                if let Some(slot) = provenance.get_mut(project_path) {
+                    *slot = UpdateProvenance::Explicit;
+                } else {
+                    provenance.insert(project_path.clone(), UpdateProvenance::Explicit);
+                }
+                if !expansion_seeds.contains(project_path.as_path()) {
+                    expansion_seeds.insert(project_path.clone());
+                }
             }
             // Fast-path: `HashMap::get_mut` on an existing key is zero-alloc,
             // whereas `entry(project_path.clone()).or_insert(...)` unconditionally
@@ -235,7 +247,9 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
             // with many changepack logs mentioning the same package paths (common
             // in active monorepos), this saves N `PathBuf` allocations per hot
             // invocation. Semantics are byte-identical: both branches produce the
-            // same mutable reference for the same input.
+            // same mutable reference for the same input. The same probe-before-
+            // allocate policy now covers all three containers built by this loop:
+            // `update_map`, `provenance`, and `expansion_seeds`.
             let ret = if let Some(existing) = update_map.get_mut(project_path) {
                 existing
             } else {
