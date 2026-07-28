@@ -13,6 +13,7 @@ pub mod workspace;
 pub use finder::NodeProjectFinder;
 
 use std::{
+    borrow::Cow,
     collections::HashMap,
     path::{Path, PathBuf},
 };
@@ -24,7 +25,9 @@ use serde::Serialize;
 
 #[cfg(test)]
 pub(crate) mod test_util {
-    use std::path::Path;
+    use anyhow::Result;
+    use changepacks_core::Config;
+    use std::path::{Path, PathBuf};
 
     pub(crate) fn marker_command(marker_name: &str) -> String {
         if cfg!(target_os = "windows") {
@@ -39,6 +42,49 @@ pub(crate) mod test_util {
             std::io::ErrorKind::PermissionDenied,
             "deterministic metadata failure",
         ))
+    }
+
+    /// Assert that a failing `node_modules/.bin` PATH probe aborts the publish
+    /// (or dry-run publish) flow BEFORE the configured command runs: the
+    /// fixture points the relevant config map at a command that would create a
+    /// marker file, then forces [`denied_metadata`]. `NodePackage` and
+    /// `NodeWorkspace` share the `run_publish_for_path` /
+    /// `run_dry_run_publish_for_path` tail, so `run` — which builds the
+    /// caller's own project type and awaits its publish method — is the only
+    /// part that differs.
+    pub(crate) async fn assert_collection_failure_prevents_command<F, Fut>(dry_run: bool, run: F)
+    where
+        F: FnOnce(PathBuf, Config) -> Fut,
+        Fut: Future<Output = Result<()>>,
+    {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        std::fs::write(&package_json, "{}").unwrap();
+
+        let marker_name = if dry_run {
+            "dry-run-command-invoked"
+        } else {
+            "publish-command-invoked"
+        };
+        let marker = temp_dir.path().join(marker_name);
+        let mut config = Config::default();
+        let commands = if dry_run {
+            &mut config.publish_dry_run
+        } else {
+            &mut config.publish
+        };
+        commands.insert("package.json".to_string(), marker_command(marker_name));
+
+        let result =
+            crate::with_test_metadata_probe(denied_metadata, run(package_json, config)).await;
+        let error = result.expect_err("PATH collection must fail before command execution");
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains("node_modules\\.bin") || chain.contains("node_modules/.bin"),
+            "error should name the candidate .bin path, got: {chain}"
+        );
+        assert!(chain.contains("deterministic metadata failure"));
+        assert!(!marker.exists(), "configured command must not be invoked");
     }
 }
 
@@ -526,28 +572,30 @@ pub(crate) async fn detect_package_manager_in_ancestors_cached(
 ///
 /// Checks the provided config map first; if no match, detects the package manager
 /// recursively and calls the provided accessor function to get the default command.
+///
+/// The default command is a compile-time constant, so it is returned borrowed
+/// (`Cow::Borrowed`) and only a configured override allocates.
 async fn command_for_path(
     path: &Path,
     relative_path: &Path,
     map: &std::collections::BTreeMap<String, String>,
     default_fn: fn(PackageManager) -> &'static str,
-) -> Result<String> {
+) -> Result<Cow<'static, str>> {
     if let Some(command) =
         changepacks_core::publish::lookup_by_path_or_language(map, relative_path, Language::Node)
     {
-        return Ok(command.clone());
+        return Ok(Cow::Owned(command.clone()));
     }
-    Ok(default_fn(
+    Ok(Cow::Borrowed(default_fn(
         detect_package_manager_recursive_async(path, relative_path.components().count()).await?,
-    )
-    .to_string())
+    )))
 }
 
 pub(crate) async fn publish_command_for_path(
     path: &Path,
     relative_path: &Path,
     config: &Config,
-) -> Result<String> {
+) -> Result<Cow<'static, str>> {
     command_for_path(
         path,
         relative_path,
@@ -561,7 +609,7 @@ pub(crate) async fn dry_run_publish_command_for_path(
     path: &Path,
     relative_path: &Path,
     config: &Config,
-) -> Result<String> {
+) -> Result<Cow<'static, str>> {
     command_for_path(
         path,
         relative_path,

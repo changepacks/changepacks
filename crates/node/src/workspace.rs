@@ -73,55 +73,31 @@ impl Workspace for NodeWorkspace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{denied_metadata, marker_command};
     use changepacks_core::UpdateType;
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 
+    /// `NodeWorkspace` binding of the shared PATH-collection-failure scenario.
     async fn assert_collection_failure_prevents_command(dry_run: bool) {
-        let temp_dir = TempDir::new().unwrap();
-        let package_json = temp_dir.path().join("package.json");
-        fs::write(&package_json, "{}").unwrap();
-
-        let workspace = NodeWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            package_json,
-            PathBuf::from("package.json"),
-        );
-        let marker_name = if dry_run {
-            "dry-run-command-invoked"
-        } else {
-            "publish-command-invoked"
-        };
-        let marker = temp_dir.path().join(marker_name);
-        let mut config = Config::default();
-        let commands = if dry_run {
-            &mut config.publish_dry_run
-        } else {
-            &mut config.publish
-        };
-        commands.insert("package.json".to_string(), marker_command(marker_name));
-
-        let result = if dry_run {
-            crate::with_test_metadata_probe(denied_metadata, workspace.dry_run_publish(&config))
-                .await
-                .map(|_| ())
-        } else {
-            crate::with_test_metadata_probe(denied_metadata, workspace.publish(&config))
-                .await
-                .map(|_| ())
-        };
-        let error = result.expect_err("PATH collection must fail before command execution");
-        let chain = format!("{error:#}");
-        assert!(
-            chain.contains("node_modules\\.bin") || chain.contains("node_modules/.bin"),
-            "error should name the candidate .bin path, got: {chain}"
-        );
-        assert!(chain.contains("deterministic metadata failure"));
-        assert!(!marker.exists(), "configured command must not be invoked");
+        crate::test_util::assert_collection_failure_prevents_command(
+            dry_run,
+            async |package_json, config| {
+                let workspace = NodeWorkspace::new(
+                    Some("test-workspace".to_string()),
+                    Some("1.0.0".to_string()),
+                    package_json,
+                    PathBuf::from("package.json"),
+                );
+                if dry_run {
+                    workspace.dry_run_publish(&config).await.map(|_| ())
+                } else {
+                    workspace.publish(&config).await.map(|_| ())
+                }
+            },
+        )
+        .await;
     }
 
     #[tokio::test]

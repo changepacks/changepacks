@@ -273,6 +273,51 @@ requires = ["setuptools"]
         temp_dir.close().unwrap();
     }
 
+    /// A `pyproject.toml` that does not parse must abort the bump BEFORE the
+    /// writer touches the file. The finder covers a malformed manifest, and
+    /// `write_pyproject_version` covers semantic rejections, but nothing pinned
+    /// the parse failure as observed through the `Package` trait entry point —
+    /// so swallowing the parse error inside the writer would still leave this
+    /// path green. Mirrors
+    /// `test_write_pyproject_version_non_table_project_leaves_file_untouched`.
+    #[tokio::test]
+    async fn test_python_package_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        let original = "invalid toml [[[";
+        fs::write(&pyproject_toml, original).unwrap();
+
+        let mut package = PythonPackage::new(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
+        );
+
+        let err = package
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("a malformed pyproject.toml must fail the bump");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("Failed to parse pyproject.toml"),
+            "error chain should name the parse failure, got: {chain}"
+        );
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+
+        // Byte-for-byte: an unparseable manifest must never be rewritten.
+        assert_eq!(
+            fs::read(&pyproject_toml).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     #[test]
     fn test_set_name() {
         let mut package = PythonPackage::new(

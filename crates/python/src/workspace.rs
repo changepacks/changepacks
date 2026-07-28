@@ -228,6 +228,48 @@ members = ["packages/*"]
         assert_eq!(workspace.dependencies().len(), 2);
     }
 
+    /// Workspace-side twin of the `PythonPackage` malformed-manifest test: the
+    /// two `update_version` bodies share `bump_pyproject_version`, so both trait
+    /// entry points must be pinned independently or a regression could be
+    /// hidden behind whichever one is still covered.
+    #[tokio::test]
+    async fn test_python_workspace_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        let original = "invalid toml [[[";
+        fs::write(&pyproject_toml, original).unwrap();
+
+        let mut workspace = PythonWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
+        );
+
+        let err = workspace
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("a malformed pyproject.toml must fail the bump");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("Failed to parse pyproject.toml"),
+            "error chain should name the parse failure, got: {chain}"
+        );
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+
+        // Byte-for-byte: an unparseable manifest must never be rewritten.
+        assert_eq!(
+            fs::read(&pyproject_toml).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     #[test]
     fn test_set_name() {
         let mut workspace = PythonWorkspace::new(

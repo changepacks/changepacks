@@ -138,6 +138,15 @@ impl std::error::Error for DependencySortError {
 /// `in_degree` is Kahn's leftover degree array: a node is residual exactly when
 /// its entry is still non-zero, so the residual mask is read straight off it
 /// instead of being materialized into a throwaway `Vec<bool>`.
+///
+/// The pass-one `visited` mask is reused with inverted polarity as pass two's
+/// "assigned" mask instead of allocating a second `Vec<bool>`. Pass one leaves
+/// `visited[i] == (in_degree[i] > 0)`: its root loop skips only zero-in-degree
+/// and already-visited nodes, and it only descends into residual targets. Pass
+/// two touches residual nodes exclusively - its roots come from `finish_order`
+/// and its edges from the residual-filtered `reverse_adj` - so "still `true`"
+/// is exactly "residual and not yet assigned", and claiming a node for a
+/// component clears its flag.
 fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], in_degree: &[usize]) -> Vec<bool> {
     let node_count = in_degree.len();
     let mut visited = vec![false; node_count];
@@ -215,23 +224,23 @@ fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], in_degree: &[usiz
     }
     reverse_offsets[0] = 0;
 
-    let mut assigned = vec![false; node_count];
     let mut cycle_members = vec![false; node_count];
     let mut component = Vec::new();
     let mut stack = Vec::new();
 
+    // `visited` is recycled here: `true` now means "residual and unassigned".
     for root in finish_order.into_iter().rev() {
-        if assigned[root] {
+        if !visited[root] {
             continue;
         }
 
-        assigned[root] = true;
+        visited[root] = false;
         stack.push(root);
         while let Some(node) = stack.pop() {
             component.push(node);
             for &source in &reverse_adj[reverse_offsets[node]..reverse_offsets[node + 1]] {
-                if !assigned[source] {
-                    assigned[source] = true;
+                if visited[source] {
+                    visited[source] = false;
                     stack.push(source);
                 }
             }
