@@ -253,6 +253,29 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
         return Ok(projects);
     }
 
+    // Fast path: with no project carrying any local (monorepo) dependency the
+    // graph has zero edges, so the work below - a full `ProjectNameAnalysis`
+    // map plus the `in_degree`, `edges`, `offsets`, `adj`, `VecDeque` and
+    // `sorted_indices` allocations - reproduces the input order and is pure
+    // waste. Common on single-package repos and workspaces that don't use
+    // `workspace:*` / `workspace = true` / `[tool.uv.sources]` /
+    // `<ProjectReference/>`. Two invariants make the early return
+    // byte-identical to the full path:
+    // (a) a `referenced_ambiguity` can only originate from a dependency name
+    //     (see `project_names.rs`), so a dependency-free set can never raise
+    //     the ambiguity error - duplicate names stay unreferenced and legal;
+    // (b) with no edges every `in_degree` is 0, so Kahn's initial fill pushes
+    //     `0..n` in ascending order, no decrement ever runs, and the final
+    //     reorder maps each index back onto itself.
+    // `.all(...)` short-circuits on the first dep-carrying project, so it's
+    // O(1) amortized when the rest of the function would have fired anyway.
+    if projects
+        .iter()
+        .all(|project| project.dependencies().is_empty())
+    {
+        return Ok(projects);
+    }
+
     let project_names = ProjectNameAnalysis::new(&projects);
 
     if let Some(ambiguity) = project_names.referenced_ambiguity() {
@@ -634,6 +657,33 @@ mod tests {
                 Path::new("app/package.json"),
                 Path::new("packages/core/package.json"),
                 Path::new("crates/core/Cargo.toml"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sort_no_dependency_fast_path_preserves_input_order() {
+        // Dependency-free set that also carries a duplicate name, so it locks
+        // both fast-path invariants at once: the returned order is the input
+        // order verbatim, and unreferenced duplicate names are still legal
+        // (no ambiguity error) even though the fast path skips
+        // `ProjectNameAnalysis` entirely.
+        let core_a = create_project_at("core", "packages/core/package.json");
+        let core_b = create_project_at("core", "crates/core/Cargo.toml");
+        let app = create_project_at("app", "apps/app/package.json");
+
+        let sorted = sort_by_dependencies(vec![&core_b, &app, &core_a]).unwrap();
+        let paths: Vec<_> = sorted
+            .iter()
+            .map(|project| project.relative_path())
+            .collect();
+
+        assert_eq!(
+            paths,
+            vec![
+                Path::new("crates/core/Cargo.toml"),
+                Path::new("apps/app/package.json"),
+                Path::new("packages/core/package.json"),
             ]
         );
     }

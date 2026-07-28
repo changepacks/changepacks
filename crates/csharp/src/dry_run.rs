@@ -151,6 +151,32 @@ where
     Ok(combined)
 }
 
+/// Shared body of the real-publish and dry-run resolvers: locate the project
+/// directory, honour an already-resolved config override, and otherwise hand
+/// the directory to the managed NuGet flow.
+///
+/// The two callers differ only in which override map they consult and in the
+/// `Option` wrapper on the result, so the override lookup is resolved by the
+/// caller and passed in as `override_command`.
+async fn resolve_and_run_with<F, Fut>(
+    path: &Path,
+    missing_dir_msg: &'static str,
+    override_command: Option<String>,
+    managed_runner: F,
+) -> Result<PublishOutput>
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: Future<Output = Result<PublishOutput>>,
+{
+    let dir = path.parent().context(missing_dir_msg)?;
+
+    if let Some(user_cmd) = override_command {
+        return run_publish_command(&user_cmd, dir).await;
+    }
+
+    managed_runner(dir.to_path_buf()).await
+}
+
 async fn resolve_and_run_publish_with<F, Fut>(
     path: &Path,
     relative_path: &Path,
@@ -162,15 +188,13 @@ where
     F: FnOnce(PathBuf) -> Fut,
     Fut: Future<Output = Result<PublishOutput>>,
 {
-    let dir = path.parent().context(missing_dir_msg)?;
-
-    if let Some(user_cmd) =
-        lookup_by_path_or_language(&config.publish, relative_path, Language::CSharp)
-    {
-        return run_publish_command(&user_cmd, dir).await;
-    }
-
-    managed_runner(dir.to_path_buf()).await
+    resolve_and_run_with(
+        path,
+        missing_dir_msg,
+        lookup_by_path_or_language(&config.publish, relative_path, Language::CSharp),
+        managed_runner,
+    )
+    .await
 }
 
 /// Resolve a configured real-publish override or run the managed NuGet flow
@@ -211,15 +235,15 @@ where
     F: FnOnce(PathBuf) -> Fut,
     Fut: Future<Output = Result<PublishOutput>>,
 {
-    let dir = path.parent().context(missing_dir_msg)?;
-
-    if let Some(user_cmd) =
-        resolve_dry_run_publish_command(relative_path, Language::CSharp, || None, config)
-    {
-        return Ok(Some(run_publish_command(&user_cmd, dir).await?));
-    }
-
-    Ok(Some(managed_runner(dir.to_path_buf()).await?))
+    Ok(Some(
+        resolve_and_run_with(
+            path,
+            missing_dir_msg,
+            resolve_dry_run_publish_command(relative_path, Language::CSharp, || None, config),
+            managed_runner,
+        )
+        .await?,
+    ))
 }
 
 /// Resolve a configured dry-run override or run the managed temporary-feed

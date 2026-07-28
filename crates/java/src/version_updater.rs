@@ -1,7 +1,8 @@
 use crate::properties_version::{PropertyAssignment, property_assignments};
 use crate::version_lexer::{GradleDialect, candidate_ranges};
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use changepacks_core::has_extension_ignore_ascii_case;
+#[cfg(test)]
 use std::borrow::Cow;
 use std::io::ErrorKind;
 use std::ops::Range;
@@ -18,31 +19,44 @@ pub enum GradleVersionScope {
     ScriptAndAllProjects,
 }
 
+/// Replace the byte range `candidate` of `content` with `new_version`.
+fn splice_version(content: &str, candidate: &Range<usize>, new_version: &str) -> String {
+    let mut updated = String::with_capacity(content.len() - candidate.len() + new_version.len());
+    updated.push_str(&content[..candidate.start]);
+    updated.push_str(new_version);
+    updated.push_str(&content[candidate.end..]);
+    updated
+}
+
+/// Test-only: the production path splices the single candidate directly via
+/// [`splice_version`]; this wrapper adds the empty/ambiguous arbitration that
+/// only the isolated build-script helpers below need.
+#[cfg(test)]
 fn replace_candidate<'a>(
     content: &'a str,
     new_version: &str,
     candidates: Vec<Range<usize>>,
 ) -> Result<Cow<'a, str>> {
-    let candidate = match candidates.as_slice() {
+    match candidates.as_slice() {
         [] => bail!("No supported editable version declaration found"),
-        [candidate] => candidate,
+        [candidate] => Ok(Cow::Owned(splice_version(content, candidate, new_version))),
         candidates => bail!(
             "Ambiguous supported editable version declarations found ({} candidates)",
             candidates.len()
         ),
-    };
-    let mut updated = String::with_capacity(content.len() - candidate.len() + new_version.len());
-    updated.push_str(&content[..candidate.start]);
-    updated.push_str(new_version);
-    updated.push_str(&content[candidate.end..]);
-    Ok(Cow::Owned(updated))
+    }
 }
 
 /// Update version in build.gradle.kts content
 ///
+/// Test-only: production version writing goes through [`write_gradle_version`],
+/// which owns the build-script/`gradle.properties` arbitration. This helper
+/// only exercises the build-script replacement half in isolation.
+///
 /// # Errors
 /// Returns an error unless exactly one declaration exists in a supported scope.
-pub fn update_version_in_kts<'a>(
+#[cfg(test)]
+pub(crate) fn update_version_in_kts<'a>(
     content: &'a str,
     new_version: &str,
     policy: GradleVersionScope,
@@ -56,9 +70,14 @@ pub fn update_version_in_kts<'a>(
 
 /// Update version in build.gradle (Groovy) content
 ///
+/// Test-only: production version writing goes through [`write_gradle_version`],
+/// which owns the build-script/`gradle.properties` arbitration. This helper
+/// only exercises the build-script replacement half in isolation.
+///
 /// # Errors
 /// Returns an error unless exactly one declaration exists in a supported scope.
-pub fn update_version_in_groovy<'a>(
+#[cfg(test)]
+pub(crate) fn update_version_in_groovy<'a>(
     content: &'a str,
     new_version: &str,
     policy: GradleVersionScope,
@@ -141,10 +160,9 @@ pub async fn write_gradle_version(
     }
 
     if let [candidate] = script_candidates.editable.as_slice() {
-        let updated_content = replace_candidate(&content, new_version, vec![candidate.clone()])
-            .map_err(|error| anyhow!("{error} in Gradle build file {}", path.display()))?;
+        let updated_content = splice_version(&content, candidate, new_version);
 
-        write(path, updated_content.as_ref())
+        write(path, &updated_content)
             .await
             .with_context(|| format!("Failed to write Gradle build file {}", path.display()))?;
         return Ok(());

@@ -1289,8 +1289,10 @@ group = "com.example"
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("Ambiguous"));
-        assert!(error.to_string().contains("gradle.properties"));
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("Ambiguous editable version sources found in both"));
+        assert!(rendered.contains(&build_path.display().to_string()));
+        assert!(rendered.contains(&properties_path.display().to_string()));
         assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
         assert_eq!(
             tokio::fs::read(&properties_path).await.unwrap(),

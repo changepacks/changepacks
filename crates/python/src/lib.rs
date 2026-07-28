@@ -166,6 +166,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_write_pyproject_version_non_table_project_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        // A scalar top-level `project` key. The sibling test above pins the
+        // ERROR TEXT; this one pins the guard's actual reason for existing —
+        // it must reject BEFORE the `pyproject_toml["project"]["version"] = ...`
+        // assignment ever runs, so the manifest on disk is never clobbered.
+        let original = "project = 1\n\n[build-system]\nrequires = [\"hatchling\"]\n";
+        fs::write(&pyproject_toml, original).unwrap();
+
+        let err = write_pyproject_version(&pyproject_toml, "1.0.1")
+            .await
+            .expect_err("non-table project item must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("has a non-table [project] item"),
+            "error chain should name the non-table project guard, got: {chain}"
+        );
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+
+        // Byte-for-byte, not line-for-line: a partial or reformatted write is
+        // exactly the manifest destruction the guard prevents.
+        assert_eq!(
+            fs::read(&pyproject_toml).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+    }
+
+    #[tokio::test]
     async fn test_write_pyproject_version_rejects_dynamic_version_multiline() {
         let temp_dir = TempDir::new().unwrap();
         let pyproject_toml = temp_dir.path().join("pyproject.toml");

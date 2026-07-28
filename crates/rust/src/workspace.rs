@@ -102,6 +102,19 @@ impl RustWorkspace {
             inherited_workspace_members,
         }
     }
+
+    /// The `[package].name` to write when this workspace manifest does not
+    /// already declare one.
+    ///
+    /// A virtual workspace root has no package name of its own, but a
+    /// `[package]` table written by `update_version` still needs the required
+    /// `name` key to keep the manifest parsable by Cargo. `_` is the sentinel
+    /// placeholder used for that case; it is user-visible in the written
+    /// Cargo.toml, so it is defined here ONCE and reused by every branch of
+    /// `update_version` that materializes a package name.
+    fn fallback_package_name(&self) -> &str {
+        self.name.as_deref().unwrap_or("_")
+    }
 }
 
 #[async_trait]
@@ -156,7 +169,7 @@ impl Workspace for RustWorkspace {
                 cargo_toml["package"]["version"] = new_version.as_str().into();
             }
             if cargo_toml["package"].get("name").is_none() {
-                let fallback_name = self.name.as_deref().unwrap_or("_");
+                let fallback_name = self.fallback_package_name();
                 cargo_toml["package"]["name"] = fallback_name.into();
             }
         } else if cargo_toml.get("workspace").is_some() {
@@ -164,7 +177,7 @@ impl Workspace for RustWorkspace {
             // it has not opted into workspace package metadata yet.
             cargo_toml["workspace"]["package"]["version"] = new_version.as_str().into();
         } else {
-            let fallback_name = self.name.as_deref().unwrap_or("_");
+            let fallback_name = self.fallback_package_name();
             cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
             cargo_toml["package"]["version"] = new_version.as_str().into();
             cargo_toml["package"]["name"] = fallback_name.into();

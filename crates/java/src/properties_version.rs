@@ -189,4 +189,32 @@ mod tests {
             properties_content
         );
     }
+
+    #[tokio::test]
+    async fn write_gradle_version_rejects_non_literal_assignment_without_writing() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle.kts");
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let build_content = b"plugins { id(\"java\") }\n";
+        let properties_content = b"version=${releaseVersion}\nreleaseVersion=1.0.0\n";
+        tokio::fs::write(&build_path, build_content).await.unwrap();
+        tokio::fs::write(&properties_path, properties_content)
+            .await
+            .unwrap();
+
+        let error = write_gradle_version(&build_path, "1.0.1", GradleVersionScope::ScriptOnly)
+            .await
+            .unwrap_err();
+
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains(
+            "The active version assignment is computed, continued, or otherwise non-literal in Gradle properties file"
+        ));
+        assert!(rendered.contains(&properties_path.display().to_string()));
+        assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
+        assert_eq!(
+            tokio::fs::read(&properties_path).await.unwrap(),
+            properties_content
+        );
+    }
 }

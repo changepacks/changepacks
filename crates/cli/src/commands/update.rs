@@ -3,9 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-#[cfg(test)]
-use std::future::Future;
-
 use anyhow::{Context, Result, bail};
 use changepacks_core::{
     ChangePackLog, ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType,
@@ -438,53 +435,6 @@ fn collect_update_snapshot_paths(
     paths
 }
 
-#[cfg(test)]
-async fn apply_updates_unchecked(
-    update_projects: &mut [UpdateProjectMut<'_>],
-    workspace_projects: &[WorkspaceRef<'_>],
-) -> Result<()> {
-    apply_project_version_updates(update_projects).await?;
-
-    // Fast-path the dominant no-op case: a package-only repo has zero
-    // workspaces, so the `Vec<&dyn Package>` build + walk below and the
-    // trailing `join_all` over `workspace_projects` are pure no-ops. Bail
-    // here to skip that allocation and walk entirely. Behavior-preserving:
-    // an empty `workspace_projects` already produced an empty `join_all`,
-    // and `projects` is consumed only by that call. Semantic mirror of the
-    // `is_empty()` guards in `apply_reverse_dependencies`,
-    // `apply_update_on_rules`, and `RustWorkspace::update_workspace_dependencies`.
-    if workspace_projects.is_empty() {
-        return Ok(());
-    }
-
-    let projects = packages_of(
-        update_projects.len(),
-        update_projects.iter().map(|(p, _)| &**p),
-    );
-
-    apply_workspace_dependency_updates(workspace_projects, &projects).await?;
-
-    Ok(())
-}
-
-#[cfg(test)]
-async fn run_update_transaction(
-    manifest_paths: Vec<PathBuf>,
-    changepacks_dir: &Path,
-    update: impl Future<Output = Result<()>>,
-    cleanup: impl Future<Output = Result<()>>,
-) -> Result<()> {
-    let snapshots = snapshot_update_state(manifest_paths, changepacks_dir).await?;
-    let result = match update.await {
-        Ok(()) => cleanup.await,
-        Err(error) => Err(error),
-    };
-    match result {
-        Ok(()) => Ok(()),
-        Err(update_error) => rollback_update_error(&snapshots, update_error).await,
-    }
-}
-
 async fn persist_carry_forward_logs(changepacks_dir: &Path, logs: &[ChangePackLog]) -> Result<()> {
     for log in logs {
         let path = changepacks_dir.join(format!(
@@ -720,10 +670,12 @@ fn merge_workspace_inherited_updates(
 #[cfg(test)]
 mod tests {
     use super::{
-        UpdateArgs, apply_updates_unchecked, collect_projects, collect_update_project_muts,
+        UpdateArgs, UpdateProjectMut, WorkspaceRef, apply_project_version_updates,
+        apply_workspace_dependency_updates, collect_projects, collect_update_project_muts,
         collect_update_project_refs, collect_update_snapshot_paths, collect_workspace_projects,
-        merge_workspace_inherited_updates, persist_carry_forward_logs, preview_and_confirm,
-        run_update_transaction, validate_update_project_paths,
+        merge_workspace_inherited_updates, packages_of, persist_carry_forward_logs,
+        preview_and_confirm, rollback_update_error, snapshot_update_state,
+        validate_update_project_paths,
     };
     use anyhow::{Result, bail};
     use async_trait::async_trait;
@@ -740,11 +692,57 @@ mod tests {
     use serial_test::serial;
     use std::{
         collections::{BTreeMap, HashMap, HashSet},
+        future::Future,
         path::{Path, PathBuf},
     };
     use tempfile::TempDir;
 
     use crate::{options::FormatOptions, prompter::MockPrompter};
+
+    async fn apply_updates_unchecked(
+        update_projects: &mut [UpdateProjectMut<'_>],
+        workspace_projects: &[WorkspaceRef<'_>],
+    ) -> Result<()> {
+        apply_project_version_updates(update_projects).await?;
+
+        // Fast-path the dominant no-op case: a package-only repo has zero
+        // workspaces, so the `Vec<&dyn Package>` build + walk below and the
+        // trailing `join_all` over `workspace_projects` are pure no-ops. Bail
+        // here to skip that allocation and walk entirely. Behavior-preserving:
+        // an empty `workspace_projects` already produced an empty `join_all`,
+        // and `projects` is consumed only by that call. Semantic mirror of the
+        // `is_empty()` guards in `apply_reverse_dependencies`,
+        // `apply_update_on_rules`, and `RustWorkspace::update_workspace_dependencies`.
+        if workspace_projects.is_empty() {
+            return Ok(());
+        }
+
+        let projects = packages_of(
+            update_projects.len(),
+            update_projects.iter().map(|(p, _)| &**p),
+        );
+
+        apply_workspace_dependency_updates(workspace_projects, &projects).await?;
+
+        Ok(())
+    }
+
+    async fn run_update_transaction(
+        manifest_paths: Vec<PathBuf>,
+        changepacks_dir: &Path,
+        update: impl Future<Output = Result<()>>,
+        cleanup: impl Future<Output = Result<()>>,
+    ) -> Result<()> {
+        let snapshots = snapshot_update_state(manifest_paths, changepacks_dir).await?;
+        let result = match update.await {
+            Ok(()) => cleanup.await,
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(update_error) => rollback_update_error(&snapshots, update_error).await,
+        }
+    }
 
     #[derive(Parser)]
     struct TestCli {
