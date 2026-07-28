@@ -14,11 +14,20 @@ pub enum FormatOptions {
 }
 
 impl FormatOptions {
-    pub fn print(self, stdout_msg: &str) {
+    /// Returns the payload this format prints for `stdout_msg`.
+    ///
+    /// `Self::Stdout` forwards the human-readable message unchanged, while
+    /// `Self::Json` always yields the empty JSON object, ignoring `stdout_msg`.
+    #[must_use]
+    pub fn message(self, stdout_msg: &str) -> &str {
         match self {
-            Self::Stdout => println!("{stdout_msg}"),
-            Self::Json => println!("{{}}"),
+            Self::Stdout => stdout_msg,
+            Self::Json => "{}",
         }
+    }
+
+    pub fn print(self, stdout_msg: &str) {
+        println!("{}", self.message(stdout_msg));
     }
 }
 
@@ -43,6 +52,22 @@ mod tests {
     fn test_format_options_debug() {
         assert_eq!(format!("{:?}", FormatOptions::Json), "Json");
         assert_eq!(format!("{:?}", FormatOptions::Stdout), "Stdout");
+    }
+
+    #[test]
+    fn test_format_options_message_stdout_forwards_message() {
+        assert_eq!(
+            FormatOptions::Stdout.message("No projects to publish"),
+            "No projects to publish"
+        );
+        assert_eq!(FormatOptions::Stdout.message(""), "");
+    }
+
+    #[test]
+    fn test_format_options_message_json_is_empty_object() {
+        assert_eq!(FormatOptions::Json.message("No projects to publish"), "{}");
+        assert_eq!(FormatOptions::Json.message("No updates to apply"), "{}");
+        assert_eq!(FormatOptions::Json.message(""), "{}");
     }
 
     #[test]

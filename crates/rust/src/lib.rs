@@ -73,6 +73,9 @@ pub(crate) async fn read_and_parse_cargo_toml(path: &Path) -> Result<(String, Do
 /// of the document instead of a proper `[package]` header — the same hazard
 /// guarded in `changepacks-python`'s `write_pyproject_version`.
 ///
+/// The version assignment goes through [`assign_preserving_decor`] so an
+/// end-of-line comment on the version line survives the bump.
+///
 /// # Errors
 /// Returns error if the file cannot be read, the TOML cannot be parsed,
 /// or the write fails.
@@ -81,7 +84,7 @@ pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) 
     if !ensure_package_table_like(&cargo_toml, path)? {
         cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    cargo_toml["package"]["version"] = new_version.into();
+    assign_preserving_decor(&mut cargo_toml["package"]["version"], new_version);
     write_finalized(path, cargo_toml.to_string(), &cargo_toml_raw, "Cargo.toml").await
 }
 
@@ -118,6 +121,37 @@ pub(crate) fn ensure_package_table_like(doc: &DocumentMut, path: &Path) -> Resul
         );
     }
     Ok(package.is_some())
+}
+
+/// Overwrite `slot` with the string `new_value`, carrying the previous value's
+/// [`toml_edit::Decor`] across the assignment.
+///
+/// Every `Cargo.toml` version rewrite replaces a whole [`toml_edit::Item`] with
+/// a freshly built one, and a fresh value carries DEFAULT (empty) decor. Decor
+/// is where `toml_edit` keeps the trivia around a value — the spacing after
+/// `=` and, most visibly, an end-of-line comment such as
+/// `version = "1.2.3" # pinned by release tooling`. Without this capture and
+/// restore, a routine version bump silently deletes that comment from the
+/// user's manifest, which is exactly the format-preservation guarantee this
+/// tool advertises.
+///
+/// The sibling Python writer already guards the identical hazard inline in
+/// `changepacks_python`'s `write_pyproject_version`; `Cargo.toml` has SIX such
+/// write sites (the package writer here plus five in
+/// [`crate::workspace::RustWorkspace`]), so the policy is factored out to ONE
+/// place beside [`ensure_package_table_like`] and [`is_workspace_marker`],
+/// matching the repo-wide "one decoder, one place" convention.
+///
+/// A slot that does not currently hold a value — a missing key auto-vivified
+/// by `toml_edit` indexing, or a table — has no decor to preserve, so the
+/// restore is skipped and behaviour is identical to a plain assignment.
+pub(crate) fn assign_preserving_decor(slot: &mut toml_edit::Item, new_value: &str) {
+    // Cloned BEFORE the assignment: `*slot = ...` drops the old value.
+    let previous_decor = slot.as_value().map(|value| value.decor().clone());
+    *slot = toml_edit::value(new_value);
+    if let (Some(decor), Some(value)) = (previous_decor, slot.as_value_mut()) {
+        *value.decor_mut() = decor;
+    }
 }
 
 /// Return `true` for a `toml_edit::Item` whose value is table-like with
@@ -305,6 +339,28 @@ mod tests {
             written.lines().any(|line| line.trim() == "[workspace]")
                 && written.contains("members = [\"a\"]"),
             "output must preserve the existing [workspace] section, got: {written}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_cargo_package_version_preserves_version_line_decor() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        // The version line carries an end-of-line comment, which `toml_edit`
+        // stores as the VALUE's suffix decor. Assigning a freshly built value
+        // would drop it, silently deleting the user's comment on a routine
+        // bump. Whole-file round trip: only the version literal may change.
+        let original = "# release-managed manifest\n[package]\nname = \"x\"\nversion = \"1.0.0\" # pinned by release tooling\nedition = \"2024\"\n";
+        fs::write(&cargo_toml, original).unwrap();
+
+        write_cargo_package_version(&cargo_toml, "2.0.0")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&cargo_toml).unwrap(),
+            original.replace("1.0.0", "2.0.0"),
+            "only the version literal may change"
         );
     }
 }

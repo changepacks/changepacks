@@ -402,55 +402,28 @@ fn apply_update_on_rules_from(
 
 /// Apply reverse dependency updates: if package A depends on package B (via a local workspace dependency),
 /// and B is being updated, then A should also be updated as PATCH.
-pub trait ReverseDependencyUpdates {
-    /// Apply reverse-dependency expansion using this target's eligible seeds.
-    ///
-    /// # Errors
-    /// Returns an error when project names are ambiguous or a project path is outside the repo.
-    fn expand_reverse_dependencies(
-        &mut self,
-        projects: &[&Project],
-        repo_root_path: &Path,
-    ) -> Result<()>;
-}
-
-impl ReverseDependencyUpdates for UpdatePlan {
-    fn expand_reverse_dependencies(
-        &mut self,
-        projects: &[&Project],
-        repo_root_path: &Path,
-    ) -> Result<()> {
-        self.apply_reverse_dependencies(projects, repo_root_path)
-    }
-}
-
-impl<S: BuildHasher> ReverseDependencyUpdates
-    for HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>
-{
-    fn expand_reverse_dependencies(
-        &mut self,
-        projects: &[&Project],
-        repo_root_path: &Path,
-    ) -> Result<()> {
-        let expansion_seeds = self.keys().cloned().collect();
-        apply_reverse_dependencies_with_provenance(
-            self,
-            projects,
-            ReverseDependencyContext {
-                repo_root_path,
-                expansion_seeds: &expansion_seeds,
-            },
-        )
-        .map(|_| ())
-    }
-}
-
-pub fn apply_reverse_dependencies<T: ReverseDependencyUpdates + ?Sized>(
-    update_map: &mut T,
+///
+/// Every already-scheduled path in `update_map` is treated as an expansion seed. Callers holding an
+/// [`UpdatePlan`] must use [`UpdatePlan::apply_reverse_dependencies`] instead, so that generated
+/// provenance and the narrower seed set are preserved.
+///
+/// # Errors
+/// Returns an error when project names are ambiguous or a project path is outside the repo.
+pub fn apply_reverse_dependencies<S: BuildHasher>(
+    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
     projects: &[&Project],
     repo_root_path: &Path,
 ) -> Result<()> {
-    update_map.expand_reverse_dependencies(projects, repo_root_path)
+    let expansion_seeds = update_map.keys().cloned().collect();
+    apply_reverse_dependencies_with_provenance(
+        update_map,
+        projects,
+        ReverseDependencyContext {
+            repo_root_path,
+            expansion_seeds: &expansion_seeds,
+        },
+    )
+    .map(|_| ())
 }
 
 struct ReverseDependencyContext<'a> {
@@ -1059,7 +1032,8 @@ mod tests {
         let core = create_project("core", vec![]);
         let cli = create_project("cli", vec!["core"]);
 
-        apply_reverse_dependencies(&mut plan, &[&core, &cli], Path::new("/test")).unwrap();
+        plan.apply_reverse_dependencies(&[&core, &cli], Path::new("/test"))
+            .unwrap();
 
         assert_eq!(plan.len(), 1);
         assert!(plan.contains_key(Path::new("core/package.json")));

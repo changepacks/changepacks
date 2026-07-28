@@ -18,32 +18,22 @@ pub struct RustPackage {
 }
 
 impl RustPackage {
-    #[must_use]
-    pub fn new(
+    /// Single construction site for every `RustPackage` field default.
+    ///
+    /// `new` and `new_with_workspace_version` used to spell out the same
+    /// nine-field struct literal and differed only in
+    /// `workspace_version_inherited` and `workspace_root`, so adding a field
+    /// meant editing both in lock-step. The other language crates collapse
+    /// this shape with a macro (`changepacks_core::impl_discovered_new`,
+    /// `crate::impl_node_discovered_new`, `crate::impl_gradle_constructors`);
+    /// `RustPackage`'s two extra fields rule those out, so it delegates here
+    /// instead.
+    fn build(
         name: Option<String>,
         version: Option<String>,
         path: PathBuf,
         relative_path: PathBuf,
-    ) -> Self {
-        Self {
-            name,
-            version,
-            path,
-            relative_path,
-            is_changed: false,
-            dependencies: HashSet::new(),
-            publishable_by_default: true,
-            workspace_version_inherited: false,
-            workspace_root: None,
-        }
-    }
-
-    #[must_use]
-    pub fn new_with_workspace_version(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
+        workspace_version_inherited: bool,
         workspace_root: Option<PathBuf>,
     ) -> Self {
         Self {
@@ -54,9 +44,30 @@ impl RustPackage {
             is_changed: false,
             dependencies: HashSet::new(),
             publishable_by_default: true,
-            workspace_version_inherited: true,
+            workspace_version_inherited,
             workspace_root,
         }
+    }
+
+    #[must_use]
+    pub fn new(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+    ) -> Self {
+        Self::build(name, version, path, relative_path, false, None)
+    }
+
+    #[must_use]
+    pub fn new_with_workspace_version(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        workspace_root: Option<PathBuf>,
+    ) -> Self {
+        Self::build(name, version, path, relative_path, true, workspace_root)
     }
 
     #[must_use]
