@@ -174,9 +174,22 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
 
     // Capture filtered workspace paths before taking the mutable project borrow
     // so the transaction snapshots every in-scope manifest before the first write.
-    let workspace_manifest_paths = collect_workspace_projects(&project_finders)
-        .into_iter()
-        .map(|workspace| workspace.path().to_path_buf())
+    //
+    // Filters the `projects` slice collected above instead of calling
+    // `collect_workspace_projects(&project_finders)`, which re-ran
+    // `collect_projects` over all six finders to rebuild a second full
+    // `Vec<&Project>` plus a `Vec<WorkspaceRef>` just to reach the workspace
+    // subset already present here. Order is byte-identical:
+    // `collect_workspace_projects` walks the same `collect_projects` output in
+    // the same finder-then-`projects()` order and keeps only the `Workspace`
+    // arm. This is also the last use of `projects`, so its immutable borrow of
+    // `project_finders` ends here, before the mutable borrow taken below.
+    let workspace_manifest_paths = projects
+        .iter()
+        .filter_map(|project| match project {
+            Project::Workspace(workspace) => Some(workspace.path().to_path_buf()),
+            Project::Package(_) => None,
+        })
         .collect::<Vec<_>>();
 
     let mut update_projects =
@@ -402,12 +415,16 @@ fn collect_update_project_refs<'a>(
 /// [`ProjectFinder::extend_projects`] into one pre-sized buffer — instead of
 /// looping `finder.projects()` per finder. The per-finder shape allocated and
 /// immediately dropped one intermediate `Vec<&Project>` for each of the six
-/// language finders, and `collect_workspace_projects` runs twice per `update`
-/// invocation (dry-run preview and the real apply), so that was 12 throwaway
-/// allocations per run. The merged buffer is still presized to
+/// language finders. The merged buffer is still presized to
 /// `total_project_count(finders)` inside `collect_projects`, and the result
 /// buffer inherits that same capacity, so the previous capacity hint is
 /// preserved exactly.
+///
+/// `handle_update_with_prompter` calls this once per invocation, after the
+/// mutable project borrow is released, where a fresh borrow of the finders is
+/// genuinely required. The earlier `workspace_manifest_paths` capture filters
+/// the already-collected `projects` vector directly instead of calling in
+/// here.
 fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<WorkspaceRef<'a>> {
     let projects = collect_projects(finders);
     let mut workspace_projects = Vec::with_capacity(projects.len());

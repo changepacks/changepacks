@@ -3,6 +3,9 @@ mod check;
 mod config;
 mod init;
 mod publish;
+/// Private `check --tree` renderer; intentionally not re-exported, so the
+/// public `commands` surface is unchanged.
+mod tree;
 mod update;
 
 use std::{

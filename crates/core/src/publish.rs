@@ -1044,4 +1044,30 @@ mod tests {
         assert!(matches!(normalized, Cow::Owned(_)));
         assert_eq!(normalized, "packages/core/package.json");
     }
+
+    #[test]
+    fn test_normalize_path_separators_mixed_separators_fully_normalized() {
+        // Mixed separators are the realistic Windows shape: a forward-slash
+        // `--project` prefix or config-derived segment joined onto a
+        // filesystem-derived backslash tail. Every backslash must be rewritten,
+        // not just the first, and the pre-existing forward slashes must survive
+        // untouched, so the result is comparable against a forward-slash config
+        // key. Presence of a single backslash is enough to take the owned path.
+        let normalized = normalize_path_separators("packages/core\\src\\lib\\package.json");
+        assert!(matches!(normalized, Cow::Owned(_)));
+        assert_eq!(normalized, "packages/core/src/lib/package.json");
+    }
+
+    #[test]
+    fn test_normalize_path_separators_empty_input_borrows_empty() {
+        // Reachable in practice: the publish `--project` filter normalizes
+        // `Path::new(value).to_string_lossy()`, and an empty relative path
+        // (a project at the repository root, or an empty filter value) yields
+        // the empty string. It contains no backslash, so it must round-trip
+        // unchanged through the allocation-free borrowed branch rather than
+        // paying for an empty `String`.
+        let normalized = normalize_path_separators("");
+        assert!(matches!(normalized, Cow::Borrowed(_)));
+        assert_eq!(normalized, "");
+    }
 }

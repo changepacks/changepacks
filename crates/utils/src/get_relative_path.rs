@@ -143,4 +143,38 @@ mod tests {
         let result = get_relative_path(root, &absolute).unwrap();
         assert_eq!(result, PathBuf::from("src").join("lib.rs"));
     }
+
+    /// The zero-copy variant is what the CLI calls directly, so exercise it
+    /// without going through the owned wrapper.
+    #[test]
+    fn test_get_relative_path_ref_returns_borrowed_suffix() {
+        let root = PathBuf::from("repo");
+        let absolute = root.join("crates").join("utils").join("Cargo.toml");
+        let result = get_relative_path_ref(&root, &absolute).unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from("crates").join("utils").join("Cargo.toml")
+        );
+    }
+
+    /// The doc comment declares the failure text as a stability contract, so
+    /// pin the literal prefix together with both interpolated paths.
+    #[test]
+    fn test_get_relative_path_ref_error_context_names_both_paths() {
+        let git_root_path = PathBuf::from("repo");
+        let absolute_path = PathBuf::from("other").join("package.json");
+
+        let err = get_relative_path_ref(&git_root_path, &absolute_path)
+            .expect_err("a path outside the git root must fail");
+
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to get relative path: '{}' is not within '{}'",
+                absolute_path.display(),
+                git_root_path.display()
+            )),
+            "error chain should carry the documented message and both paths, got: {chain}"
+        );
+    }
 }

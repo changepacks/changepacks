@@ -1991,6 +1991,117 @@ members = ["packages/*"]
         }
     }
 
+    /// Seeds a committed git repository at `root` holding two independent Node
+    /// packages (`packages/alpha`, `packages/beta`) sharing one publish command
+    /// that creates a `published` directory in the package's own directory (the
+    /// publish runner executes each command in the manifest's parent). Which
+    /// markers exist after a publish run is therefore an exact record of which
+    /// projects survived the `--project` filter. `mkdir` is used rather than a
+    /// redirection so the command needs no shell quoting on either `cmd /C` or
+    /// `sh -c`. Returns `(alpha_marker, beta_marker)`.
+    fn write_two_package_publish_fixture(root: &Path) -> (PathBuf, PathBuf) {
+        init_git_repo(root);
+        let changepacks_dir = root.join(".changepacks");
+        std::fs::create_dir_all(&changepacks_dir).expect("create config directory");
+        for name in ["alpha", "beta"] {
+            let package_dir = root.join("packages").join(name);
+            std::fs::create_dir_all(&package_dir).expect("create package directory");
+            std::fs::write(
+                package_dir.join("package.json"),
+                format!(r#"{{"name":"{name}","version":"1.0.0"}}"#),
+            )
+            .expect("write manifest");
+        }
+
+        let config = serde_json::json!({ "publish": { "node": "mkdir published" } });
+        std::fs::write(
+            changepacks_dir.join("config.json"),
+            serde_json::to_vec(&config).expect("serialize config"),
+        )
+        .expect("write config");
+        git_add_and_commit(root, "project filter fixture");
+
+        (
+            root.join("packages/alpha/published"),
+            root.join("packages/beta/published"),
+        )
+    }
+
+    fn publish_args_for_project(project: &str, yes: bool) -> PublishArgs {
+        PublishArgs {
+            dry_run: false,
+            yes,
+            format: FormatOptions::Json,
+            remote: false,
+            language: vec![],
+            project: vec![project.to_string()],
+        }
+    }
+
+    /// Negative side of the `--project` retain predicate: a value naming a path
+    /// no discovered project has (a typo, or a project excluded by `ignore`)
+    /// must filter the batch down to empty and take the early
+    /// `"No projects found"` return — `Ok(())` with nothing published.
+    ///
+    /// `yes: false` routes any surviving project through the confirmation
+    /// prompt, so `PanicPrompter` fails the test if the retain block let
+    /// anything through instead of emptying the batch; the markers prove no
+    /// publish command ran. The printed message itself is not asserted because
+    /// it goes to the process-wide stdout, which these in-process tests cannot
+    /// capture; the early return is observed through its side effects instead.
+    #[tokio::test]
+    #[serial]
+    async fn test_publish_project_filter_without_match_publishes_nothing() {
+        let repository = tempdir().expect("create temporary repository");
+        let (alpha_marker, beta_marker) = write_two_package_publish_fixture(repository.path());
+
+        let _current_dir_guard = DirGuard::change_to(repository.path());
+
+        let args = publish_args_for_project("packages/missing/package.json", false);
+
+        handle_publish_with_prompter(&args, &PanicPrompter)
+            .await
+            .expect("an unmatched --project value must return Ok(()) with an empty batch");
+
+        assert!(
+            !alpha_marker.exists(),
+            "alpha must not publish for an unmatched --project value"
+        );
+        assert!(
+            !beta_marker.exists(),
+            "beta must not publish for an unmatched --project value"
+        );
+    }
+
+    /// Positive side of the same retain predicate: the one project whose
+    /// relative manifest path matches must survive, and every other discovered
+    /// project must be dropped. `yes: true` skips the confirmation prompt (so
+    /// `PanicPrompter` is never consulted) and lets the configured publish
+    /// command run, leaving exactly one marker behind.
+    #[tokio::test]
+    #[serial]
+    async fn test_publish_project_filter_keeps_only_the_matching_project() {
+        let repository = tempdir().expect("create temporary repository");
+        let (alpha_marker, beta_marker) = write_two_package_publish_fixture(repository.path());
+
+        let _current_dir_guard = DirGuard::change_to(repository.path());
+
+        let args = publish_args_for_project("packages/alpha/package.json", true);
+
+        handle_publish_with_prompter(&args, &PanicPrompter)
+            .await
+            .expect("the matched project must publish successfully");
+
+        assert!(
+            alpha_marker.exists(),
+            "the project matching --project must survive the filter and publish"
+        );
+        assert!(
+            !beta_marker.exists(),
+            "a project not named by --project must be filtered out"
+        );
+    }
+
     #[tokio::test]
     async fn test_execute_dry_run_loop_skips_dependent_after_failed_dependency() {
         let dependency = make_publish_cascade_mock("pkg-a", "packages/a/package.json", &[], false);

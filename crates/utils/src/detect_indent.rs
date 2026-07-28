@@ -40,6 +40,9 @@ mod tests {
     #[case("\t\tdeep\n\tshallow", "\t\t")] // Double-tab, first match wins
     #[case("\n    indented\n   less\n", "    ")] // First non-empty line wins
     #[case("{\n\n\n  \"after_blanks\": true\n}", "  ")] // Skip blanks
+    #[case("{\r\n  \"key\": \"value\"\r\n}\r\n", "  ")] // CRLF, 2-space
+    #[case("{\r\n\t\"key\": \"value\"\r\n}\r\n", "\t")] // CRLF, tab
+    #[case("{\r\n\r\n    \"key\": \"value\"\r\n}\r\n", "    ")] // CRLF, skip blank
     fn test_detect_indent_str(#[case] content: &str, #[case] expected: &str) {
         let indent = detect_indent_str(content);
         assert_eq!(indent, expected);
