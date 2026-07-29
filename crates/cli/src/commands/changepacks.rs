@@ -1,5 +1,5 @@
 use changepacks_core::{ChangePackLog, Project, UpdateType};
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, io::Write, path::PathBuf};
 use tokio::fs::{create_dir_all, write};
 
 use changepacks_utils::get_relative_path;
@@ -32,7 +32,8 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
 /// Select projects and resolve the changepack notes without performing git or file I/O.
 ///
 /// # Errors
-/// Returns an error if a project path is outside the repository root or prompting fails.
+/// Returns an error if a project path is outside the repository root, writing the
+/// project count to stdout fails, or prompting fails.
 fn select_changepack(
     mut projects: Vec<&Project>,
     repo_root_path: &std::path::Path,
@@ -45,7 +46,15 @@ fn select_changepack(
 
     retain_by_filters(&mut projects, args.filter, &args.language);
 
-    println!("Found {} projects", projects.len());
+    // Same locked-stdout policy as `check.rs`: `println!` re-acquires the global
+    // lock per line and panics on a write failure (a broken pipe from
+    // `changepacks | head`), while a short-lived `StdoutLock` writes through the
+    // same `LineWriter` and lets an io error propagate as a typed error.
+    writeln!(
+        std::io::stdout().lock(),
+        "Found {} projects",
+        projects.len()
+    )?;
     // workspace first
     projects.sort();
 
@@ -162,13 +171,15 @@ pub async fn handle_changepack_with_prompter(
     let projects = collect_projects(&ctx.project_finders);
     let (update_map, notes) = select_changepack(projects, &ctx.repo_root_path, args, prompter)?;
 
+    // Locked stdout for the same reason as in `select_changepack` above: an io
+    // failure surfaces as a typed error instead of a panic inside `println!`.
     if update_map.is_empty() {
-        println!("No projects selected");
+        writeln!(std::io::stdout().lock(), "No projects selected")?;
         return Ok(());
     }
 
     if notes.is_empty() {
-        println!("Notes are empty");
+        writeln!(std::io::stdout().lock(), "Notes are empty")?;
         return Ok(());
     }
     let changepack_log = ChangePackLog::new(update_map, notes);

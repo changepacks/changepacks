@@ -523,6 +523,37 @@ pub(crate) async fn detect_package_manager_recursive_async(
     detect_package_manager_in_ancestors(start, max_depth).await
 }
 
+/// Walks ancestors of `start` (at most `max_depth` directories) and returns the
+/// first decisive package manager, falling back to [`PackageManager::Npm`].
+///
+/// When `cache` is `Some`, every directory probe (including a negative one) is
+/// memoized so repeated lookups issue no further filesystem stats. When it is
+/// `None`, no map is touched and the walk allocates nothing.
+async fn resolve_from_ancestors(
+    start: &Path,
+    max_depth: usize,
+    mut cache: Option<&mut HashMap<PathBuf, Option<PackageManager>>>,
+) -> Result<PackageManager> {
+    for dir in start.ancestors().take(max_depth) {
+        let decisive = match cache.as_deref_mut() {
+            Some(cache) => match cache.get(dir).copied() {
+                Some(decisive) => decisive,
+                None => {
+                    let decisive = probe_decisive_package_manager(dir).await?;
+                    cache.insert(dir.to_path_buf(), decisive);
+                    decisive
+                }
+            },
+            None => probe_decisive_package_manager(dir).await?,
+        };
+        if let Some(pm) = decisive {
+            return Ok(pm);
+        }
+    }
+
+    Ok(PackageManager::Npm)
+}
+
 /// Detects the package manager by searching asynchronously from a known directory upward.
 ///
 /// # Errors
@@ -532,13 +563,7 @@ pub(crate) async fn detect_package_manager_in_ancestors(
     start: &Path,
     max_depth: usize,
 ) -> Result<PackageManager> {
-    for dir in start.ancestors().take(max_depth) {
-        if let Some(pm) = probe_decisive_package_manager(dir).await? {
-            return Ok(pm);
-        }
-    }
-
-    Ok(PackageManager::Npm)
+    resolve_from_ancestors(start, max_depth, None).await
 }
 
 /// Detects the package manager from a known directory upward while caching each directory probe.
@@ -551,21 +576,7 @@ pub(crate) async fn detect_package_manager_in_ancestors_cached(
     max_depth: usize,
     cache: &mut HashMap<PathBuf, Option<PackageManager>>,
 ) -> Result<PackageManager> {
-    for dir in start.ancestors().take(max_depth) {
-        let decisive = match cache.get(dir).copied() {
-            Some(decisive) => decisive,
-            None => {
-                let decisive = probe_decisive_package_manager(dir).await?;
-                cache.insert(dir.to_path_buf(), decisive);
-                decisive
-            }
-        };
-        if let Some(pm) = decisive {
-            return Ok(pm);
-        }
-    }
-
-    Ok(PackageManager::Npm)
+    resolve_from_ancestors(start, max_depth, Some(cache)).await
 }
 
 /// Shared helper for resolving publish commands by config or detected package manager.
@@ -1093,6 +1104,44 @@ mod tests {
 
             assert_eq!(actual, expected);
         }
+    }
+
+    /// Regression lock: the cached walk must memoize NEGATIVE probes, not only
+    /// decisive ones. A lockfile created in a directory that was already probed
+    /// and cached as undecided must not be observed by a later lookup, proving
+    /// the second walk issued no filesystem probe for that directory.
+    #[tokio::test]
+    async fn test_cached_package_manager_detection_memoizes_negative_probes() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        fs::write(root.join("pnpm-lock.yaml"), "").unwrap();
+        let nested = root.join("packages").join("app");
+        fs::create_dir_all(&nested).unwrap();
+
+        let mut cache = std::collections::HashMap::new();
+        assert_eq!(
+            detect_package_manager_in_ancestors_cached(&nested, 3, &mut cache)
+                .await
+                .unwrap(),
+            PackageManager::Pnpm
+        );
+
+        // `nested` was cached as undecided; a new lockfile there must be invisible.
+        fs::write(nested.join("bun.lock"), "").unwrap();
+        assert_eq!(
+            detect_package_manager_in_ancestors_cached(&nested, 3, &mut cache)
+                .await
+                .unwrap(),
+            PackageManager::Pnpm
+        );
+
+        // The uncached walk has no memo, so it does see the new lockfile.
+        assert_eq!(
+            detect_package_manager_in_ancestors(&nested, 3)
+                .await
+                .unwrap(),
+            PackageManager::Bun
+        );
     }
 
     /// Regression lock: a decoy lockfile ABOVE the repo root must not flip the

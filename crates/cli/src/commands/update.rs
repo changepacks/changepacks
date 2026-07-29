@@ -68,7 +68,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // an empty map cannot become non-empty downstream. Skip project collection
     // and dependency-graph processing.
     if update_map.is_empty() {
-        args.format.print("No updates found");
+        args.format.print("No updates found")?;
         return Ok(());
     }
 
@@ -134,12 +134,22 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // Rust logs pending); mirror the unfiltered empty case above instead of
     // printing an "Updates found:" banner over nothing and prompting.
     if update_map.is_empty() {
-        args.format.print("No updates found");
+        args.format.print("No updates found")?;
         return Ok(());
     }
 
     if let FormatOptions::Stdout = args.format {
-        println!("Updates found:");
+        // Same reason as the preview loop in `preview_and_confirm` below: an
+        // explicit `writeln!` on a locked handle surfaces a broken-pipe /
+        // full-disk write failure as an `anyhow` error through this fn's
+        // `Result<()>`, where `println!` would panic. The lock is short-lived
+        // because the next stdout write happens inside `preview_and_confirm`,
+        // which takes its own handle.
+        use std::io::Write as _;
+
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
+        writeln!(out, "Updates found:")?;
     }
 
     // Snapshot applied paths before gen_changepack_result_map drains update_map.
@@ -249,7 +259,15 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
 
     if let Some(json_output) = json_output {
-        println!("{json_output}");
+        // Final stdout write of the command, and the one most likely to be
+        // piped (`changepacks update --format json | jq`). A locked-handle
+        // `writeln!` propagates a failed write as an `anyhow` error instead of
+        // panicking inside `println!`.
+        use std::io::Write as _;
+
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
+        writeln!(out, "{json_output}")?;
     }
 
     Ok(())
@@ -311,7 +329,7 @@ fn preview_and_confirm(
     }
 
     if args.dry_run {
-        args.format.print("Dry run, no updates will be made");
+        args.format.print("Dry run, no updates will be made")?;
         return Ok(false);
     }
 
@@ -320,7 +338,7 @@ fn preview_and_confirm(
         prompter.confirm_unless(args.yes, "Are you sure you want to update the projects?")?;
 
     if !confirm {
-        args.format.print("Update cancelled");
+        args.format.print("Update cancelled")?;
         return Ok(false);
     }
 

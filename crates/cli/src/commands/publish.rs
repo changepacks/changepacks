@@ -99,7 +99,7 @@ pub async fn handle_publish_with_prompter(
     let projects = sort_publishable_projects(projects, &ctx.config, args.dry_run)?;
 
     if projects.is_empty() {
-        args.format.print("No projects found");
+        args.format.print("No projects found")?;
         return Ok(());
     }
 
@@ -122,7 +122,7 @@ pub async fn handle_publish_with_prompter(
     let confirm =
         prompter.confirm_unless(args.yes, "Are you sure you want to publish the packages?")?;
     if !confirm {
-        args.format.print("Publish cancelled");
+        args.format.print("Publish cancelled")?;
         return Ok(());
     }
 
@@ -203,6 +203,17 @@ fn print_publish_failure_summary(failed_projects: &[String], total: usize, forma
 /// `bail_prefix` must be `"Dry-run failed for"` (dry-run branch) or
 /// `"Failed to publish"` (real-publish branch) — the exact strings pinned by
 /// integration tests.
+///
+/// The JSON document is written through a locked stdout handle for the same
+/// reason as [`print_projects_to_publish`]: `println!` panics when the write
+/// fails, so a CI consumer that closes the pipe early (`changepacks publish
+/// --format json | jq -e '...'`) would abort the process instead of surfacing
+/// a typed error. `writeln!` on a held `StdoutLock` propagates the io error
+/// with `?`.
+///
+/// # Errors
+/// Returns an error if serializing the result map or writing to stdout fails,
+/// or if any project failed to publish.
 fn finish_publish_run(
     result_map: &BTreeMap<PathBuf, PublishResult>,
     failed_projects: &[String],
@@ -213,7 +224,8 @@ fn finish_publish_run(
     print_publish_failure_summary(failed_projects, total, format);
 
     if let FormatOptions::Json = format {
-        println!("{}", serde_json::to_string_pretty(result_map)?);
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "{}", serde_json::to_string_pretty(result_map)?)?;
     }
 
     if !failed_projects.is_empty() {

@@ -1,5 +1,8 @@
 use changepacks_core::Config;
-use std::{io::ErrorKind, path::Path};
+use std::{
+    io::{ErrorKind, Write},
+    path::Path,
+};
 use tokio::{
     fs::{OpenOptions, create_dir_all},
     io::{AsyncWrite, AsyncWriteExt},
@@ -86,10 +89,18 @@ async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
         // initialized — the message must reflect that or a user running
         // `changepacks init --dry-run` cannot distinguish the preview from a
         // real init.
-        println!(
+        //
+        // Render through a held `StdoutLock`: `println!` panics on a write
+        // failure (a broken pipe from `changepacks init --dry-run | head`),
+        // while `writeln!` lets the io error propagate through the existing
+        // `Result<()>` signature. The lock is taken after the last `.await` so
+        // it is never held across a suspension point.
+        let mut out = std::io::stdout().lock();
+        writeln!(
+            out,
             "Would initialize changepacks project in {}",
             changepacks_dir.display()
-        );
+        )?;
         return Ok(());
     }
 
@@ -114,10 +125,14 @@ async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
         }
     };
     write_claimed_config(file, &config_file, contents.as_bytes()).await?;
-    println!(
+    // Same locked-stdout policy as the dry-run branch above: taken after the
+    // final `.await` so no suspension point holds the lock.
+    let mut out = std::io::stdout().lock();
+    writeln!(
+        out,
         "changepacks project initialized in {}",
         changepacks_dir.display()
-    );
+    )?;
 
     Ok(())
 }
