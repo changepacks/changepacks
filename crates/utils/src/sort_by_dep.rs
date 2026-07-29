@@ -1,5 +1,4 @@
 use changepacks_core::Project;
-use std::collections::VecDeque;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -259,7 +258,7 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
 
     // Fast path: with no project carrying any local (monorepo) dependency the
     // graph has zero edges, so the work below - a full `ProjectNameAnalysis`
-    // map plus the `in_degree`, `edges`, `offsets`, `adj`, `VecDeque` and
+    // map plus the `in_degree`, `edges`, `offsets`, `adj` and
     // `sorted_indices` allocations - reproduces the input order and is pure
     // waste. Common on single-package repos and workspaces that don't use
     // `workspace:*` / `workspace = true` / `[tool.uv.sources]` /
@@ -352,19 +351,23 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
     }
     offsets[0] = 0;
 
-    // Kahn's algorithm for topological sort
-    let mut queue: VecDeque<usize> = VecDeque::with_capacity(projects.len());
+    // Kahn's algorithm for topological sort.
+    //
+    // `sorted_indices` doubles as the FIFO queue: `head` is the read cursor and
+    // the tail is the vector's end, so the live queue is exactly the
+    // `sorted_indices[head..]` window. Kahn's traversal pushes every index in
+    // `0..projects.len()` at most once, so the final length is bounded by
+    // `projects.len()`. Preallocating up front removes the ~log2(N)
+    // geometric-doubling reallocations `Vec::new()` would otherwise incur on
+    // every `publish` / `check --tree` invocation, and folding the queue into
+    // the output vector removes the separate `VecDeque` allocation plus the
+    // copy of every index from the deque into the result.
+    let mut sorted_indices: Vec<usize> = Vec::with_capacity(projects.len());
     for (idx, &degree) in in_degree.iter().enumerate() {
         if degree == 0 {
-            queue.push_back(idx);
+            sorted_indices.push(idx);
         }
     }
-
-    // Kahn's traversal pushes every index in `0..projects.len()` at most once,
-    // so the final length is bounded by `projects.len()`. Preallocating up front removes
-    // the ~log2(N) geometric-doubling reallocations `Vec::new()` would
-    // otherwise incur on every `publish` / `check --tree` invocation.
-    let mut sorted_indices: Vec<usize> = Vec::with_capacity(projects.len());
 
     // Kahn's invariant: each node is pushed to the queue at most once, so the
     // per-pop membership guard is unreachable. The initial fill enumerates
@@ -372,15 +375,20 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
     // exactly once (deps are stored in a `HashSet<String>` so no duplicate
     // edges, and `project_names.resolve(dep)` resolves each dep to a single
     // index), so every `in_degree` decrement is unique and the `== 0`
-    // push happens at most once per node.
-    while let Some(idx) = queue.pop_front() {
-        sorted_indices.push(idx);
+    // push happens at most once per node. That "pushed at most once" property
+    // is what makes the head cursor equivalent to popping a deque front:
+    // indices are appended in the same order the deque received them and are
+    // consumed in that same order, never revisited.
+    let mut head = 0;
+    while head < sorted_indices.len() {
+        let idx = sorted_indices[head];
+        head += 1;
 
         // Decrease in-degree of dependent projects
         for &dependent_idx in &adj[offsets[idx]..offsets[idx + 1]] {
             in_degree[dependent_idx] -= 1;
             if in_degree[dependent_idx] == 0 {
-                queue.push_back(dependent_idx);
+                sorted_indices.push(dependent_idx);
             }
         }
     }

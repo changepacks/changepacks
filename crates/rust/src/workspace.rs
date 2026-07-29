@@ -228,40 +228,17 @@ impl Workspace for RustWorkspace {
                 if !inherited_workspace_members.contains_dependency(dependency_key, package_name) {
                     continue;
                 }
-                // `split_version` no longer returns `Result` (it was total —
-                // both match arms returned `Ok`), so the destructure moves
-                // out of the `&&`-let-chain into a plain irrefutable `let`
-                // followed by a `ver == old_version` guard. The refutable
-                // gates that still filter the branch (`as_table_like_mut`,
-                // `dep.get("path").is_some()`, `dep.get("version").as_str()`)
-                // stay in the `&&`-chain unchanged. `as_table_like_mut` accepts
-                // BOTH inline-table deps (`foo = { path = "...", version = "..."
-                // }`) AND sub-table deps (`[workspace.dependencies.foo]` with
-                // `path`/`version` keys), bringing the writer into parity with
-                // the reader's `as_table_like()` in `finder.rs`. String deps
-                // (`foo = "1.0"`) still yield `None`, so they remain skipped.
-                if let Some(dep) = value.as_table_like_mut()
-                    && dep.get("path").is_some()
-                    && let Some(ver_str) = dep.get("version").and_then(|v| v.as_str())
-                {
-                    // Only the numeric tail (`split_version`'s `.1`) gates the
-                    // sync; the prefix-preserving rebuild is delegated to the
-                    // shared `replace_version_keep_prefix` so the "keep prefix,
-                    // swap version" policy lives next to `split_version`.
-                    if split_version(ver_str).1 == old_version {
-                        // `ver_str` borrows `dep`; build the owned bumped string
-                        // BEFORE taking the `get_mut("version")` mutable borrow
-                        // so no shared borrow of `dep` outlives it. `TableLike`
-                        // exposes no `Index`/`[]` operator, so rewrite the value
-                        // in place via `get_mut` — never insert a `version` key
-                        // where none exists (the guard above already proved it
-                        // does).
-                        let bumped = replace_version_keep_prefix(ver_str, &new_version);
-                        if let Some(v) = dep.get_mut("version") {
-                            crate::assign_preserving_decor(v, &bumped);
-                        }
-                    }
-                }
+                // The path-dep shape gates (`as_table_like_mut`, an existing
+                // `path`, an existing string `version`) and the decor-preserving
+                // in-place rewrite are shared with
+                // `update_workspace_dependencies` below and live in
+                // `crate::sync_path_dependency_version`; only the in-scope
+                // decision differs and is passed in here. Only the numeric tail
+                // (`split_version`'s `.1`) gates this sync, so a member pinned
+                // at some other version is left alone.
+                crate::sync_path_dependency_version(value, &new_version, |ver_str| {
+                    split_version(ver_str).1 == old_version
+                });
             }
         }
 
@@ -353,32 +330,16 @@ impl Workspace for RustWorkspace {
             let Some(&next_version) = package_versions.get(package_name) else {
                 continue;
             };
-            // `as_table_like_mut` matches BOTH inline-table deps
-            // (`foo = { version = "..." }`) AND sub-table deps
-            // (`[workspace.dependencies.foo]`), while string deps still yield
-            // `None` and are skipped.
-            let Some(dep) = dependency.as_table_like_mut() else {
-                continue;
-            };
-            if dep.get("path").is_some()
-                && let Some(current_version) = dep.get("version").and_then(|v| v.as_str())
-            {
-                // `current_version` borrows `dep`; delegate the prefix-
-                // preserving rebuild to the shared `replace_version_keep_prefix`
-                // and build the owned bumped string BEFORE taking the
-                // `get_mut("version")` mutable borrow so no shared borrow of
-                // `dep` outlives it. `TableLike` exposes no `Index`/`[]`
-                // operator, so rewrite the value in place via `get_mut` — never
-                // insert a `version` key where none exists.
-                let bumped = replace_version_keep_prefix(current_version, next_version);
-                if bumped == current_version {
-                    continue;
-                }
-                if let Some(v) = dep.get_mut("version") {
-                    crate::assign_preserving_decor(v, &bumped);
-                    any_updated = true;
-                }
-            }
+            // The path-dep shape gates and the decor-preserving in-place
+            // rewrite are shared with `update_version` above and live in
+            // `crate::sync_path_dependency_version`; only the in-scope decision
+            // differs and is passed in here. This sync rewrites any path dep
+            // whose specifier would actually change, so an entry already at
+            // `next_version` is skipped and cannot dirty the document.
+            any_updated |=
+                crate::sync_path_dependency_version(dependency, next_version, |current_version| {
+                    replace_version_keep_prefix(current_version, next_version) != current_version
+                });
         }
 
         if !any_updated {

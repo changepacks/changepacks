@@ -161,6 +161,30 @@ mod tests {
         assert_eq!(assignments, expected);
     }
 
+    #[rstest]
+    #[case(b"version=1.2.3\n", &[PropertyAssignment::Literal(8..13)])]
+    #[case(b"version=1.2.3\\\n", &[PropertyAssignment::Unsupported])]
+    #[case(b"version=1.2.3\\\\\n", &[PropertyAssignment::Literal(8..15)])]
+    #[case(b"version=1.2.3\\\\\\\n", &[PropertyAssignment::Unsupported])]
+    fn trailing_backslash_assignments_follow_line_continuation_rules(
+        #[case] content: &[u8],
+        #[case] expected: &[PropertyAssignment],
+    ) {
+        let assignments = property_assignments(content);
+
+        assert_eq!(assignments, expected);
+    }
+
+    #[test]
+    fn escaped_trailing_backslashes_stay_inside_the_literal_value_range() {
+        let content = b"version=1.2.3\\\\\n";
+
+        let assignments = property_assignments(content);
+
+        assert_eq!(assignments, [PropertyAssignment::Literal(8..15)]);
+        assert_eq!(&content[8..15], b"1.2.3\\\\");
+    }
+
     #[tokio::test]
     async fn write_gradle_version_rejects_equals_and_whitespace_assignments_as_ambiguous() {
         let temp_dir = tempfile::TempDir::new().unwrap();

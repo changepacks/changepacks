@@ -189,6 +189,68 @@ mod tests {
         );
     }
 
+    // Directly pins the `file_type.is_file()` gate inside
+    // `collect_changepack_log_paths`: a DIRECTORY whose name matches the
+    // changepack-log pattern (`changepack_log_dir.json`) must never be
+    // collected. `is_changepack_log_json_name` is a pure name predicate and
+    // says `true` for that name, so only the entry-type gate rejects it.
+    // Without this test the gate is exercised only transitively through
+    // `clear_update_logs`; the `gen_update_map` reader and the `update`
+    // rollback snapshot consume the same collector and would try to
+    // `read_to_string` a directory (`EISDIR`/`ERROR_ACCESS_DENIED`), turning a
+    // stray directory into a hard failure of `check`/`update`.
+    //
+    // The same test pins the case-insensitive extension contract at the
+    // COLLECTOR level: `changepack_log_b.JSON` is a real file and MUST be
+    // collected, so a future "just compare the literal .json suffix" rewrite
+    // of the collector cannot pass while only the name-predicate table above
+    // stays green.
+    #[tokio::test]
+    async fn test_collect_changepack_log_paths_skips_directory_named_like_a_log() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path();
+
+        fs::write(
+            changepacks_dir.join("changepack_log_a.json"),
+            r#"{"changes": {}, "note": "note_a"}"#,
+        )
+        .await
+        .unwrap();
+        fs::write(
+            changepacks_dir.join("changepack_log_b.JSON"),
+            r#"{"changes": {}, "note": "note_b"}"#,
+        )
+        .await
+        .unwrap();
+        // A directory whose name passes `is_changepack_log_json_name`.
+        fs::create_dir(changepacks_dir.join("changepack_log_dir.json"))
+            .await
+            .unwrap();
+
+        assert!(
+            is_changepack_log_json_name("changepack_log_dir.json"),
+            "test precondition: the name predicate must accept the directory name, \
+             otherwise this test would not reach the file_type gate"
+        );
+
+        let paths = collect_changepack_log_paths(changepacks_dir).await.unwrap();
+
+        let names: Vec<String> = paths
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "changepack_log_a.json".to_string(),
+                "changepack_log_b.JSON".to_string(),
+            ],
+            "only regular files may be collected: the directory \
+             changepack_log_dir.json must be skipped and the uppercase-extension \
+             file must be kept, got {paths:?}"
+        );
+    }
+
     // Covers the `ErrorKind::NotFound` `read_dir` arm, which the doc comment on
     // `collect_changepack_log_paths` declares as a contract: a missing directory is
     // NOT an error, it is an empty list. Production callers rely on that contract

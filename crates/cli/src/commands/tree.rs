@@ -88,12 +88,11 @@ pub(super) fn display_tree(
     }
 
     // Manifest paths keep same-named projects distinct in root detection.
-    // The set only ever holds distinct project manifest paths, so the edge count
-    // is an upper bound that is only tight on a sparse graph; clamp it to the
-    // number of projects so a dense graph does not over-reserve.
-    let has_dependents_cap: usize = resolved_deps.values().map(Vec::len).sum();
-    let mut has_dependents: HashSet<&Path> =
-        HashSet::with_capacity(has_dependents_cap.min(projects.len()));
+    // The set only ever holds distinct project manifest paths, so `projects.len()`
+    // is an exact upper bound on its size — that is what made the previous clamp
+    // against the edge count correct, and it makes the extra edge-count pass
+    // redundant. Reserve it unconditionally, like the allocations below.
+    let mut has_dependents: HashSet<&Path> = HashSet::with_capacity(projects.len());
     has_dependents.extend(
         resolved_deps
             .values()

@@ -15,7 +15,7 @@ pub use finder::RustProjectFinder;
 use std::path::Path;
 
 use anyhow::Result;
-use changepacks_utils::{read_and_parse, write_finalized};
+use changepacks_utils::{read_and_parse, replace_version_keep_prefix, write_finalized};
 use toml_edit::DocumentMut;
 
 /// Default publish command for a single-crate `Cargo.toml`.
@@ -152,6 +152,58 @@ pub(crate) fn assign_preserving_decor(slot: &mut toml_edit::Item, new_value: &st
     if let (Some(decor), Some(value)) = (previous_decor, slot.as_value_mut()) {
         *value.decor_mut() = decor;
     }
+}
+
+/// Rewrite the `version` of a `[workspace.dependencies]` entry that also
+/// carries a `path`, keeping the entry's range prefix and its `toml_edit`
+/// decor, and report whether anything was written.
+///
+/// Both `[workspace.dependencies]` fan-outs in
+/// [`crate::workspace::RustWorkspace`] — the workspace-version sync in
+/// `update_version` and the member-version sync in
+/// `update_workspace_dependencies` — previously open-coded the SAME five
+/// steps: match `as_table_like_mut` (which accepts BOTH inline-table deps
+/// `foo = { path = "...", version = "..." }` AND sub-table deps
+/// `[workspace.dependencies.foo]`, while string deps `foo = "1.0"` yield
+/// `None` and are skipped), require an existing `path` key, read the current
+/// `version` as a string, decide whether this entry is in scope, then rewrite
+/// it. Only the decision differs, so it is injected as `accept` and everything
+/// else lives here — matching the repo-wide "one decoder, one place"
+/// convention already followed by [`assign_preserving_decor`] and
+/// [`workspace_dependencies_table_mut`].
+///
+/// The owned bumped string is built via
+/// [`changepacks_utils::replace_version_keep_prefix`] BEFORE the
+/// `get_mut("version")` mutable borrow is taken, so no shared borrow of the
+/// dependency table outlives it. `TableLike` exposes no `Index`/`[]` operator,
+/// so the value is rewritten in place through `get_mut` — a `version` key that
+/// does not already exist is NEVER inserted.
+///
+/// Returns `false` — writing nothing — when the item is not table-like, has no
+/// `path`, has no string `version`, or `accept` rejects the current specifier.
+pub(crate) fn sync_path_dependency_version(
+    value: &mut toml_edit::Item,
+    next_version: &str,
+    accept: impl FnOnce(&str) -> bool,
+) -> bool {
+    let Some(dep) = value.as_table_like_mut() else {
+        return false;
+    };
+    if dep.get("path").is_none() {
+        return false;
+    }
+    let Some(current_version) = dep.get("version").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    if !accept(current_version) {
+        return false;
+    }
+    let bumped = replace_version_keep_prefix(current_version, next_version);
+    let Some(slot) = dep.get_mut("version") else {
+        return false;
+    };
+    assign_preserving_decor(slot, &bumped);
+    true
 }
 
 /// Return `true` for a `toml_edit::Item` whose value is table-like with

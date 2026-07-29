@@ -1,5 +1,5 @@
 use changepacks_core::{ChangePackLog, Project, UpdateType};
-use std::{collections::BTreeMap, io::Write, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf};
 use tokio::fs::{create_dir_all, write};
 
 use changepacks_utils::get_relative_path;
@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 
 use crate::{
     CommandContext,
+    commands::writeln_stdout,
     finders::collect_projects,
     options::{CliLanguage, FilterOptions, retain_by_filters},
     prompter::{InquirePrompter, Prompter},
@@ -46,15 +47,7 @@ fn select_changepack(
 
     retain_by_filters(&mut projects, args.filter, &args.language);
 
-    // Same locked-stdout policy as `check.rs`: `println!` re-acquires the global
-    // lock per line and panics on a write failure (a broken pipe from
-    // `changepacks | head`), while a short-lived `StdoutLock` writes through the
-    // same `LineWriter` and lets an io error propagate as a typed error.
-    writeln!(
-        std::io::stdout().lock(),
-        "Found {} projects",
-        projects.len()
-    )?;
+    writeln_stdout(format_args!("Found {} projects", projects.len()))?;
     // workspace first
     projects.sort();
 
@@ -171,15 +164,13 @@ pub async fn handle_changepack_with_prompter(
     let projects = collect_projects(&ctx.project_finders);
     let (update_map, notes) = select_changepack(projects, &ctx.repo_root_path, args, prompter)?;
 
-    // Locked stdout for the same reason as in `select_changepack` above: an io
-    // failure surfaces as a typed error instead of a panic inside `println!`.
     if update_map.is_empty() {
-        writeln!(std::io::stdout().lock(), "No projects selected")?;
+        writeln_stdout(format_args!("No projects selected"))?;
         return Ok(());
     }
 
     if notes.is_empty() {
-        writeln!(std::io::stdout().lock(), "Notes are empty")?;
+        writeln_stdout(format_args!("Notes are empty"))?;
         return Ok(());
     }
     let changepack_log = ChangePackLog::new(update_map, notes);

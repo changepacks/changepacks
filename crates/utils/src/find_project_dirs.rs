@@ -1495,6 +1495,13 @@ mod tests {
     // it surfaced the raw gix "remote not found" error, leaving users unsure
     // why `--remote` failed. This test locks in the anyhow context so the error
     // chain names the missing "origin" remote.
+    //
+    // The assertion pins the FULL context sentence, not just the word
+    // "origin": the underlying gix error already contains "origin" on its
+    // own, so a substring check for "origin" alone passes even when the
+    // `.context(..)` at the `find_remote("origin")` call site is deleted
+    // outright. Only the exact-sentence assertion actually exercises that
+    // context string and its `--remote` remediation hint.
     #[tokio::test]
     async fn test_find_project_dirs_remote_missing_origin_has_context() {
         let temp_dir = TempDir::new().unwrap();
@@ -1521,8 +1528,10 @@ mod tests {
         let err = result.expect_err("expected missing origin remote lookup to fail");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("origin"),
-            "expected error to mention 'origin', got: {msg}"
+            msg.contains(
+                "Git remote 'origin' is not configured; --remote requires an 'origin' remote"
+            ),
+            "expected the missing-origin context sentence, got: {msg}"
         );
 
         temp_dir.close().unwrap();

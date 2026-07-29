@@ -40,6 +40,24 @@ pub(crate) fn changepack_result_json<S: BuildHasher>(
     )?)?)
 }
 
+/// Write one formatted line to a short-lived locked stdout handle.
+///
+/// `println!` re-acquires the global stdout lock per line and *panics* when the
+/// write fails — a broken pipe from `changepacks | head` is a normal way for
+/// these commands to end. A short-lived `StdoutLock` writes through the same
+/// `LineWriter`, so the bytes are identical, but the io error propagates as a
+/// typed error the caller can return. Multi-line renderers (`publish`'s
+/// `print_projects_to_publish`, `update`'s `preview_and_confirm`, `check`)
+/// deliberately hold one lock across many lines and keep their own handle.
+///
+/// # Errors
+/// Returns the underlying `io::Error` if writing to stdout fails.
+pub(crate) fn writeln_stdout(args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    writeln!(std::io::stdout().lock(), "{args}")
+}
+
 pub use changepacks::ChangepackArgs;
 pub use changepacks::handle_changepack;
 pub use changepacks::handle_changepack_with_prompter;

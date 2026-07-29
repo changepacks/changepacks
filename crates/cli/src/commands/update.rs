@@ -18,7 +18,7 @@ use clap::Args;
 
 use crate::{
     CommandContext,
-    commands::changepack_result_json,
+    commands::{changepack_result_json, writeln_stdout},
     finders::collect_projects,
     options::{CliLanguage, FormatOptions, language_slice_contains},
     prompter::{InquirePrompter, Prompter},
@@ -139,17 +139,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
 
     if let FormatOptions::Stdout = args.format {
-        // Same reason as the preview loop in `preview_and_confirm` below: an
-        // explicit `writeln!` on a locked handle surfaces a broken-pipe /
-        // full-disk write failure as an `anyhow` error through this fn's
-        // `Result<()>`, where `println!` would panic. The lock is short-lived
-        // because the next stdout write happens inside `preview_and_confirm`,
-        // which takes its own handle.
-        use std::io::Write as _;
-
-        let stdout = std::io::stdout();
-        let mut out = stdout.lock();
-        writeln!(out, "Updates found:")?;
+        writeln_stdout(format_args!("Updates found:"))?;
     }
 
     // Snapshot applied paths before gen_changepack_result_map drains update_map.
@@ -259,15 +249,8 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
 
     if let Some(json_output) = json_output {
-        // Final stdout write of the command, and the one most likely to be
-        // piped (`changepacks update --format json | jq`). A locked-handle
-        // `writeln!` propagates a failed write as an `anyhow` error instead of
-        // panicking inside `println!`.
-        use std::io::Write as _;
-
-        let stdout = std::io::stdout();
-        let mut out = stdout.lock();
-        writeln!(out, "{json_output}")?;
+        // Most-piped write of the command (`changepacks update --format json | jq`).
+        writeln_stdout(format_args!("{json_output}"))?;
     }
 
     Ok(())
