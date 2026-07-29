@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashMap, HashSet, VecDeque, hash_map::Entry},
     hash::BuildHasher,
     ops::{Deref, DerefMut},
@@ -282,15 +283,6 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
     Ok(plan)
 }
 
-#[cfg(test)]
-fn apply_update_on_rules(
-    update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-    config: &Config,
-) -> Result<Vec<(PathBuf, String)>> {
-    let mut expansion_seeds = update_map.keys().cloned().collect();
-    apply_update_on_rules_from(update_map, config, &mut expansion_seeds)
-}
-
 fn apply_update_on_rules_from(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     config: &Config,
@@ -324,25 +316,30 @@ fn apply_update_on_rules_from(
         // Preserve BTreeMap rule precedence within each breadth-first batch so
         // the lexicographically first matching trigger owns an inserted note.
         let batch_len = queued_paths.len();
-        let mut batch = Vec::with_capacity(batch_len);
-        for _ in 0..batch_len {
-            let path = queued_paths
-                .pop_front()
-                .expect("the queued path batch length is exact");
-            // Glob triggers in `updateOn` are written with forward slashes, so
-            // the filesystem-derived path is normalized through the shared core
-            // helper, which keeps the allocation policy in one place.
-            let match_path = normalize_path_separators_of(&path).into_owned();
-            batch.push((path, match_path));
-        }
+        let mut batch: Vec<PathBuf> = Vec::with_capacity(batch_len);
+        batch.extend(queued_paths.drain(..));
         // The per-batch sort establishes canonical path order for every expansion level.
-        batch.sort_by(|left, right| compare_paths(&left.0, &right.0));
+        batch.sort_by(|left, right| compare_paths(left, right));
+        // Glob triggers in `updateOn` are written with forward slashes, so the
+        // filesystem-derived path is normalized through the shared core helper,
+        // which keeps the allocation policy in one place. Normalization happens
+        // AFTER the sort so it never perturbs batch ordering, and the result is
+        // kept as the helper's `Cow`: it borrows straight out of the owning
+        // `PathBuf` for every valid-UTF-8 path without a backslash — every Unix
+        // path and every already-forward-slashed config path — so the common
+        // case allocates nothing, and only a genuine backslash path pays for an
+        // owned `String`. `Pattern::matches` takes a `&str`, which `&Cow<str>`
+        // derefs to exactly as the previously owned `String` did.
+        let match_paths: Vec<Cow<'_, str>> = batch
+            .iter()
+            .map(|path| normalize_path_separators_of(path))
+            .collect();
 
         // `expansion_seeds` records every queued path, including a persisted
         // generated entry reached by a fresh explicit path, so each path reaches
         // every rule exactly once within this plan.
         for (trigger_pattern, pattern, dependents) in &rules {
-            for (_, match_path) in &batch {
+            for match_path in &match_paths {
                 if !pattern.matches(match_path) {
                     continue;
                 }
@@ -666,6 +663,16 @@ mod tests {
     use super::*;
 
     use crate::test_support::create_project;
+
+    /// Test shim over `apply_update_on_rules_from` that treats every
+    /// `update_map` key as an expansion seed.
+    fn apply_update_on_rules(
+        update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+        config: &Config,
+    ) -> Result<Vec<(PathBuf, String)>> {
+        let mut expansion_seeds = update_map.keys().cloned().collect();
+        apply_update_on_rules_from(update_map, config, &mut expansion_seeds)
+    }
 
     #[derive(Default)]
     struct CollisionHasher;

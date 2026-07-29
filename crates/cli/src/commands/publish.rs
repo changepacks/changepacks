@@ -144,22 +144,26 @@ fn sort_publishable_projects<'a>(
     config: &Config,
     dry_run: bool,
 ) -> Result<Vec<&'a Project>> {
-    let configured_commands = if dry_run {
-        &config.publish_dry_run
+    // `dry_run` is loop-invariant, so both mode-dependent choices — the
+    // configured command table and the by-default predicate — are resolved once
+    // here instead of re-testing the flag inside the retain closure for every
+    // candidate project.
+    let (configured_commands, publishable_by_default): (_, fn(&Project) -> bool) = if dry_run {
+        (
+            &config.publish_dry_run,
+            Project::is_dry_run_publishable_by_default,
+        )
     } else {
-        &config.publish
+        (&config.publish, Project::is_publishable_by_default)
     };
     projects.retain(|project| {
-        (if dry_run {
-            project.is_dry_run_publishable_by_default()
-        } else {
-            project.is_publishable_by_default()
-        }) || changepacks_core::publish::lookup_by_path_or_language(
-            configured_commands,
-            project.relative_path(),
-            project.language(),
-        )
-        .is_some()
+        publishable_by_default(project)
+            || changepacks_core::publish::lookup_by_path_or_language(
+                configured_commands,
+                project.relative_path(),
+                project.language(),
+            )
+            .is_some()
     });
     Ok(sort_by_dependencies(projects)?)
 }
