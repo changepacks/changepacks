@@ -1,6 +1,6 @@
 use std::{collections::HashSet, path::Path};
 
-use crate::{Language, Package, change_detection::should_mark_changed, update_type::UpdateType};
+use crate::{Language, Package, update_type::UpdateType};
 use anyhow::Result;
 use async_trait::async_trait;
 
@@ -22,18 +22,6 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn dependencies(&self) -> &HashSet<String>;
     fn add_dependency(&mut self, dependency: &str);
 
-    /// # Errors
-    /// Returns error if the parent path cannot be determined.
-    fn check_changed(&mut self, path: &Path) -> Result<()> {
-        if self.is_changed() {
-            return Ok(());
-        }
-        if should_mark_changed(path, self.path())? {
-            self.set_changed(true);
-        }
-        Ok(())
-    }
-
     fn is_changed(&self) -> bool;
     fn set_changed(&mut self, changed: bool);
 
@@ -51,17 +39,7 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     /// via `config.publish_dry_run`.
     fn default_dry_run_publish_command(&self) -> Option<String>;
 
-    /// Whether this project should be included in publish runs when no
-    /// project-path or language command override is configured.
-    fn is_publishable_by_default(&self) -> bool {
-        true
-    }
-
-    /// Whether this project should be included in dry-run publish runs when no
-    /// project-path or language command override is configured.
-    fn is_dry_run_publishable_by_default(&self) -> bool {
-        self.is_publishable_by_default()
-    }
+    crate::impl_shared_project_defaults!();
 
     crate::impl_publish_flows!(crate::publish::WORKSPACE_DIR_NOT_FOUND);
 

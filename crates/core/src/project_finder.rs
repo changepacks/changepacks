@@ -268,6 +268,58 @@ macro_rules! impl_publish_flows {
     };
 }
 
+/// Generates the `check_changed`, `is_publishable_by_default`, and
+/// `is_dry_run_publishable_by_default` trait defaults shared by
+/// [`Package`](crate::Package) and [`Workspace`](crate::Workspace).
+///
+/// These three bodies were byte-identical hand-kept copies in `package.rs`
+/// and `workspace.rs`; they live here once for the same reason
+/// [`impl_publish_flows!`] and [`impl_publish_command_resolvers!`] do.
+///
+/// Contract: the invoking trait MUST already declare `is_changed()`,
+/// `set_changed()`, and `path()` (the manifest path — its parent is the
+/// project directory). Like its two publish siblings, this macro emits trait
+/// *default methods*, so it is only meaningful inside the `Package` /
+/// `Workspace` trait definitions in this crate.
+///
+/// `check_changed` is a sync default, so unlike [`impl_publish_flows!`] it
+/// needs no `Pin<Box<dyn Future>>` desugaring and does not interact with
+/// `#[async_trait]`.
+///
+/// The emitted `check_changed` is monotonic: it early-returns once the
+/// project is already changed and only ever flips `changed` to `true` via the
+/// pure, stateless `should_mark_changed`. That is the invariant
+/// [`ProjectFinder::check_changed_many`] relies on for its project-major loop
+/// order and early `break`.
+#[macro_export]
+macro_rules! impl_shared_project_defaults {
+    () => {
+        /// # Errors
+        /// Returns error if the parent path cannot be determined.
+        fn check_changed(&mut self, path: &::std::path::Path) -> ::anyhow::Result<()> {
+            if self.is_changed() {
+                return ::core::result::Result::Ok(());
+            }
+            if $crate::change_detection::should_mark_changed(path, self.path())? {
+                self.set_changed(true);
+            }
+            ::core::result::Result::Ok(())
+        }
+
+        /// Whether this project should be included in publish runs when no
+        /// project-path or language command override is configured.
+        fn is_publishable_by_default(&self) -> ::std::primitive::bool {
+            true
+        }
+
+        /// Whether this project should be included in dry-run publish runs when no
+        /// project-path or language command override is configured.
+        fn is_dry_run_publishable_by_default(&self) -> ::std::primitive::bool {
+            self.is_publishable_by_default()
+        }
+    };
+}
+
 /// Generates the shared basic accessors for package/workspace structs with
 /// `name`, `version`, `path`, `relative_path`, and `is_changed` fields.
 #[macro_export]

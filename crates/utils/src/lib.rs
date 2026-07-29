@@ -16,6 +16,12 @@
 //!   whether a discovered manifest roots a workspace, either from an
 //!   in-manifest field or a fixed sibling file (`pnpm-workspace.yaml`,
 //!   `melos.yaml`), shared by the Node and Dart finders.
+//! - **Optional-declaration shape guard** — [`ensure_declared_shape`] turns a
+//!   caller-evaluated `Option<bool>` into "declared / not declared", rejecting a
+//!   present-but-wrongly-shaped field with the single
+//!   ``Invalid `<field>` declaration in <path>: expected <expected>`` template
+//!   the Node, Dart and Python finders each open-coded for their workspace
+//!   declaration.
 //! - **Semver arithmetic** — [`next_version`] applies an `UpdateType` bump
 //!   to a version string; [`next_version_or_default`] wraps it with a
 //!   `0.0.0` fallback for the unversioned-manifest case shared across every
@@ -53,14 +59,17 @@
 //!   (`[package]` in `Cargo.toml`, `[project]` in `pyproject.toml`) holds a
 //!   non-table scalar, and reports whether the key exists, so the Rust and
 //!   Python writers share ONE guard instead of two mirrored copies.
+//! - **TOML decor-preserving assignment** (optional `toml` feature) —
+//!   `assign_preserving_decor` overwrites a value slot while carrying the old
+//!   value's `toml_edit::Decor` across, so an end-of-line comment or unusual
+//!   spacing on a `version = "…"` line survives a bump; shared by every
+//!   `Cargo.toml` write site and by `pyproject.toml`'s `[project].version`.
 //! - **Format-preservation helpers** — [`detect_indent_str`] recovers the
 //!   indent width/character of the on-disk JSON so `serde_json` roundtrips
-//!   don't reformat it; the crate-internal `trailing_newline` helper reports
-//!   the trailing-newline convention; [`finalize_content`] rebuilds output
-//!   that matches the original file's trailing-whitespace shape byte-for-byte,
-//!   and [`write_finalized`] is the shared manifest-write tail — finalize the
-//!   body, write it, and attach a `Failed to write <label> <path>` context —
-//!   used by every language crate's manifest rewriter.
+//!   don't reformat it; [`write_finalized`] is the shared manifest-write tail —
+//!   rebuild the body so it matches the original file's trailing-whitespace
+//!   shape byte-for-byte, write it, and attach a `Failed to write <label>
+//!   <path>` context — used by every language crate's manifest rewriter.
 //! - **Result / progress display** — [`display_update`] renders the
 //!   per-project update summary emitted by `changepacks update` / `check`.
 //! - **Config + directory management** — [`get_changepacks_config`] and
@@ -70,10 +79,13 @@
 //!   from the git repository root.
 
 mod applied_change_spans;
+#[cfg(feature = "toml")]
+mod assign_preserving_decor;
 mod bump_version_with;
 mod clear_update_logs;
 mod detect_indent;
 mod display_update;
+mod ensure_declared_shape;
 #[cfg(feature = "toml")]
 mod ensure_toml_table_like;
 mod find_current_git_repo;
@@ -102,10 +114,13 @@ pub(crate) use is_changepack_log::read_log_bodies;
 // wraps every other gix touch point.
 pub use gix::ThreadSafeRepository;
 
+#[cfg(feature = "toml")]
+pub use assign_preserving_decor::assign_preserving_decor;
 pub use bump_version_with::bump_version_with;
 pub use clear_update_logs::{clear_applied_update_logs, clear_update_logs};
 pub use detect_indent::detect_indent_str;
 pub use display_update::display_update;
+pub use ensure_declared_shape::ensure_declared_shape;
 #[cfg(feature = "toml")]
 pub use ensure_toml_table_like::ensure_toml_table_like;
 pub use find_current_git_repo::find_current_git_repo;
@@ -127,4 +142,4 @@ pub use sort_by_dep::{
     sort_by_dependencies,
 };
 pub use split_version::{replace_version_keep_prefix, split_version};
-pub use trailing_newline::{finalize_content, write_finalized};
+pub use trailing_newline::write_finalized;

@@ -30,7 +30,7 @@ pub use language::Language;
 pub use package::Package;
 pub use project::{Project, cmp_normalized_paths, format_version_display};
 pub use project_finder::{ProjectFinder, has_extension_ignore_ascii_case, is_regular_file};
-pub use publish::{PublishOutput, normalize_path_separators};
+pub use publish::{PublishOutput, normalize_path_separators, normalize_path_separators_of};
 pub use publish_result::PublishResult;
 pub use update_log::ChangePackLog;
 pub use update_type::UpdateType;

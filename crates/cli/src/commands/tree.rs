@@ -6,7 +6,7 @@
 //! is re-exported from `commands`, so the CLI surface is unchanged.
 
 use anyhow::Result;
-use changepacks_core::{ChangePackResultLog, Project, UpdateType, normalize_path_separators};
+use changepacks_core::{ChangePackResultLog, Project, UpdateType, normalize_path_separators_of};
 use changepacks_utils::{
     ProjectNameAnalysis, ProjectNameResolution, display_update, get_relative_path_ref,
 };
@@ -53,11 +53,7 @@ fn resolved_monorepo_deps<'a>(
                     if i > 0 {
                         rendered_candidates.push_str(", ");
                     }
-                    // Bind the `to_string_lossy` temporary so the borrowed
-                    // `Cow` returned by `normalize_path_separators` cannot
-                    // outlive the string it points at.
-                    let lossy = candidate.to_string_lossy();
-                    rendered_candidates.push_str(&normalize_path_separators(&lossy));
+                    rendered_candidates.push_str(&normalize_path_separators_of(candidate));
                 }
                 anyhow::bail!(
                     "dependency `{dep}` is ambiguous; candidate manifests: {rendered_candidates}"

@@ -114,14 +114,19 @@ impl ProjectFinder for NodeProjectFinder {
         // truth for the "declared field OR fixed sibling file" policy
         // (missing/directory marker → not-a-workspace; other metadata errors
         // propagate; all file ops via `tokio::fs`).
-        let has_workspace_declaration = match package_json.get("workspaces") {
-            None => false,
-            Some(workspaces) if workspaces.is_array() || workspaces.is_object() => true,
-            Some(_) => anyhow::bail!(
-                "Invalid `workspaces` declaration in {}: expected an array or object",
-                path.display()
-            ),
-        };
+        //
+        // The absent/valid/invalid triage itself is
+        // `changepacks_utils::ensure_declared_shape`, shared verbatim with the
+        // Dart and Python finders; only the shape predicate stays here because
+        // it is the one part that speaks `serde_json::Value`.
+        let has_workspace_declaration = changepacks_utils::ensure_declared_shape(
+            package_json
+                .get("workspaces")
+                .map(|workspaces| workspaces.is_array() || workspaces.is_object()),
+            path,
+            "workspaces",
+            "an array or object",
+        )?;
         let is_workspace = changepacks_utils::is_workspace_by_sibling(
             has_workspace_declaration,
             path,

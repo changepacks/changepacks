@@ -45,6 +45,35 @@ pub fn normalize_path_separators(s: &str) -> Cow<'_, str> {
     }
 }
 
+/// Normalize a [`Path`] to a forward-slash-separated string.
+///
+/// The `Path` counterpart of [`normalize_path_separators`], which only covers
+/// the second half of the conversion. Callers that start from a `Path` had to
+/// bind the [`Path::to_string_lossy`] temporary themselves (otherwise the
+/// borrowed [`Cow`] handed back would point at a dropped temporary) and then
+/// re-derive the same allocation policy by hand.
+///
+/// Allocation behaviour matches the hand-written versions this replaces:
+/// matching on the lossy `Cow` moves an already-owned lossy string (a non-UTF-8
+/// path) through untouched when it has no backslash, and a borrowed one is only
+/// copied when it actually contains a backslash. Call `.into_owned()` at sites
+/// that genuinely need to store a `String`.
+#[must_use]
+pub fn normalize_path_separators_of(path: &Path) -> Cow<'_, str> {
+    match path.to_string_lossy() {
+        // Borrowed: the path was valid UTF-8, so defer to the `&str` helper,
+        // which borrows straight out of `path` unless a rewrite is needed.
+        Cow::Borrowed(s) => normalize_path_separators(s),
+        // Owned: `to_string_lossy` already allocated. Only pay for a second
+        // allocation when there is genuinely something to rewrite.
+        Cow::Owned(s) => Cow::Owned(if s.contains('\\') {
+            s.replace('\\', "/")
+        } else {
+            s
+        }),
+    }
+}
+
 /// Shared 2-step lookup: first by the project's relative path, then by the
 /// language's `publish_key()`. Extracted so `resolve_publish_command` and
 /// `resolve_dry_run_publish_command` share ONE resolution ladder; a future
@@ -1175,5 +1204,78 @@ mod tests {
         let normalized = normalize_path_separators("");
         assert!(matches!(normalized, Cow::Borrowed(_)));
         assert_eq!(normalized, "");
+    }
+
+    #[test]
+    fn test_normalize_path_separators_of_borrows_utf8_path_without_backslash() {
+        // A valid-UTF-8, already-normalized path is the overwhelmingly common
+        // case (every path on non-Windows). It must borrow straight out of the
+        // `Path`, with no `String` allocation anywhere in the chain.
+        let path = Path::new("packages/core/package.json");
+        let normalized = normalize_path_separators_of(path);
+        assert!(matches!(normalized, Cow::Borrowed(_)));
+        assert_eq!(normalized, "packages/core/package.json");
+    }
+
+    #[test]
+    fn test_normalize_path_separators_of_rewrites_utf8_path_with_backslash() {
+        // A valid-UTF-8 Windows path pays exactly one allocation for the
+        // rewrite, and every backslash is rewritten, not just the first.
+        let path = Path::new("packages\\core\\src\\package.json");
+        let normalized = normalize_path_separators_of(path);
+        assert!(matches!(normalized, Cow::Owned(_)));
+        assert_eq!(normalized, "packages/core/src/package.json");
+    }
+
+    /// Build a path whose bytes are not valid UTF-8, so `to_string_lossy`
+    /// is forced onto its owned, replacement-character branch.
+    #[cfg(any(unix, windows))]
+    fn non_utf8_path(with_backslash: bool) -> OsString {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStringExt;
+            let separator = if with_backslash { b'\\' } else { b'/' };
+            OsString::from_vec(vec![b'p', 0xFF, separator, b'q'])
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            let separator = if with_backslash { 0x005C } else { 0x002F };
+            // 0xD800 is an unpaired surrogate: representable in a Windows
+            // wide path, but not decodable as UTF-8.
+            OsString::from_wide(&[u16::from(b'p'), 0xD800, separator, u16::from(b'q')])
+        }
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn test_normalize_path_separators_of_moves_owned_lossy_string_untouched() {
+        // A non-UTF-8 path makes `to_string_lossy` allocate before we ever see
+        // it. With no backslash there is nothing left to rewrite, so that owned
+        // `String` must be moved through as-is rather than copied a second
+        // time — the allocation behaviour the old hand-written helper in
+        // `gen_update_map` documented and this helper now owns.
+        let os_string = non_utf8_path(false);
+        let path = Path::new(&os_string);
+        let expected = path.to_string_lossy().into_owned();
+        let normalized = normalize_path_separators_of(path);
+        assert!(matches!(normalized, Cow::Owned(_)));
+        assert_eq!(normalized, expected);
+        assert!(!normalized.contains('\\'));
+        // The lossy replacement character survived the round-trip.
+        assert!(normalized.contains('\u{FFFD}'));
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn test_normalize_path_separators_of_rewrites_owned_lossy_string() {
+        // The other half of the owned branch: a non-UTF-8 path that DOES carry
+        // a backslash still gets fully normalized.
+        let os_string = non_utf8_path(true);
+        let path = Path::new(&os_string);
+        let normalized = normalize_path_separators_of(path);
+        assert!(matches!(normalized, Cow::Owned(_)));
+        assert!(!normalized.contains('\\'));
+        assert_eq!(normalized, format!("p{}/q", '\u{FFFD}'));
     }
 }

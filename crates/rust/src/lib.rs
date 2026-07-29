@@ -136,9 +136,7 @@ pub(crate) fn ensure_package_table_like(doc: &DocumentMut, path: &Path) -> Resul
 /// user's manifest, which is exactly the format-preservation guarantee this
 /// tool advertises.
 ///
-/// The sibling Python writer already guards the identical hazard inline in
-/// `changepacks_python`'s `write_pyproject_version`; `Cargo.toml` has SIX such
-/// write sites (the package writer here plus five in
+/// `Cargo.toml` has SIX such write sites (the package writer here plus five in
 /// [`crate::workspace::RustWorkspace`]), so the policy is factored out to ONE
 /// place beside [`ensure_package_table_like`] and [`is_workspace_marker`],
 /// matching the repo-wide "one decoder, one place" convention.
@@ -146,13 +144,16 @@ pub(crate) fn ensure_package_table_like(doc: &DocumentMut, path: &Path) -> Resul
 /// A slot that does not currently hold a value — a missing key auto-vivified
 /// by `toml_edit` indexing, or a table — has no decor to preserve, so the
 /// restore is skipped and behaviour is identical to a plain assignment.
+///
+/// The body itself now lives in
+/// [`changepacks_utils::assign_preserving_decor`], because
+/// `changepacks-python`'s `write_pyproject_version` open-coded the identical
+/// capture / assign / restore triple inline, and `crates/AGENTS.md` forbids
+/// importing one language crate into another — the same reasoning that moved
+/// [`ensure_package_table_like`]'s body there. This wrapper stays so every
+/// call site inside this crate is unchanged.
 pub(crate) fn assign_preserving_decor(slot: &mut toml_edit::Item, new_value: &str) {
-    // Cloned BEFORE the assignment: `*slot = ...` drops the old value.
-    let previous_decor = slot.as_value().map(|value| value.decor().clone());
-    *slot = toml_edit::value(new_value);
-    if let (Some(decor), Some(value)) = (previous_decor, slot.as_value_mut()) {
-        *value.decor_mut() = decor;
-    }
+    changepacks_utils::assign_preserving_decor(slot, new_value);
 }
 
 /// Rewrite the `version` of a `[workspace.dependencies]` entry that also

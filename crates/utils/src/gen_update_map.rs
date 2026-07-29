@@ -6,11 +6,13 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use changepacks_core::{ChangePackLog, ChangePackResultLog, Config, Project, UpdateType};
+use changepacks_core::{
+    ChangePackLog, ChangePackResultLog, Config, Project, UpdateType, normalize_path_separators_of,
+};
 use glob::Pattern;
 
 use crate::{
-    DependencyAmbiguityError, collect_changepack_log_paths, get_relative_path,
+    DependencyAmbiguityError, collect_changepack_log_paths, get_relative_path_ref,
     project_names::{ProjectNameAnalysis, ProjectNameResolution, compare_paths},
     read_log_bodies,
 };
@@ -280,22 +282,6 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
     Ok(plan)
 }
 
-fn normalize_update_on_match_path(path: &Path) -> String {
-    let lossy = path.to_string_lossy();
-    if lossy.contains('\\') {
-        // Only a backslash-carrying path needs the rewrite; delegate it to the
-        // single shared implementation in core.
-        return changepacks_core::normalize_path_separators(&lossy).into_owned();
-    }
-    // Nothing to rewrite. `normalize_path_separators` would hand back
-    // `Cow::Borrowed` here, so the old `.into_owned()` copied the string even
-    // when `to_string_lossy` had already produced an owned `String` (a
-    // non-UTF-8 path). Consuming the lossy `Cow` instead moves that `String`
-    // out untouched and allocates only for the borrowed case, which is exactly
-    // what the previous code did. The bytes returned are identical either way.
-    lossy.into_owned()
-}
-
 #[cfg(test)]
 fn apply_update_on_rules(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
@@ -343,7 +329,10 @@ fn apply_update_on_rules_from(
             let path = queued_paths
                 .pop_front()
                 .expect("the queued path batch length is exact");
-            let match_path = normalize_update_on_match_path(&path);
+            // Glob triggers in `updateOn` are written with forward slashes, so
+            // the filesystem-derived path is normalized through the shared core
+            // helper, which keeps the allocation policy in one place.
+            let match_path = normalize_path_separators_of(&path).into_owned();
             batch.push((path, match_path));
         }
         // The per-batch sort establishes canonical path order for every expansion level.
@@ -439,15 +428,15 @@ struct ReverseDependencyContext<'a> {
     expansion_seeds: Option<&'a HashSet<PathBuf>>,
 }
 
-fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
+fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHasher>(
     update_map: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
-    projects: &[&Project],
+    projects: &[&'projects Project],
     context: ReverseDependencyContext<'_>,
 ) -> Result<Vec<(PathBuf, String)>> {
     // Fast path: with no project carrying any local
     // (monorepo) dependency edge, the DFS discovers nothing and the
     // full `path_to_name` / `reverse_deps` construction below is pure
-    // waste (N `PathBuf` + N `String` allocs per project). Common on
+    // waste (two hash maps plus a per-project strip_prefix). Common on
     // single-package repos and workspaces that don't use `workspace:*`
     // / `workspace = true` / `[tool.uv.sources]` / `<ProjectReference/>`.
     // `.all(...)` short-circuits on the first dep-carrying project, so
@@ -478,12 +467,20 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
     // Single pass over projects to build:
     //   - path_to_name:   relative file path -> package name (for O(1) reverse lookup)
     //   - reverse_deps:   unique dependency name -> [packages that depend on it]
-    let mut path_to_name: HashMap<PathBuf, &str> = HashMap::with_capacity(projects.len());
-    let mut reverse_deps: HashMap<&str, Vec<(PathBuf, Option<&str>)>> =
+    //
+    // Both maps borrow their paths straight out of `projects`, which outlives this
+    // function: `get_relative_path_ref` only strips a prefix, so the result is a
+    // subslice of `project.path()` rather than a fresh `PathBuf`. That removes the
+    // one owned path per project plus one clone per dependency edge that the owned
+    // shape needed before the worklist even started. Lookups are unaffected because
+    // `&Path: Borrow<Path>` hashes and compares exactly like `PathBuf`.
+    let mut path_to_name: HashMap<&'projects Path, &'projects str> =
+        HashMap::with_capacity(projects.len());
+    let mut reverse_deps: HashMap<&'projects str, Vec<(&'projects Path, Option<&'projects str>)>> =
         HashMap::with_capacity(projects.len());
     for (idx, project) in projects.iter().enumerate() {
-        let rel_path_buf =
-            get_relative_path(context.repo_root_path, project.path()).with_context(|| {
+        let rel_path =
+            get_relative_path_ref(context.repo_root_path, project.path()).with_context(|| {
                 format!(
                     "failed to apply reverse dependencies for project '{}'",
                     project.path().display()
@@ -525,21 +522,19 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
             } else {
                 reverse_deps.entry(dep_name.as_str()).or_default()
             };
-            entry.push((rel_path_buf.clone(), worklist_name));
+            entry.push((rel_path, worklist_name));
         }
 
-        // Move `rel_path_buf` into its final consumer instead of cloning it:
-        // the edge loop above only borrows it (one clone per edge), so once
-        // the loop ends the buffer is free to move — the "move into the last
-        // consumer" idiom from `find_project_dirs`'s repo-name fallback.
+        // `rel_path` is a `Copy` borrow of `projects`, so both consumers above and
+        // below share it without any clone or move dance.
         if let Some(unique_name) = worklist_name.filter(|_| name_opt.is_some()) {
-            path_to_name.insert(rel_path_buf, unique_name);
+            path_to_name.insert(rel_path, unique_name);
         }
     }
 
     for dependents in reverse_deps.values_mut() {
         dependents.sort_by(|left, right| {
-            compare_paths(&left.0, &right.0).then_with(|| left.1.cmp(&right.1))
+            compare_paths(left.0, right.0).then_with(|| left.1.cmp(&right.1))
         });
     }
 
@@ -548,10 +543,11 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
     // (via `contains_key`) and the final insertion queue (drained into
     // `update_map` below). This collapses the previous parallel
     // `HashSet<PathBuf>` + `Vec<(PathBuf, String)>` structures into a
-    // single `HashMap` allocation and cuts per-edge clones from 2 to 1
-    // (`dep_path` is cloned once as the map key, vs. once for the set
-    // insert and once again for the vec push in the old shape).
-    let mut packages_to_add: HashMap<PathBuf, &str> = HashMap::with_capacity(projects.len());
+    // single `HashMap` allocation and removes the per-edge clones entirely
+    // (the key is the same borrowed `&Path` the graph already holds, vs. one
+    // owned clone for the set insert and another for the vec push).
+    let mut packages_to_add: HashMap<&'projects Path, &'projects str> =
+        HashMap::with_capacity(projects.len());
 
     // Seed a breadth-first worklist in path/name order. Keeping every initial
     // update ahead of generated dependents lets independently bumped direct
@@ -565,7 +561,11 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
                     .expansion_seeds
                     .is_none_or(|seeds| seeds.contains(*path))
             })
-            .filter_map(|path| path_to_name.get(path).map(|name| (path, *name))),
+            .filter_map(|path| {
+                path_to_name
+                    .get_key_value(path.as_path())
+                    .map(|(seed_path, name)| (*seed_path, *name))
+            }),
     );
     initial_paths
         .sort_by(|left, right| compare_paths(left.0, right.0).then_with(|| left.1.cmp(right.1)));
@@ -587,7 +587,8 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
     while let Some(trigger_name) = to_process.pop_front() {
         if let Some(dependents) = reverse_deps.get(trigger_name) {
             for (dependent_path, dependent_name) in dependents {
-                let newly_reached = reached_paths.insert(dependent_path.as_path());
+                let dependent_path = *dependent_path;
+                let newly_reached = reached_paths.insert(dependent_path);
                 if update_map.contains_key(dependent_path) {
                     if newly_reached && let Some(dependent_name) = dependent_name {
                         to_process.push_back(*dependent_name);
@@ -595,7 +596,7 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
                     continue;
                 }
 
-                match packages_to_add.entry(dependent_path.clone()) {
+                match packages_to_add.entry(dependent_path) {
                     Entry::Vacant(entry) => {
                         entry.insert(trigger_name);
                         if newly_reached && let Some(dependent_name) = dependent_name {
@@ -632,9 +633,12 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
     for (path, dependency_name) in packages_to_add {
         let note =
             format!("Auto-update: depends on '{dependency_name}' via a local workspace dependency");
-        generated.push((path.clone(), note.clone()));
+        // Two owned paths materialize here — one for the caller's `generated`
+        // provenance list and one for the `update_map` key — exactly the same
+        // count the owned-graph version ended up allocating in this tail.
+        generated.push((path.to_path_buf(), note.clone()));
         ordered_entries.push((
-            path,
+            path.to_path_buf(),
             (
                 UpdateType::Patch,
                 vec![ChangePackResultLog::new(UpdateType::Patch, note)],
@@ -750,6 +754,72 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string()
+    }
+
+    /// Create a `.changepacks` directory inside `temp_dir` and return its path.
+    async fn provenance_fixture_dir(temp_dir: &TempDir) -> PathBuf {
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).await.unwrap();
+        changepacks_dir
+    }
+
+    /// Write one changepack log naming a single project path.
+    ///
+    /// `file_name` decides which provenance `gen_update_map` records: a name
+    /// starting with [`CARRY_FORWARD_LOG_PREFIX`] produces
+    /// `Generated { state: Persisted }`, any other `changepack_log_*.json`
+    /// produces `Explicit` and seeds expansion. `Generated { state: Fresh }` has
+    /// no on-disk representation at all — it only ever arises from an `updateOn`
+    /// rule or reverse-dependency expansion, so the tests below mint it through
+    /// `Config::update_on`.
+    async fn write_provenance_log(
+        changepacks_dir: &Path,
+        file_name: &str,
+        project_path: &str,
+        update_type: UpdateType,
+        note: &str,
+    ) {
+        let log = ChangePackLog::new(
+            BTreeMap::from([(PathBuf::from(project_path), update_type)]),
+            note.to_string(),
+        );
+        fs::write(
+            changepacks_dir.join(file_name),
+            serde_json::to_vec(&log).unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+
+    fn update_on_note(trigger: &str) -> String {
+        format!("Auto-update triggered by updateOn rule: {trigger}")
+    }
+
+    /// Drop `excluded` from `plan` and project the resulting carry-forward logs
+    /// down to `(project path, note)` pairs.
+    ///
+    /// [`UpdatePlan::retain_updates`] is the only public observer of provenance:
+    /// an excluded path emits one log per recorded note when — and only when —
+    /// its provenance is `Generated { state: Fresh }`. `Explicit`,
+    /// `Generated { state: Persisted }`, and absent provenance all emit nothing.
+    /// So the returned vector distinguishes every state `merge_provenance` can
+    /// leave a path in, and its order mirrors the stored note order.
+    fn carry_forward_for(plan: &mut UpdatePlan, excluded: &[&str]) -> Vec<(PathBuf, String)> {
+        plan.retain_updates(|path| {
+            !excluded
+                .iter()
+                .any(|candidate| path == Path::new(candidate))
+        })
+        .iter()
+        .map(|log| {
+            let (path, _) = log
+                .changes()
+                .iter()
+                .next()
+                .expect("a carry-forward log names exactly one project path");
+            (path.clone(), log.note().to_string())
+        })
+        .collect()
     }
 
     #[tokio::test]
@@ -1111,6 +1181,549 @@ mod tests {
 
         assert_eq!(plan[&path].0, UpdateType::Minor);
         assert_eq!(plan[&generated_path].0, UpdateType::Patch);
+    }
+
+    // `merge_provenance` skips any pair whose SOURCE has no recorded
+    // provenance (the `let ... else { continue }` guard). The target must be
+    // left byte-for-byte as it was — still generated, still fresh, still
+    // holding its single note.
+    #[tokio::test]
+    async fn merge_provenance_skips_source_without_provenance() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_seed.json",
+            "seed/package.json",
+            UpdateType::Minor,
+            "explicit seed",
+        )
+        .await;
+        let config = Config {
+            update_on: BTreeMap::from([(
+                "seed/package.json".to_string(),
+                vec!["target/package.json".to_string()],
+            )]),
+            ..Default::default()
+        };
+        let mut plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+
+        // `ghost/package.json` appears in no log and no rule, so it has no
+        // provenance entry to fold anywhere.
+        plan.merge_provenance(&[(
+            PathBuf::from("ghost/package.json"),
+            PathBuf::from("target/package.json"),
+        )]);
+
+        assert_eq!(
+            carry_forward_for(&mut plan, &["target/package.json"]),
+            vec![(
+                PathBuf::from("target/package.json"),
+                update_on_note("seed/package.json")
+            )]
+        );
+    }
+
+    // A target with no provenance of its own adopts the source's verbatim.
+    // This is the shape `changepacks update` actually produces:
+    // `merge_workspace_inherited_updates` writes the workspace root straight
+    // into the update map (through `DerefMut`), so the root reaches
+    // `merge_provenance` with a vacant provenance slot.
+    #[tokio::test]
+    async fn merge_provenance_vacant_target_adopts_source() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_seed.json",
+            "seed/package.json",
+            UpdateType::Minor,
+            "explicit seed",
+        )
+        .await;
+        let config = Config {
+            update_on: BTreeMap::from([(
+                "seed/package.json".to_string(),
+                vec!["member/Cargo.toml".to_string()],
+            )]),
+            ..Default::default()
+        };
+        let mut plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+        plan.insert(
+            PathBuf::from("workspace/Cargo.toml"),
+            (UpdateType::Patch, vec![]),
+        );
+
+        plan.merge_provenance(&[(
+            PathBuf::from("member/Cargo.toml"),
+            PathBuf::from("workspace/Cargo.toml"),
+        )]);
+
+        // Only the workspace root carries forward: the member's provenance was
+        // moved out, so excluding it emits nothing.
+        assert_eq!(
+            carry_forward_for(&mut plan, &["member/Cargo.toml", "workspace/Cargo.toml"]),
+            vec![(
+                PathBuf::from("workspace/Cargo.toml"),
+                update_on_note("seed/package.json")
+            )]
+        );
+    }
+
+    // An `Explicit` target outranks a `Generated` source and is left untouched:
+    // a user-authored bump must never be downgraded into a carry-forward
+    // candidate by a folded member.
+    #[tokio::test]
+    async fn merge_provenance_keeps_explicit_target_over_generated_source() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_seed.json",
+            "seed/package.json",
+            UpdateType::Minor,
+            "explicit seed",
+        )
+        .await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_target.json",
+            "target/package.json",
+            UpdateType::Minor,
+            "explicit target",
+        )
+        .await;
+        let config = Config {
+            update_on: BTreeMap::from([(
+                "seed/package.json".to_string(),
+                vec!["source/package.json".to_string()],
+            )]),
+            ..Default::default()
+        };
+
+        // Control: without the merge the source alone would carry forward, so
+        // the empty result below is the merge's doing and not an inert fixture.
+        let mut control = gen_update_map(&changepacks_dir, &config).await.unwrap();
+        assert_eq!(
+            carry_forward_for(
+                &mut control,
+                &["source/package.json", "target/package.json"]
+            ),
+            vec![(
+                PathBuf::from("source/package.json"),
+                update_on_note("seed/package.json")
+            )]
+        );
+
+        let mut plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+        plan.merge_provenance(&[(
+            PathBuf::from("source/package.json"),
+            PathBuf::from("target/package.json"),
+        )]);
+
+        assert!(
+            carry_forward_for(&mut plan, &["source/package.json", "target/package.json"])
+                .is_empty()
+        );
+    }
+
+    // The mirror image: an `Explicit` source PROMOTES a `Generated` target, so
+    // the folded bump stops being a carry-forward candidate.
+    #[tokio::test]
+    async fn merge_provenance_explicit_source_promotes_generated_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_seed.json",
+            "seed/package.json",
+            UpdateType::Minor,
+            "explicit seed",
+        )
+        .await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_source.json",
+            "source/package.json",
+            UpdateType::Minor,
+            "explicit source",
+        )
+        .await;
+        let config = Config {
+            update_on: BTreeMap::from([(
+                "seed/package.json".to_string(),
+                vec!["target/package.json".to_string()],
+            )]),
+            ..Default::default()
+        };
+
+        // Control: the un-merged target is generated + fresh, so it carries forward.
+        let mut control = gen_update_map(&changepacks_dir, &config).await.unwrap();
+        assert_eq!(
+            carry_forward_for(&mut control, &["target/package.json"]),
+            vec![(
+                PathBuf::from("target/package.json"),
+                update_on_note("seed/package.json")
+            )]
+        );
+
+        let mut plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+        plan.merge_provenance(&[(
+            PathBuf::from("source/package.json"),
+            PathBuf::from("target/package.json"),
+        )]);
+
+        assert!(carry_forward_for(&mut plan, &["target/package.json"]).is_empty());
+    }
+
+    // Two `Generated` entries concatenate their notes, target's first, and stay
+    // fresh when neither side is persisted — so the excluded target replays
+    // BOTH auto-update reasons on the next run.
+    #[tokio::test]
+    async fn merge_provenance_appends_generated_notes_in_target_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_a.json",
+            "a/package.json",
+            UpdateType::Minor,
+            "explicit a",
+        )
+        .await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_b.json",
+            "b/package.json",
+            UpdateType::Minor,
+            "explicit b",
+        )
+        .await;
+        // Distinct triggers give the two generated entries distinguishable notes.
+        let config = Config {
+            update_on: BTreeMap::from([
+                (
+                    "a/package.json".to_string(),
+                    vec!["target/package.json".to_string()],
+                ),
+                (
+                    "b/package.json".to_string(),
+                    vec!["source/package.json".to_string()],
+                ),
+            ]),
+            ..Default::default()
+        };
+        let mut plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+
+        plan.merge_provenance(&[(
+            PathBuf::from("source/package.json"),
+            PathBuf::from("target/package.json"),
+        )]);
+
+        assert_eq!(
+            carry_forward_for(&mut plan, &["source/package.json", "target/package.json"]),
+            vec![
+                (
+                    PathBuf::from("target/package.json"),
+                    update_on_note("a/package.json")
+                ),
+                (
+                    PathBuf::from("target/package.json"),
+                    update_on_note("b/package.json")
+                ),
+            ]
+        );
+    }
+
+    // A persisted `Generated` source promotes a fresh `Generated` target to
+    // persisted, which suppresses carry-forward entirely: the notes are already
+    // on disk in a `changepack_log_carry_forward_*.json`, so re-emitting them
+    // would duplicate the log.
+    #[tokio::test]
+    async fn merge_provenance_persisted_source_promotes_fresh_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_seed.json",
+            "seed/package.json",
+            UpdateType::Minor,
+            "explicit seed",
+        )
+        .await;
+        write_provenance_log(
+            &changepacks_dir,
+            &format!("{CARRY_FORWARD_LOG_PREFIX}source.json"),
+            "source/package.json",
+            UpdateType::Patch,
+            "persisted generated source",
+        )
+        .await;
+        let config = Config {
+            update_on: BTreeMap::from([(
+                "seed/package.json".to_string(),
+                vec!["target/package.json".to_string()],
+            )]),
+            ..Default::default()
+        };
+
+        // Control: the target alone is fresh-generated and does carry forward.
+        let mut control = gen_update_map(&changepacks_dir, &config).await.unwrap();
+        assert_eq!(
+            carry_forward_for(
+                &mut control,
+                &["source/package.json", "target/package.json"]
+            ),
+            vec![(
+                PathBuf::from("target/package.json"),
+                update_on_note("seed/package.json")
+            )]
+        );
+
+        let mut plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+        plan.merge_provenance(&[(
+            PathBuf::from("source/package.json"),
+            PathBuf::from("target/package.json"),
+        )]);
+
+        assert!(
+            carry_forward_for(&mut plan, &["source/package.json", "target/package.json"])
+                .is_empty()
+        );
+    }
+
+    // The seed half of `merge_provenance`: the source's expansion-seed
+    // membership moves to the target, so reverse-dependency expansion now
+    // starts from the workspace root that owns the bump and no longer from the
+    // folded member. Complements
+    // `persisted_carry_plan_does_not_seed_update_on_or_reverse_dependencies`,
+    // which pins that a non-seed path expands nothing.
+    #[tokio::test]
+    async fn merge_provenance_rekeys_expansion_seed_to_target() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        // Explicit -> `member/package.json` is an expansion seed.
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_member.json",
+            "member/package.json",
+            UpdateType::Minor,
+            "explicit member",
+        )
+        .await;
+        // Carry-forward -> `core/package.json` is scheduled but NOT a seed.
+        write_provenance_log(
+            &changepacks_dir,
+            &format!("{CARRY_FORWARD_LOG_PREFIX}core.json"),
+            "core/package.json",
+            UpdateType::Patch,
+            "persisted generated core",
+        )
+        .await;
+        let config = Config::default();
+        let core = create_project("core", vec![]);
+        let member = create_project("member", vec![]);
+        let core_dependent = create_project("core-dependent", vec!["core"]);
+        let member_dependent = create_project("member-dependent", vec!["member"]);
+        let projects: Vec<&Project> = vec![&core, &member, &core_dependent, &member_dependent];
+
+        let mut plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+        plan.merge_provenance(&[(
+            PathBuf::from("member/package.json"),
+            PathBuf::from("core/package.json"),
+        )]);
+        plan.apply_reverse_dependencies(&projects, Path::new("/test"))
+            .unwrap();
+
+        // The seed moved: `core` now expands, `member` no longer does.
+        assert!(plan.contains_key(Path::new("core-dependent/package.json")));
+        assert!(!plan.contains_key(Path::new("member-dependent/package.json")));
+    }
+
+    // `retain_updates` is the plan's only pruning entry point (`changepacks
+    // update` calls it to drop the projects the user deselected). Its first
+    // contract is plain map surgery: every excluded key leaves the `Deref`'d
+    // update map, and every retained key survives with its update type and
+    // accumulated result logs untouched.
+    #[tokio::test]
+    async fn retain_updates_removes_excluded_and_keeps_retained_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_keep.json",
+            "keep/package.json",
+            UpdateType::Minor,
+            "explicit keep",
+        )
+        .await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_drop.json",
+            "drop/package.json",
+            UpdateType::Major,
+            "explicit drop",
+        )
+        .await;
+        let mut plan = gen_update_map(&changepacks_dir, &Config::default())
+            .await
+            .unwrap();
+        assert_eq!(plan.len(), 2);
+
+        plan.retain_updates(|path| path == Path::new("keep/package.json"));
+
+        assert_eq!(plan.len(), 1);
+        assert!(!plan.contains_key(Path::new("drop/package.json")));
+        let (update_type, logs) = &plan[Path::new("keep/package.json")];
+        assert_eq!(*update_type, UpdateType::Minor);
+        assert_eq!(logs.len(), 1);
+    }
+
+    // Provenance alone decides emission, and only `Generated { Fresh }` qualifies.
+    // An `Explicit` bump belongs to a changepack log the user still owns, so
+    // re-emitting it would double-count that bump on the next run; a
+    // `Generated { Persisted }` bump already lives on disk as a
+    // `changepack_log_carry_forward_*.json`, so re-emitting it would duplicate
+    // the log. Dropping either filter silently double-applies a pending bump.
+    #[tokio::test]
+    async fn retain_updates_emits_carry_forward_only_for_fresh_generated_provenance() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_explicit.json",
+            "explicit/package.json",
+            UpdateType::Minor,
+            "explicit bump",
+        )
+        .await;
+        write_provenance_log(
+            &changepacks_dir,
+            &format!("{CARRY_FORWARD_LOG_PREFIX}persisted.json"),
+            "persisted/package.json",
+            UpdateType::Patch,
+            "persisted generated bump",
+        )
+        .await;
+        // The updateOn rule is the only way to mint `Generated { Fresh }`: it has
+        // no on-disk representation.
+        let config = Config {
+            update_on: BTreeMap::from([(
+                "explicit/package.json".to_string(),
+                vec!["fresh/package.json".to_string()],
+            )]),
+            ..Default::default()
+        };
+        let mut plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+        assert_eq!(plan.len(), 3);
+
+        assert_eq!(
+            carry_forward_for(
+                &mut plan,
+                &[
+                    "explicit/package.json",
+                    "fresh/package.json",
+                    "persisted/package.json",
+                ],
+            ),
+            vec![(
+                PathBuf::from("fresh/package.json"),
+                update_on_note("explicit/package.json"),
+            )]
+        );
+        // All three were excluded, so the pruning half ran for every provenance.
+        assert!(plan.is_empty());
+    }
+
+    // Each emitted log names exactly the removed path, mapped to the update type
+    // the plan HELD for it — not the `Patch` the updateOn rule originally minted.
+    // A later `DerefMut` write (what `merge_workspace_inherited_updates` does
+    // when a workspace root absorbs a member's bump) must therefore be reflected,
+    // or the carried-forward bump would silently downgrade on the next run.
+    #[tokio::test]
+    async fn retain_updates_carry_forward_log_names_only_the_removed_path_and_type() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_seed.json",
+            "seed/package.json",
+            UpdateType::Minor,
+            "explicit seed",
+        )
+        .await;
+        let config = Config {
+            update_on: BTreeMap::from([(
+                "seed/package.json".to_string(),
+                vec!["fresh/package.json".to_string()],
+            )]),
+            ..Default::default()
+        };
+        let mut plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+        let fresh = PathBuf::from("fresh/package.json");
+        assert_eq!(plan[&fresh].0, UpdateType::Patch);
+        plan.get_mut(&fresh)
+            .expect("the updateOn rule scheduled the dependent")
+            .0 = UpdateType::Major;
+
+        let logs = plan.retain_updates(|path| path != fresh.as_path());
+
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            *logs[0].changes(),
+            BTreeMap::from([(fresh.clone(), UpdateType::Major)])
+        );
+        assert_eq!(logs[0].note(), update_on_note("seed/package.json"));
+        // The retained seed keeps its own bump and emits nothing.
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[Path::new("seed/package.json")].0, UpdateType::Minor);
+    }
+
+    // Multiple exclusions are emitted in `compare_paths` order, which normalizes
+    // backslashes before comparing. `zz\alpha/...` therefore precedes
+    // `zz/beta/...`, the opposite of raw byte order ('/' is 0x2F, '\' is 0x5C) —
+    // so a lost normalization or a lost sort reorders this vector.
+    #[tokio::test]
+    async fn retain_updates_emits_carry_forward_logs_in_compare_paths_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_seed.json",
+            "seed/package.json",
+            UpdateType::Minor,
+            "explicit seed",
+        )
+        .await;
+        let config = Config {
+            update_on: BTreeMap::from([(
+                "seed/package.json".to_string(),
+                vec![
+                    "zz/beta/package.json".to_string(),
+                    "zz\\alpha/package.json".to_string(),
+                    "aa/gamma/package.json".to_string(),
+                ],
+            )]),
+            ..Default::default()
+        };
+        let mut plan = gen_update_map(&changepacks_dir, &config).await.unwrap();
+
+        let note = update_on_note("seed/package.json");
+        assert_eq!(
+            carry_forward_for(
+                &mut plan,
+                &[
+                    "zz/beta/package.json",
+                    "zz\\alpha/package.json",
+                    "aa/gamma/package.json",
+                ],
+            ),
+            vec![
+                (PathBuf::from("aa/gamma/package.json"), note.clone()),
+                (PathBuf::from("zz\\alpha/package.json"), note.clone()),
+                (PathBuf::from("zz/beta/package.json"), note),
+            ]
+        );
     }
 
     #[test]
@@ -1579,11 +2192,11 @@ mod tests {
     #[test]
     fn test_apply_update_on_rules_normalizes_candidate_separators() {
         assert_eq!(
-            normalize_update_on_match_path(Path::new("crates/core/Cargo.toml")),
+            normalize_path_separators_of(Path::new("crates/core/Cargo.toml")),
             "crates/core/Cargo.toml"
         );
         assert_eq!(
-            normalize_update_on_match_path(Path::new(r"crates\core\Cargo.toml")),
+            normalize_path_separators_of(Path::new(r"crates\core\Cargo.toml")),
             "crates/core/Cargo.toml"
         );
 

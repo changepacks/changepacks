@@ -25,7 +25,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use changepacks_core::UpdateType;
-use changepacks_utils::{read_and_parse, write_finalized};
+use changepacks_utils::{assign_preserving_decor, read_and_parse, write_finalized};
 use toml_edit::DocumentMut;
 
 /// Compute the next version for `update_type`, write it into the
@@ -78,12 +78,15 @@ pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String
 /// table (`project = { version = ... }`) at the top of the document instead
 /// of a proper `[project]` header.
 ///
-/// The existing value's [`toml_edit::Decor`] is captured and re-applied after
-/// the assignment. Assigning a freshly built value replaces the whole
-/// `Item`, and a fresh value carries default (empty) decor, so without this
-/// the surrounding trivia — most visibly an end-of-line comment such as
-/// `version = "1.2.3" # pinned` — would be silently deleted from the user's
-/// manifest by a routine version bump.
+/// The version assignment goes through
+/// [`changepacks_utils::assign_preserving_decor`], which carries the existing
+/// value's [`toml_edit::Decor`] across the write. Assigning a freshly built
+/// value replaces the whole `Item`, and a fresh value carries default (empty)
+/// decor, so without that the surrounding trivia — most visibly an
+/// end-of-line comment such as `version = "1.2.3" # pinned` — would be
+/// silently deleted from the user's manifest by a routine version bump. The
+/// helper is shared with `changepacks-rust`'s six `Cargo.toml` write sites
+/// instead of being open-coded here.
 ///
 /// # Errors
 /// Returns error if the file cannot be read, is not valid TOML, or the write
@@ -91,11 +94,10 @@ pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String
 pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> Result<()> {
     let (pyproject_toml_raw, mut pyproject_toml) = read_and_parse_pyproject_toml(path).await?;
     let has_project = ensure_project_table_like(&pyproject_toml, path)?;
-    // One lookup, reused by both reads below: `Option<&Item>` is `Copy`, and
-    // the borrow ends at its last use, so the mutations that follow still
+    // The borrow ends at its last use, so the mutations that follow still
     // type-check without re-walking the document.
-    let project = pyproject_toml.get("project");
-    let has_dynamic_version = project
+    let has_dynamic_version = pyproject_toml
+        .get("project")
         .and_then(|project| project.get("dynamic"))
         .and_then(toml_edit::Item::as_array)
         .is_some_and(|dynamic| dynamic.iter().any(|item| item.as_str() == Some("version")));
@@ -105,23 +107,15 @@ pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> R
             path.display()
         );
     }
-    let previous_decor = project
-        .and_then(|project| project.get("version"))
-        .and_then(toml_edit::Item::as_value)
-        .map(|version| version.decor().clone());
-    // Strictly after the decor capture: creating the table takes `&mut`, which
-    // would invalidate `project`. A missing `[project]` has no version and so
-    // no decor to preserve, leaving behaviour identical to the previous order.
     if !has_project {
         pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
     }
-    pyproject_toml["project"]["version"] = new_version.into();
-    if let (Some(decor), Some(version)) = (
-        previous_decor,
-        pyproject_toml["project"]["version"].as_value_mut(),
-    ) {
-        *version.decor_mut() = decor;
-    }
+    // The indexed slot IS the value whose decor is preserved: when
+    // `[project].version` exists it is that value, and when `[project]` was
+    // just created — or exists without a `version` — `toml_edit` auto-vivifies
+    // a non-value `Item`, so there is no decor to carry and the helper falls
+    // back to a plain assignment.
+    assign_preserving_decor(&mut pyproject_toml["project"]["version"], new_version);
     write_finalized(
         path,
         pyproject_toml.to_string(),

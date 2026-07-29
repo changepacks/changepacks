@@ -15,17 +15,17 @@ fn trailing_whitespace(source: &str) -> &str {
 /// character and is therefore preserved byte-for-byte, including repeated or
 /// mixed line endings, spaces, tabs, and other Unicode whitespace.
 #[must_use]
-pub fn finalize_content(mut body: String, original: &str) -> String {
+fn finalize_content(mut body: String, original: &str) -> String {
     let trimmed_len = body.trim_end().len();
     body.truncate(trimmed_len);
     body.push_str(trailing_whitespace(original));
     body
 }
 
-/// Write the finalized manifest bytes for `path`: run `body` through
-/// [`finalize_content`] against the manifest's `original` on-disk text, then
-/// write the result, attaching a `Failed to write <label> <path>` context to
-/// any I/O failure.
+/// Write the finalized manifest bytes for `path`: drop the serializer-generated
+/// trailing whitespace from `body`, re-append the manifest's `original`
+/// trailing-whitespace suffix byte-for-byte, then write the result, attaching a
+/// `Failed to write <label> <path>` context to any I/O failure.
 ///
 /// This is the shared tail of every language crate's manifest rewrite
 /// (`package.json`, `pyproject.toml`, `pubspec.yaml`, `Cargo.toml`), which

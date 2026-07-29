@@ -85,14 +85,17 @@ impl ProjectFinder for DartProjectFinder {
         // — the one source of truth for the "declared field OR fixed
         // sibling file" policy (stat error → not-a-workspace; all file ops
         // via `tokio::fs`).
-        let has_workspace_declaration = match pubspec.get("workspace") {
-            None => false,
-            Some(workspace) if workspace.is_sequence() => true,
-            Some(_) => anyhow::bail!(
-                "Invalid `workspace` declaration in {}: expected a sequence",
-                path.display()
-            ),
-        };
+        //
+        // The absent/valid/invalid triage itself is
+        // `changepacks_utils::ensure_declared_shape`, shared verbatim with the
+        // Node and Python finders; only the shape predicate stays here because
+        // it is the one part that speaks `yaml_serde::Value`.
+        let has_workspace_declaration = changepacks_utils::ensure_declared_shape(
+            pubspec.get("workspace").map(yaml_serde::Value::is_sequence),
+            path,
+            "workspace",
+            "a sequence",
+        )?;
         let is_workspace = changepacks_utils::is_workspace_by_sibling(
             has_workspace_declaration,
             path,

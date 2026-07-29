@@ -111,14 +111,18 @@ impl ProjectFinder for PythonProjectFinder {
         // `None` positions.
         let uv_table = pyproject_toml.get("tool").and_then(|t| t.get("uv"));
 
-        let has_workspace_declaration = match uv_table.and_then(|u| u.get("workspace")) {
-            None => false,
-            Some(workspace) if workspace.as_table_like().is_some() => true,
-            Some(_) => anyhow::bail!(
-                "Invalid `[tool.uv].workspace` declaration in {}: expected a table or inline table",
-                path.display()
-            ),
-        };
+        // The absent/valid/invalid triage is
+        // `changepacks_utils::ensure_declared_shape`, shared verbatim with the
+        // Node and Dart finders; only the shape predicate stays here because it
+        // is the one part that speaks `toml_edit::Item`.
+        let has_workspace_declaration = changepacks_utils::ensure_declared_shape(
+            uv_table
+                .and_then(|u| u.get("workspace"))
+                .map(|workspace| workspace.as_table_like().is_some()),
+            path,
+            "[tool.uv].workspace",
+            "a table or inline table",
+        )?;
 
         let mut project = if has_workspace_declaration {
             Project::Workspace(Box::new(PythonWorkspace::new_discovered(
