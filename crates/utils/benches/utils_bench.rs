@@ -1,18 +1,26 @@
 //! Criterion benchmarks for the pure hot-path utilities: semver bumping
 //! (`next_version`), version-prefix splitting (`split_version`), project
-//! ordering, and the Kahn's-algorithm dependency sort (`sort_by_dependencies`).
+//! ordering, the Kahn's-algorithm dependency sort (`sort_by_dependencies`), and
+//! the reverse-dependency expansion (`apply_reverse_dependencies`).
 //!
 //! These functions are deterministic and allocation-light, so they provide a
 //! stable regression signal for the retry-now improvement loop.
 
+use std::collections::HashMap;
 use std::hint::black_box;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use changepacks_core::{Package, Project, UpdateType};
+use changepacks_core::{ChangePackResultLog, Package, Project, UpdateType};
 use changepacks_node::package::NodePackage;
-use changepacks_utils::{next_version, sort_by_dependencies, split_version};
+use changepacks_utils::{
+    apply_reverse_dependencies, next_version, sort_by_dependencies, split_version,
+};
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
+
+/// Synthetic repository root matching the absolute paths produced by
+/// [`make_project`], so relative-path derivation succeeds without touching disk.
+const BENCH_REPO_ROOT: &str = "/bench";
 
 /// Build a single Node package project with the given dependency names.
 fn make_project(name: &str, deps: &[String]) -> Project {
@@ -157,6 +165,62 @@ fn bench_sort_by_dependencies_cyclic(c: &mut Criterion) {
     group.finish();
 }
 
+/// Seed the update map with one or two directly changed packages, the shape a
+/// real `changepacks check` / `changepacks update` run produces before the
+/// reverse-dependency worklist expands it.
+fn seed_paths(size: usize) -> Vec<PathBuf> {
+    let mut seeds = vec![PathBuf::from("pkg0/package.json")];
+    if size > 1 {
+        seeds.push(PathBuf::from(format!("pkg{}/package.json", size / 2)));
+    }
+    seeds
+}
+
+fn bench_apply_reverse_dependencies(c: &mut Criterion) {
+    let repo_root = Path::new(BENCH_REPO_ROOT);
+    let mut group = c.benchmark_group("apply_reverse_dependencies");
+    for size in [16_usize, 64, 256] {
+        let projects = build_graph(size);
+        let input = (projects.iter().collect::<Vec<&Project>>(), seed_paths(size));
+        group.bench_with_input(
+            BenchmarkId::from_parameter(size),
+            &input,
+            |b, (projects, seeds)| {
+                b.iter_batched(
+                    || {
+                        seeds
+                            .iter()
+                            .map(|path| {
+                                (
+                                    path.clone(),
+                                    (
+                                        UpdateType::Minor,
+                                        vec![ChangePackResultLog::new(
+                                            UpdateType::Minor,
+                                            "bench seed".to_string(),
+                                        )],
+                                    ),
+                                )
+                            })
+                            .collect::<HashMap<_, _>>()
+                    },
+                    |mut update_map| {
+                        apply_reverse_dependencies(
+                            &mut update_map,
+                            black_box(projects),
+                            black_box(repo_root),
+                        )
+                        .expect("benchmark projects have unique names inside the repo root");
+                        black_box(update_map);
+                    },
+                    BatchSize::SmallInput,
+                );
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
@@ -165,6 +229,6 @@ criterion_group! {
         .sample_size(60);
     targets = bench_next_version, bench_split_version,
         bench_project_sort_same_language_same_name_paths, bench_sort_by_dependencies,
-        bench_sort_by_dependencies_cyclic
+        bench_sort_by_dependencies_cyclic, bench_apply_reverse_dependencies
 }
 criterion_main!(benches);

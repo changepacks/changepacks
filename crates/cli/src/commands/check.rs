@@ -75,7 +75,7 @@ pub async fn handle_check(args: &CheckArgs) -> Result<()> {
     // Expand over the full project graph before filtering output, matching update.
     update_map.apply_reverse_dependencies(&projects, &ctx.repo_root_path)?;
 
-    retain_by_filters(&mut projects, args.filter.as_ref(), &args.language);
+    retain_by_filters(&mut projects, args.filter, &args.language);
     projects.sort();
     // One stdout lock for the whole render: `println!` re-acquires the global
     // lock per line and panics on a write failure (a broken pipe from

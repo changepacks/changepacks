@@ -43,7 +43,7 @@ fn select_changepack(
     // They are updated automatically when the workspace version bumps.
     projects.retain(|p| !matches!(p, Project::Package(pkg) if pkg.inherits_workspace_version()));
 
-    retain_by_filters(&mut projects, args.filter.as_ref(), &args.language);
+    retain_by_filters(&mut projects, args.filter, &args.language);
 
     println!("Found {} projects", projects.len());
     // workspace first

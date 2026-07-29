@@ -109,13 +109,14 @@ where
         })?;
 
         if nupkgs.is_empty() {
-            let _ = write!(
+            write!(
                 combined.stderr,
                 "\n[changepacks {}] no .nupkg produced by `dotnet pack`; \
                  check that the project sets <IsPackable>true</IsPackable> and \
                  includes the required PackageId / Version metadata.\n",
                 target.operation(),
-            );
+            )
+            .expect("writing into a String via fmt::Write is infallible");
             combined.success = false;
         }
 
@@ -350,13 +351,15 @@ fn note_cleanup_result(
     stderr: &mut String,
 ) {
     if let Err(e) = result {
-        // Writing into a `String` via `fmt::Write` never returns `Err`, so
-        // the discarded `Result` is `Ok(())` in practice — mirrors
-        // `prompter.rs::format_selected_projects`.
-        let _ = write!(
+        // `fmt::Write for String` is infallible: its `write_str` only calls
+        // `String::push_str` and always returns `Ok(())`. The `expect`
+        // documents that invariant instead of silently discarding the
+        // `Result` — mirrors `prompter.rs::format_selected_projects`.
+        write!(
             stderr,
             "\n[changepacks {operation}] {label} tempdir cleanup error: {e}\n"
-        );
+        )
+        .expect("writing into a String via fmt::Write is infallible");
     }
 }
 

@@ -41,9 +41,13 @@ impl FilterOptions {
 ///
 /// `publish` deliberately does not use this helper — it has no `--filter` flag
 /// and correctly applies only [`retain_by_language`].
+///
+/// `filter` is taken by value: [`FilterOptions`] is a fieldless two-variant
+/// `Copy` enum, so a `&FilterOptions` is strictly larger than the value it
+/// points at and forces every caller to write `.as_ref()` for nothing.
 pub fn retain_by_filters(
     projects: &mut Vec<&Project>,
-    filter: Option<&FilterOptions>,
+    filter: Option<FilterOptions>,
     langs: &[CliLanguage],
 ) {
     if let Some(filter) = filter {
@@ -155,7 +159,7 @@ mod tests {
         let projects = [workspace_project(), rust_package(), node_package()];
         let mut refs: Vec<&Project> = projects.iter().collect();
 
-        retain_by_filters(&mut refs, filter.as_ref(), langs);
+        retain_by_filters(&mut refs, filter, langs);
 
         let actual: Vec<String> = refs
             .iter()
