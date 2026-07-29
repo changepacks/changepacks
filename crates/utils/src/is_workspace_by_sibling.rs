@@ -112,9 +112,17 @@ mod tests {
 
     // A manifest path with no parent (the empty path) surfaces the
     // "Parent not found" error instead of silently reporting not-a-workspace.
+    // Pin the documented message so the branch cannot silently lose its
+    // context and degrade into a bare io error.
     #[tokio::test]
     async fn test_no_parent_errors() {
-        let result = is_workspace_by_sibling(false, Path::new(""), "melos.yaml").await;
-        assert!(result.is_err());
+        let err = is_workspace_by_sibling(false, Path::new(""), "melos.yaml")
+            .await
+            .expect_err("a parentless manifest path must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Parent not found"),
+            "expected parent-not-found context in error, got: {msg}"
+        );
     }
 }

@@ -156,6 +156,33 @@ mod tests {
     }
 
     #[test]
+    fn test_changepack_log_deserialize_ignores_unknown_keys() {
+        // Forward compatibility: a log written by a newer changepacks version may
+        // carry extra top-level keys. Older binaries must still parse it, because
+        // `gen_update_map` aborts the whole update run on a single parse failure.
+        let json = r#"{
+            "changes": {
+                "packages/foo/package.json": "Minor"
+            },
+            "note": "Written by a newer version",
+            "date": "2025-12-19T10:27:00.000Z",
+            "futureField": "some value",
+            "anotherFutureField": { "nested": [1, 2, 3] }
+        }"#;
+
+        let log: ChangePackLog = serde_json::from_str(json)
+            .expect("unknown top-level keys must be ignored, not rejected");
+
+        assert_eq!(log.changes().len(), 1);
+        assert_eq!(
+            log.changes()
+                .get(&PathBuf::from("packages/foo/package.json")),
+            Some(&UpdateType::Minor)
+        );
+        assert_eq!(log.note(), "Written by a newer version");
+    }
+
+    #[test]
     fn test_changepack_log_deterministic_serialization() {
         // Build a log with entries in reverse alphabetical order
         let mut changes = BTreeMap::new();

@@ -310,16 +310,24 @@ fn apply_update_on_rules_from(
     }
 
     let mut generated = Vec::new();
-    let mut queued_paths: VecDeque<PathBuf> = expansion_seeds.iter().cloned().collect();
+    // Double-buffered breadth-first frontier. `current` holds the level being
+    // expanded, `next` accumulates the level discovered while expanding it, and
+    // the two are swapped at the end of each level. This replaces a
+    // `VecDeque` frontier that had to be fully drained into a freshly allocated
+    // `Vec` on every level purely so the level could be sorted in place and
+    // borrowed as a contiguous slice: with two `Vec`s the storage is reused
+    // across levels, so after the first couple of levels the loop performs no
+    // frontier allocation at all. Ordering is unchanged — `VecDeque::drain(..)`
+    // yielded front-to-back, which is exactly `Vec` iteration order, and the
+    // per-level sort below re-imposes canonical order regardless.
+    let mut current: Vec<PathBuf> = expansion_seeds.iter().cloned().collect();
+    let mut next: Vec<PathBuf> = Vec::new();
 
-    while !queued_paths.is_empty() {
+    while !current.is_empty() {
         // Preserve BTreeMap rule precedence within each breadth-first batch so
         // the lexicographically first matching trigger owns an inserted note.
-        let batch_len = queued_paths.len();
-        let mut batch: Vec<PathBuf> = Vec::with_capacity(batch_len);
-        batch.extend(queued_paths.drain(..));
         // The per-batch sort establishes canonical path order for every expansion level.
-        batch.sort_by(|left, right| compare_paths(left, right));
+        current.sort_by(|left, right| compare_paths(left, right));
         // Glob triggers in `updateOn` are written with forward slashes, so the
         // filesystem-derived path is normalized through the shared core helper,
         // which keeps the allocation policy in one place. Normalization happens
@@ -330,7 +338,7 @@ fn apply_update_on_rules_from(
         // case allocates nothing, and only a genuine backslash path pays for an
         // owned `String`. `Pattern::matches` takes a `&str`, which `&Cow<str>`
         // derefs to exactly as the previously owned `String` did.
-        let match_paths: Vec<Cow<'_, str>> = batch
+        let match_paths: Vec<Cow<'_, str>> = current
             .iter()
             .map(|path| normalize_path_separators_of(path))
             .collect();
@@ -378,11 +386,16 @@ fn apply_update_on_rules_from(
                     }
                     if needs_seed {
                         expansion_seeds.insert(PathBuf::from(dependent_ref));
-                        queued_paths.push_back(PathBuf::from(dependent_ref));
+                        next.push(PathBuf::from(dependent_ref));
                     }
                 }
             }
         }
+
+        // Drop the borrow of `current` held by `match_paths` before swapping.
+        drop(match_paths);
+        std::mem::swap(&mut current, &mut next);
+        next.clear();
     }
 
     Ok(generated)

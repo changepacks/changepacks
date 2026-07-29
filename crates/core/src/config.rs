@@ -156,6 +156,36 @@ mod tests {
         assert!(config.update_on.is_empty());
     }
 
+    // `Config` deliberately does NOT use `#[serde(deny_unknown_fields)]`.
+    // The on-disk `.changepacks/config.json` format is a hard backward
+    // compatibility constraint: a newer changepacks release may add config
+    // keys, and an OLDER binary must still be able to read that file. Adding
+    // `deny_unknown_fields` would turn every newly introduced key into a hard
+    // parse error on older binaries, so unknown keys must stay silently
+    // ignored. This test pins that forward-compatibility contract.
+    #[test]
+    fn test_config_ignores_unknown_keys_for_forward_compatibility() {
+        let json = r#"{
+            "baseBranch": "develop",
+            "futureFeature": { "enabled": true, "targets": ["a", "b"] },
+            "unknownScalar": 42,
+            "someFutureFlag": "on"
+        }"#;
+        let config: Config =
+            serde_json::from_str(json).expect("unknown config keys must not fail deserialization");
+
+        // The known key is still honoured.
+        assert_eq!(config.base_branch, "develop");
+
+        // Everything else falls back to its default, unaffected by the
+        // unrecognized keys.
+        assert!(config.ignore.is_empty());
+        assert!(config.latest_package.is_none());
+        assert!(config.publish.is_empty());
+        assert!(config.publish_dry_run.is_empty());
+        assert!(config.update_on.is_empty());
+    }
+
     #[test]
     fn test_config_ignore_patterns() {
         let json = r#"{ "ignore": ["**/*", "!crates/changepacks/Cargo.toml", "!bridge/**"] }"#;
