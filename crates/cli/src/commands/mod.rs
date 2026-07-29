@@ -58,6 +58,36 @@ pub(crate) fn writeln_stdout(args: std::fmt::Arguments<'_>) -> std::io::Result<(
     writeln!(std::io::stdout().lock(), "{args}")
 }
 
+/// Join `items` into one `String`, inserting `separator` between elements.
+///
+/// Several error messages render a list as `a, b, c`. Each site used to
+/// hand-roll the same loop — `String::new()`, `enumerate()`, push the separator
+/// when the index is non-zero, append the element — with only the per-element
+/// rendering differing, which a `Display` bound covers. Accumulating into a
+/// single running `String` keeps the allocation profile of those loops
+/// (`.map(..).collect::<Vec<String>>().join(..)` allocated one `String` per
+/// element plus the `Vec` spine plus the joined `String`), and the one
+/// "`fmt::Write for String` is infallible" justification now lives here instead
+/// of being restated per call site.
+pub(super) fn join_display<T: std::fmt::Display>(
+    items: impl IntoIterator<Item = T>,
+    separator: &str,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut joined = String::new();
+    for (index, item) in items.into_iter().enumerate() {
+        if index > 0 {
+            joined.push_str(separator);
+        }
+        // `fmt::Write for String` is infallible: its `write_str` only calls
+        // `String::push_str` and always returns `Ok(())`. The `expect` documents
+        // that invariant instead of silently discarding the `Result`.
+        write!(&mut joined, "{item}").expect("writing into a String via fmt::Write is infallible");
+    }
+    joined
+}
+
 pub use changepacks::ChangepackArgs;
 pub use changepacks::handle_changepack;
 pub use changepacks::handle_changepack_with_prompter;

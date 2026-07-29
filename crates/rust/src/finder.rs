@@ -196,6 +196,15 @@ pub struct RustProjectFinder {
     non_workspace_manifest_candidates: HashSet<PathBuf>,
     inherited_workspace_members: HashMap<PathBuf, InheritedWorkspaceMembers>,
     pending_workspace_packages: Vec<PendingWorkspacePackage>,
+    /// Hashed membership index over `pending_workspace_packages`' `abs_path`s.
+    /// The `Vec` remains the authoritative resolution-order source; this set
+    /// only answers "already pending?" in `visit` in O(1) instead of a linear
+    /// `PathBuf` scan over every deferred member (which made discovery
+    /// O(members^2) in a Cargo workspace where nearly every crate inherits
+    /// `version.workspace = true`). Kept in lockstep with the `Vec`: inserted
+    /// at the single push site, cleared alongside the `std::mem::take` in
+    /// `resolve_pending_workspace_packages`.
+    pending_workspace_paths: HashSet<PathBuf>,
 }
 
 impl RustProjectFinder {
@@ -319,6 +328,7 @@ impl RustProjectFinder {
 
     fn resolve_pending_workspace_packages(&mut self) {
         let pending = std::mem::take(&mut self.pending_workspace_packages);
+        self.pending_workspace_paths.clear();
         for package in pending {
             let (version, root_path) = self
                 .nearest_workspace_package(&package.abs_path)
@@ -344,16 +354,11 @@ impl ProjectFinder for RustProjectFinder {
         }
         // The already-discovered half now goes through the shared
         // `ProjectFinder::contains_project` probe; the extra
-        // `pending_workspace_packages` scan is Rust-only (members whose
-        // version is still deferred to `resolve_pending_workspace_packages`)
-        // and stays open-coded here, so `should_visit_manifest` is not usable
-        // for this finder.
-        if self.contains_project(path)
-            || self
-                .pending_workspace_packages
-                .iter()
-                .any(|package| package.abs_path == path)
-        {
+        // pending-member check is Rust-only (members whose version is still
+        // deferred to `resolve_pending_workspace_packages`) and stays
+        // open-coded here, so `should_visit_manifest` is not usable for this
+        // finder. Both halves are now O(1) hashed probes.
+        if self.contains_project(path) || self.pending_workspace_paths.contains(path) {
             return Ok(());
         }
         // read Cargo.toml
@@ -463,6 +468,7 @@ impl ProjectFinder for RustProjectFinder {
             let relative_path_key = relative_path.to_path_buf();
 
             if inherits_workspace {
+                self.pending_workspace_paths.insert(path_key.clone());
                 self.pending_workspace_packages
                     .push(PendingWorkspacePackage {
                         name,
@@ -983,6 +989,44 @@ version = "1.0.0"
             .unwrap();
 
         assert_eq!(finder.projects().len(), 1);
+
+        temp_dir.close().unwrap();
+    }
+
+    // A `version.workspace = true` member whose manifest is visited twice must
+    // be deferred exactly once. The pending `Vec` stays the resolution-order
+    // source, so the O(1) `pending_workspace_paths` probe has to keep it
+    // duplicate-free, and both containers must be emptied together when the
+    // pending members are resolved.
+    #[tokio::test]
+    async fn test_rust_project_finder_visit_inherited_member_twice_defers_once() {
+        let temp_dir = TempDir::new().unwrap();
+        let (_workspace_toml, package_toml) =
+            write_inherited_version_workspace(temp_dir.path(), "member", "3.1.4");
+        let relative_path = PathBuf::from("crates/member/Cargo.toml");
+
+        let mut finder = RustProjectFinder::new();
+        for _ in 0..2 {
+            finder.visit(&package_toml, &relative_path).await.unwrap();
+        }
+
+        assert_eq!(finder.pending_workspace_packages.len(), 1);
+        assert_eq!(
+            finder.pending_workspace_paths,
+            HashSet::from([package_toml.clone()])
+        );
+
+        finder.finalize().await.unwrap();
+
+        assert!(finder.pending_workspace_packages.is_empty());
+        assert!(finder.pending_workspace_paths.is_empty());
+        let members = finder
+            .projects()
+            .into_iter()
+            .filter(|project| project.name() == Some("member"))
+            .collect::<Vec<_>>();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].version(), Some("3.1.4"));
 
         temp_dir.close().unwrap();
     }

@@ -2,7 +2,9 @@ use changepacks_core::Project;
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::project_names::{ProjectNameAnalysis, ProjectNameResolution, compare_paths};
+use crate::project_names::{
+    ProjectNameAnalysis, ProjectNameResolution, ReferencedDependencyAmbiguity, compare_paths,
+};
 
 /// A project participating in a dependency cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +64,20 @@ impl DependencyAmbiguityError {
     #[must_use]
     pub fn candidates(&self) -> &[PathBuf] {
         &self.candidates
+    }
+}
+
+/// The single crate-internal bridge from the borrowed diagnostic produced by
+/// [`ProjectNameAnalysis`] to the owned public error. Both `sort_by_dependencies`
+/// and `apply_reverse_dependencies_with_provenance` raise the very same payload,
+/// so keeping one conversion here means a payload change can never be applied to
+/// only one of them.
+impl From<&ReferencedDependencyAmbiguity<'_>> for DependencyAmbiguityError {
+    fn from(ambiguity: &ReferencedDependencyAmbiguity<'_>) -> Self {
+        Self::new(
+            ambiguity.dependency().to_string(),
+            ambiguity.candidates().to_vec(),
+        )
     }
 }
 
@@ -272,12 +288,7 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
     let project_names = ProjectNameAnalysis::new(&projects);
 
     if let Some(ambiguity) = project_names.referenced_ambiguity() {
-        return Err(DependencySortError::AmbiguousDependency(
-            DependencyAmbiguityError::new(
-                ambiguity.dependency().to_string(),
-                ambiguity.candidates().to_vec(),
-            ),
-        ));
+        return Err(DependencySortError::AmbiguousDependency(ambiguity.into()));
     }
 
     // Build dependency graph: for each project, find which projects depend on it.

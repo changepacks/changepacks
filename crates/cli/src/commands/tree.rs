@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use super::check::changed_marker;
+use super::join_display;
 
 /// Select the box-drawing tree connector for a node based on whether it is the last sibling.
 const fn tree_connector(is_last: bool) -> &'static str {
@@ -44,17 +45,14 @@ fn resolved_monorepo_deps<'a>(
                 resolved.push((dep, projects[index]));
             }
             ProjectNameResolution::Ambiguous => {
-                // Accumulate the joined list in a single running `String`
-                // instead of `.map(..).collect::<Vec<String>>().join(", ")`,
-                // which allocated one `String` per candidate plus the `Vec`
-                // spine plus the joined `String`.
-                let mut rendered_candidates = String::new();
-                for (i, candidate) in analysis.candidates_for(projects, dep).iter().enumerate() {
-                    if i > 0 {
-                        rendered_candidates.push_str(", ");
-                    }
-                    rendered_candidates.push_str(&normalize_path_separators_of(candidate));
-                }
+                let rendered_candidates = join_display(
+                    analysis
+                        .candidates_for(projects, dep)
+                        .iter()
+                        .map(PathBuf::as_path)
+                        .map(normalize_path_separators_of),
+                    ", ",
+                );
                 anyhow::bail!(
                     "dependency `{dep}` is ambiguous; candidate manifests: {rendered_candidates}"
                 );

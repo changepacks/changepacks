@@ -165,6 +165,16 @@ fn sort_publishable_projects<'a>(
             )
             .is_some()
     });
+    // `collect_projects` merges each finder's `HashMap` values, so the incoming
+    // order follows `RandomState` hash order and differs on every process run.
+    // `sort_by_dependencies` seeds Kahn's queue in input order and returns the
+    // input untouched on its dependency-free fast path, so without this sort
+    // both the "Projects to publish:" listing and the real publish order of
+    // mutually independent projects would vary run to run. `Project`'s total
+    // `Ord` (workspaces first, then language, name, normalized relative path,
+    // raw path) pins them. `check`, `update` and the default changepack flow
+    // already sort; this removes the outlier.
+    projects.sort();
     Ok(sort_by_dependencies(projects)?)
 }
 
@@ -1818,6 +1828,38 @@ members = ["packages/*"]
             .expect("configured Gradle selection should sort");
 
         assert_eq!(selected.len(), 1, "override key {key}, dry_run={dry_run}");
+    }
+
+    // Mutually independent projects hit `sort_by_dependencies`' dependency-free
+    // fast path, which returns the input order verbatim. Feeding the same set in
+    // different permutations therefore proves the ordering comes from
+    // `sort_publishable_projects` itself and not from the caller's (hash-order)
+    // input, which is what makes both the "Projects to publish:" listing and the
+    // real publish order reproducible across process runs.
+    #[test]
+    fn test_sort_publishable_projects_order_is_independent_of_input_permutation() {
+        let alpha = make_rust_mock("alpha", "crates/alpha/Cargo.toml", &[]);
+        let beta = make_rust_mock("beta", "crates/beta/Cargo.toml", &[]);
+        let gamma = make_rust_mock("gamma", "crates/gamma/Cargo.toml", &[]);
+
+        let mut ord_sorted = vec![&alpha, &beta, &gamma];
+        ord_sorted.sort();
+        let expected = project_names(&ord_sorted);
+
+        for permutation in [
+            vec![&gamma, &beta, &alpha],
+            vec![&beta, &gamma, &alpha],
+            vec![&alpha, &gamma, &beta],
+        ] {
+            let selected = sort_publishable_projects(permutation, &Config::default(), false)
+                .expect("independent publishable projects should sort");
+
+            assert_eq!(project_names(&selected), expected);
+        }
+    }
+
+    fn project_names<'a>(projects: &[&'a Project]) -> Vec<Option<&'a str>> {
+        projects.iter().map(|project| project.name()).collect()
     }
 
     #[tokio::test]

@@ -458,11 +458,7 @@ fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHasher>(
 
     let project_names = ProjectNameAnalysis::new(projects);
     if let Some(ambiguity) = project_names.referenced_ambiguity() {
-        return Err(DependencyAmbiguityError::new(
-            ambiguity.dependency().to_string(),
-            ambiguity.candidates().to_vec(),
-        )
-        .into());
+        return Err(DependencyAmbiguityError::from(ambiguity).into());
     }
 
     // Ambiguity validation is unconditional. Once it succeeds, an empty map

@@ -48,6 +48,135 @@ impl GradleProjectFinder {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Resolve the repository-bounded Gradle wrapper for `manifest_path` and make
+    /// sure this finder holds that wrapper's batched metadata.
+    ///
+    /// Owns the three cache-shaped steps of discovery: the bounded `find_gradlew`
+    /// ancestor walk, the `wrapper_dir_canonical` memoization of the wrapper root,
+    /// and the one-shot `metadata_by_wrapper` fill. Returns the normalized wrapper
+    /// root (the `metadata_by_wrapper` key) together with the wrapper path, which
+    /// the caller still needs for its error context.
+    async fn resolve_wrapper_metadata(
+        &mut self,
+        manifest_path: &Path,
+        project_dir: &Path,
+        relative_path: &Path,
+        java_available: bool,
+    ) -> Result<(PathBuf, PathBuf)> {
+        // Bound the gradlew search to the repository root: `relative_path` is
+        // the build file's path relative to the git repo root, so its component
+        // count equals the number of directories from `project_dir` up to and
+        // INCLUDING the repo root (root project: `build.gradle.kts` → count 1 →
+        // check `project_dir` only). This stops the ancestor walk at the repo
+        // boundary so an out-of-repo `gradlew` is never discovered or executed.
+        // Mirrors the C# finder's `is_workspace` bound.
+        let max_depth = relative_path.components().count();
+
+        let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth)
+            .await?
+            .with_context(|| gradlew_not_found(manifest_path))?;
+        // Sibling subprojects all report the same `gradlew_dir`, so canonicalize
+        // it once per wrapper root instead of once per manifest.
+        let normalized_wrapper_dir = match self.wrapper_dir_canonical.get(&gradlew_dir) {
+            Some(cached) => cached.clone(),
+            None => {
+                let normalized =
+                    tokio::fs::canonicalize(&gradlew_dir)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to normalize Gradle wrapper root '{}' for '{}'",
+                                gradlew_dir.display(),
+                                manifest_path.display()
+                            )
+                        })?;
+                self.wrapper_dir_canonical
+                    .insert(gradlew_dir.clone(), normalized.clone());
+                normalized
+            }
+        };
+
+        if !self
+            .metadata_by_wrapper
+            .contains_key(&normalized_wrapper_dir)
+        {
+            let metadata = get_gradle_metadata(&gradlew, &gradlew_dir, java_available).await?;
+            self.metadata_by_wrapper
+                .insert(normalized_wrapper_dir.clone(), metadata);
+        }
+
+        Ok((normalized_wrapper_dir, gradlew))
+    }
+
+    /// Look up the metadata record Gradle emitted for one project directory.
+    ///
+    /// Both lookups (wrapper record, then project record inside it) report the
+    /// same context, so the shared closure lives here instead of inline in
+    /// `visit`. The wrapper record is handed back alongside the project's Gradle
+    /// path and properties because the caller resolves dependency project names
+    /// against that same record and must not repeat the lookup.
+    fn gradle_project_metadata<'a>(
+        &'a self,
+        normalized_wrapper_dir: &Path,
+        project_dir: &Path,
+        normalized_project_dir: &Path,
+        gradlew: &Path,
+    ) -> Result<(&'a GradleWrapperMetadata, String, GradleProperties)> {
+        let missing_metadata_context = || {
+            format!(
+                "missing Gradle metadata record for project directory '{}' (normalized: '{}') from wrapper '{}'",
+                project_dir.display(),
+                normalized_project_dir.display(),
+                gradlew.display()
+            )
+        };
+        let wrapper_metadata = self
+            .metadata_by_wrapper
+            .get(normalized_wrapper_dir)
+            .with_context(missing_metadata_context)?;
+        let metadata = wrapper_metadata
+            .by_project_dir
+            .get(normalized_project_dir)
+            .with_context(missing_metadata_context)?;
+        Ok((
+            wrapper_metadata,
+            metadata.project_path.clone(),
+            metadata.properties.clone(),
+        ))
+    }
+
+    /// Map the `project(":a:b")` dependency paths lexed out of a build file to
+    /// the project names Gradle reported for them.
+    ///
+    /// A miss means the build file references a project the wrapper never
+    /// emitted, so the error names every field needed to locate the mismatch.
+    fn dependency_project_names<'a>(
+        project_names_by_path: &'a HashMap<String, String>,
+        dependencies: &[&str],
+        name: Option<&str>,
+        project_path: &str,
+        manifest_path: &Path,
+        gradlew: &Path,
+    ) -> Result<Vec<&'a String>> {
+        dependencies
+            .iter()
+            .map(|dependency_path| {
+                project_names_by_path
+                    .get(*dependency_path)
+                    .with_context(|| {
+                        format!(
+                            "Gradle dependency project path '{}' declared by project '{}' (Gradle path '{}', manifest '{}') is missing from metadata emitted by wrapper '{}'",
+                            dependency_path,
+                            name.unwrap_or("<unnamed>"),
+                            project_path,
+                            manifest_path.display(),
+                            gradlew.display()
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>>>()
+    }
 }
 
 async fn is_java_executable_candidate(path: &Path) -> Result<bool> {
@@ -340,47 +469,9 @@ impl ProjectFinder for GradleProjectFinder {
         let dependencies =
             extract_gradle_project_dependencies(&content, gradle_dependency_dialect(path));
 
-        // Bound the gradlew search to the repository root: `relative_path` is
-        // the build file's path relative to the git repo root, so its component
-        // count equals the number of directories from `project_dir` up to and
-        // INCLUDING the repo root (root project: `build.gradle.kts` → count 1 →
-        // check `project_dir` only). This stops the ancestor walk at the repo
-        // boundary so an out-of-repo `gradlew` is never discovered or executed.
-        // Mirrors the C# finder's `is_workspace` bound.
-        let max_depth = relative_path.components().count();
-
-        let (gradlew, gradlew_dir) = find_gradlew(project_dir, max_depth)
-            .await?
-            .with_context(|| gradlew_not_found(path))?;
-        // Sibling subprojects all report the same `gradlew_dir`, so canonicalize
-        // it once per wrapper root instead of once per manifest.
-        let normalized_wrapper_dir = match self.wrapper_dir_canonical.get(&gradlew_dir) {
-            Some(cached) => cached.clone(),
-            None => {
-                let normalized =
-                    tokio::fs::canonicalize(&gradlew_dir)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "Failed to normalize Gradle wrapper root '{}' for '{}'",
-                                gradlew_dir.display(),
-                                path.display()
-                            )
-                        })?;
-                self.wrapper_dir_canonical
-                    .insert(gradlew_dir.clone(), normalized.clone());
-                normalized
-            }
-        };
-
-        if !self
-            .metadata_by_wrapper
-            .contains_key(&normalized_wrapper_dir)
-        {
-            let metadata = get_gradle_metadata(&gradlew, &gradlew_dir, java_available).await?;
-            self.metadata_by_wrapper
-                .insert(normalized_wrapper_dir.clone(), metadata);
-        }
+        let (normalized_wrapper_dir, gradlew) = self
+            .resolve_wrapper_metadata(path, project_dir, relative_path, java_available)
+            .await?;
 
         let normalized_project_dir =
             tokio::fs::canonicalize(project_dir)
@@ -392,30 +483,19 @@ impl ProjectFinder for GradleProjectFinder {
                         path.display()
                     )
                 })?;
-        let missing_metadata_context = || {
-            format!(
-                "missing Gradle metadata record for project directory '{}' (normalized: '{}') from wrapper '{}'",
-                project_dir.display(),
-                normalized_project_dir.display(),
-                gradlew.display()
-            )
-        };
-        let wrapper_metadata = self
-            .metadata_by_wrapper
-            .get(&normalized_wrapper_dir)
-            .with_context(missing_metadata_context)?;
-        let metadata = wrapper_metadata
-            .by_project_dir
-            .get(&normalized_project_dir)
-            .with_context(missing_metadata_context)?;
-        let project_path = metadata.project_path.clone();
+        let (wrapper_metadata, project_path, properties) = self.gradle_project_metadata(
+            &normalized_wrapper_dir,
+            project_dir,
+            &normalized_project_dir,
+            &gradlew,
+        )?;
         let GradleProperties {
             name,
             version,
             has_subprojects,
             has_publish_task,
             has_publish_to_maven_local_task,
-        } = metadata.properties.clone();
+        } = properties;
 
         // Use directory name as fallback for project name
         let name = name.or_else(|| {
@@ -425,24 +505,14 @@ impl ProjectFinder for GradleProjectFinder {
                 .map(std::string::ToString::to_string)
         });
 
-        let project_names_by_path = &wrapper_metadata.project_names_by_path;
-        let dependency_names = dependencies
-            .iter()
-            .map(|dependency_path| {
-                project_names_by_path
-                    .get(*dependency_path)
-                    .with_context(|| {
-                        format!(
-                            "Gradle dependency project path '{}' declared by project '{}' (Gradle path '{}', manifest '{}') is missing from metadata emitted by wrapper '{}'",
-                            dependency_path,
-                            name.as_deref().unwrap_or("<unnamed>"),
-                            project_path,
-                            path.display(),
-                            gradlew.display()
-                        )
-                    })
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let dependency_names = Self::dependency_project_names(
+            &wrapper_metadata.project_names_by_path,
+            &dependencies,
+            name.as_deref(),
+            &project_path,
+            path,
+            &gradlew,
+        )?;
 
         // Workspace detection: gradlew reports non-empty subprojects list.
         // Previous approach (checking for settings.gradle.kts existence) caused

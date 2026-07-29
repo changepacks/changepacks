@@ -326,14 +326,6 @@ pub async fn find_project_dirs(
     // Collecting into a `HashSet<PathBuf>` collapses that to exactly one
     // traversal per unique file. Also keeps the `git_root_path.join(file)`
     // hoist from a previous iteration intact.
-    //
-    // Preallocate: `HashSet::from_iter` (via `collect`) does NOT use
-    // `size_hint` to reserve capacity (unlike `Vec`), so it incurs
-    // geometric-doubling reallocations. `diff.len() * 2` is a conservative
-    // estimate (typical live-edit repos have status entries in the same order
-    // of magnitude as base-branch diff entries) that avoids reserving too
-    // little without unbounded over-allocation.
-    let mut unique_files: HashSet<PathBuf> = HashSet::with_capacity(diff.len() * 2);
     let status_paths = collect_dispatchable_paths(
         repo.status(progress::Discard)
             .context("Failed to prepare repository status")?
@@ -350,6 +342,12 @@ pub async fn find_project_dirs(
         gitignore.as_ref(),
         "Failed to enumerate worktree status paths",
     )?;
+
+    // Preallocate the exact upper bound now that both sources are materialized.
+    // Cross-source duplicates can only leave unused capacity, while reserving
+    // from `diff` alone can require the set to grow for worktree-only changes.
+    let mut unique_files: HashSet<PathBuf> =
+        HashSet::with_capacity(diff.len() + status_paths.len());
     unique_files.extend(status_paths);
     unique_files.extend(diff);
 
@@ -361,8 +359,12 @@ pub async fn find_project_dirs(
     // Vec allocations total. Order-flip safety (project-major vs file-major) is
     // guaranteed by `Project::check_changed` monotonicity — see its doc comment
     // on `ProjectFinder::check_changed_many`.
+    //
+    // `into_iter` (not `iter`) so each source `PathBuf` is moved out and freed
+    // as its absolute form is built, instead of keeping the whole set alive
+    // alongside `abs_paths`; `unique_files` is not read after this point.
     let abs_paths: Vec<PathBuf> = unique_files
-        .iter()
+        .into_iter()
         .map(|file| git_root_path.join(file))
         .collect();
     for finder in project_finders.iter_mut() {
