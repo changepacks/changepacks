@@ -273,6 +273,48 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    /// Workspace-side twin of the `NodePackage` malformed-manifest test: the
+    /// two `update_version` bodies share `bump_package_json_version`, so both
+    /// trait entry points must be pinned independently or a regression could be
+    /// hidden behind whichever one is still covered.
+    #[tokio::test]
+    async fn test_node_workspace_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        let original = r#"{ "name": "test-workspace", invalid json }"#;
+        fs::write(&package_json, original).unwrap();
+
+        let mut workspace = NodeWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        let err = workspace
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("a malformed package.json must fail the bump");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("Failed to parse package.json"),
+            "error chain should name the parse failure, got: {chain}"
+        );
+        assert!(
+            chain.contains(&package_json.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+
+        // Byte-for-byte: an unparseable manifest must never be rewritten.
+        assert_eq!(
+            fs::read(&package_json).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     #[test]
     fn test_node_workspace_dependencies() {
         let mut workspace = NodeWorkspace::new(

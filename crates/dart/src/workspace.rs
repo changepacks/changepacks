@@ -229,6 +229,50 @@ workspace:
         temp_dir.close().unwrap();
     }
 
+    /// Workspace counterpart of
+    /// `test_dart_package_update_version_malformed_manifest_leaves_file_untouched`.
+    /// `DartWorkspace` had no error-path coverage at all, so a `yamlpath` parse
+    /// failure reached through the `Workspace` trait entry point was unpinned:
+    /// nothing stopped a future writer from truncating or half-writing a
+    /// manifest it could not parse.
+    #[tokio::test]
+    async fn test_dart_workspace_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        let original = "name: test_workspace\nversion: [1.0.0\n";
+        fs::write(&pubspec_path, original).unwrap();
+
+        let mut workspace = DartWorkspace::new(
+            Some("test_workspace".to_string()),
+            Some("1.0.0".to_string()),
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        let err = workspace
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("a malformed pubspec.yaml must fail the bump");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("Failed to parse pubspec.yaml"),
+            "error chain should name the parse failure, got: {chain}"
+        );
+        assert!(
+            chain.contains(&pubspec_path.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+
+        // Byte-for-byte: an unparseable manifest must never be rewritten.
+        assert_eq!(
+            fs::read(&pubspec_path).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     #[test]
     fn test_dependencies() {
         let mut workspace = DartWorkspace::new(

@@ -199,6 +199,51 @@ dependencies:
         temp_dir.close().unwrap();
     }
 
+    /// A `pubspec.yaml` that does not parse must abort the bump BEFORE the
+    /// writer touches the file. The finder covers a malformed manifest
+    /// (`test_visit_malformed_pubspec_yaml`), but nothing pinned the
+    /// `yamlpath` parse failure as observed through the `Package` trait entry
+    /// point — so a writer that swallowed the parse error and rewrote the file
+    /// from scratch would still leave this path green. Mirrors
+    /// `test_python_package_update_version_malformed_manifest_leaves_file_untouched`.
+    #[tokio::test]
+    async fn test_dart_package_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        let original = "name: test_package\nversion: [1.0.0\n";
+        fs::write(&pubspec_path, original).unwrap();
+
+        let mut package = DartPackage::new(
+            Some("test_package".to_string()),
+            Some("1.0.0".to_string()),
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        let err = package
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("a malformed pubspec.yaml must fail the bump");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("Failed to parse pubspec.yaml"),
+            "error chain should name the parse failure, got: {chain}"
+        );
+        assert!(
+            chain.contains(&pubspec_path.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+
+        // Byte-for-byte: an unparseable manifest must never be rewritten.
+        assert_eq!(
+            fs::read(&pubspec_path).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     #[test]
     fn test_dependencies() {
         let mut package = DartPackage::new(

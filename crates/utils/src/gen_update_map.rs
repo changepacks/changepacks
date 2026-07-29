@@ -366,8 +366,11 @@ fn apply_update_on_rules_from(
                     // expansion revisits the same dependents across batches.
                     // `contains_key` / `contains` accept a `&Path` through `Borrow`
                     // (and `Path` hashes identically to `PathBuf`), so a doubly-hit
-                    // dependent allocates nothing and only a genuine miss builds the
-                    // `PathBuf` the insert bodies below consume.
+                    // dependent allocates nothing. Each surviving consumer below then
+                    // builds exactly the one owned `PathBuf` it stores: `PathBuf::from`
+                    // of a `&Path` costs what cloning a shared binding costs, so no
+                    // case regresses, and an update-only hit no longer allocates a
+                    // spare binding that is dropped unused.
                     let dependent_ref = Path::new(dependent.as_str());
                     let needs_update = !update_map.contains_key(dependent_ref);
                     let needs_seed = !expansion_seeds.contains(dependent_ref);
@@ -375,22 +378,21 @@ fn apply_update_on_rules_from(
                         continue;
                     }
 
-                    let dependent_path = PathBuf::from(dependent_ref);
                     if needs_update {
                         let note =
                             format!("Auto-update triggered by updateOn rule: {trigger_pattern}");
                         update_map.insert(
-                            dependent_path.clone(),
+                            PathBuf::from(dependent_ref),
                             (
                                 UpdateType::Patch,
                                 vec![ChangePackResultLog::new(UpdateType::Patch, note.clone())],
                             ),
                         );
-                        generated.push((dependent_path.clone(), note));
+                        generated.push((PathBuf::from(dependent_ref), note));
                     }
                     if needs_seed {
-                        expansion_seeds.insert(dependent_path.clone());
-                        queued_paths.push_back(dependent_path);
+                        expansion_seeds.insert(PathBuf::from(dependent_ref));
+                        queued_paths.push_back(PathBuf::from(dependent_ref));
                     }
                 }
             }

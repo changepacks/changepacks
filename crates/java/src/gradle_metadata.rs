@@ -8,7 +8,7 @@
 
 use anyhow::{Context, Result};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, hash_map::Entry},
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
@@ -314,16 +314,19 @@ pub(crate) async fn get_gradle_metadata(
                     gradlew.display()
                 )
             })?;
-        if let Some(previous_name) =
-            project_names_by_path.insert(project_path.clone(), project_name.clone())
-        {
-            return Err(anyhow::anyhow!(
-                "Duplicate Gradle metadata project path '{}' from '{}': projects '{}' and '{}'",
-                project_path,
-                gradlew.display(),
-                previous_name,
-                project_name
-            ));
+        match project_names_by_path.entry(project_path.clone()) {
+            Entry::Occupied(previous) => {
+                return Err(anyhow::anyhow!(
+                    "Duplicate Gradle metadata project path '{}' from '{}': projects '{}' and '{}'",
+                    project_path,
+                    gradlew.display(),
+                    previous.get(),
+                    project_name
+                ));
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(project_name);
+            }
         }
         if let Some(previous) = by_project_dir.insert(normalized_dir.clone(), record) {
             return Err(anyhow::anyhow!(

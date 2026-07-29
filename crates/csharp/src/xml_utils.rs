@@ -166,7 +166,7 @@ pub fn update_version_in_xml(content: &str, new_version: &str) -> Result<String>
     let mut element_depth = 0usize;
     let mut project_depth = None;
     let mut project_close_ws: Option<String> = None;
-    let mut fallback_qnames: Option<(String, String)> = None;
+    let mut project_qname: Option<String> = None;
     let mut fallback_group_indent = None;
 
     loop {
@@ -179,9 +179,12 @@ pub fn update_version_in_xml(content: &str, new_version: &str) -> Result<String>
                     let element_name = e.name();
                     let qname = std::str::from_utf8(element_name.as_ref())
                         .context("Failed to decode Project qualified name")?;
-                    let property_group_qname = qname_with_local_name(qname, "PropertyGroup");
-                    let version_qname = qname_with_local_name(qname, "Version");
-                    fallback_qnames = Some((property_group_qname, version_qname));
+                    // Only the raw `Project` qualified name is retained here.
+                    // The derived `PropertyGroup`/`Version` names are built at
+                    // the single synthesize site below, so the dominant path
+                    // (a `.csproj` that already carries `<Version>`) pays no
+                    // allocation for names it never writes.
+                    project_qname = Some(qname.to_owned());
                 }
                 let is_top_level = project_depth.is_some_and(|depth| element_depth == depth + 1);
                 let preceding_project_ws = if is_top_level {
@@ -279,8 +282,11 @@ pub fn update_version_in_xml(content: &str, new_version: &str) -> Result<String>
                     && project_depth == Some(element_depth)
                     && !version_updated
                     && !has_version
-                    && let Some((property_group_qname, version_qname)) = fallback_qnames.as_ref()
+                    && let Some(project_qname) = project_qname.as_deref()
                 {
+                    let property_group_qname =
+                        qname_with_local_name(project_qname, "PropertyGroup");
+                    let version_qname = qname_with_local_name(project_qname, "Version");
                     let fallback_group_indent = fallback_group_indent.as_deref().unwrap_or("");
                     if let Some(trailing) = project_close_ws.as_deref() {
                         if contains_line_break(trailing) {
@@ -292,20 +298,20 @@ pub fn update_version_in_xml(content: &str, new_version: &str) -> Result<String>
                         writer.write_event(Event::Text(BytesText::new(fallback_group_indent)))?;
                     }
 
-                    writer.write_event(Event::Start(BytesStart::new(property_group_qname)))?;
+                    writer.write_event(Event::Start(BytesStart::new(&property_group_qname)))?;
                     if !line_ending.is_empty() {
                         let inner_indent = format!("{fallback_group_indent}{indent}");
                         writer.write_event(Event::Text(BytesText::new(line_ending)))?;
                         writer.write_event(Event::Text(BytesText::new(&inner_indent)))?;
                     }
-                    writer.write_event(Event::Start(BytesStart::new(version_qname)))?;
+                    writer.write_event(Event::Start(BytesStart::new(&version_qname)))?;
                     writer.write_event(Event::Text(BytesText::new(new_version)))?;
-                    writer.write_event(Event::End(BytesEnd::new(version_qname)))?;
+                    writer.write_event(Event::End(BytesEnd::new(&version_qname)))?;
                     if !line_ending.is_empty() {
                         writer.write_event(Event::Text(BytesText::new(line_ending)))?;
                         writer.write_event(Event::Text(BytesText::new(fallback_group_indent)))?;
                     }
-                    writer.write_event(Event::End(BytesEnd::new(property_group_qname)))?;
+                    writer.write_event(Event::End(BytesEnd::new(&property_group_qname)))?;
                     if let Some(trailing) = project_close_ws.as_deref() {
                         writer.write_event(Event::Text(BytesText::new(trailing)))?;
                     } else if !line_ending.is_empty() {
