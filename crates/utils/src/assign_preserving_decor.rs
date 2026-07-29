@@ -17,8 +17,8 @@ use toml_edit::Item;
 /// identical capture / assign / restore triple inline. `crates/AGENTS.md`
 /// forbids importing one language crate into another, so `changepacks-utils`
 /// is the only legal home for the shared body — the same precedent already set
-/// by [`crate::ensure_toml_table_like`]. `changepacks-rust` keeps a thin
-/// `pub(crate)` wrapper of the same name so none of its call sites changed.
+/// by [`crate::ensure_toml_table_like`]. Both crates now call this function
+/// directly — no per-crate pass-through wrapper.
 ///
 /// A slot that does not currently hold a value — a missing key auto-vivified
 /// by `toml_edit` indexing, or a table — has no decor to preserve, so the

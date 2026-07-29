@@ -2,7 +2,8 @@ use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
 use changepacks_utils::{
-    next_version, replace_version_keep_prefix, split_version, write_finalized,
+    assign_preserving_decor, next_version, replace_version_keep_prefix, split_version,
+    write_finalized,
 };
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -163,7 +164,7 @@ impl Workspace for RustWorkspace {
                 // `assign_preserving_decor` keeps the trivia around the value —
                 // notably an end-of-line comment on the version line — which a
                 // freshly built `Item` would otherwise drop.
-                crate::assign_preserving_decor(
+                assign_preserving_decor(
                     &mut cargo_toml["package"]["version"],
                     new_version.as_str(),
                 );
@@ -175,7 +176,7 @@ impl Workspace for RustWorkspace {
         } else if cargo_toml.get("workspace").is_some() {
             // A manifest with [workspace] but no [package] is virtual even when
             // it has not opted into workspace package metadata yet.
-            crate::assign_preserving_decor(
+            assign_preserving_decor(
                 &mut cargo_toml["workspace"]["package"]["version"],
                 new_version.as_str(),
             );
@@ -203,7 +204,7 @@ impl Workspace for RustWorkspace {
             .and_then(|w| w.get_mut("package"))
             .and_then(|p| p.get_mut("version"))
         {
-            crate::assign_preserving_decor(ws_pkg_version, new_version.as_str());
+            assign_preserving_decor(ws_pkg_version, new_version.as_str());
         }
 
         // Sync [workspace.dependencies] only for discovered members that inherit

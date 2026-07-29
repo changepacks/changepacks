@@ -346,13 +346,23 @@ fn record_publish_success(
 ///
 ///   - `PublishFailureCause::Output(output)` prints
 ///     `print_publish_output(&output); eprintln!("{label} {project}");`
-///   - `PublishFailureCause::Error(e)` prints `eprintln!("{label} {project}: {e}");`
-///     (with the `: {e}` suffix).
+///   - `PublishFailureCause::Error(e)` prints `eprintln!("{label} {project}: {e:#}");`
+///     (with the `: {e:#}` suffix).
 ///
-/// Byte-identical to the pre-refactor arms — including the trailing
-/// `failed_projects.push(project.to_string())` shared by both. Ok(None)
-/// (dry-run unsupported) stays inline in the dry-run loop because it is
-/// a warning, not a failure, and does not fit this helper's contract.
+/// The trailing `failed_projects.push(project.to_string())` is shared by both
+/// causes. Ok(None) (dry-run unsupported) stays inline in the dry-run loop
+/// because it is a warning, not a failure, and does not fit this helper's
+/// contract.
+///
+/// Errors are rendered with anyhow's alternate `Display` (`{e:#}`) on BOTH the
+/// stdout and the JSON path, so every `with_context` layer survives instead of
+/// only the outermost message. That is where the actionable detail lives for
+/// these failures: Node's `node_modules/.bin` PATH probe and
+/// `run_publish_flow`'s `Package directory not found` /
+/// `Workspace directory not found` context both wrap a lower-level cause. The
+/// chain is joined by `": "`. The JSON contract is unaffected — the key set and
+/// the `PublishResult` shape are unchanged and only the free-text `error`
+/// string grows.
 ///
 /// # Errors
 /// Returns the underlying `io::Error` if replaying the captured stdout fails.
@@ -371,14 +381,14 @@ fn record_publish_failure(
                 eprintln!("{failure_label} {project}");
             }
             PublishFailureCause::Error(e) => {
-                eprintln!("{failure_label} {project}: {e}");
+                eprintln!("{failure_label} {project}: {e:#}");
             }
         }
     }
     if let FormatOptions::Json = format {
         let (stdout, stderr, err_msg) = match cause {
             PublishFailureCause::Output(output) => (output.stdout, output.stderr, None),
-            PublishFailureCause::Error(e) => (String::new(), String::new(), Some(e.to_string())),
+            PublishFailureCause::Error(e) => (String::new(), String::new(), Some(format!("{e:#}"))),
         };
         result_map.insert(
             project.relative_path().to_path_buf(),
@@ -1378,6 +1388,51 @@ mod tests {
         assert!(err_msg.contains("Failed to publish 2 project(s)"));
         assert!(err_msg.contains("pkg-a"));
         assert!(err_msg.contains("pkg-b"));
+    }
+
+    /// A spawn/execution failure must reach the `--format json` payload with
+    /// its whole anyhow cause chain, not just the outermost message: the
+    /// actionable detail for these errors lives in the `with_context` layers
+    /// (`Package directory not found`, Node's `node_modules/.bin` PATH probe).
+    /// The JSON contract is pinned alongside it — the key set stays exactly
+    /// `result` / `error` / `stdout` / `stderr` and only the free-text `error`
+    /// value grows.
+    #[test]
+    fn test_record_publish_failure_json_keeps_full_cause_chain() {
+        let project = Project::Package(Box::new(TestPackage::fail_spawn()));
+        let error = anyhow::anyhow!("No such file or directory (os error 2)")
+            .context("Package directory not found");
+        let mut result_map = BTreeMap::new();
+        let mut failed_projects = Vec::new();
+
+        record_publish_failure(
+            &mut result_map,
+            &mut failed_projects,
+            &project,
+            PublishFailureCause::Error(&error),
+            "Failed to publish",
+            FormatOptions::Json,
+        )
+        .expect("the json path writes nothing to stdout");
+
+        assert_eq!(failed_projects.len(), 1);
+        let entry = result_map
+            .get(std::path::Path::new("package.json"))
+            .expect("failure must be recorded under the project relative path");
+        let value = serde_json::to_value(entry).expect("serialize");
+        let object = value
+            .as_object()
+            .expect("PublishResult serializes to a JSON object");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["error", "result", "stderr", "stdout"]);
+        assert_eq!(object["result"], serde_json::json!(false));
+        assert_eq!(
+            object["error"],
+            serde_json::json!(
+                "Package directory not found: No such file or directory (os error 2)"
+            ),
+        );
     }
 
     // Used by leaf packages in the workspace-internal-dep integration tests

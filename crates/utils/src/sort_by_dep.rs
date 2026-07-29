@@ -91,16 +91,6 @@ pub enum DependencySortError {
     AmbiguousDependency(DependencyAmbiguityError),
 }
 
-impl DependencySortError {
-    #[must_use]
-    pub fn ambiguity(&self) -> Option<&DependencyAmbiguityError> {
-        match self {
-            Self::Cycle(_) => None,
-            Self::AmbiguousDependency(error) => Some(error),
-        }
-    }
-}
-
 impl fmt::Display for DependencySortError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -454,6 +444,14 @@ mod tests {
         cycle
     }
 
+    /// Narrow a sort error to its ambiguity details, panicking on any other variant.
+    fn ambiguity_of(error: &DependencySortError) -> &DependencyAmbiguityError {
+        let DependencySortError::AmbiguousDependency(ambiguity) = error else {
+            panic!("expected an ambiguous dependency error, got: {error}");
+        };
+        ambiguity
+    }
+
     fn create_project_at(name: &str, relative_path: &str) -> Project {
         Project::Package(Box::new(NodePackage::new(
             Some(name.to_string()),
@@ -605,7 +603,7 @@ mod tests {
 
         let projects = vec![&app, &core_a, &core_b];
         let error = sort_by_dependencies(projects).expect_err("ambiguous edge must fail");
-        let ambiguity = error.ambiguity().expect("ambiguity details");
+        let ambiguity = ambiguity_of(&error);
 
         assert_eq!(ambiguity.dependency(), "core");
         assert_eq!(
@@ -652,16 +650,12 @@ mod tests {
         let second = sort_by_dependencies(vec![&app, &backslash, &slash])
             .expect_err("ambiguous edge must fail");
 
-        let first_candidates: Vec<_> = first
-            .ambiguity()
-            .expect("ambiguity details")
+        let first_candidates: Vec<_> = ambiguity_of(&first)
             .candidates()
             .iter()
             .map(|path| path.to_string_lossy())
             .collect();
-        let second_candidates: Vec<_> = second
-            .ambiguity()
-            .expect("ambiguity details")
+        let second_candidates: Vec<_> = ambiguity_of(&second)
             .candidates()
             .iter()
             .map(|path| path.to_string_lossy())
@@ -963,9 +957,9 @@ mod tests {
         let ambiguity = sort_by_dependencies(vec![&app, &core_a, &core_b])
             .expect_err("ambiguous edge must fail");
 
-        // The cross-variant fallback: a cycle carries no ambiguity details, and
+        // The cross-variant fallback: a cycle is never the ambiguity variant, and
         // an ambiguity is never the cycle variant.
-        assert!(cycle.ambiguity().is_none());
+        assert!(matches!(cycle, DependencySortError::Cycle(_)));
         assert!(!matches!(ambiguity, DependencySortError::Cycle(_)));
 
         // Both variants delegate `source` to their inner error, so the inner
@@ -987,13 +981,7 @@ mod tests {
 
         // Sanity: each fixture really is the variant it claims to be.
         assert_eq!(cycle_of(&cycle).members().len(), 2);
-        assert_eq!(
-            ambiguity
-                .ambiguity()
-                .expect("ambiguity details")
-                .dependency(),
-            "core"
-        );
+        assert_eq!(ambiguity_of(&ambiguity).dependency(), "core");
     }
 
     #[test]

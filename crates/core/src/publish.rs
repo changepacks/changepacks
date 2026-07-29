@@ -107,9 +107,12 @@ pub fn lookup_by_path_or_language<'a>(
     // Retry with forward-slash normalization if the exact lookup missed and
     // the string contains a backslash, so a forward-slash config key does not
     // silently miss. See `normalize_path_separators` for the shared normalization
-    // policy used across the CLI and core.
+    // policy used across the CLI and core. The guard already established that a
+    // backslash is present, which makes that helper's own `contains` check
+    // redundant here, so this replaces directly and keeps the probed key
+    // byte-identical to the helper's `Cow::Owned` arm.
     if lossy.contains('\\')
-        && let Some(cmd) = map.get(normalize_path_separators(lossy.as_ref()).as_ref())
+        && let Some(cmd) = map.get(lossy.replace('\\', "/").as_str())
     {
         return Some(cmd);
     }
