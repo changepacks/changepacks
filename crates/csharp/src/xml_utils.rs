@@ -838,6 +838,24 @@ mod tests {
     }
 
     #[test]
+    fn test_property_group_malformed_attribute_returns_contextual_error() {
+        // A `PropertyGroup` start tag carrying a valueless attribute makes
+        // quick-xml's attribute iterator yield `Err`. That failure must
+        // surface as the contextual `Failed to parse PropertyGroup
+        // attribute` error rather than a bare `AttrError`, mirroring the
+        // `ProjectReference` counterpart pinned in `finder.rs`.
+        let content =
+            r#"<Project><PropertyGroup Broken><Version>1.0.0</Version></PropertyGroup></Project>"#;
+
+        let error = update_version_in_xml(content, "2.0.0").unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Failed to parse PropertyGroup attribute"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
     fn test_update_version_preserves_general_ref() {
         // XML with entity references like &custom; triggers Event::GeneralRef in quick-xml,
         // exercising the GeneralRef handler (lines 78-79)

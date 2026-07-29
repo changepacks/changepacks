@@ -239,6 +239,38 @@ mod tests {
         );
     }
 
+    /// When the caller claims an existing `version` key but the manifest has
+    /// none, the `Replace` patch route cannot resolve. That failure must be
+    /// reported with the `Failed to update pubspec.yaml <path>` context (the
+    /// `with_context` on `apply_yaml_patches`), and it must leave the manifest
+    /// byte-identical so a rejected patch never produces a partial write.
+    #[tokio::test]
+    async fn test_write_pubspec_version_unresolvable_replace_route_keeps_file_intact() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_yaml = temp_dir.path().join("pubspec.yaml");
+        let original = "name: test\n";
+        fs::write(&pubspec_yaml, original).unwrap();
+
+        // `existing_version = true` forces the Replace branch, but there is no
+        // `version` key for `yamlpath::route!("version")` to point at.
+        let result = write_pubspec_version(&pubspec_yaml, "2.0.0", true).await;
+
+        let err = result.expect_err("replacing a missing version key must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to update pubspec.yaml {}",
+                pubspec_yaml.display()
+            )),
+            "error chain should carry the update context with the path, got: {chain}"
+        );
+        assert_eq!(
+            fs::read_to_string(&pubspec_yaml).unwrap(),
+            original,
+            "a failed patch must not partially write the manifest"
+        );
+    }
+
     #[tokio::test]
     async fn test_write_pubspec_version_error_includes_path() {
         let temp_dir = TempDir::new().unwrap();

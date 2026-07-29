@@ -910,4 +910,42 @@ mod tests {
         assert!(!pack_dir.exists(), "temporary pack directory leaked");
         assert!(!feed_dir.exists(), "temporary feed directory leaked");
     }
+
+    #[tokio::test]
+    async fn test_managed_publish_rejects_manifest_without_file_name() {
+        let work = TempDir::new().unwrap();
+        let invoked = Arc::new(Mutex::new(false));
+        let runner_invoked = Arc::clone(&invoked);
+
+        // `..` terminates in a parent component, so `Path::file_name` is `None`
+        // and the guard must reject before any `dotnet` command is spawned.
+        let error = run_managed_publish_with(
+            work.path(),
+            Path::new(".."),
+            ManagedPublishTarget::TemporaryFeed,
+            move |_program, _args, _working_dir| {
+                let runner_invoked = Arc::clone(&runner_invoked);
+                async move {
+                    *runner_invoked.lock().unwrap() = true;
+                    Ok(PublishOutput {
+                        success: true,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
+                }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains("C# project manifest path has no file name"),
+            "chain: {chain}"
+        );
+        assert!(
+            !*invoked.lock().unwrap(),
+            "the command runner must not be invoked when the manifest has no file name"
+        );
+    }
 }

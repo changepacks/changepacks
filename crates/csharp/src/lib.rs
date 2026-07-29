@@ -162,6 +162,63 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    /// The read leg of `write_csproj_version` (via [`read_csproj`]) must name
+    /// the manifest path in its error chain, so a missing/unreadable `.csproj`
+    /// is diagnosable from the CLI output alone. Pins the exact
+    /// `Failed to read C# project {path}` context added at the `read_csproj`
+    /// call site — same message-pinning style as the Node/utils siblings.
+    #[tokio::test]
+    async fn test_write_csproj_version_read_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Missing.csproj");
+
+        let err = write_csproj_version(&csproj_path, "1.0.1")
+            .await
+            .expect_err("a missing .csproj must fail the read");
+
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to read C# project {}",
+                csproj_path.display()
+            )),
+            "error chain should carry the read context naming the manifest path, got: {chain}"
+        );
+        temp_dir.close().unwrap();
+    }
+
+    /// The update leg of `write_csproj_version` must name the manifest path in
+    /// its error chain: `update_version_in_xml` only reports the XML-level
+    /// cause (`XML parsing error: ...`), so without the `.with_context(...)`
+    /// wrapper a user with many `.csproj` files could not tell WHICH file is
+    /// malformed. Uses an unbalanced `<Project>`/`<PropertyGroup>` document so
+    /// the XML parse — not the read — is what fails.
+    #[tokio::test]
+    async fn test_write_csproj_version_update_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Malformed.csproj");
+        tokio::fs::write(
+            &csproj_path,
+            "<Project><PropertyGroup><Version>1.0.0</Version></PropertyGroup",
+        )
+        .await
+        .unwrap();
+
+        let err = write_csproj_version(&csproj_path, "1.0.1")
+            .await
+            .expect_err("a malformed .csproj must fail the version update");
+
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to update version in C# project {}",
+                csproj_path.display()
+            )),
+            "error chain should carry the update context naming the manifest path, got: {chain}"
+        );
+        temp_dir.close().unwrap();
+    }
+
     /// A malformed `<Version>` must fail the bump with the manifest path named
     /// in the error chain — matching the Node/Python/Dart/Rust siblings whose
     /// version-bump already carries `.with_context(... path ...)`. The bump

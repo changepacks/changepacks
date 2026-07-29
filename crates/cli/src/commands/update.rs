@@ -214,43 +214,36 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     let project_result = apply_project_version_updates(&mut update_projects).await;
     drop(update_projects);
 
-    let update_result = match project_result {
-        Ok(()) => {
-            // Collect filtered workspace projects after the mutable borrow is released.
-            let workspace_projects = collect_workspace_projects(&project_finders);
-            if workspace_projects.is_empty() {
-                Ok(())
-            } else {
-                match collect_update_project_refs(
-                    &project_finders,
-                    &update_map,
-                    &ctx.repo_root_path,
-                ) {
-                    Ok(update_projects) => {
-                        let projects = packages_of(
-                            update_projects.len(),
-                            update_projects.iter().map(|(p, _)| *p),
-                        );
-                        apply_workspace_dependency_updates(&workspace_projects, &projects).await
-                    }
-                    Err(error) => Err(error),
-                }
-            }
-        }
-        Err(error) => Err(error),
-    };
+    // Every write past the snapshot belongs to one all-or-nothing transaction:
+    // the first failure must skip the remaining steps and hand the error to
+    // `rollback_update_error` below. Expressing that as one `async` block lets
+    // `?` do the short-circuiting, instead of three nested `match`es whose
+    // `Err` arms were pure `Err(error) => Err(error)` forwarding. Step order is
+    // unchanged: version writes, then workspace dependency rewrites, then
+    // carry-forward logs, then log cleanup.
+    let transaction_result: Result<()> = async {
+        project_result?;
 
-    let transaction_result = match update_result {
-        Ok(()) => match persist_carry_forward_logs(&ctx.changepacks_dir, &carry_forward_logs).await
-        {
-            Ok(()) => match applied_paths {
-                Some(applied) => clear_applied_update_logs(&ctx.changepacks_dir, &applied).await,
-                None => clear_update_logs(&ctx.changepacks_dir).await,
-            },
-            Err(error) => Err(error),
-        },
-        Err(error) => Err(error),
-    };
+        // Collect filtered workspace projects after the mutable borrow is released.
+        let workspace_projects = collect_workspace_projects(&project_finders);
+        if !workspace_projects.is_empty() {
+            let update_projects =
+                collect_update_project_refs(&project_finders, &update_map, &ctx.repo_root_path)?;
+            let projects = packages_of(
+                update_projects.len(),
+                update_projects.iter().map(|(p, _)| *p),
+            );
+            apply_workspace_dependency_updates(&workspace_projects, &projects).await?;
+        }
+
+        persist_carry_forward_logs(&ctx.changepacks_dir, &carry_forward_logs).await?;
+
+        match applied_paths {
+            Some(applied) => clear_applied_update_logs(&ctx.changepacks_dir, &applied).await,
+            None => clear_update_logs(&ctx.changepacks_dir).await,
+        }
+    }
+    .await;
     if let Err(error) = transaction_result {
         return rollback_update_error(&snapshots, error).await;
     }

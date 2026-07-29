@@ -975,6 +975,15 @@ mod tests {
         assert!(CSharpProjectFinder::parse_csproj_metadata(content).is_err());
     }
 
+    // Pins the `with_context` wrapper `visit` puts around
+    // `parse_csproj_metadata`: the top-level message must name the failure
+    // and the manifest path, AND the underlying parser error must survive
+    // in the anyhow chain. The chain assertion is what distinguishes a
+    // context wrapper from a `map_err` that discards the root cause — the
+    // extractor-level `test_extract_version_malformed_xml` only proves
+    // `parse_csproj_metadata` returns `Err`, and asserting on
+    // `error.to_string()` alone would still pass if `visit` replaced the
+    // source instead of wrapping it.
     #[tokio::test]
     async fn test_visit_malformed_xml_returns_path_context() {
         let temp_dir = TempDir::new().unwrap();
@@ -989,6 +998,26 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("Failed to parse C# project XML"));
         assert!(message.contains("Broken.csproj"));
+
+        // Full alternate-Display chain: context + every source below it.
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains("Failed to parse C# project XML"),
+            "context missing from chain: {chain}"
+        );
+        assert!(
+            chain.contains(&csproj_path.display().to_string()),
+            "absolute manifest path missing from chain: {chain}"
+        );
+        assert!(
+            chain.contains("unexpected end of XML document"),
+            "root cause dropped from chain: {chain}"
+        );
+        assert_eq!(
+            error.root_cause().to_string(),
+            "unexpected end of XML document",
+            "context must wrap the parser error, not replace it: {chain}"
+        );
 
         temp_dir.close().unwrap();
     }

@@ -569,6 +569,66 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    // A freshly `git init`-ed repository has no `.git/index` until something is
+    // staged, which is the only way to reach the `repo.index()` error arm in
+    // `discover_project_dirs_with_gitignore`. Pin the actionable context so the
+    // "add files to git" hint cannot silently disappear.
+    #[tokio::test]
+    async fn find_project_dirs_reports_missing_git_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        init_git_repo(temp_path);
+
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        let error = find_project_dirs(
+            &discover_repo(temp_path),
+            &mut finders,
+            &Config::default(),
+            false,
+        )
+        .await
+        .expect_err("a repository with no index must abort discovery");
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("Failed to get index, Please add files to git"),
+            "unexpected error context: {message}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    // A bare repository is discovered successfully but exposes no work dir, so
+    // it is the only way to reach the `work_dir()` -> None arm of
+    // `find_project_dirs`. Pin the documented message so the branch cannot
+    // silently lose its context.
+    #[tokio::test]
+    async fn find_project_dirs_rejects_bare_repository() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        run_git(temp_path, &["init", "--bare", "-b", "main"]);
+
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        let error = find_project_dirs(
+            &discover_repo(temp_path),
+            &mut finders,
+            &Config::default(),
+            false,
+        )
+        .await
+        .expect_err("a bare repository must abort discovery");
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("Not a working directory"),
+            "unexpected error context: {message}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     #[tokio::test]
     async fn find_uses_directory_name_when_origin_is_absent() {
         let temp_dir = TempDir::new().unwrap();

@@ -198,3 +198,43 @@ pub async fn write_gradle_version(
         properties_path.display()
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{GradleVersionScope, write_gradle_version};
+    use changepacks_utils::test_support;
+
+    /// The build-script write-back is the only place that attaches the
+    /// `Failed to write Gradle build file <path>` context. Pin it so a
+    /// permission failure stays attributable to the build script rather than
+    /// surfacing as a bare `os error`.
+    #[tokio::test]
+    async fn test_write_gradle_version_build_file_write_error_names_context_and_path() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle.kts");
+        std::fs::write(&build_path, "version = \"1.0.0\"\n").unwrap();
+
+        // The read succeeds (readonly still permits reads); it is the
+        // write-back that must fail, so flip the readonly bit after seeding.
+        test_support::set_readonly(&build_path, true);
+
+        // A NEW version guarantees the write is actually attempted against the
+        // readonly file rather than being short-circuited as an unchanged no-op.
+        let result =
+            write_gradle_version(&build_path, "2.0.0", GradleVersionScope::ScriptOnly).await;
+
+        // Restore write permission BEFORE asserting so `TempDir` cleanup
+        // succeeds even if an assertion panics.
+        test_support::set_readonly(&build_path, false);
+
+        let error = result.expect_err("write to a readonly Gradle build file must fail");
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to write Gradle build file {}",
+                build_path.display()
+            )),
+            "error chain should carry the build file write context, got: {chain}"
+        );
+    }
+}
