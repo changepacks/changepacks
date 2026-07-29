@@ -590,6 +590,55 @@ version = "1.0.0"
         temp_dir.close().unwrap();
     }
 
+    /// Workspace-side twin of the `RustPackage` malformed-manifest test: the
+    /// two `update_version` bodies reach `read_and_parse_cargo_toml` through
+    /// different paths (the workspace parses inline, the package parses inside
+    /// `write_cargo_package_version`), so both trait entry points must be
+    /// pinned independently or a regression could hide behind whichever one is
+    /// still covered.
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let original = "invalid toml [[[";
+        fs::write(&cargo_toml, original).unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let err = workspace
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("a malformed Cargo.toml must fail the bump");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("Failed to parse Cargo.toml"),
+            "error chain should name the parse failure, got: {chain}"
+        );
+        assert!(
+            chain.contains(&cargo_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+
+        // Byte-for-byte: an unparseable manifest must never be rewritten.
+        assert_eq!(
+            fs::read(&cargo_toml).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+        assert_eq!(
+            workspace.version(),
+            Some("1.0.0"),
+            "a rejected bump must not advance the in-memory version"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     #[tokio::test]
     async fn test_rust_workspace_update_version_without_package_section() {
         let temp_dir = TempDir::new().unwrap();

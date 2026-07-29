@@ -452,6 +452,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_csharp_package_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Broken.csproj");
+        // Unclosed `</PropertyGroup` and a missing `</Project>` make the
+        // manifest unparseable, so the version bump must fail before any
+        // write reaches disk.
+        let original_bytes =
+            b"<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version>1.0.0</Version>\n  </PropertyGroup\n";
+        fs::write(&csproj_path, original_bytes).unwrap();
+
+        let mut package = CSharpPackage::new(
+            Some("Test".to_string()),
+            Some("1.0.0".to_string()),
+            csproj_path.clone(),
+            PathBuf::from("Broken.csproj"),
+        );
+
+        let error = package
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("a malformed .csproj must fail the version bump");
+        let chain = format!("{error:#}");
+
+        assert!(
+            chain.contains(&csproj_path.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+        assert_eq!(
+            fs::read(&csproj_path).unwrap(),
+            original_bytes,
+            "a failed bump must leave the manifest bytes untouched"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
     async fn test_update_version_without_property_group_creates_global_version() {
         let temp_dir = TempDir::new().unwrap();
         let csproj_path = temp_dir.path().join("NoPropertyGroup.csproj");

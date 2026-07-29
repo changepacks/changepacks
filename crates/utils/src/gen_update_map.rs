@@ -598,7 +598,14 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
     // Reinsert every entry in canonical path order. `HashMap` does not promise
     // ordered iteration, but this gives deterministic insertion/serialization
     // whenever the map's chosen hasher supports it.
-    let mut ordered_entries: Vec<_> = update_map.drain().collect();
+    // `Drain` is an `ExactSizeIterator`, so `collect` would size the vector to
+    // exactly the drained length and leave zero spare capacity — every push
+    // below would then start a geometric-doubling realloc chain that memcpys
+    // `(PathBuf, (UpdateType, Vec<ChangePackResultLog>))` tuples. Read the len
+    // before draining and reserve the final size once instead.
+    let existing_len = update_map.len();
+    let mut ordered_entries = Vec::with_capacity(existing_len + packages_to_add.len());
+    ordered_entries.extend(update_map.drain());
     let mut generated = Vec::with_capacity(packages_to_add.len());
     for (path, dependency_name) in packages_to_add {
         let note =

@@ -403,4 +403,55 @@ edition = "2024"
             "error chain should name the manifest path, got: {chain}"
         );
     }
+
+    /// A `Cargo.toml` that does not parse must abort the bump BEFORE the writer
+    /// touches the file. The sibling test above only covers a malformed version
+    /// STRING (which fails before any file access at all), and `lib.rs` covers
+    /// the writer's semantic rejections — nothing pinned an UNPARSEABLE
+    /// manifest as observed through the `Package` trait entry point, so
+    /// swallowing the parse error inside `write_cargo_package_version` would
+    /// still leave this path green. Twin of
+    /// `test_python_package_update_version_malformed_manifest_leaves_file_untouched`.
+    #[tokio::test]
+    async fn test_rust_package_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let original = "invalid toml [[[";
+        fs::write(&cargo_toml, original).unwrap();
+
+        let mut package = RustPackage::new(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let err = package
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("a malformed Cargo.toml must fail the bump");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("Failed to parse Cargo.toml"),
+            "error chain should name the parse failure, got: {chain}"
+        );
+        assert!(
+            chain.contains(&cargo_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+
+        // Byte-for-byte: an unparseable manifest must never be rewritten.
+        assert_eq!(
+            fs::read(&cargo_toml).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+        assert_eq!(
+            package.version(),
+            Some("1.0.0"),
+            "a rejected bump must not advance the in-memory version"
+        );
+
+        temp_dir.close().unwrap();
+    }
 }
