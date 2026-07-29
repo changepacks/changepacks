@@ -93,15 +93,6 @@ pub enum DependencySortError {
 }
 
 impl DependencySortError {
-    /// Cycle members, or an empty slice when this is an ambiguity error.
-    #[must_use]
-    pub fn members(&self) -> &[DependencyCycleMember] {
-        match self {
-            Self::Cycle(error) => error.members(),
-            Self::AmbiguousDependency(_) => &[],
-        }
-    }
-
     #[must_use]
     pub fn ambiguity(&self) -> Option<&DependencyAmbiguityError> {
         match self {
@@ -434,6 +425,14 @@ mod tests {
     use crate::test_support::create_project;
     use changepacks_node::package::NodePackage;
 
+    /// Narrow a sort error to its cycle details, panicking on any other variant.
+    fn cycle_of(error: &DependencySortError) -> &DependencyCycleError {
+        let DependencySortError::Cycle(cycle) = error else {
+            panic!("expected a cycle error, got: {error}");
+        };
+        cycle
+    }
+
     fn create_project_at(name: &str, relative_path: &str) -> Project {
         Project::Package(Box::new(NodePackage::new(
             Some(name.to_string()),
@@ -723,7 +722,7 @@ mod tests {
         let projects = vec![&p1, &p2];
         let error = sort_by_dependencies(projects).expect_err("self-cycle must fail");
 
-        assert_eq!(error.members()[0].name, "p1");
+        assert_eq!(cycle_of(&error).members()[0].name, "p1");
     }
 
     #[test]
@@ -736,7 +735,7 @@ mod tests {
         let projects = vec![&p1, &p2, &p3];
         let error = sort_by_dependencies(projects).expect_err("cycle must fail");
 
-        assert_eq!(error.members().len(), 3);
+        assert_eq!(cycle_of(&error).members().len(), 3);
     }
 
     #[test]
@@ -789,10 +788,11 @@ mod tests {
 
         let error = sort_by_dependencies(vec![&project]).expect_err("self-cycle must fail");
 
-        assert_eq!(error.members().len(), 1);
-        assert_eq!(error.members()[0].name, "self");
+        let cycle = cycle_of(&error);
+        assert_eq!(cycle.members().len(), 1);
+        assert_eq!(cycle.members()[0].name, "self");
         assert_eq!(
-            error.members()[0].path,
+            cycle.members()[0].path,
             std::path::Path::new("self/package.json")
         );
     }
@@ -807,7 +807,7 @@ mod tests {
             .expect_err("multi-node cycle must fail");
 
         assert_eq!(
-            error
+            cycle_of(&error)
                 .members()
                 .iter()
                 .map(|member| member.name.as_str())
@@ -825,7 +825,7 @@ mod tests {
         let error =
             sort_by_dependencies(vec![&zeta, &blocked, &alpha]).expect_err("cycle must fail");
 
-        let details: Vec<_> = error
+        let details: Vec<_> = cycle_of(&error)
             .members()
             .iter()
             .map(|member| (member.name.as_str(), member.path.as_path()))
@@ -869,7 +869,7 @@ mod tests {
             .expect_err("cycle must fail");
 
         assert_eq!(
-            error
+            cycle_of(&error)
                 .members()
                 .iter()
                 .map(|member| member.name.as_str())
@@ -887,7 +887,7 @@ mod tests {
             sort_by_dependencies(vec![&blocked, &self_cycle]).expect_err("self-cycle must fail");
 
         assert_eq!(
-            error
+            cycle_of(&error)
                 .members()
                 .iter()
                 .map(|member| member.name.as_str())
@@ -916,7 +916,7 @@ mod tests {
             .expect_err("disjoint cycles must fail");
 
         assert_eq!(
-            error
+            cycle_of(&error)
                 .members()
                 .iter()
                 .map(|member| (member.name.as_str(), member.path.as_path()))
@@ -942,10 +942,10 @@ mod tests {
         let ambiguity = sort_by_dependencies(vec![&app, &core_a, &core_b])
             .expect_err("ambiguous edge must fail");
 
-        // The cross-variant fallbacks: a cycle carries no ambiguity details, and
-        // an ambiguity carries no cycle members.
+        // The cross-variant fallback: a cycle carries no ambiguity details, and
+        // an ambiguity is never the cycle variant.
         assert!(cycle.ambiguity().is_none());
-        assert!(ambiguity.members().is_empty());
+        assert!(!matches!(ambiguity, DependencySortError::Cycle(_)));
 
         // Both variants delegate `source` to their inner error, so the inner
         // Display is reachable through the trait object.
@@ -965,7 +965,7 @@ mod tests {
         );
 
         // Sanity: each fixture really is the variant it claims to be.
-        assert_eq!(cycle.members().len(), 2);
+        assert_eq!(cycle_of(&cycle).members().len(), 2);
         assert_eq!(
             ambiguity
                 .ambiguity()
@@ -988,8 +988,9 @@ mod tests {
 
         let error = sort_by_dependencies(refs).expect_err("large cycle must fail");
 
-        assert_eq!(error.members().len(), SIZE);
-        assert_eq!(error.members().first().unwrap().name, "cycle-0000");
-        assert_eq!(error.members().last().unwrap().name, "cycle-4095");
+        let cycle = cycle_of(&error);
+        assert_eq!(cycle.members().len(), SIZE);
+        assert_eq!(cycle.members().first().unwrap().name, "cycle-0000");
+        assert_eq!(cycle.members().last().unwrap().name, "cycle-4095");
     }
 }

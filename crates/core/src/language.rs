@@ -59,7 +59,7 @@ mod tests {
 
     #[rstest]
     #[case(Language::Python, "Python")]
-    #[case(Language::Node, "Node")]
+    #[case(Language::Node, "Node.js")]
     #[case(Language::Rust, "Rust")]
     #[case(Language::Dart, "Dart")]
     #[case(Language::CSharp, "C#")]

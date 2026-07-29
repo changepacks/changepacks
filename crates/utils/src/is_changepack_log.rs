@@ -189,6 +189,34 @@ mod tests {
         );
     }
 
+    // Covers the `ErrorKind::NotFound` `read_dir` arm, which the doc comment on
+    // `collect_changepack_log_paths` declares as a contract: a missing directory is
+    // NOT an error, it is an empty list. Production callers rely on that contract
+    // and never pre-check the directory's existence — `gen_update_map`,
+    // `clear_update_logs`, `clear_applied_update_logs`, and the `update` rollback
+    // snapshot all propagate with `?`, so a regression turning this arm into an
+    // `Err` would break `check`/`update` in every repository that has not created
+    // `.changepacks/` yet. The joined directory is deliberately never created.
+    #[tokio::test]
+    async fn test_collect_changepack_log_paths_missing_directory_is_empty() {
+        let temp_dir = TempDir::new().unwrap();
+        let missing_dir = temp_dir.path().join("never-created");
+        assert!(
+            !missing_dir.exists(),
+            "test precondition: {} must not exist so read_dir reports NotFound",
+            missing_dir.display()
+        );
+
+        let paths = collect_changepack_log_paths(&missing_dir)
+            .await
+            .expect("a missing changepacks directory must map to Ok, not Err");
+
+        assert!(
+            paths.is_empty(),
+            "a missing changepacks directory must yield no log paths, got {paths:?}"
+        );
+    }
+
     // Covers the non-`NotFound` `read_dir` error arm: a MISSING directory is
     // deliberately mapped to an empty list, but any OTHER `read_dir` failure must
     // surface as an error carrying `read_dir_context`. Pointing `read_dir` at a

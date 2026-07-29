@@ -84,8 +84,15 @@ pub async fn clear_applied_update_logs(
     //   formatting (key order, indentation, trailing newline).
     let paths = collect_changepack_log_paths(changepacks_dir).await?;
     let bodies = read_log_bodies(&paths, "update log").await?;
-    let mut removals: Vec<&PathBuf> = Vec::new();
-    let mut rewrites: Vec<(&PathBuf, String)> = Vec::new();
+    // The classify loop below walks `paths` exactly once and pushes each path
+    // into at most one of these two buffers, so `paths.len()` is a tight upper
+    // bound for each. Preallocating removes the ~log2(N) geometric-doubling
+    // reallocations `Vec::new()` would otherwise incur on every `update`.
+    // `error_details` in `clear_update_logs` is deliberately left unreserved:
+    // it stays empty on every success path, so reserving would be a
+    // pessimization rather than a saving.
+    let mut removals: Vec<&PathBuf> = Vec::with_capacity(paths.len());
+    let mut rewrites: Vec<(&PathBuf, String)> = Vec::with_capacity(paths.len());
     for (path, content) in paths.iter().zip(bodies) {
         let value: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse update log {}", path.display()))?;
