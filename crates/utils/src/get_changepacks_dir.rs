@@ -77,6 +77,28 @@ mod tests {
     }
 
     #[test]
+    fn test_get_changepacks_dir_bare_repo_is_rejected() {
+        // A bare repository is discovered successfully but has no work dir, so
+        // this is the only way to reach the `work_dir()` -> None arm. Pin the
+        // documented message so the branch cannot silently lose its context.
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        crate::test_support::run_git(temp_path, &["init", "--bare", "-b", "main"]);
+
+        let err = get_changepacks_dir(temp_path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(
+                "Git repository has no working directory (bare repository is not supported)"
+            ),
+            "expected bare-repository context in error, got: {msg}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[test]
     fn test_get_changepacks_dir_path_structure() {
         // Create a temporary directory and initialize git
         let temp_dir = TempDir::new().unwrap();

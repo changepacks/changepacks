@@ -1817,6 +1817,39 @@ version = "1.0.0"
     }
 
     #[tokio::test]
+    async fn test_gradle_finder_errors_when_wrapper_metadata_directory_does_not_exist() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path().join("repo");
+        tokio::fs::create_dir_all(&repo).await.unwrap();
+        let manifest = repo.join("build.gradle.kts");
+        tokio::fs::write(&manifest, "plugins { java }\n")
+            .await
+            .unwrap();
+        let missing_dir = repo.join("never-created");
+        create_metadata_gradlew(
+            &repo,
+            &[
+                metadata_record(&repo, ":", "service-suite", true),
+                metadata_record(&missing_dir, ":ghost", "ghost-api", false),
+            ],
+        )
+        .await;
+
+        let error = finder_with_java_available()
+            .visit(&manifest, Path::new("build.gradle.kts"))
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("Failed to normalize Gradle metadata directory"),
+            "{message}"
+        );
+        assert!(message.contains(":ghost"), "{message}");
+        assert!(message.contains("never-created"), "{message}");
+    }
+
+    #[tokio::test]
     async fn test_gradle_finder_uses_manifest_dialect_for_slashes() {
         let kotlin = dependencies_for_manifest(
             "build.gradle.kts",

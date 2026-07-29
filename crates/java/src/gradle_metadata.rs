@@ -283,19 +283,35 @@ pub(crate) async fn get_gradle_metadata(
             gradlew_dir.display()
         )
     })?;
+    // Every record needs its directory canonicalized before the purely CPU-bound
+    // duplicate detection below can run, and `tokio::fs::canonicalize` is a
+    // blocking syscall dispatched to the blocking pool. Awaiting one per record
+    // inside the merge loop serializes those syscalls across every subproject of
+    // a multi-project build, so they are issued together here instead. The
+    // results are then inspected in record order and the first failing one is
+    // reported, keeping error selection tied to emission order rather than to
+    // whichever syscall happened to fail first.
+    let canonicalized = futures::future::join_all(
+        records
+            .iter()
+            .map(|record| tokio::fs::canonicalize(&record.project_dir)),
+    )
+    .await;
+    let mut normalized_dirs = Vec::with_capacity(canonicalized.len());
+    for (record, normalized_dir) in records.iter().zip(canonicalized) {
+        normalized_dirs.push(normalized_dir.with_context(|| {
+            format!(
+                "Failed to normalize Gradle metadata directory '{}' for project '{}' emitted by '{}'",
+                record.project_dir.display(),
+                record.project_path,
+                gradlew.display()
+            )
+        })?);
+    }
+
     let mut by_project_dir = HashMap::with_capacity(records.len());
     let mut project_names_by_path = HashMap::with_capacity(records.len());
-    for record in records {
-        let normalized_dir = tokio::fs::canonicalize(&record.project_dir)
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to normalize Gradle metadata directory '{}' for project '{}' emitted by '{}'",
-                    record.project_dir.display(),
-                    record.project_path,
-                    gradlew.display()
-                )
-            })?;
+    for (record, normalized_dir) in records.into_iter().zip(normalized_dirs) {
         let project_path = record.project_path.clone();
         let project_name = record
             .properties

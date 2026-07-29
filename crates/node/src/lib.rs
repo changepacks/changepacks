@@ -411,6 +411,17 @@ impl PackageManager {
 /// so lifecycle hooks such as `husky` resolve during `bun publish` / `bun pm
 /// pack` (oven-sh/bun#16071, #18055, #23594).
 ///
+/// The probes are order-INDEPENDENT, so all `max_depth` candidates are
+/// resolved concurrently with `join_all` instead of one `await` per ancestor:
+/// the whole walk now costs one metadata round-trip rather than `max_depth`
+/// of them, on every publish and `publish --dry-run` for a Node project.
+/// Concurrency is an implementation detail — the *results* are consumed in
+/// ancestor index order, which keeps both observable invariants exactly as
+/// the previous serial loop had them:
+/// - `dirs` stays in ancestor order (nearest first), and
+/// - a reported error is the FIRST failing ancestor by index, not whichever
+///   probe happened to fail first in wall-clock time.
+///
 /// # Errors
 /// Returns an error when a candidate directory cannot be inspected for a
 /// reason other than it not existing. The error includes the candidate path.
@@ -418,10 +429,17 @@ pub(crate) async fn node_modules_bin_dirs_async(
     start_dir: &Path,
     max_depth: usize,
 ) -> Result<Vec<PathBuf>> {
+    let candidates: Vec<PathBuf> = start_dir
+        .ancestors()
+        .take(max_depth)
+        .map(|dir| dir.join("node_modules").join(".bin"))
+        .collect();
+    let probes =
+        futures::future::join_all(candidates.iter().map(|bin| metadata_is_directory(bin))).await;
+
     let mut dirs = Vec::new();
-    for dir in start_dir.ancestors().take(max_depth) {
-        let bin = dir.join("node_modules").join(".bin");
-        match metadata_is_directory(&bin).await {
+    for (bin, probe) in candidates.into_iter().zip(probes) {
+        match probe {
             Ok(true) => dirs.push(bin),
             Ok(false) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -824,6 +842,88 @@ mod tests {
             chain.contains(&expected.display().to_string()),
             "error chain should name the candidate path, got: {chain}"
         );
+    }
+
+    /// Probe that fails for TWO distinct ancestors with distinguishable
+    /// messages: the `<...>/a` candidate (ancestor index 1) and the
+    /// `<...>/repo` candidate (ancestor index 2). The start dir's own
+    /// candidate (index 0) reports "not a directory" so the walk reaches the
+    /// failing ancestors at all.
+    ///
+    /// `path` is always `<ancestor>/node_modules/.bin`, so two `parent()`
+    /// hops recover the ancestor directory being probed.
+    fn fails_for_two_ancestors(path: &Path) -> std::io::Result<bool> {
+        match path
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::file_name)
+            .and_then(std::ffi::OsStr::to_str)
+        {
+            Some("a") => Err(std::io::Error::other("first failing ancestor")),
+            Some("repo") => Err(std::io::Error::other("later failing ancestor")),
+            _ => Ok(false),
+        }
+    }
+
+    /// The probes now resolve concurrently, so "which error is reported" must
+    /// stay pinned to ANCESTOR INDEX order rather than to whichever probe
+    /// failed first in wall-clock time. With `repo/a/b` at depth 3 the walk
+    /// covers `repo/a/b` (index 0, no hit), `repo/a` (index 1, fails) and
+    /// `repo` (index 2, also fails); the surfaced error must be index 1's.
+    #[tokio::test]
+    async fn test_node_modules_bin_dirs_reports_first_failing_ancestor_by_index() {
+        let start = PathBuf::from("repo").join("a").join("b");
+        let first_failing = start
+            .parent()
+            .unwrap()
+            .join("node_modules")
+            .join(".bin")
+            .display()
+            .to_string();
+        let later_failing = PathBuf::from("repo")
+            .join("node_modules")
+            .join(".bin")
+            .display()
+            .to_string();
+
+        let error = with_test_metadata_probe(
+            fails_for_two_ancestors,
+            node_modules_bin_dirs_async(&start, 3),
+        )
+        .await
+        .expect_err("a failing ancestor probe must propagate");
+
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains(&first_failing) && chain.contains("first failing ancestor"),
+            "error must name the first failing ancestor by index, got: {chain}"
+        );
+        assert!(
+            !chain.contains(&later_failing) && !chain.contains("later failing ancestor"),
+            "the later failing ancestor must not win the race, got: {chain}"
+        );
+    }
+
+    /// Mixed hits with a GAP: only the deepest dir and the root carry a
+    /// `node_modules/.bin`, the dir between them does not. Locks that batching
+    /// the probes keeps `dirs` in ancestor order (nearest first) and drops the
+    /// misses rather than reordering around them.
+    #[tokio::test]
+    async fn test_node_modules_bin_dirs_keeps_ancestor_order_with_gaps() {
+        let temp_dir = TempDir::new().unwrap();
+        let root = temp_dir.path();
+        let root_bin = root.join("node_modules").join(".bin");
+        fs::create_dir_all(&root_bin).unwrap();
+
+        // Middle ancestor deliberately has NO node_modules/.bin.
+        let middle = root.join("packages");
+        let pkg_dir = middle.join("app");
+        let pkg_bin = pkg_dir.join("node_modules").join(".bin");
+        fs::create_dir_all(&pkg_bin).unwrap();
+
+        // depth 3 covers `packages/app`, `packages` and the root.
+        let dirs = node_modules_bin_dirs_async(&pkg_dir, 3).await.unwrap();
+        assert_eq!(dirs, vec![pkg_bin, root_bin]);
     }
 
     #[tokio::test]

@@ -223,6 +223,81 @@ mod tests {
         format!("{error:#}")
     }
 
+    /// A hand-formatted changepack log: two-space root indent, four-space
+    /// members, `changes` before `note` before `date`, trailing newline.
+    ///
+    /// The success-path tests below all splice this same text so the assertion
+    /// is purely about which bytes the removal range covers.
+    const HAND_FORMATTED_LOG: &str = r#"{
+  "changes": {
+    "packages/a/package.json": "Minor",
+    "packages/b/package.json": "Patch"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#;
+
+    /// Splice `applied` out of `content`, asserting the rewriter accepts it.
+    fn rewrite(content: &str, applied: &[&str]) -> String {
+        let applied_paths: HashSet<PathBuf> = applied.iter().copied().map(PathBuf::from).collect();
+        remove_applied_change_spans(content, &applied_paths)
+            .expect("a well-formed changepack log must be rewritten, not rejected")
+    }
+
+    #[test]
+    fn remove_applied_change_spans_removes_member_through_its_trailing_comma() {
+        // Removed run is followed by a kept member, so the run must take its
+        // own trailing comma with it and leave the next member's indentation.
+        assert_eq!(
+            rewrite(HAND_FORMATTED_LOG, &["packages/a/package.json"]),
+            r#"{
+  "changes": {
+    "packages/b/package.json": "Patch"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#
+        );
+    }
+
+    #[test]
+    fn remove_applied_change_spans_empties_the_changes_object() {
+        // Every member is applied, so the run starts at index 0 and ends at the
+        // last value: only the whitespace before the closing brace survives.
+        assert_eq!(
+            rewrite(
+                HAND_FORMATTED_LOG,
+                &["packages/a/package.json", "packages/b/package.json"]
+            ),
+            r#"{
+  "changes": {
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#
+        );
+    }
+
+    #[test]
+    fn remove_applied_change_spans_removes_the_comma_before_a_final_member() {
+        // The removed run ends the object, so the comma belonging to the KEPT
+        // preceding member has to go too or the object is left dangling.
+        assert_eq!(
+            rewrite(HAND_FORMATTED_LOG, &["packages/b/package.json"]),
+            r#"{
+  "changes": {
+    "packages/a/package.json": "Minor"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#
+        );
+    }
+
     #[test]
     fn remove_applied_change_spans_rejects_non_object_root() {
         assert_eq!(
