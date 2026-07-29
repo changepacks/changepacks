@@ -11,6 +11,7 @@ use clap::Args;
 
 use crate::{
     CommandContext,
+    commands::writeln_stdout,
     finders::collect_projects,
     options::{FormatOptions, retain_by_language},
     prompter::{InquirePrompter, Prompter},
@@ -107,7 +108,7 @@ pub async fn handle_publish_with_prompter(
 
     if args.dry_run {
         let (result_map, failed_projects) =
-            execute_dry_run_publish_loop(&projects, &ctx.config, args.format).await;
+            execute_dry_run_publish_loop(&projects, &ctx.config, args.format).await?;
 
         return finish_publish_run(
             &result_map,
@@ -127,7 +128,7 @@ pub async fn handle_publish_with_prompter(
     }
 
     let (result_map, failed_projects) =
-        execute_publish_loop(&projects, &ctx.config, args.format).await;
+        execute_publish_loop(&projects, &ctx.config, args.format).await?;
 
     finish_publish_run(
         &result_map,
@@ -183,16 +184,20 @@ fn print_projects_to_publish(projects: &[&Project], format: FormatOptions) -> Re
     Ok(())
 }
 
-fn print_publish_failure_summary(failed_projects: &[String], total: usize, format: FormatOptions) {
-    if !failed_projects.is_empty()
-        && let FormatOptions::Stdout = format
-    {
-        eprintln!(
-            "\n{} of {} projects failed to publish: {}",
-            failed_projects.len(),
-            total,
-            failed_projects.join(", ")
-        );
+/// Writes the stderr failure summary for an already-rendered, non-empty failed
+/// project list.
+///
+/// The caller owns both the "are there failures at all" guard and the rendering
+/// of `failed_list`, so the comma-joined string is allocated once per run and
+/// shared with the `anyhow::bail!` message in [`finish_publish_run`].
+fn print_publish_failure_summary(
+    failed_list: &str,
+    failed_count: usize,
+    total: usize,
+    format: FormatOptions,
+) {
+    if let FormatOptions::Stdout = format {
+        eprintln!("\n{failed_count} of {total} projects failed to publish: {failed_list}");
     }
 }
 
@@ -221,32 +226,49 @@ fn finish_publish_run(
     format: FormatOptions,
     bail_prefix: &str,
 ) -> Result<()> {
-    print_publish_failure_summary(failed_projects, total, format);
+    // Rendered once and reused by both consumers below: the stderr summary and
+    // the bail message print the same comma-joined list.
+    let failed_list = (!failed_projects.is_empty()).then(|| failed_projects.join(", "));
+
+    if let Some(list) = failed_list.as_deref() {
+        print_publish_failure_summary(list, failed_projects.len(), total, format);
+    }
 
     if let FormatOptions::Json = format {
         let mut out = std::io::stdout().lock();
         writeln!(out, "{}", serde_json::to_string_pretty(result_map)?)?;
     }
 
-    if !failed_projects.is_empty() {
+    if let Some(list) = failed_list.as_deref() {
         anyhow::bail!(
             "{} {} project(s): {}",
             bail_prefix,
             failed_projects.len(),
-            failed_projects.join(", ")
+            list
         );
     }
 
     Ok(())
 }
 
-fn print_publish_output(output: &PublishOutput) {
+/// Replays a finished publish command's captured output on this process's own
+/// stdout/stderr.
+///
+/// `print!` / `eprint!` re-acquire the global handle and *panic* when the write
+/// fails — a broken pipe from `changepacks publish | head` is a normal way for
+/// this command to end. Short-lived locked handles emit exactly the same bytes
+/// but let the io error propagate as a typed error the caller can return.
+///
+/// # Errors
+/// Returns the underlying `io::Error` if writing to stdout or stderr fails.
+fn print_publish_output(output: &PublishOutput) -> std::io::Result<()> {
     if !output.stdout.is_empty() {
-        print!("{}", output.stdout);
+        write!(std::io::stdout().lock(), "{}", output.stdout)?;
     }
     if !output.stderr.is_empty() {
-        eprint!("{}", output.stderr);
+        write!(std::io::stderr().lock(), "{}", output.stderr)?;
     }
+    Ok(())
 }
 
 /// Skip `cargo publish --dry-run` for Rust packages whose dependencies are
@@ -293,16 +315,19 @@ fn skip_dry_run_due_to_workspace_internal_dep(
 /// Takes `output` by value so the `PublishResult::new(..., output.stdout,
 /// output.stderr)` move stays zero-clone on the JSON path, matching the
 /// pre-refactor shape.
+///
+/// # Errors
+/// Returns the underlying `io::Error` if writing the stdout report fails.
 fn record_publish_success(
     result_map: &mut BTreeMap<PathBuf, PublishResult>,
     project: &Project,
     output: PublishOutput,
     success_label: &str,
     format: FormatOptions,
-) {
+) -> std::io::Result<()> {
     if let FormatOptions::Stdout = format {
-        print_publish_output(&output);
-        println!("{success_label} {project}");
+        print_publish_output(&output)?;
+        writeln_stdout(format_args!("{success_label} {project}"))?;
     }
     if let FormatOptions::Json = format {
         result_map.insert(
@@ -310,6 +335,7 @@ fn record_publish_success(
             PublishResult::new(true, None, output.stdout, output.stderr),
         );
     }
+    Ok(())
 }
 
 /// Shared per-project failure recorder for both publish loops.
@@ -327,6 +353,9 @@ fn record_publish_success(
 /// `failed_projects.push(project.to_string())` shared by both. Ok(None)
 /// (dry-run unsupported) stays inline in the dry-run loop because it is
 /// a warning, not a failure, and does not fit this helper's contract.
+///
+/// # Errors
+/// Returns the underlying `io::Error` if replaying the captured stdout fails.
 fn record_publish_failure(
     result_map: &mut BTreeMap<PathBuf, PublishResult>,
     failed_projects: &mut Vec<String>,
@@ -334,11 +363,11 @@ fn record_publish_failure(
     cause: PublishFailureCause,
     failure_label: &str,
     format: FormatOptions,
-) {
+) -> std::io::Result<()> {
     if let FormatOptions::Stdout = format {
         match &cause {
             PublishFailureCause::Output(output) => {
-                print_publish_output(output);
+                print_publish_output(output)?;
                 eprintln!("{failure_label} {project}");
             }
             PublishFailureCause::Error(e) => {
@@ -357,6 +386,7 @@ fn record_publish_failure(
         );
     }
     failed_projects.push(project.to_string());
+    Ok(())
 }
 
 fn failed_dependency<'a>(
@@ -458,13 +488,16 @@ impl PublishLoopState {
     /// tracks the project's package name via `Self::track_failed_name`.
     /// Collapses the four identical "record the outcome, then track its
     /// name on failure" blocks that appeared in both publish loops.
+    ///
+    /// # Errors
+    /// Returns the underlying `io::Error` if writing the stdout report fails.
     fn record_outcome_track_failure(
         &mut self,
         project: &Project,
         outcome: ProjectPublishOutcome,
         labels: PublishOutcomeLabels,
         format: FormatOptions,
-    ) {
+    ) -> std::io::Result<()> {
         let failed = match outcome {
             ProjectPublishOutcome::Success(output) => {
                 record_publish_success(
@@ -473,7 +506,7 @@ impl PublishLoopState {
                     output,
                     labels.success,
                     format,
-                );
+                )?;
                 false
             }
             ProjectPublishOutcome::Failure(output) => {
@@ -484,7 +517,7 @@ impl PublishLoopState {
                     PublishFailureCause::Output(output),
                     labels.failure,
                     format,
-                );
+                )?;
                 true
             }
             ProjectPublishOutcome::Error(error) => {
@@ -495,25 +528,29 @@ impl PublishLoopState {
                     PublishFailureCause::Error(&error),
                     labels.failure,
                     format,
-                );
+                )?;
                 true
             }
         };
         if failed {
             self.track_failed_name(project);
         }
+        Ok(())
     }
 
     /// Records `project` as failed-by-association with an already-failed
     /// `dependency`, then tracks its package name so its own dependents are
     /// skipped in turn.
+    ///
+    /// # Errors
+    /// Returns the underlying `io::Error` if writing the stdout report fails.
     fn record_dependency_skip(
         &mut self,
         project: &Project,
         dependency: &str,
         failure_label: &str,
         format: FormatOptions,
-    ) {
+    ) -> std::io::Result<()> {
         let error = anyhow::anyhow!("skipped because dependency failed: {dependency}");
         record_publish_failure(
             &mut self.result_map,
@@ -522,8 +559,9 @@ impl PublishLoopState {
             PublishFailureCause::Error(&error),
             failure_label,
             format,
-        );
+        )?;
         self.track_failed_name(project);
+        Ok(())
     }
 
     /// Records `project` as skipped when any of its dependencies already
@@ -533,20 +571,23 @@ impl PublishLoopState {
     /// (`"Dry-run skipped for"` vs `"Skipped publish for"`) and is passed
     /// through to `Self::record_dependency_skip` unchanged, so every
     /// user-visible string stays byte-identical.
+    ///
+    /// # Errors
+    /// Returns the underlying `io::Error` if writing the stdout report fails.
     fn skip_if_dependency_failed(
         &mut self,
         project: &Project,
         failure_label: &str,
         format: FormatOptions,
-    ) -> bool {
+    ) -> std::io::Result<bool> {
         let Some(dependency) = failed_dependency(project, &self.failed_project_names) else {
-            return false;
+            return Ok(false);
         };
         // `failed_dependency` returns a `&str` borrowed from `project`, not
         // from `self.failed_project_names`, so the shared borrow of `self`
         // ends at the call and `&mut self` is free here.
-        self.record_dependency_skip(project, dependency, failure_label, format);
-        true
+        self.record_dependency_skip(project, dependency, failure_label, format)?;
+        Ok(true)
     }
 
     fn finish(self) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
@@ -554,11 +595,13 @@ impl PublishLoopState {
     }
 }
 
+/// # Errors
+/// Returns the underlying `io::Error` if writing the stdout report fails.
 async fn execute_dry_run_publish_loop(
     projects: &[&Project],
     config: &Config,
     format: FormatOptions,
-) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
+) -> std::io::Result<(BTreeMap<PathBuf, PublishResult>, Vec<String>)> {
     let mut state = PublishLoopState::with_capacity(projects.len());
 
     const DRY_RUN_LABELS: PublishOutcomeLabels = PublishOutcomeLabels {
@@ -583,7 +626,7 @@ async fn execute_dry_run_publish_loop(
     );
 
     for project in projects {
-        if state.skip_if_dependency_failed(project, "Dry-run skipped for", format) {
+        if state.skip_if_dependency_failed(project, "Dry-run skipped for", format)? {
             continue;
         }
         if skip_dry_run_due_to_workspace_internal_dep(project, &rust_batch_names) {
@@ -604,12 +647,12 @@ async fn execute_dry_run_publish_loop(
             continue;
         }
         if let FormatOptions::Stdout = format {
-            println!("Dry-run publishing {project}...");
+            writeln_stdout(format_args!("Dry-run publishing {project}..."))?;
         }
         match project.dry_run_publish(config).await {
             Ok(Some(output)) => {
                 let outcome = ProjectPublishOutcome::from_output(output);
-                state.record_outcome_track_failure(project, outcome, DRY_RUN_LABELS, format);
+                state.record_outcome_track_failure(project, outcome, DRY_RUN_LABELS, format)?;
             }
             Ok(None) => {
                 // Ok(None) stays inline: dry-run unsupported is a warning,
@@ -638,19 +681,21 @@ async fn execute_dry_run_publish_loop(
                     ProjectPublishOutcome::Error(e),
                     DRY_RUN_LABELS,
                     format,
-                );
+                )?;
             }
         }
     }
 
-    state.finish()
+    Ok(state.finish())
 }
 
+/// # Errors
+/// Returns the underlying `io::Error` if writing the stdout report fails.
 async fn execute_publish_loop(
     projects: &[&Project],
     config: &Config,
     format: FormatOptions,
-) -> (BTreeMap<PathBuf, PublishResult>, Vec<String>) {
+) -> std::io::Result<(BTreeMap<PathBuf, PublishResult>, Vec<String>)> {
     let mut state = PublishLoopState::with_capacity(projects.len());
 
     const PUBLISH_LABELS: PublishOutcomeLabels = PublishOutcomeLabels {
@@ -659,16 +704,16 @@ async fn execute_publish_loop(
     };
 
     for project in projects {
-        if state.skip_if_dependency_failed(project, "Skipped publish for", format) {
+        if state.skip_if_dependency_failed(project, "Skipped publish for", format)? {
             continue;
         }
         if let FormatOptions::Stdout = format {
-            println!("Publishing {project}...");
+            writeln_stdout(format_args!("Publishing {project}..."))?;
         }
         match project.publish(config).await {
             Ok(output) => {
                 let outcome = ProjectPublishOutcome::from_output(output);
-                state.record_outcome_track_failure(project, outcome, PUBLISH_LABELS, format);
+                state.record_outcome_track_failure(project, outcome, PUBLISH_LABELS, format)?;
             }
             Err(e) => {
                 state.record_outcome_track_failure(
@@ -676,12 +721,12 @@ async fn execute_publish_loop(
                     ProjectPublishOutcome::Error(e),
                     PUBLISH_LABELS,
                     format,
-                );
+                )?;
             }
         }
     }
 
-    state.finish()
+    Ok(state.finish())
 }
 
 #[cfg(test)]
@@ -812,7 +857,7 @@ mod tests {
             stdout: "some stdout\n".to_string(),
             stderr: "some stderr\n".to_string(),
         };
-        print_publish_output(&output);
+        print_publish_output(&output).unwrap();
     }
 
     #[test]
@@ -822,7 +867,7 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
         };
-        print_publish_output(&output);
+        print_publish_output(&output).unwrap();
     }
 
     #[derive(Debug)]
@@ -1176,7 +1221,9 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) = execute_publish_loop(&projects, &config, format).await;
+        let (result_map, failed) = execute_publish_loop(&projects, &config, format)
+            .await
+            .unwrap();
 
         assert_eq!(result_map.len(), expected_result_map_len);
         assert_eq!(failed.len(), 1);
@@ -1198,7 +1245,9 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, format).await;
+        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, format)
+            .await
+            .unwrap();
 
         assert_eq!(result_map.len(), expected_result_map_len);
         assert_eq!(failed.len(), 1);
@@ -1221,7 +1270,9 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, format).await;
+        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, format)
+            .await
+            .unwrap();
 
         assert_eq!(result_map.len(), expected_result_map_len);
         assert_eq!(failed.len(), 1);
@@ -1244,7 +1295,9 @@ mod tests {
         let projects: Vec<&Project> = vec![&project];
         let config = Config::default();
 
-        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, format).await;
+        let (result_map, failed) = execute_dry_run_publish_loop(&projects, &config, format)
+            .await
+            .unwrap();
 
         assert_eq!(result_map.len(), expected_result_map_len);
         assert!(failed.is_empty());
@@ -1744,8 +1797,9 @@ members = ["packages/*"]
                 .collect::<Vec<_>>(),
             vec![Some("leaf"), Some("parent")]
         );
-        let (_, failed) =
-            execute_publish_loop(&projects, &Config::default(), FormatOptions::Json).await;
+        let (_, failed) = execute_publish_loop(&projects, &Config::default(), FormatOptions::Json)
+            .await
+            .unwrap();
         assert!(failed.is_empty());
         assert_eq!(recorded_publishes(&publish_log), ["leaf", "parent"]);
     }
@@ -1804,8 +1858,9 @@ members = ["packages/*"]
         let projects =
             sort_publishable_projects(vec![&parent, &root, &leaf], &Config::default(), false)
                 .expect("hybrid root member graph should be acyclic");
-        let (_, failed) =
-            execute_publish_loop(&projects, &Config::default(), FormatOptions::Json).await;
+        let (_, failed) = execute_publish_loop(&projects, &Config::default(), FormatOptions::Json)
+            .await
+            .unwrap();
         assert!(failed.is_empty());
 
         let publishes = recorded_publishes(&publish_log);
@@ -1836,7 +1891,9 @@ members = ["packages/*"]
 
         let projects = sort_publishable_projects(vec![&virtual_root], &config, false)
             .expect("configured virtual root should remain publishable");
-        let (_, failed) = execute_publish_loop(&projects, &config, FormatOptions::Json).await;
+        let (_, failed) = execute_publish_loop(&projects, &config, FormatOptions::Json)
+            .await
+            .unwrap();
 
         assert!(failed.is_empty());
         assert_eq!(recorded_publishes(&publish_log), ["virtual-root"]);
@@ -1896,8 +1953,9 @@ members = ["packages/*"]
         let projects: Vec<&Project> = vec![&dependency, &dependent, &independent];
         let config = Config::default();
 
-        let (result_map, failed) =
-            execute_publish_loop(&projects, &config, FormatOptions::Json).await;
+        let (result_map, failed) = execute_publish_loop(&projects, &config, FormatOptions::Json)
+            .await
+            .unwrap();
 
         assert_eq!(failed.len(), 2);
         assert!(failed[0].contains("pkg-a"));
@@ -2114,6 +2172,44 @@ members = ["packages/*"]
         );
     }
 
+    /// Argument-side half of the `--project` normalization. The retain
+    /// predicate normalizes BOTH sides: each discovered project's relative
+    /// path, and every supplied `--project` value. Only the project side is
+    /// covered by the two tests above, because their arguments already use
+    /// `/`; a `\` there would silently miss and the batch would empty out.
+    ///
+    /// This matters on Windows, where a shell tab-completing
+    /// `packages\alpha\package.json` hands the CLI a backslash path that must
+    /// select exactly the same project as the `/` spelling. The assertions are
+    /// deliberately identical to
+    /// `test_publish_project_filter_keeps_only_the_matching_project` so the
+    /// pair pins spelling-independence rather than two unrelated behaviors, and
+    /// the test is platform-independent: normalization is pure string work on
+    /// the argument, so a backslash value must match on Unix too.
+    #[tokio::test]
+    #[serial]
+    async fn test_publish_project_filter_matches_backslash_separated_argument() {
+        let repository = tempdir().expect("create temporary repository");
+        let (alpha_marker, beta_marker) = write_two_package_publish_fixture(repository.path());
+
+        let _current_dir_guard = DirGuard::change_to(repository.path());
+
+        let args = publish_args_for_project(r"packages\alpha\package.json", true);
+
+        handle_publish_with_prompter(&args, &PanicPrompter)
+            .await
+            .expect("a backslash-separated --project value must publish the matched project");
+
+        assert!(
+            alpha_marker.exists(),
+            "a backslash-separated --project value must select the same project as the forward-slash spelling"
+        );
+        assert!(
+            !beta_marker.exists(),
+            "a project not named by --project must be filtered out"
+        );
+    }
+
     #[tokio::test]
     async fn test_execute_dry_run_loop_skips_dependent_after_failed_dependency() {
         let dependency = make_publish_cascade_mock("pkg-a", "packages/a/package.json", &[], false);
@@ -2123,7 +2219,9 @@ members = ["packages/*"]
         let config = Config::default();
 
         let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json).await;
+            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json)
+                .await
+                .unwrap();
 
         assert_eq!(failed.len(), 2);
         assert!(failed[0].contains("pkg-a"));
@@ -2143,7 +2241,9 @@ members = ["packages/*"]
         let config = Config::default();
 
         let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json).await;
+            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json)
+                .await
+                .unwrap();
 
         assert_eq!(failed.len(), 2);
         assert!(failed[0].contains("crate-leaf"));
@@ -2209,7 +2309,9 @@ members = ["packages/*"]
         let config = Config::default();
 
         let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Stdout).await;
+            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Stdout)
+                .await
+                .unwrap();
 
         // Stdout mode never populates result_map. Skipped packages MUST
         // not appear in failed_projects — that is the whole point of the
@@ -2226,7 +2328,9 @@ members = ["packages/*"]
         let config = Config::default();
 
         let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json).await;
+            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json)
+                .await
+                .unwrap();
 
         // `parent` is skipped → recorded as success with the skip note.
         let parent_entry = result_map
@@ -2288,7 +2392,9 @@ members = ["packages/*"]
         let config = Config::default();
 
         let (result_map, failed) =
-            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json).await;
+            execute_dry_run_publish_loop(&projects, &config, FormatOptions::Json)
+                .await
+                .unwrap();
 
         // The Rust crate must run its real dry-run (mock returns
         // "dry-run ok for crate-a"), NOT be recorded as a workspace-internal skip.

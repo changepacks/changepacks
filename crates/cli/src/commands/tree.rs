@@ -43,20 +43,23 @@ fn resolved_monorepo_deps<'a>(
                 resolved.push((dep, projects[index]));
             }
             ProjectNameResolution::Ambiguous => {
-                let paths: Vec<String> = analysis
-                    .candidates_for(projects, dep)
-                    .iter()
-                    .map(|candidate| {
-                        // Bind the `to_string_lossy` temporary so the borrowed
-                        // `Cow` returned by `normalize_path_separators` cannot
-                        // outlive the string it points at.
-                        let lossy = candidate.to_string_lossy();
-                        normalize_path_separators(&lossy).into_owned()
-                    })
-                    .collect();
+                // Accumulate the joined list in a single running `String`
+                // instead of `.map(..).collect::<Vec<String>>().join(", ")`,
+                // which allocated one `String` per candidate plus the `Vec`
+                // spine plus the joined `String`.
+                let mut rendered_candidates = String::new();
+                for (i, candidate) in analysis.candidates_for(projects, dep).iter().enumerate() {
+                    if i > 0 {
+                        rendered_candidates.push_str(", ");
+                    }
+                    // Bind the `to_string_lossy` temporary so the borrowed
+                    // `Cow` returned by `normalize_path_separators` cannot
+                    // outlive the string it points at.
+                    let lossy = candidate.to_string_lossy();
+                    rendered_candidates.push_str(&normalize_path_separators(&lossy));
+                }
                 anyhow::bail!(
-                    "dependency `{dep}` is ambiguous; candidate manifests: {}",
-                    paths.join(", ")
+                    "dependency `{dep}` is ambiguous; candidate manifests: {rendered_candidates}"
                 );
             }
             ProjectNameResolution::Missing => {}

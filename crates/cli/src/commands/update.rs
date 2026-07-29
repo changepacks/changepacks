@@ -603,29 +603,43 @@ async fn rollback_update_state(snapshots: &UpdateStateSnapshot) -> Result<()> {
     }
 }
 
+/// Drive every future in `futures` concurrently to completion and return the
+/// first error, if any.
+///
+/// Every future is polled to completion even when an earlier one already
+/// failed: `join_all` never short-circuits, so the failure of one manifest
+/// write cannot leave a sibling write half-done and unaccounted for. The
+/// rollback path relies on that: it restores the snapshot of every path the
+/// fan-out could have touched, not only the ones that succeeded.
+async fn join_all_results<F>(futures: impl IntoIterator<Item = F>) -> Result<()>
+where
+    F: std::future::Future<Output = Result<()>>,
+{
+    futures::future::join_all(futures)
+        .await
+        .into_iter()
+        .collect::<Result<()>>()
+}
+
 async fn apply_project_version_updates(update_projects: &mut [UpdateProjectMut<'_>]) -> Result<()> {
-    futures::future::join_all(
+    join_all_results(
         update_projects
             .iter_mut()
             .map(|(project, update_type)| project.update_version(*update_type)),
     )
     .await
-    .into_iter()
-    .collect::<Result<()>>()
 }
 
 async fn apply_workspace_dependency_updates(
     workspace_projects: &[WorkspaceRef<'_>],
     projects: &[&dyn Package],
 ) -> Result<()> {
-    futures::future::join_all(
+    join_all_results(
         workspace_projects
             .iter()
             .map(|workspace| workspace.update_workspace_dependencies(projects)),
     )
     .await
-    .into_iter()
-    .collect::<Result<()>>()
 }
 
 /// Merge workspace-inherited package updates into workspace entries.

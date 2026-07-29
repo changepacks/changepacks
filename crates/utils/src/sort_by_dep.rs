@@ -395,15 +395,28 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
 
     if sorted_indices.len() < projects.len() {
         let cycle_members = cycle_members_in_residual(&adj, &offsets, &in_degree);
-        let mut members: Vec<_> = cycle_members
-            .iter()
-            .enumerate()
-            .filter(|&(_, &in_cycle)| in_cycle)
-            .map(|(index, _)| DependencyCycleMember {
-                name: projects[index].name().unwrap_or("<unnamed>").to_string(),
-                path: projects[index].relative_path().to_path_buf(),
-            })
-            .collect();
+        // `Filter` reports a `size_hint` lower bound of 0, and `Vec::from_iter`
+        // reserves against that lower bound, so `collect()` here would start
+        // from an empty vector and geometric-double its way up on every cycle
+        // report. The number of nodes that survive Kahn's loop is exactly
+        // `projects.len() - sorted_indices.len()` (the enclosing `if` is
+        // exactly `sorted_indices.len() < projects.len()`, so the subtraction
+        // cannot underflow and is non-zero), and the cycle members are a
+        // subset of those residual nodes — an exact upper bound, and exact for
+        // a graph whose residual is one pure cycle. Preallocating to it makes
+        // the fill a single allocation.
+        let mut members: Vec<DependencyCycleMember> =
+            Vec::with_capacity(projects.len() - sorted_indices.len());
+        members.extend(
+            cycle_members
+                .iter()
+                .enumerate()
+                .filter(|&(_, &in_cycle)| in_cycle)
+                .map(|(index, _)| DependencyCycleMember {
+                    name: projects[index].name().unwrap_or("<unnamed>").to_string(),
+                    path: projects[index].relative_path().to_path_buf(),
+                }),
+        );
         members.sort_by(|left, right| {
             left.name
                 .cmp(&right.name)

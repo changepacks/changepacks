@@ -625,4 +625,68 @@ mod tests {
         repo_dir.close().unwrap();
         outside_dir.close().unwrap();
     }
+
+    #[test]
+    fn test_gen_changepack_result_map_invalid_semver_with_update_entry() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_root = temp_dir.path();
+
+        let project_path = repo_root.join("bad_semver_pkg");
+        fs::create_dir_all(&project_path).unwrap();
+        let package_json = project_path.join("package.json");
+        fs::write(
+            &package_json,
+            r#"{"name": "bad-semver-pkg", "version": "abc"}"#,
+        )
+        .unwrap();
+
+        // Non-empty but unparseable semver, so `next_version_or_default` fails
+        // on a value the project actually declared rather than on the empty
+        // string, exercising the same bump arm from the other input class.
+        // Joined rather than written with a literal `/` so `display()` renders
+        // the same separator `get_relative_path` produces on this platform;
+        // `PathBuf` equality is component-based, so the map key still matches.
+        let relative_path = Path::new("bad_semver_pkg").join("package.json");
+        let project = create_test_project(
+            "bad-semver-pkg",
+            "abc",
+            package_json,
+            relative_path.clone(),
+            true,
+        );
+
+        // A matching `update_result` entry is the ONLY route into the bump arm;
+        // without it the project takes the `None` arm and never computes a next
+        // version.
+        let mut update_result = HashMap::new();
+        update_result.insert(
+            relative_path.clone(),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "bad semver".to_string(),
+                )],
+            ),
+        );
+
+        let projects = vec![&project];
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result);
+
+        let err = result.expect_err("an unparseable version must fail the bump");
+        let chain = format!("{err:#}");
+        // Pin the exact bump-failure context, not just the path: `check` and
+        // `update --format json` rely on this wording to tell a version-bump
+        // failure apart from the relative-path failure raised earlier.
+        assert!(
+            chain.contains("Failed to compute next version for"),
+            "error chain should carry the next-version context, got: {chain}"
+        );
+        assert!(
+            chain.contains(&relative_path.display().to_string()),
+            "error chain should name the offending manifest path, got: {chain}"
+        );
+
+        temp_dir.close().unwrap();
+    }
 }
