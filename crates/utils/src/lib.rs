@@ -48,6 +48,11 @@
 //!   caller-supplied parser, and attach `Failed to read <label> <path>` /
 //!   `Failed to parse <label> <path>` contexts, returning the raw text next to
 //!   the parsed value.
+//! - **TOML manifest shape guard** (optional `toml` feature) —
+//!   `ensure_toml_table_like` rejects a manifest whose top-level table key
+//!   (`[package]` in `Cargo.toml`, `[project]` in `pyproject.toml`) holds a
+//!   non-table scalar, and reports whether the key exists, so the Rust and
+//!   Python writers share ONE guard instead of two mirrored copies.
 //! - **Format-preservation helpers** — [`detect_indent_str`] recovers the
 //!   indent width/character of the on-disk JSON so `serde_json` roundtrips
 //!   don't reformat it; the crate-internal `trailing_newline` helper reports
@@ -69,6 +74,8 @@ mod bump_version_with;
 mod clear_update_logs;
 mod detect_indent;
 mod display_update;
+#[cfg(feature = "toml")]
+mod ensure_toml_table_like;
 mod find_current_git_repo;
 mod find_project_dirs;
 mod gen_changepack_result_map;
@@ -99,6 +106,8 @@ pub use bump_version_with::bump_version_with;
 pub use clear_update_logs::{clear_applied_update_logs, clear_update_logs};
 pub use detect_indent::detect_indent_str;
 pub use display_update::display_update;
+#[cfg(feature = "toml")]
+pub use ensure_toml_table_like::ensure_toml_table_like;
 pub use find_current_git_repo::find_current_git_repo;
 pub use find_project_dirs::find_project_dirs;
 pub use gen_changepack_result_map::gen_changepack_result_map;

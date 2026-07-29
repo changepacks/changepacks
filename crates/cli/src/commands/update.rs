@@ -152,12 +152,19 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // path IFF its workspace root actually survived the language filter (its
     // path is still in the applied set), so logs clear in lock-step with the
     // bump that satisfied them.
+    //
+    // The set BORROWS its keys (`HashSet<&Path>`): `clear_applied_update_logs`
+    // only probes membership with `&Path`, and both sources outlive that call —
+    // `update_map` is not mutated after `retain_updates` above and is last read
+    // when the transaction runs, `merged_pairs` is never mutated after it is
+    // built. So the owned copies this used to make (one `PathBuf` clone per
+    // update-map key plus one per folded workspace member) are pure waste.
     let applied_paths = language_filter_active.then(|| {
-        let mut set = HashSet::with_capacity(update_map.len() + merged_pairs.len());
-        set.extend(update_map.keys().cloned());
+        let mut set: HashSet<&Path> = HashSet::with_capacity(update_map.len() + merged_pairs.len());
+        set.extend(update_map.keys().map(PathBuf::as_path));
         for (pkg_path, ws_path) in &merged_pairs {
             if set.contains(ws_path.as_path()) {
-                set.insert(pkg_path.clone());
+                set.insert(pkg_path.as_path());
             }
         }
         set
@@ -468,18 +475,32 @@ fn collect_update_snapshot_paths(
     paths
 }
 
+/// Write every carry-forward changepack log, concurrently.
+///
+/// Serialization happens first, in log order, so a `serde_json` failure still
+/// question-mark propagates exactly as before (and now aborts before any file
+/// is created). Each filename is drawn from `nanoid`, so the target paths are
+/// provably disjoint and the writes race-free; they are therefore driven
+/// through [`join_all_results`], whose polling-every-future-to-completion
+/// contract is what this transaction needs — the rollback restores every path
+/// the fan-out could have touched, not only the ones that succeeded.
 async fn persist_carry_forward_logs(changepacks_dir: &Path, logs: &[ChangePackLog]) -> Result<()> {
+    let mut pending = Vec::with_capacity(logs.len());
     for log in logs {
         let path = changepacks_dir.join(format!(
             "{CARRY_FORWARD_LOG_PREFIX}{}.json",
             nanoid::nanoid!()
         ));
         let content = serde_json::to_string_pretty(log)?;
-        tokio::fs::write(&path, content)
-            .await
-            .with_context(|| format!("Failed to write changepack log {}", path.display()))?;
+        pending.push((path, content));
     }
-    Ok(())
+
+    join_all_results(pending.iter().map(|(path, content)| async move {
+        tokio::fs::write(path, content)
+            .await
+            .with_context(|| format!("Failed to write changepack log {}", path.display()))
+    }))
+    .await
 }
 
 struct FileSnapshot {
@@ -555,16 +576,29 @@ async fn snapshot_update_state(
     })
 }
 
+/// Restore every snapshot concurrently, appending one failure string per path
+/// that could not be restored.
+///
+/// The snapshot paths within a single batch are unique (manifest paths are
+/// deduplicated by [`collect_update_snapshot_paths`] and log paths come from a
+/// directory listing), so no two futures touch the same file and the fan-out
+/// stays race-free. Failures are collected by zipping the results back against
+/// `snapshots`, which keeps the reported order (and therefore the joined error
+/// message) byte-identical to a sequential restore.
 async fn restore_file_snapshots(snapshots: &[FileSnapshot], failures: &mut Vec<String>) {
-    for snapshot in snapshots {
-        let result = match &snapshot.bytes {
+    let results = futures::future::join_all(snapshots.iter().map(|snapshot| async move {
+        match &snapshot.bytes {
             Some(bytes) => tokio::fs::write(&snapshot.path, bytes).await,
             None => match tokio::fs::remove_file(&snapshot.path).await {
                 Ok(()) => Ok(()),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
                 Err(error) => Err(error),
             },
-        };
+        }
+    }))
+    .await;
+
+    for (snapshot, result) in snapshots.iter().zip(results) {
         if let Err(error) = result {
             failures.push(format!("{}: {error}", snapshot.path.display()));
         }
@@ -583,9 +617,17 @@ async fn rollback_update_state(snapshots: &UpdateStateSnapshot) -> Result<()> {
         .collect::<HashSet<_>>();
     match collect_changepack_log_paths(&snapshots.changepacks_dir).await {
         Ok(current_logs) => {
-            for path in current_logs {
-                if !original_logs.contains(path.as_path())
-                    && let Err(error) = tokio::fs::remove_file(&path).await
+            // Logs created by the failed update are distinct directory entries,
+            // so their removals can overlap. Failures are re-ordered back to the
+            // listing order by zipping the results against `stale_logs`.
+            let stale_logs = current_logs
+                .into_iter()
+                .filter(|path| !original_logs.contains(path.as_path()))
+                .collect::<Vec<_>>();
+            let removals =
+                futures::future::join_all(stale_logs.iter().map(tokio::fs::remove_file)).await;
+            for (path, result) in stale_logs.iter().zip(removals) {
+                if let Err(error) = result
                     && error.kind() != std::io::ErrorKind::NotFound
                 {
                     failures.push(format!("{}: {error}", path.display()));
@@ -1723,6 +1765,51 @@ path = "../visible"
         assert_eq!(
             error.to_string(),
             "unresolved changepack update paths: missing/Cargo.toml"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_validate_update_project_paths_rejects_multiple_unresolved_keys() -> Result<()> {
+        let repo_root = Path::new("/repo");
+        let mut project_finders: Vec<Box<dyn ProjectFinder>> =
+            vec![Box::new(MockFinder::new(vec![mock_package_project(
+                "/repo/crates/foo/Cargo.toml",
+                "crates/foo/Cargo.toml",
+                false,
+                None,
+            )]))];
+        // Seeded out of lexicographic order so the assertion below pins both the
+        // `sort_unstable` ordering and the `, ` separator emitted between every
+        // pair of rendered paths, including the middle element.
+        let update_map = HashMap::from([
+            (
+                PathBuf::from("missing/zeta/Cargo.toml"),
+                (UpdateType::Patch, vec![mock_log("zeta update")]),
+            ),
+            (
+                PathBuf::from("crates/foo/Cargo.toml"),
+                (UpdateType::Minor, vec![mock_log("foo update")]),
+            ),
+            (
+                PathBuf::from("missing/alpha/Cargo.toml"),
+                (UpdateType::Major, vec![mock_log("alpha update")]),
+            ),
+            (
+                PathBuf::from("missing/mid/Cargo.toml"),
+                (UpdateType::Patch, vec![mock_log("mid update")]),
+            ),
+        ]);
+        let update_projects =
+            collect_update_project_muts(&mut project_finders, &update_map, repo_root)?;
+
+        let error = validate_update_project_paths(&update_map, &update_projects, repo_root)
+            .expect_err("every unmatched update path should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "unresolved changepack update paths: missing/alpha/Cargo.toml, \
+             missing/mid/Cargo.toml, missing/zeta/Cargo.toml"
         );
         Ok(())
     }

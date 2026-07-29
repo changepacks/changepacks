@@ -110,17 +110,18 @@ pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) 
 /// Guarding BEFORE any mutation is the point: `toml_edit` indexing assignment
 /// would otherwise silently replace the scalar and rewrite the manifest.
 ///
+/// The body itself now lives in
+/// [`changepacks_utils::ensure_toml_table_like`], because
+/// `changepacks-python`'s `ensure_project_table_like` was the same function
+/// modulo the key name and the manifest label, and `crates/AGENTS.md` forbids
+/// importing one language crate into another. This wrapper stays so the
+/// `Cargo.toml`-specific key/label pair is bound in ONE place and every call
+/// site inside this crate is unchanged.
+///
 /// # Errors
 /// Returns an error naming `path` when `package` is present but not table-like.
 pub(crate) fn ensure_package_table_like(doc: &DocumentMut, path: &Path) -> Result<bool> {
-    let package = doc.get("package");
-    if package.is_some_and(|package| !package.is_table_like()) {
-        anyhow::bail!(
-            "Cargo.toml {} has a non-table [package] item",
-            path.display()
-        );
-    }
-    Ok(package.is_some())
+    changepacks_utils::ensure_toml_table_like(doc, path, "package", "Cargo.toml")
 }
 
 /// Overwrite `slot` with the string `new_value`, carrying the previous value's

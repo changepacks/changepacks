@@ -6,10 +6,7 @@
 //! them out. Everything the caller does not touch — key order, indentation,
 //! spacing, trailing newline — survives byte-for-byte.
 
-use std::{
-    collections::HashSet,
-    path::{Path, PathBuf},
-};
+use std::{collections::HashSet, path::Path};
 
 use anyhow::{Context, Result, bail};
 
@@ -150,7 +147,7 @@ fn parse_json_object_members(content: &str, open: usize) -> Result<Vec<JsonObjec
 /// rejected rather than silently corrupted.
 pub(crate) fn remove_applied_change_spans(
     content: &str,
-    applied_paths: &HashSet<PathBuf>,
+    applied_paths: &HashSet<&Path>,
 ) -> Result<String> {
     let root_open = skip_json_whitespace(content.as_bytes(), 0);
     let root_members = parse_json_object_members(content, root_open)?;
@@ -217,7 +214,7 @@ mod tests {
     /// keeps a hand-edited or future-schema changepack log from being silently
     /// rewritten into corrupted bytes, so each one is pinned to its message.
     fn scanner_error(content: &str) -> String {
-        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
         let error = remove_applied_change_spans(content, &applied_paths)
             .expect_err("malformed JSON must be rejected instead of rewritten");
         format!("{error:#}")
@@ -256,7 +253,7 @@ mod tests {
 
     /// Splice `applied` out of `content`, asserting the rewriter accepts it.
     fn rewrite(content: &str, applied: &[&str]) -> String {
-        let applied_paths: HashSet<PathBuf> = applied.iter().copied().map(PathBuf::from).collect();
+        let applied_paths: HashSet<&Path> = applied.iter().copied().map(Path::new).collect();
         remove_applied_change_spans(content, &applied_paths)
             .expect("a well-formed changepack log must be rewritten, not rejected")
     }

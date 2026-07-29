@@ -54,12 +54,17 @@ pub async fn clear_update_logs(changepacks_dir: &Path) -> Result<()> {
 /// only unapplied `changes` entries while preserving sibling fields such as
 /// `note` and `date`.
 ///
+/// `applied_paths` is a set of BORROWED paths: every membership probe below is
+/// already a `&Path` lookup, so the caller hands over views into the update map
+/// it still owns instead of cloning one `PathBuf` per applied project. Mirrors
+/// the borrow-the-keys policy documented in [`gen_update_map`](crate::gen_update_map).
+///
 /// # Errors
 /// Returns error if a matching changepack log cannot be read, parsed, removed,
 /// or rewritten.
 pub async fn clear_applied_update_logs(
     changepacks_dir: &Path,
-    applied_paths: &HashSet<PathBuf>,
+    applied_paths: &HashSet<&Path>,
 ) -> Result<()> {
     // Two-phase read, mirroring `gen_update_map`:
     //   Phase 1: single directory walk to collect the paths of every matching
@@ -360,7 +365,7 @@ mod tests {
             r#"{"changes":{"packages/a/package.json":"Patch"},"note":"selective"}"#,
         )
         .unwrap();
-        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
         clear_applied_update_logs(&changepacks_dir, &applied_paths)
             .await
             .unwrap();
@@ -403,7 +408,7 @@ mod tests {
         )
         .unwrap();
 
-        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
         let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
 
         assert!(result.is_ok());
@@ -431,7 +436,7 @@ mod tests {
         crate::test_support::set_readonly(&untouched_log, true);
 
         // When selective cleanup applies only the first log.
-        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
         let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
         crate::test_support::set_readonly(&untouched_log, false);
 
@@ -456,7 +461,7 @@ mod tests {
         )
         .unwrap();
 
-        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
         let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
 
         assert!(result.is_ok());
@@ -482,7 +487,7 @@ mod tests {
         fs::write(&config_file, r#"{"ignore":[],"baseBranch":"main"}"#).unwrap();
         fs::write(&readme, "notes").unwrap();
 
-        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
         let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
 
         assert!(result.is_ok());
@@ -496,7 +501,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         let changepacks_dir = temp_path.join(".changepacks");
-        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
         let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
 
         assert!(result.is_ok());
@@ -514,7 +519,7 @@ mod tests {
         let log_file = changepacks_dir.join("changepack_log_broken.json");
         fs::write(&log_file, r#"{"changes":{"packages/a/package.json":"#).unwrap();
 
-        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
         let err = clear_applied_update_logs(&changepacks_dir, &applied_paths)
             .await
             .expect_err("a malformed changepack log must not be reported as success");
@@ -545,7 +550,7 @@ mod tests {
         let log_file = changepacks_dir.join("changepack_log_1.json");
         fs::write(&log_file, bytes).unwrap();
 
-        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
         let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
 
         assert!(result.is_ok(), "selective cleanup failed: {result:?}");
@@ -599,7 +604,7 @@ mod tests {
         .unwrap();
 
         // Apply only one change, so the file gets rewritten (not deleted)
-        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
         let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
 
         assert!(result.is_ok());
@@ -632,7 +637,7 @@ mod tests {
         let log_file = changepacks_dir.join("changepack_log_1.json");
         fs::write(&log_file, input.as_bytes()).unwrap();
 
-        let applied_paths = HashSet::from([PathBuf::from("packages/a/package.json")]);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
         clear_applied_update_logs(&changepacks_dir, &applied_paths)
             .await
             .unwrap();
@@ -702,8 +707,8 @@ mod tests {
         fs::write(&log_file, input.as_bytes()).unwrap();
 
         let applied_paths = HashSet::from([
-            PathBuf::from("packages/a/package.json"),
-            PathBuf::from("packages/c/package.json"),
+            Path::new("packages/a/package.json"),
+            Path::new("packages/c/package.json"),
         ]);
         clear_applied_update_logs(&changepacks_dir, &applied_paths)
             .await

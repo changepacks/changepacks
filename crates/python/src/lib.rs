@@ -135,11 +135,10 @@ pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> R
 /// table-like (e.g. `project = 3`), and report whether the key is present at
 /// all.
 ///
-/// The mirror of `changepacks_rust`'s `ensure_package_table_like` for
-/// `Cargo.toml`: [`write_pyproject_version`] needs the SAME two facts before
-/// touching the document — "is the existing `project` item safe to index
-/// into?" and "does it already exist?" — and previously answered them with two
-/// separate `get("project")` walks. Folding both into one call keeps the
+/// [`write_pyproject_version`] needs the SAME two facts before touching the
+/// document — "is the existing `project` item safe to index into?" and "does
+/// it already exist?" — and previously answered them with two separate
+/// `get("project")` walks. Folding both into one call keeps the
 /// manifest-shape assumption AND its user-visible message in ONE place, and
 /// the returned flag drives the missing-`[project]` creation so no extra
 /// lookup is introduced.
@@ -147,17 +146,18 @@ pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> R
 /// Guarding BEFORE any mutation is the point: `toml_edit` indexing assignment
 /// would otherwise silently replace the scalar and rewrite the manifest.
 ///
+/// This used to be a hand-copied mirror of `changepacks_rust`'s
+/// `ensure_package_table_like` — the same function modulo the key name and the
+/// manifest label. `crates/AGENTS.md` forbids importing one language crate
+/// into another, so the shared body now lives in
+/// [`changepacks_utils::ensure_toml_table_like`] and both crates keep a thin
+/// wrapper that binds their own key/label pair, leaving every call site
+/// unchanged.
+///
 /// # Errors
 /// Returns an error naming `path` when `project` is present but not table-like.
 pub(crate) fn ensure_project_table_like(doc: &DocumentMut, path: &Path) -> Result<bool> {
-    let project = doc.get("project");
-    if project.is_some_and(|project| !project.is_table_like()) {
-        anyhow::bail!(
-            "pyproject.toml {} has a non-table [project] item",
-            path.display()
-        );
-    }
-    Ok(project.is_some())
+    changepacks_utils::ensure_toml_table_like(doc, path, "project", "pyproject.toml")
 }
 
 #[cfg(test)]

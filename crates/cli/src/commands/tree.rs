@@ -13,6 +13,7 @@ use changepacks_utils::{
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use super::check::changed_marker;
 
@@ -166,15 +167,22 @@ fn cached_project_line<'a, 'ctx>(
     }
 }
 
+/// A pending unit of tree rendering work.
+///
+/// `prefix` is the accumulated indentation string every line under this frame
+/// is written with. It is a shared `Rc<str>` rather than an owned `String`
+/// because a `Dependencies` frame has to hand the very same prefix to each of
+/// its siblings: with a `String` that meant one heap allocation plus a memcpy
+/// per sibling, growing with tree depth, while `Rc::clone` is a refcount bump.
 enum TreeFrame<'a> {
     Node {
         project: &'a Project,
-        prefix: String,
+        prefix: Rc<str>,
         is_last: bool,
     },
     Dependencies {
         project: &'a Project,
-        prefix: String,
+        prefix: Rc<str>,
         next_index: usize,
     },
 }
@@ -190,7 +198,7 @@ fn display_tree_node<'a>(
 ) -> Result<()> {
     let mut frames = vec![TreeFrame::Node {
         project,
-        prefix: prefix.to_owned(),
+        prefix: Rc::from(prefix),
         is_last,
     }];
 
@@ -219,7 +227,11 @@ fn display_tree_node<'a>(
                 {
                     frames.push(TreeFrame::Dependencies {
                         project,
-                        prefix: format!("{}{}", prefix, if is_last { "    " } else { "│   " }),
+                        prefix: Rc::from(format!(
+                            "{}{}",
+                            prefix,
+                            if is_last { "    " } else { "│   " }
+                        )),
                         next_index: 0,
                     });
                 }
@@ -240,7 +252,7 @@ fn display_tree_node<'a>(
                 if !is_last_dep {
                     frames.push(TreeFrame::Dependencies {
                         project,
-                        prefix: prefix.clone(),
+                        prefix: Rc::clone(&prefix),
                         next_index: next_index + 1,
                     });
                 }
@@ -312,8 +324,15 @@ fn format_project_line(
         .get(project.path())
         .map(Vec::as_slice)
         .unwrap_or_default();
-    let mut deps_str =
-        String::with_capacity(filtered_deps.iter().map(|(dep, _)| dep.len() + 9).sum());
+    // The 9-byte separator only precedes elements after the first, so charge it
+    // `len() - 1` times instead of once per dependency.
+    let mut deps_str = String::with_capacity(
+        filtered_deps
+            .iter()
+            .map(|(dep, _)| dep.len())
+            .sum::<usize>()
+            + 9 * filtered_deps.len().saturating_sub(1),
+    );
     for (dep, _) in filtered_deps {
         if !deps_str.is_empty() {
             deps_str.push_str("\n        ");
@@ -321,9 +340,11 @@ fn format_project_line(
         deps_str.push_str(dep);
     }
     let deps_info = if deps_str.is_empty() {
-        "".normal()
+        String::new()
     } else {
-        format!(" [deps:\n        {deps_str}]").bright_black()
+        format!(" [deps:\n        {deps_str}]")
+            .bright_black()
+            .to_string()
     };
 
     // Reuse `Project::format_line` so the base label stays in sync with
