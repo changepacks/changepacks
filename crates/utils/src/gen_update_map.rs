@@ -71,7 +71,7 @@ impl UpdatePlan {
             projects,
             ReverseDependencyContext {
                 repo_root_path,
-                expansion_seeds: &self.expansion_seeds,
+                expansion_seeds: Some(&self.expansion_seeds),
             },
         )?;
         self.record_generated(generated);
@@ -416,13 +416,12 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     projects: &[&Project],
     repo_root_path: &Path,
 ) -> Result<()> {
-    let expansion_seeds = update_map.keys().cloned().collect();
     apply_reverse_dependencies_with_provenance(
         update_map,
         projects,
         ReverseDependencyContext {
             repo_root_path,
-            expansion_seeds: &expansion_seeds,
+            expansion_seeds: None,
         },
     )
     .map(|_| ())
@@ -430,7 +429,14 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
 
 struct ReverseDependencyContext<'a> {
     repo_root_path: &'a Path,
-    expansion_seeds: &'a HashSet<PathBuf>,
+    /// Paths allowed to seed reverse-dependency expansion.
+    ///
+    /// `None` means "every key of `update_map` is a seed", which is exactly what the free
+    /// [`apply_reverse_dependencies`] wants. Spelling that as `Some(update_map.keys().cloned())`
+    /// would allocate a whole `HashSet` and clone every `PathBuf` only to compare the map's keys
+    /// against a byte-for-byte copy of themselves, so the unrestricted case is encoded in the type
+    /// instead. Both variants produce identical observable output and ordering.
+    expansion_seeds: Option<&'a HashSet<PathBuf>>,
 }
 
 fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
@@ -465,7 +471,7 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
     if update_map.is_empty() {
         return Ok(Vec::new());
     }
-    if context.expansion_seeds.is_empty() {
+    if context.expansion_seeds.is_some_and(HashSet::is_empty) {
         return Ok(Vec::new());
     }
 
@@ -554,14 +560,30 @@ fn apply_reverse_dependencies_with_provenance<S: BuildHasher>(
     initial_paths.extend(
         update_map
             .keys()
-            .filter(|path| context.expansion_seeds.contains(*path))
+            .filter(|path| {
+                context
+                    .expansion_seeds
+                    .is_none_or(|seeds| seeds.contains(*path))
+            })
             .filter_map(|path| path_to_name.get(path).map(|name| (path, *name))),
     );
     initial_paths
         .sort_by(|left, right| compare_paths(left.0, right.0).then_with(|| left.1.cmp(right.1)));
     let mut to_process: VecDeque<&str> = initial_paths.into_iter().map(|(_, name)| name).collect();
-    let mut reached_paths: HashSet<&Path> = HashSet::with_capacity(context.expansion_seeds.len());
-    reached_paths.extend(context.expansion_seeds.iter().map(PathBuf::as_path));
+    // `None` seeds every already-scheduled path, so borrow the keys straight out of `update_map`
+    // instead of walking a cloned copy of them.
+    let mut reached_paths: HashSet<&Path> = match context.expansion_seeds {
+        Some(seeds) => {
+            let mut reached = HashSet::with_capacity(seeds.len());
+            reached.extend(seeds.iter().map(PathBuf::as_path));
+            reached
+        }
+        None => {
+            let mut reached = HashSet::with_capacity(update_map.len());
+            reached.extend(update_map.keys().map(PathBuf::as_path));
+            reached
+        }
+    };
     while let Some(trigger_name) = to_process.pop_front() {
         if let Some(dependents) = reverse_deps.get(trigger_name) {
             for (dependent_path, dependent_name) in dependents {

@@ -922,6 +922,44 @@ mod tests {
     }
 
     #[test]
+    fn test_prepend_path_dirs_preserves_multi_dir_order_before_existing_path() {
+        // `node_modules_bin_dirs_async` hands back a multi-entry `Vec` ordered
+        // innermost-package-first, and nearest-wins resolution depends on that
+        // order surviving into the child `PATH`. The single-directory test can
+        // only pin the first slot, so the relative order of two injected
+        // directories — and the fact that the whole process `PATH` still
+        // follows them — is asserted here.
+        let (first, second) = if cfg!(target_os = "windows") {
+            (
+                PathBuf::from("C:\\changepacks-path-test-bin-a"),
+                PathBuf::from("C:\\changepacks-path-test-bin-b"),
+            )
+        } else {
+            (
+                PathBuf::from("/changepacks-path-test-bin-a"),
+                PathBuf::from("/changepacks-path-test-bin-b"),
+            )
+        };
+
+        let joined = prepend_path_dirs(&[first.clone(), second.clone()])
+            .expect("valid PATH construction")
+            .expect("some PATH");
+        let parsed: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+
+        assert_eq!(parsed.first(), Some(&first));
+        assert_eq!(parsed.get(1), Some(&second));
+
+        let existing: Vec<PathBuf> = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            &parsed[2..],
+            existing.as_slice(),
+            "pre-existing PATH entries must follow the injected directories unchanged"
+        );
+    }
+
+    #[test]
     fn test_prepend_path_dirs_reports_invalid_platform_separator() {
         #[cfg(target_os = "windows")]
         let invalid_dir = PathBuf::from("C:\\changepacks\"invalid");
@@ -997,6 +1035,74 @@ mod tests {
             "expected success=false for a non-zero exit, stdout: {}, stderr: {}",
             output.stdout, output.stderr
         );
+    }
+
+    #[tokio::test]
+    async fn test_run_publish_command_os_args_kill_on_drop_kills_cancelled_child() {
+        // `run_publish_command_os_args` documents that with `kill_on_drop =
+        // true` a cancelled future terminates the child before the `Child`
+        // handle is dropped, but every other argv test passes `false`, so the
+        // flag was never exercised. The C# managed dry-run pipeline is the
+        // production consumer of the `true` variant, and it relies on this to
+        // avoid leaking a `dotnet` child when the publish run is interrupted.
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let base = std::env::temp_dir().join(format!(
+            "changepacks_osargs_cancel_{}_{}",
+            std::process::id(),
+            unique
+        ));
+        std::fs::create_dir_all(&base).unwrap();
+        let started = base.join("started");
+        let completed = base.join("completed");
+
+        // Same cfg-split command shape as the shell-runner cancellation test:
+        // write a readiness marker, sleep, then write a delayed completion
+        // marker that must never appear once the future is cancelled.
+        #[cfg(target_os = "windows")]
+        let (program, args) = (
+            "cmd",
+            [
+                "/C",
+                "echo started>started & ping -n 3 127.0.0.1 >nul & echo completed>completed",
+            ],
+        );
+        #[cfg(not(target_os = "windows"))]
+        let (program, args) = (
+            "sh",
+            [
+                "-c",
+                "printf started > started; sleep 2; printf completed > completed",
+            ],
+        );
+
+        let task_dir = base.clone();
+        let mut task = tokio::spawn(async move {
+            run_publish_command_os_args(program, args, &task_dir, true).await
+        });
+        tokio::task::yield_now().await;
+        let started_written = wait_for_file(&started, Duration::from_secs(5)).await;
+        if !started_written && task.is_finished() {
+            panic!(
+                "argv command finished before readiness: {:?}",
+                (&mut task).await
+            );
+        }
+        assert!(started_written, "argv child never wrote its start marker");
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+
+        // The child writes `completed` after roughly two seconds. Polling for
+        // longer than that proves `kill_on_drop` prevented the delayed side
+        // effect instead of merely racing the child's startup.
+        assert!(
+            !wait_for_file(&completed, Duration::from_secs(4)).await,
+            "cancelled argv child wrote its delayed completion marker"
+        );
+        let _ = std::fs::remove_dir_all(base);
     }
 
     #[test]

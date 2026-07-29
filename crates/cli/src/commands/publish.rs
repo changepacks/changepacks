@@ -433,6 +433,16 @@ impl ProjectPublishOutcome {
             Self::Failure(output)
         }
     }
+
+    /// Classifies the result of invoking a publish command: a completed
+    /// invocation is split into `Success` / `Failure` by `Self::from_output`,
+    /// while a spawn or execution error becomes `Self::Error`.
+    fn from_result(result: anyhow::Result<PublishOutput>) -> Self {
+        match result {
+            Ok(output) => Self::from_output(output),
+            Err(error) => Self::Error(error),
+        }
+    }
 }
 
 /// Represents the failure cause for a publish operation.
@@ -454,9 +464,12 @@ struct PublishOutcomeLabels {
 ///
 /// Bundling them keeps the invariant "a project recorded in `failed_projects`
 /// is also recorded in `failed_project_names`" expressible in one place —
-/// `track_failed_name` — instead of once per loop. `result_map` starts
-/// empty (a `BTreeMap` has no meaningful pre-sizing); the two others are
-/// pre-sized to the batch length exactly as the loops did inline.
+/// `track_failed_name` — instead of once per loop. All three start empty:
+/// a `BTreeMap` has no meaningful pre-sizing, and `failed_projects` /
+/// `failed_project_names` are written only when a project fails, so on the
+/// dominant all-success path a batch-length reservation would allocate and
+/// drop without a single write. That is the same empty-on-success policy
+/// `clear_update_logs` already documents for its `error_details` buffer.
 struct PublishLoopState {
     result_map: BTreeMap<PathBuf, PublishResult>,
     failed_projects: Vec<String>,
@@ -464,11 +477,11 @@ struct PublishLoopState {
 }
 
 impl PublishLoopState {
-    fn with_capacity(capacity: usize) -> Self {
+    fn new() -> Self {
         Self {
             result_map: BTreeMap::new(),
-            failed_projects: Vec::with_capacity(capacity),
-            failed_project_names: HashSet::with_capacity(capacity),
+            failed_projects: Vec::new(),
+            failed_project_names: HashSet::new(),
         }
     }
 
@@ -602,7 +615,7 @@ async fn execute_dry_run_publish_loop(
     config: &Config,
     format: FormatOptions,
 ) -> std::io::Result<(BTreeMap<PathBuf, PublishResult>, Vec<String>)> {
-    let mut state = PublishLoopState::with_capacity(projects.len());
+    let mut state = PublishLoopState::new();
 
     const DRY_RUN_LABELS: PublishOutcomeLabels = PublishOutcomeLabels {
         success: "Dry-run succeeded for",
@@ -649,18 +662,15 @@ async fn execute_dry_run_publish_loop(
         if let FormatOptions::Stdout = format {
             writeln_stdout(format_args!("Dry-run publishing {project}..."))?;
         }
-        match project.dry_run_publish(config).await {
-            Ok(Some(output)) => {
-                let outcome = ProjectPublishOutcome::from_output(output);
-                state.record_outcome_track_failure(project, outcome, DRY_RUN_LABELS, format)?;
-            }
+        // `Ok(None)` stays inline: dry-run unsupported is a warning, not a
+        // failure (`failed_projects` is NOT bumped), so it does not fit
+        // `record_publish_failure`'s contract. The JSON side also records
+        // `success = true` with an explanatory error field, not the
+        // `success = false` shape `record_publish_failure` produces. The
+        // other two arms share one `record_outcome_track_failure` tail call.
+        let outcome = match project.dry_run_publish(config).await {
+            Ok(Some(output)) => ProjectPublishOutcome::from_output(output),
             Ok(None) => {
-                // Ok(None) stays inline: dry-run unsupported is a warning,
-                // not a failure (`failed_projects` is NOT bumped), so it
-                // does not fit `record_publish_failure`'s contract. The
-                // JSON side also records `success = true` with an
-                // explanatory error field, not the `success = false`
-                // shape `record_publish_failure` produces.
                 if let FormatOptions::Stdout = format {
                     eprintln!(
                         "Dry-run not supported for {project}; skipping. \
@@ -674,16 +684,11 @@ async fn execute_dry_run_publish_loop(
                     "dry-run not supported; skipped",
                     format,
                 );
+                continue;
             }
-            Err(e) => {
-                state.record_outcome_track_failure(
-                    project,
-                    ProjectPublishOutcome::Error(e),
-                    DRY_RUN_LABELS,
-                    format,
-                )?;
-            }
-        }
+            Err(e) => ProjectPublishOutcome::Error(e),
+        };
+        state.record_outcome_track_failure(project, outcome, DRY_RUN_LABELS, format)?;
     }
 
     Ok(state.finish())
@@ -696,7 +701,7 @@ async fn execute_publish_loop(
     config: &Config,
     format: FormatOptions,
 ) -> std::io::Result<(BTreeMap<PathBuf, PublishResult>, Vec<String>)> {
-    let mut state = PublishLoopState::with_capacity(projects.len());
+    let mut state = PublishLoopState::new();
 
     const PUBLISH_LABELS: PublishOutcomeLabels = PublishOutcomeLabels {
         success: "Successfully published",
@@ -710,20 +715,8 @@ async fn execute_publish_loop(
         if let FormatOptions::Stdout = format {
             writeln_stdout(format_args!("Publishing {project}..."))?;
         }
-        match project.publish(config).await {
-            Ok(output) => {
-                let outcome = ProjectPublishOutcome::from_output(output);
-                state.record_outcome_track_failure(project, outcome, PUBLISH_LABELS, format)?;
-            }
-            Err(e) => {
-                state.record_outcome_track_failure(
-                    project,
-                    ProjectPublishOutcome::Error(e),
-                    PUBLISH_LABELS,
-                    format,
-                )?;
-            }
-        }
+        let outcome = ProjectPublishOutcome::from_result(project.publish(config).await);
+        state.record_outcome_track_failure(project, outcome, PUBLISH_LABELS, format)?;
     }
 
     Ok(state.finish())

@@ -238,6 +238,22 @@ mod tests {
 }
 "#;
 
+    /// The same hand-formatted shape with a third `changes` member, so a run
+    /// can start after index 0 and still end before the last member.
+    ///
+    /// Two members can only ever produce a leading, trailing, or whole-object
+    /// run; the middle-run removal range needs three.
+    const THREE_MEMBER_LOG: &str = r#"{
+  "changes": {
+    "packages/a/package.json": "Minor",
+    "packages/b/package.json": "Patch",
+    "packages/c/package.json": "Major"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#;
+
     /// Splice `applied` out of `content`, asserting the rewriter accepts it.
     fn rewrite(content: &str, applied: &[&str]) -> String {
         let applied_paths: HashSet<PathBuf> = applied.iter().copied().map(PathBuf::from).collect();
@@ -295,6 +311,38 @@ mod tests {
   "date": "2026-01-01T00:00:00.000Z"
 }
 "#
+        );
+    }
+
+    #[test]
+    fn remove_applied_change_spans_removes_a_middle_run_from_its_own_prefix() {
+        // Only the middle member is applied, so the run neither starts at the
+        // object opening nor ends the object. The removal must begin at that
+        // member's own prefix - the bytes right after the PREVIOUS member's
+        // comma - so the kept member before it keeps its value, its comma and
+        // the indentation of the kept member after it.
+        assert_eq!(
+            rewrite(THREE_MEMBER_LOG, &["packages/b/package.json"]),
+            r#"{
+  "changes": {
+    "packages/a/package.json": "Minor",
+    "packages/c/package.json": "Major"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#
+        );
+    }
+
+    #[test]
+    fn remove_applied_change_spans_returns_the_input_when_nothing_is_applied() {
+        // No member matches, so no removal range is ever pushed and the
+        // rewriter must hand back the original bytes - indentation, key order
+        // and trailing newline included - rather than a reflowed copy.
+        assert_eq!(
+            rewrite(THREE_MEMBER_LOG, &["packages/unrelated/package.json"]),
+            THREE_MEMBER_LOG
         );
     }
 
