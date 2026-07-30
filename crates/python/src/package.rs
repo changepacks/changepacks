@@ -308,14 +308,11 @@ requires = ["setuptools"]
 
     #[test]
     fn test_set_name() {
-        let mut package = PythonPackage::new(
+        changepacks_core::assert_set_name_roundtrip!(PythonPackage::new(
             None,
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pyproject.toml"),
             PathBuf::from("pyproject.toml"),
-        );
-        assert_eq!(package.name(), None);
-        package.set_name("my-project".to_string());
-        assert_eq!(package.name(), Some("my-project"));
+        ));
     }
 }

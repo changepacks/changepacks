@@ -366,7 +366,15 @@ fn gradle_identifier_end(bytes: &[u8], start: usize) -> usize {
     end
 }
 
-fn groovy_identifier_allows_expression(identifier: &[u8]) -> bool {
+/// Single source of truth for the Groovy keywords after which a `/` opens a
+/// slashy string instead of being division.
+///
+/// Both Gradle scanners answer this question for the same dialect: this lexer
+/// (byte-oriented) and `version_lexer::identifier_allows_expression` (`&str`,
+/// which delegates here). Keeping one table prevents the two scanners from
+/// silently disagreeing about where a string literal starts if the keyword set
+/// ever changes.
+pub(crate) fn groovy_identifier_allows_expression(identifier: &[u8]) -> bool {
     matches!(
         identifier,
         b"assert" | b"case" | b"in" | b"instanceof" | b"new" | b"return" | b"throw" | b"yield"

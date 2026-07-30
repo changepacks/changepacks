@@ -289,14 +289,11 @@ workspace:
 
     #[test]
     fn test_set_name() {
-        let mut workspace = DartWorkspace::new(
+        changepacks_core::assert_set_name_roundtrip!(DartWorkspace::new(
             None,
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pubspec.yaml"),
             PathBuf::from("pubspec.yaml"),
-        );
-        assert_eq!(workspace.name(), None);
-        workspace.set_name("my-project".to_string());
-        assert_eq!(workspace.name(), Some("my-project"));
+        ));
     }
 }

@@ -165,7 +165,11 @@ fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], in_degree: &[usiz
                     dfs_stack.push((target, offsets[target]));
                 }
             } else {
-                let (finished, _) = dfs_stack.pop().expect("DFS stack is non-empty");
+                // `last_mut` already proved the stack is non-empty, so copying
+                // the node index out first (which ends that borrow under NLL)
+                // lets the pop run without an unreachable `expect` arm.
+                let finished = *node;
+                dfs_stack.pop();
                 finish_order.push(finished);
             }
         }

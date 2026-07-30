@@ -322,15 +322,12 @@ tokio = "1.0"
 
     #[test]
     fn test_set_name() {
-        let mut package = RustPackage::new(
+        changepacks_core::assert_set_name_roundtrip!(RustPackage::new(
             None,
             Some("1.0.0".to_string()),
             PathBuf::from("/test/Cargo.toml"),
             PathBuf::from("Cargo.toml"),
-        );
-        assert_eq!(package.name(), None);
-        package.set_name("my-project".to_string());
-        assert_eq!(package.name(), Some("my-project"));
+        ));
     }
 
     #[tokio::test]

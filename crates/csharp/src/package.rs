@@ -554,14 +554,11 @@ mod tests {
 
     #[test]
     fn test_set_name() {
-        let mut package = CSharpPackage::new(
+        changepacks_core::assert_set_name_roundtrip!(CSharpPackage::new(
             None,
             Some("1.0.0".to_string()),
             PathBuf::from("/test/Test.csproj"),
             PathBuf::from("Test.csproj"),
-        );
-        assert_eq!(package.name(), None);
-        package.set_name("my-project".to_string());
-        assert_eq!(package.name(), Some("my-project"));
+        ));
     }
 }

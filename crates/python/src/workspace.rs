@@ -260,14 +260,11 @@ members = ["packages/*"]
 
     #[test]
     fn test_set_name() {
-        let mut workspace = PythonWorkspace::new(
+        changepacks_core::assert_set_name_roundtrip!(PythonWorkspace::new(
             None,
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pyproject.toml"),
             PathBuf::from("pyproject.toml"),
-        );
-        assert_eq!(workspace.name(), None);
-        workspace.set_name("my-project".to_string());
-        assert_eq!(workspace.name(), Some("my-project"));
+        ));
     }
 }

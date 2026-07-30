@@ -332,25 +332,9 @@ fn format_project_line(
         .get(project.path())
         .map(Vec::as_slice)
         .unwrap_or_default();
-    // The 9-byte separator only precedes elements after the first, so charge it
-    // `len() - 1` times instead of once per dependency.
-    let mut deps_str = String::with_capacity(
-        filtered_deps
-            .iter()
-            .map(|(dep, _)| dep.len())
-            .sum::<usize>()
-            + 9 * filtered_deps.len().saturating_sub(1),
-    );
-    // Drive the separator off the element index, like `join_display` and every
-    // other join site: an empty first dependency name leaves the accumulator
-    // empty, so an `is_empty()` guard would silently drop the separator before
-    // the second name.
-    for (index, (dep, _)) in filtered_deps.iter().enumerate() {
-        if index > 0 {
-            deps_str.push_str("\n        ");
-        }
-        deps_str.push_str(dep);
-    }
+    // Delegate the join to `join_display`, which already drives the separator
+    // off the element index for every join site in this crate.
+    let deps_str = join_display(filtered_deps.iter().map(|(dep, _)| dep), "\n        ");
     let deps_info = if deps_str.is_empty() {
         String::new()
     } else {

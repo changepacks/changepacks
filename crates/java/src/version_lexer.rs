@@ -168,11 +168,13 @@ fn string_interpolates(dialect: GradleDialect, kind: StringKind) -> bool {
     )
 }
 
+/// Whether a `/` following `identifier` opens a Groovy slashy string.
+///
+/// Thin `&str` adapter over
+/// [`crate::gradle_dependency_lexer::groovy_identifier_allows_expression`],
+/// which owns the single keyword table shared by both Gradle scanners.
 fn identifier_allows_expression(identifier: &str) -> bool {
-    matches!(
-        identifier,
-        "assert" | "case" | "in" | "instanceof" | "new" | "return" | "throw" | "yield"
-    )
+    crate::gradle_dependency_lexer::groovy_identifier_allows_expression(identifier.as_bytes())
 }
 
 /// Scan only the lexical structure needed to classify Gradle version lines.
