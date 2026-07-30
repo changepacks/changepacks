@@ -691,6 +691,63 @@ mod tests {
         assert_eq!(sorted_paths, expected_paths);
     }
 
+    /// Direct coverage for the public `cmp_normalized_paths` contract.
+    ///
+    /// Every other assertion in this module reaches the function through the
+    /// private `cmp_paths` wrapper, which layers a raw-path tie-break on top
+    /// and therefore cannot observe the wrapper-free result — notably the
+    /// `Equal` verdict for two paths that differ only in separator style.
+    /// `cmp_normalized_paths` is public and re-exported from `lib.rs`, and
+    /// `changepacks_utils::project_names::compare_paths` calls it directly, so
+    /// the documented behaviour is pinned here on its own terms.
+    #[rstest]
+    // Separator style alone is not a difference: a mid-path backslash
+    // normalizes to `/`, so the two spellings compare Equal.
+    #[case(
+        "packages\\core\\package.json",
+        "packages/core/package.json",
+        Ordering::Equal
+    )]
+    // Once normalized, ordering is decided by the bytes after the separator,
+    // not by the separator byte itself (`\\` = 0x5C sorts after `/` = 0x2F,
+    // so an un-normalized comparison would answer Greater here).
+    #[case(
+        "packages\\alpha\\package.json",
+        "packages/beta/package.json",
+        Ordering::Less
+    )]
+    #[case(
+        "packages/beta/package.json",
+        "packages\\alpha\\package.json",
+        Ordering::Greater
+    )]
+    // Empty paths are accepted and compare Equal.
+    #[case("", "", Ordering::Equal)]
+    // A prefix sorts before the longer path that extends it.
+    #[case("packages/core", "packages/core/package.json", Ordering::Less)]
+    // Multi-byte components keep character order under byte-wise
+    // normalization: `é` (U+00E9 -> C3 A9) precedes `한` (U+D55C -> ED 95 9C).
+    #[case(
+        "packages/éclair/package.json",
+        "packages/한글/package.json",
+        Ordering::Less
+    )]
+    #[case(
+        "packages/한글/package.json",
+        "packages/éclair/package.json",
+        Ordering::Greater
+    )]
+    fn cmp_normalized_paths_compares_paths_ignoring_separator_style(
+        #[case] left: &str,
+        #[case] right: &str,
+        #[case] expected: Ordering,
+    ) {
+        assert_eq!(
+            cmp_normalized_paths(Path::new(left), Path::new(right)),
+            expected,
+        );
+    }
+
     #[test]
     fn cmp_paths_normalizes_slashes_and_backslashes_before_ordering() {
         let backslash_relative = Path::new("packages\\alpha\\package.json");

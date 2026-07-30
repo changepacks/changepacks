@@ -739,6 +739,39 @@ mod tests {
     }
 
     #[test]
+    fn test_update_version_preserves_attributes_on_filled_version_element() {
+        // A `<Version>` written as Start/Text/End while carrying attributes is
+        // the shape where a naive rewrite (re-synthesizing the tag from its
+        // local name, the way the two "add missing version" branches do)
+        // would silently DROP the attributes. The Start arm must instead pass
+        // the original element through verbatim and only the Text arm may
+        // change, so the `Condition` attribute survives byte-for-byte.
+        // Sibling of the self-closing attribute case below.
+        let content = "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <Version Condition=\"'$(Configuration)' == 'Release'\">1.0.0</Version>\n  </PropertyGroup>\n</Project>";
+        let result = update_version_in_xml(content, "2.0.0").unwrap();
+
+        assert_eq!(
+            result,
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <Version Condition=\"'$(Configuration)' == 'Release'\">2.0.0</Version>\n  </PropertyGroup>\n</Project>",
+            "attribute-bearing <Version> should keep its attributes and only swap its text:\n{result}",
+        );
+        assert!(
+            result.contains("Condition=\"'$(Configuration)' == 'Release'\""),
+            "Condition attribute must survive byte-for-byte:\n{result}",
+        );
+        // `<Version` matches only opening tags (`</Version>` contains
+        // `</Version`, not `<Version`), so exactly one opening proves the
+        // `</PropertyGroup>` insert branch did not also fire and append a
+        // second, attribute-less `<Version>`.
+        assert_eq!(
+            result.matches("<Version").count(),
+            1,
+            "expected exactly one <Version opening, got:\n{result}",
+        );
+        assert!(!result.contains("1.0.0"), "old version survived:\n{result}");
+    }
+
+    #[test]
     fn test_update_version_preserves_attributes_and_spacing_on_self_closing_version() {
         let content = "<Project>\n  <PropertyGroup>\n    <Version Condition=\"'$(Configuration)' == 'Release'\" />\n  </PropertyGroup>\n</Project>";
         let result = update_version_in_xml(content, "2.0.0").unwrap();
@@ -960,8 +993,10 @@ mod tests {
         // LF. `<PropertyGroup>` closes with no preceding whitespace text, so
         // `close_ws` stays `None` and the insertion genuinely goes through the
         // `line_ending` branch instead of reusing captured trailing
-        // whitespace. `detect_indent_str` splits on LF only, so a CR-only
-        // file reports no indent and the `"    "` default applies.
+        // whitespace. `detect_indent_str` splits on CR as well as LF, so this
+        // CR-only file reports its real 2-space indent and the `"    "`
+        // default does NOT apply: the synthesized inner indent is the
+        // 2-space `<PropertyGroup>` indent plus the 2-space unit.
         let content =
             "<Project>\r  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>\r</Project>";
 
@@ -969,7 +1004,7 @@ mod tests {
 
         assert_eq!(
             result,
-            "<Project>\r  <PropertyGroup><OutputType>Exe</OutputType>\r      <Version>2.0.0</Version>\r  </PropertyGroup>\r</Project>"
+            "<Project>\r  <PropertyGroup><OutputType>Exe</OutputType>\r    <Version>2.0.0</Version>\r  </PropertyGroup>\r</Project>"
         );
         assert!(
             !result.contains('\n'),

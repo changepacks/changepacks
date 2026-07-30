@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -22,9 +23,15 @@ fn read_dir_context(dir: &Path) -> String {
 /// between the filters would either (a) let the cleaner wipe a file the reader was
 /// still going to parse, or (b) let the reader parse a file the cleaner would have
 /// deleted — both silent-data-loss shapes.
+///
+/// Takes an [`OsStr`] and gates on [`OsStr::as_encoded_bytes`] so the per-entry
+/// `to_string_lossy` scan-and-maybe-allocate is gone: the sought prefix is pure
+/// ASCII, Unix bytes and Windows WTF-8 encode ASCII identically, and
+/// `to_string_lossy` only ever rewrites *invalid* sequences (into non-ASCII
+/// `U+FFFD`), so the encoded-bytes gate accepts exactly the same names.
 #[must_use]
-fn is_changepack_log_json_name(file_name: &str) -> bool {
-    file_name.starts_with("changepack_log_")
+fn is_changepack_log_json_name(file_name: &OsStr) -> bool {
+    file_name.as_encoded_bytes().starts_with(b"changepack_log_")
         && has_extension_ignore_ascii_case(Path::new(file_name), "json")
 }
 
@@ -54,7 +61,7 @@ pub async fn collect_changepack_log_paths(changepacks_dir: &Path) -> Result<Vec<
         .with_context(|| read_dir_context(changepacks_dir))?
     {
         let file_name = file.file_name();
-        if is_changepack_log_json_name(file_name.to_string_lossy().as_ref()) {
+        if is_changepack_log_json_name(&file_name) {
             let path = file.path();
             let file_type = file.file_type().await.with_context(|| {
                 format!(
@@ -135,7 +142,70 @@ mod tests {
     #[case("notes.json", false)]
     #[case("changepack_log.json", false)]
     fn test_is_changepack_log_json_name(#[case] file_name: &str, #[case] expected: bool) {
-        assert_eq!(is_changepack_log_json_name(file_name), expected);
+        assert_eq!(
+            is_changepack_log_json_name(OsStr::new(file_name)),
+            expected,
+            "is_changepack_log_json_name({file_name:?})"
+        );
+    }
+
+    /// Splice one INVALID encoding unit between two pure-ASCII halves to build a
+    /// file name that no lossless `&str` view can represent: a lone `0xFF` byte
+    /// on Unix, an unpaired high surrogate on Windows (WTF-8).
+    #[cfg(unix)]
+    fn non_unicode_name(prefix: &str, suffix: &str) -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStringExt;
+
+        let mut bytes = prefix.as_bytes().to_vec();
+        bytes.push(0xFF);
+        bytes.extend_from_slice(suffix.as_bytes());
+        std::ffi::OsString::from_vec(bytes)
+    }
+
+    /// Windows counterpart of the Unix `non_unicode_name` above.
+    #[cfg(windows)]
+    fn non_unicode_name(prefix: &str, suffix: &str) -> std::ffi::OsString {
+        use std::os::windows::ffi::OsStringExt;
+
+        let mut units: Vec<u16> = prefix.encode_utf16().collect();
+        units.push(0xD800);
+        units.extend(suffix.encode_utf16());
+        std::ffi::OsString::from_wide(&units)
+    }
+
+    // Pins the equivalence that lets the prefix gate read
+    // `OsStr::as_encoded_bytes` instead of `to_string_lossy`: names that are NOT
+    // valid Unicode are the ONLY inputs where the two views can differ, since
+    // that is exactly when `to_string_lossy` rewrites bytes (and allocates).
+    // Both halves of each name are pure ASCII, which Unix bytes and Windows
+    // WTF-8 encode identically, so the verdict must be unchanged: an invalid
+    // unit inside the stem is accepted (prefix and `.json` extension intact) and
+    // an invalid unit inside the extension is rejected (lossy replacement yields
+    // non-ASCII `U+FFFD`, never `json`). `read_dir` can hand these names to
+    // `collect_changepack_log_paths` on any filesystem that does not validate
+    // Unicode.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn test_is_changepack_log_json_name_non_unicode_names() {
+        let in_stem = non_unicode_name("changepack_log_a", ".json");
+        assert!(
+            in_stem.to_str().is_none(),
+            "test precondition: {in_stem:?} must not be valid Unicode"
+        );
+        assert!(
+            is_changepack_log_json_name(&in_stem),
+            "an invalid unit in the stem must not hide the ASCII prefix or extension: {in_stem:?}"
+        );
+
+        let in_extension = non_unicode_name("changepack_log_a.js", "on");
+        assert!(
+            in_extension.to_str().is_none(),
+            "test precondition: {in_extension:?} must not be valid Unicode"
+        );
+        assert!(
+            !is_changepack_log_json_name(&in_extension),
+            "an invalid unit inside the extension must never read as \"json\": {in_extension:?}"
+        );
     }
 
     // Regression: `collect_changepack_log_paths` must return paths in lexicographic
@@ -228,7 +298,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            is_changepack_log_json_name("changepack_log_dir.json"),
+            is_changepack_log_json_name(OsStr::new("changepack_log_dir.json")),
             "test precondition: the name predicate must accept the directory name, \
              otherwise this test would not reach the file_type gate"
         );
