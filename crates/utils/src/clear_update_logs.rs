@@ -76,11 +76,12 @@ pub async fn clear_applied_update_logs(
     //   Phase 3: the parse+classify loop is CPU-only — it decides
     //            remove / skip / rewrite per log and buffers the decisions,
     //            performing no IO of its own.
-    //   Phase 4: the buffered decisions are executed as two batches —
-    //            `try_join_all` over the removals, then over the rewrites —
-    //            so N sequential `remove_file`/`write` round-trips collapse
-    //            into two parallel batches, matching the batched read half
-    //            and the sibling `clear_update_logs`.
+    //   Phase 4: the buffered decisions are executed as two OVERLAPPED batches
+    //            — `join_all` over the removals and `join_all` over the
+    //            rewrites, driven together by one `tokio::join!` — so N
+    //            sequential `remove_file`/`write` round-trips collapse into a
+    //            single parallel wave, matching the batched read half and the
+    //            sibling `clear_update_logs`.
     //   The `serde_json::Value` parse below is a read-only CLASSIFIER: it only
     //   counts how many `changes` entries survive so the branch can pick
     //   remove / skip / rewrite. It is never the rewriter — the byte-preserving
@@ -129,18 +130,34 @@ pub async fn clear_applied_update_logs(
         }
     }
 
-    futures::future::try_join_all(removals.into_iter().map(|path| async move {
-        remove_file(path)
-            .await
-            .with_context(|| format!("Failed to remove update log {}", path.display()))
-    }))
-    .await?;
-    futures::future::try_join_all(rewrites.into_iter().map(|(path, next_content)| async move {
-        write(path, next_content)
-            .await
-            .with_context(|| format!("Failed to rewrite update log {}", path.display()))
-    }))
-    .await?;
+    // The two batches touch PROVABLY DISJOINT paths — the classify loop above
+    // walks `paths` once and pushes each entry into AT MOST ONE of `removals`
+    // and `rewrites` — and neither reads what the other writes, so there is no
+    // data dependency between them and awaiting the removals to completion
+    // before issuing the first rewrite was incidental serialization.
+    //
+    // `tokio::join!` over two `join_all` batches, deliberately NOT
+    // `tokio::try_join!`: `try_join!` surfaces whichever branch fails first in
+    // WALL-CLOCK time, so a run where both a removal and a rewrite fail would
+    // report a different message depending on disk timing. Decoding
+    // `removal_results` fully and `?`-ing it BEFORE looking at
+    // `rewrite_results` keeps the reported error identical to the previous
+    // serial shape. Mirrors the `tokio::join!`-plus-ordered-decode pattern
+    // already used in `snapshot_update_state` in the `cli` crate.
+    let (removal_results, rewrite_results) = tokio::join!(
+        futures::future::join_all(removals.into_iter().map(|path| async move {
+            remove_file(path)
+                .await
+                .with_context(|| format!("Failed to remove update log {}", path.display()))
+        })),
+        futures::future::join_all(rewrites.into_iter().map(|(path, next_content)| async move {
+            write(path, next_content)
+                .await
+                .with_context(|| format!("Failed to rewrite update log {}", path.display()))
+        }))
+    );
+    removal_results.into_iter().collect::<Result<()>>()?;
+    rewrite_results.into_iter().collect::<Result<()>>()?;
 
     Ok(())
 }

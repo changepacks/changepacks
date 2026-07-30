@@ -38,7 +38,15 @@ fn resolved_monorepo_deps<'a>(
 ) -> Result<Vec<(&'a str, &'a Project)>> {
     let mut deps: Vec<&str> = project.dependencies().iter().map(String::as_str).collect();
     deps.sort_unstable();
-    let mut resolved = Vec::with_capacity(deps.len());
+    // `deps` holds EVERY dependency name in the manifest, external ones
+    // included, but only the `Unique` arm below ever pushes — and
+    // monorepo-local edges are a small minority of a typical dependency set.
+    // So this follows the reserve policy documented at
+    // `crates/utils/src/clear_update_logs.rs:96-105`: reserve only for the arm
+    // that can take every element, and let a rarely-hit arm grow on demand.
+    // Counting the `Unique` resolutions up front to size it exactly would
+    // double the `analysis.resolve` calls, which costs more than it saves.
+    let mut resolved = Vec::new();
     for dep in deps {
         match analysis.resolve(dep) {
             ProjectNameResolution::Unique(index) => {

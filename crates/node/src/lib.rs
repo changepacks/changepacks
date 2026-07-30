@@ -336,6 +336,42 @@ macro_rules! impl_node_discovered_new {
 
 pub(crate) use impl_node_discovered_new;
 
+/// Declare a Node project struct plus its shared inherent constructors.
+///
+/// `NodePackage` and `NodeWorkspace` carry exactly the same eight fields —
+/// previously declared in two different orders — and each followed the
+/// declaration with an inherent impl containing
+/// [`impl_node_discovered_new!`], which already hard-codes those field
+/// names. Canonicalizing the layout here keeps the two in lockstep; the
+/// expansion's struct literal uses field-init shorthand, so the former order
+/// difference was cosmetic. Node cannot use
+/// `changepacks_core::declare_discovered_project!`: it carries the extra
+/// `package_manager` field that the core macro knows nothing about. Outer
+/// attributes (including doc comments) pass through; other inherent methods
+/// and every trait impl stay in separate blocks beside the invocation.
+macro_rules! declare_node_project {
+    ($(#[$meta:meta])* pub struct $name:ident) => {
+        $(#[$meta])*
+        #[derive(::std::fmt::Debug)]
+        pub struct $name {
+            name: ::std::option::Option<::std::string::String>,
+            version: ::std::option::Option<::std::string::String>,
+            path: ::std::path::PathBuf,
+            relative_path: ::std::path::PathBuf,
+            is_changed: ::std::primitive::bool,
+            publishable_by_default: ::std::primitive::bool,
+            dependencies: ::std::collections::HashSet<::std::string::String>,
+            pub(crate) package_manager: crate::PackageManager,
+        }
+
+        impl $name {
+            crate::impl_node_discovered_new!();
+        }
+    };
+}
+
+pub(crate) use declare_node_project;
+
 /// Represents the detected Node.js package manager
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PackageManager {
@@ -509,11 +545,21 @@ pub(crate) async fn detect_package_manager_async(dir: &Path) -> Result<PackageMa
 }
 
 async fn probe_decisive_package_manager(dir: &Path) -> Result<Option<PackageManager>> {
-    let pm = detect_package_manager_async(dir).await?;
-    Ok(
-        (pm != PackageManager::Npm || is_regular_file(&dir.join("package-lock.json")).await?)
-            .then_some(pm),
-    )
+    // The npm-lock probe joins the same concurrent batch as the four lockfile
+    // stats inside `detect_package_manager_async`, instead of running after it.
+    // Trade-off: a directory that turns out to hold a bun/pnpm/yarn lockfile now
+    // pays one stat it does not need, but that stat runs concurrently with the
+    // others (no added latency) and such a directory ends the ancestor walk, so
+    // it happens at most once per chain. In exchange every non-decisive ancestor
+    // -- the common case in `resolve_from_ancestors` -- loses a whole serialized
+    // round-trip.
+    let npm_lock_path = dir.join("package-lock.json");
+    let (pm, has_npm_lock) = tokio::try_join!(
+        detect_package_manager_async(dir),
+        is_regular_file(&npm_lock_path),
+    )?;
+
+    Ok((pm != PackageManager::Npm || has_npm_lock).then_some(pm))
 }
 
 /// Detects the package manager by searching asynchronously from a path upward.

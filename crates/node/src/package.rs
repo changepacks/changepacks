@@ -1,26 +1,12 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Config, Language, Package, UpdateType};
-use std::collections::HashSet;
-use std::path::PathBuf;
 
-#[derive(Debug)]
-pub struct NodePackage {
-    name: Option<String>,
-    version: Option<String>,
-    path: PathBuf,
-    relative_path: PathBuf,
-    is_changed: bool,
-    publishable_by_default: bool,
-    dependencies: HashSet<String>,
-    pub(crate) package_manager: crate::PackageManager,
-}
-
-impl NodePackage {
-    // Constructors shared with `NodeWorkspace` (extra `package_manager` field
-    // rules out `changepacks_core::impl_discovered_new!`).
-    crate::impl_node_discovered_new!();
-}
+// Eight-field declaration plus the shared constructor pair, identical to
+// `NodeWorkspace` (see `declare_node_project!` in `lib.rs`); the extra
+// `package_manager` field rules out
+// `changepacks_core::declare_discovered_project!`.
+crate::declare_node_project!(pub struct NodePackage);
 
 #[async_trait]
 impl Package for NodePackage {
@@ -76,6 +62,7 @@ mod tests {
     use changepacks_core::UpdateType;
     use rstest::rstest;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 
