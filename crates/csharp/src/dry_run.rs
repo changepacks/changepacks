@@ -377,6 +377,18 @@ mod tests {
         format!("echo {marker}")
     }
 
+    /// Reads the `-o <dir>` output directory out of a recorded `dotnet pack` argument list.
+    fn pack_output_dir(args: &[OsString]) -> PathBuf {
+        let output_index = args
+            .iter()
+            .position(|arg| arg == "-o")
+            .expect("dotnet pack args must carry an -o output directory");
+        let output_dir = args
+            .get(output_index + 1)
+            .expect("dotnet pack -o must be followed by a directory");
+        PathBuf::from(output_dir)
+    }
+
     async fn run_harmless_managed(dir: PathBuf) -> Result<PublishOutput> {
         run_publish_command(&harmless_command("managed-fallback"), &dir).await
     }
@@ -605,8 +617,7 @@ mod tests {
                 let recorded_calls = Arc::clone(&recorded_calls);
                 async move {
                     if args.first().and_then(|arg| arg.to_str()) == Some("pack") {
-                        let output_index = args.iter().position(|arg| arg == "-o").unwrap() + 1;
-                        let pack_dir = PathBuf::from(&args[output_index]);
+                        let pack_dir = pack_output_dir(&args);
                         fs::write(pack_dir.join("b.nupkg"), b"").unwrap();
                         fs::write(pack_dir.join("a.nupkg"), b"").unwrap();
                         fs::write(pack_dir.join("symbols.snupkg"), b"").unwrap();
@@ -689,8 +700,7 @@ mod tests {
                 let recorded_calls = Arc::clone(&recorded_calls);
                 async move {
                     if args.first().and_then(|arg| arg.to_str()) == Some("pack") {
-                        let output_index = args.iter().position(|arg| arg == "-o").unwrap() + 1;
-                        let pack_dir = PathBuf::from(&args[output_index]);
+                        let pack_dir = pack_output_dir(&args);
                         fs::write(pack_dir.join("only.nupkg"), b"").unwrap();
                     }
                     recorded_calls.lock().unwrap().push(args);
@@ -708,8 +718,7 @@ mod tests {
         assert!(output.success, "stderr: {}", output.stderr);
         let calls = calls.lock().unwrap();
         let pack_args = &calls[0];
-        let output_index = pack_args.iter().position(|arg| arg == "-o").unwrap() + 1;
-        let pack_dir = PathBuf::from(&pack_args[output_index]);
+        let pack_dir = pack_output_dir(pack_args);
         assert_eq!(
             pack_args,
             &vec![
@@ -739,8 +748,7 @@ mod tests {
                 async move {
                     let is_pack = args.first().and_then(|arg| arg.to_str()) == Some("pack");
                     if is_pack {
-                        let output_index = args.iter().position(|arg| arg == "-o").unwrap() + 1;
-                        let pack_dir = PathBuf::from(&args[output_index]);
+                        let pack_dir = pack_output_dir(&args);
                         fs::write(pack_dir.join("partial.nupkg"), b"").unwrap();
                     }
                     recorded_calls.lock().unwrap().push(args);
@@ -813,8 +821,7 @@ mod tests {
                 async move {
                     let is_pack = args.first().and_then(|arg| arg.to_str()) == Some("pack");
                     if is_pack {
-                        let output_index = args.iter().position(|arg| arg == "-o").unwrap() + 1;
-                        let pack_dir = PathBuf::from(&args[output_index]);
+                        let pack_dir = pack_output_dir(&args);
                         fs::write(pack_dir.join("a.nupkg"), b"").unwrap();
                         fs::write(pack_dir.join("b.nupkg"), b"").unwrap();
                     }
@@ -867,8 +874,7 @@ mod tests {
                 async move {
                     let is_pack = args.first().and_then(|arg| arg.to_str()) == Some("pack");
                     if is_pack {
-                        let output_index = args.iter().position(|arg| arg == "-o").unwrap() + 1;
-                        let pack_dir = PathBuf::from(&args[output_index]);
+                        let pack_dir = pack_output_dir(&args);
                         fs::write(pack_dir.join("only.nupkg"), b"").unwrap();
                     }
                     recorded_calls.lock().unwrap().push(args);

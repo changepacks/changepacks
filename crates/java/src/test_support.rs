@@ -18,8 +18,7 @@ pub(crate) fn create_publish_wrapper(root: &Path) {
          :captured_args\r\n\
          echo argc=!argc!\r\n",
     )
-    // SAFE-UNWRAP: fixture setup failures must fail the test immediately.
-    .unwrap();
+    .expect("fixture setup: failed to write gradlew.bat");
 
     #[cfg(not(windows))]
     {
@@ -37,11 +36,9 @@ pub(crate) fn create_publish_wrapper(root: &Path) {
                index=$((index + 1))\n\
              done\n",
         )
-        // SAFE-UNWRAP: fixture setup failures must fail the test immediately.
-        .unwrap();
+        .expect("fixture setup: failed to write gradlew");
         fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))
-            // SAFE-UNWRAP: fixture setup failures must fail the test immediately.
-            .unwrap();
+            .expect("fixture setup: failed to make gradlew executable");
     }
 }
 

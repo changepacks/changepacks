@@ -1,11 +1,6 @@
 use anyhow::{Context, Result};
 use changepacks_utils::get_changepacks_config;
-use clap::Args;
 use std::io::Write;
-
-#[derive(Args, Debug)]
-#[command(about = "Change changepacks configuration")]
-pub struct ConfigArgs {}
 
 /// Display changepacks configuration
 ///
@@ -34,28 +29,8 @@ pub async fn handle_config() -> Result<()> {
 mod tests {
     use super::*;
     use changepacks_utils::test_support::DirGuard;
-    use clap::Parser;
     use serial_test::serial;
     use tempfile::TempDir;
-
-    #[derive(Parser)]
-    struct TestCli {
-        #[command(flatten)]
-        config: ConfigArgs,
-    }
-
-    #[test]
-    fn test_config_args_parsing() {
-        // ConfigArgs has no arguments, just verify it parses
-        let _cli = TestCli::parse_from(["test"]);
-    }
-
-    #[test]
-    fn test_config_args_debug() {
-        let args = ConfigArgs {};
-        let debug_str = format!("{args:?}");
-        assert!(debug_str.contains("ConfigArgs"));
-    }
 
     /// Outside a git repository the config load fails in repository discovery,
     /// which is the one failure path `get_changepacks_config` does not

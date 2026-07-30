@@ -636,6 +636,18 @@ mod tests {
         ws(None, Some("2.0.0"), Language::Node),
         Ordering::Less
     )]
+    // A nameless workspace with no version substitutes the empty string, which
+    // sorts before every real version.
+    #[case(
+        ws(None, None, Language::Node),
+        ws(None, Some("1.0.0"), Language::Node),
+        Ordering::Less
+    )]
+    #[case(
+        ws(None, Some("1.0.0"), Language::Node),
+        ws(None, None, Language::Node),
+        Ordering::Greater
+    )]
     #[case(
         pkg(Some("aaa"), Some("1.0.0"), Language::Rust),
         pkg(Some("bbb"), Some("1.0.0"), Language::Rust),
@@ -929,6 +941,37 @@ mod tests {
         for &needle in expected {
             assert!(display.contains(needle), "{display:?} missing {needle:?}");
         }
+    }
+
+    /// Pins the `Some(version_override)` arm of `Project::format_line`.
+    ///
+    /// Every other test in this module reaches `format_line` through
+    /// `Display`, which always passes `None`, so the override arm was only
+    /// exercised indirectly from `changepacks-cli`. Assertions use substrings
+    /// that survive ANSI colouring (`colored` wraps the whole `({version})`
+    /// segment), matching the existing display cases above.
+    #[test]
+    fn test_project_format_line_uses_version_override_verbatim() {
+        let project = pkg(Some("my-package"), Some("1.0.0"), Language::Rust);
+        let override_text = "v1.0.0 -> v1.1.0 (minor)";
+
+        let line = project.format_line(Some(override_text));
+
+        assert!(
+            line.contains(override_text),
+            "{line:?} missing override {override_text:?}"
+        );
+        // The `None` arm would render the package's own version as `(v1.0.0)`;
+        // its absence proves the override replaced it rather than being
+        // appended alongside it.
+        assert!(
+            !line.contains("(v1.0.0)"),
+            "{line:?} unexpectedly rendered the non-override version"
+        );
+        assert!(
+            line.contains("my-package"),
+            "{line:?} missing the project name"
+        );
     }
 
     #[test]

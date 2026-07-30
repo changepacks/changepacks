@@ -13,8 +13,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
     commands::{
-        ChangepackArgs, CheckArgs, ConfigArgs, InitArgs, PublishArgs, UpdateArgs,
-        handle_changepack, handle_check, handle_config, handle_init, handle_publish, handle_update,
+        ChangepackArgs, CheckArgs, InitArgs, PublishArgs, UpdateArgs, handle_changepack,
+        handle_check, handle_config, handle_init, handle_publish, handle_update,
     },
     options::{CliLanguage, FilterOptions},
 };
@@ -101,7 +101,8 @@ enum Commands {
     Init(InitArgs),
     Check(CheckArgs),
     Update(UpdateArgs),
-    Config(ConfigArgs),
+    #[command(about = "Change changepacks configuration")]
+    Config,
     Publish(PublishArgs),
 }
 
@@ -114,7 +115,7 @@ pub async fn main(args: &[String]) -> Result<()> {
             Commands::Init(args) => handle_init(&args).await?,
             Commands::Check(args) => handle_check(&args).await?,
             Commands::Update(args) => handle_update(&args).await?,
-            Commands::Config(_) => handle_config().await?,
+            Commands::Config => handle_config().await?,
             Commands::Publish(args) => handle_publish(&args).await?,
         }
     } else {
@@ -167,7 +168,7 @@ mod tests {
                 Commands::Init(_) => Self::Init,
                 Commands::Check(_) => Self::Check,
                 Commands::Update(_) => Self::Update,
-                Commands::Config(_) => Self::Config,
+                Commands::Config => Self::Config,
                 Commands::Publish(_) => Self::Publish,
             }
         }
