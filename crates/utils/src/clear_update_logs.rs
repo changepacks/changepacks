@@ -380,6 +380,134 @@ mod tests {
         assert_eq!(fs::read(&notes_file).unwrap(), notes_bytes);
     }
 
+    /// RAII fixture that makes deleting the given changepack logs FAIL, so
+    /// [`clear_update_logs`] is forced onto its error-aggregation arm. Dropping
+    /// the guard restores normal deletion, so `TempDir` cleanup still succeeds
+    /// even when an assertion panics first.
+    ///
+    /// Unix half: `unlink` is authorized by the WRITE bit of the CONTAINING
+    /// DIRECTORY — the file's own mode is irrelevant to it — so the directory
+    /// drops to `r-xr-xr-x`. `read_dir` only needs `r-x`, so collection still
+    /// sees every log and it is exactly the deletions that are refused.
+    #[cfg(unix)]
+    struct DenyLogRemoval {
+        changepacks_dir: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl DenyLogRemoval {
+        fn new(changepacks_dir: &Path, _logs: &[&Path]) -> Self {
+            Self::set_mode(changepacks_dir, 0o555);
+            Self {
+                changepacks_dir: changepacks_dir.to_path_buf(),
+            }
+        }
+
+        fn set_mode(changepacks_dir: &Path, mode: u32) {
+            use std::os::unix::fs::PermissionsExt;
+
+            fs::set_permissions(changepacks_dir, fs::Permissions::from_mode(mode)).unwrap_or_else(
+                |err| {
+                    panic!(
+                        "failed to set mode {mode:o} on {}: {err}",
+                        changepacks_dir.display()
+                    )
+                },
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for DenyLogRemoval {
+        fn drop(&mut self) {
+            Self::set_mode(&self.changepacks_dir, 0o755);
+        }
+    }
+
+    /// Windows half of [`DenyLogRemoval`]. Windows has no directory-governed
+    /// unlink rule, and the read-only ATTRIBUTE is not a lever either: Rust's
+    /// `remove_file` passes `FILE_DISPOSITION_IGNORE_READONLY_ATTRIBUTE`, so a
+    /// read-only log is deleted anyway. The sharing rules are the lever — each
+    /// log is held open with a share mode of `FILE_SHARE_READ` alone, so the
+    /// DELETE-access open inside `remove_file` is refused with
+    /// `ERROR_SHARING_VIOLATION`. Dropping the guard closes the handles.
+    #[cfg(windows)]
+    struct DenyLogRemoval {
+        _handles: Vec<std::fs::File>,
+    }
+
+    #[cfg(windows)]
+    impl DenyLogRemoval {
+        fn new(_changepacks_dir: &Path, logs: &[&Path]) -> Self {
+            use std::os::windows::fs::OpenOptionsExt;
+
+            /// `FILE_SHARE_READ`: concurrent READ opens are allowed, DELETE
+            /// opens are not.
+            const FILE_SHARE_READ: u32 = 0x0000_0001;
+
+            Self {
+                _handles: logs
+                    .iter()
+                    .map(|log| {
+                        std::fs::OpenOptions::new()
+                            .read(true)
+                            .share_mode(FILE_SHARE_READ)
+                            .open(log)
+                            .unwrap_or_else(|err| {
+                                panic!("failed to lock {} open: {err}", log.display())
+                            })
+                    })
+                    .collect(),
+            }
+        }
+    }
+
+    /// The multi-failure arm of [`clear_update_logs`]: when MORE THAN ONE log
+    /// cannot be deleted, the user must see the count and every failing path in
+    /// one aggregated message. This is the final step of `changepacks update`,
+    /// and a silently half-cleared `.changepacks/` would re-apply the same
+    /// version bumps on the next run — so the count, the `"; "` join across
+    /// entries and the whole `Err` construction are pinned here.
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn clear_update_logs_aggregates_multiple_removal_failures() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        // TWO logs, so the plural count and the join across entries both run.
+        let first = changepacks_dir.join("changepack_log_a.json");
+        let second = changepacks_dir.join("changepack_log_b.json");
+        fs::write(&first, r#"{"changes":{},"note":"a"}"#).unwrap();
+        fs::write(&second, r#"{"changes":{},"note":"b"}"#).unwrap();
+
+        let logs = [first.as_path(), second.as_path()];
+        let guard = DenyLogRemoval::new(&changepacks_dir, &logs);
+        let result = clear_update_logs(&changepacks_dir).await;
+        // Restore BEFORE asserting so `TempDir` cleanup succeeds on both
+        // platforms even if an assertion below panics.
+        drop(guard);
+
+        let err = result.expect_err("undeletable update logs must not report success");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("Failed to remove 2 update log(s)"),
+            "error must report how many logs survived, got {rendered}"
+        );
+        assert!(
+            rendered.contains("; "),
+            "error must join the per-log details with a semicolon, got {rendered}"
+        );
+        for log in logs {
+            assert!(
+                rendered.contains(&log.display().to_string()),
+                "error must name the surviving log {}, got {rendered}",
+                log.display()
+            );
+            assert!(log.exists(), "{} must have survived", log.display());
+        }
+    }
+
     #[tokio::test]
     async fn test_clear_update_logs_ignores_json_directory() {
         // Create a temporary directory and initialize git

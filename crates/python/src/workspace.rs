@@ -1,23 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
-use std::collections::HashSet;
-use std::path::PathBuf;
 
-#[derive(Debug)]
-pub struct PythonWorkspace {
-    path: PathBuf,
-    relative_path: PathBuf,
-    version: Option<String>,
-    name: Option<String>,
-    is_changed: bool,
-    publishable_by_default: bool,
-    dependencies: HashSet<String>,
-}
-
-impl PythonWorkspace {
-    changepacks_core::impl_discovered_new!();
-}
+// Seven-field discovered-project declaration plus `new` / `new_discovered`,
+// shared verbatim with the other four identical language types.
+changepacks_core::declare_discovered_project!(pub struct PythonWorkspace);
 
 #[async_trait]
 impl Workspace for PythonWorkspace {
@@ -53,6 +40,7 @@ mod tests {
     use changepacks_core::UpdateType;
     use rstest::rstest;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 

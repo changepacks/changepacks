@@ -1,4 +1,4 @@
-use std::{collections::HashSet, ffi::OsString, future::Future, path::PathBuf};
+use std::{ffi::OsString, future::Future, path::PathBuf};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -10,20 +10,12 @@ use crate::dry_run::{
     run_dotnet_command,
 };
 
-#[derive(Debug)]
-pub struct CSharpPackage {
-    name: Option<String>,
-    version: Option<String>,
-    path: PathBuf,
-    relative_path: PathBuf,
-    is_changed: bool,
-    publishable_by_default: bool,
-    dependencies: HashSet<String>,
-}
+// Seven-field discovered-project declaration plus `new` / `new_discovered`,
+// shared verbatim with the other four identical language types. The
+// command-runner helpers below stay in their own inherent impl block.
+changepacks_core::declare_discovered_project!(pub struct CSharpPackage);
 
 impl CSharpPackage {
-    changepacks_core::impl_discovered_new!();
-
     /// Real publish with an injected command boundary, so tests can drive the
     /// managed `dotnet pack` + `dotnet nuget push` flow without spawning
     /// processes.

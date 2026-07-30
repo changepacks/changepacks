@@ -1,24 +1,10 @@
-use std::collections::HashSet;
-use std::path::PathBuf;
-
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
 
-#[derive(Debug)]
-pub struct DartPackage {
-    name: Option<String>,
-    version: Option<String>,
-    path: PathBuf,
-    relative_path: PathBuf,
-    is_changed: bool,
-    publishable_by_default: bool,
-    dependencies: HashSet<String>,
-}
-
-impl DartPackage {
-    changepacks_core::impl_discovered_new!();
-}
+// Seven-field discovered-project declaration plus `new` / `new_discovered`,
+// shared verbatim with the other four identical language types.
+changepacks_core::declare_discovered_project!(pub struct DartPackage);
 
 #[async_trait]
 impl Package for DartPackage {
@@ -50,6 +36,7 @@ mod tests {
     use super::*;
     use rstest::rstest;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[tokio::test]

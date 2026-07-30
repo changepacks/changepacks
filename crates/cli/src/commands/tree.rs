@@ -119,9 +119,19 @@ pub(super) fn display_tree(
         update_map,
         line_cache: HashMap::with_capacity(projects.len()),
     };
+    // Every root starts at column zero, so all of them can share one empty
+    // prefix handle instead of allocating a fresh `RcBox` per root.
+    let empty_prefix: Rc<str> = Rc::from("");
     for (idx, root) in sorted_roots.iter().enumerate() {
         let is_last = idx == sorted_roots.len() - 1;
-        display_tree_node(root, &mut ctx, "", is_last, &mut visited, writer)?;
+        display_tree_node(
+            root,
+            &mut ctx,
+            Rc::clone(&empty_prefix),
+            is_last,
+            &mut visited,
+            writer,
+        )?;
     }
 
     // Display projects that weren't part of the tree (for example rootless cycles).
@@ -182,17 +192,21 @@ enum TreeFrame<'a> {
 }
 
 /// Display a single node and its dependencies without growing the call stack.
+///
+/// `prefix` is the indentation the root frame is rendered with, supplied by the
+/// caller as a ready `Rc<str>` handle rather than materialized here, so callers
+/// rendering many roots share a single allocation.
 fn display_tree_node<'a>(
     project: &'a Project,
     ctx: &mut TreeContext<'a>,
-    prefix: &str,
+    prefix: Rc<str>,
     is_last: bool,
     visited: &mut HashSet<&'a Path>,
     writer: &mut impl Write,
 ) -> Result<()> {
     let mut frames = vec![TreeFrame::Node {
         project,
-        prefix: Rc::from(prefix),
+        prefix,
         is_last,
     }];
 

@@ -1,23 +1,10 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
-use std::collections::HashSet;
-use std::path::PathBuf;
 
-#[derive(Debug)]
-pub struct DartWorkspace {
-    path: PathBuf,
-    relative_path: PathBuf,
-    version: Option<String>,
-    name: Option<String>,
-    is_changed: bool,
-    publishable_by_default: bool,
-    dependencies: HashSet<String>,
-}
-
-impl DartWorkspace {
-    changepacks_core::impl_discovered_new!();
-}
+// Seven-field discovered-project declaration plus `new` / `new_discovered`,
+// shared verbatim with the other four identical language types.
+changepacks_core::declare_discovered_project!(pub struct DartWorkspace);
 
 #[async_trait]
 impl Workspace for DartWorkspace {
@@ -66,6 +53,7 @@ mod tests {
     use super::*;
     use rstest::rstest;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     #[tokio::test]

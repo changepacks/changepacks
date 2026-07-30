@@ -385,6 +385,53 @@ macro_rules! impl_discovered_new {
     };
 }
 
+/// Declares a discovered package/workspace struct plus its constructors.
+///
+/// Five language types — `PythonPackage`, `PythonWorkspace`, `DartPackage`,
+/// `DartWorkspace` and `CSharpPackage` — declared the exact same seven private
+/// fields (`name`, `version`, `path`, `relative_path`, `is_changed`,
+/// `publishable_by_default`, `dependencies`) and each immediately followed the
+/// declaration with an inherent impl containing
+/// [`impl_discovered_new!`](crate::impl_discovered_new). Those field names are
+/// already hard-coded by that constructor macro, so the declarations were not
+/// independently variable: this macro makes the coupling explicit and keeps the
+/// layout in one place.
+///
+/// Node, Rust and Java are intentionally NOT expressible here — they carry
+/// extra fields (`package_manager`, the workspace-inheritance trio) or lack
+/// `publishable_by_default` entirely — and keep their hand-written
+/// declarations.
+///
+/// Additional inherent methods stay in a separate `impl` block beside the
+/// invocation (see `CSharpPackage`'s command-runner helpers).
+///
+/// ```ignore
+/// changepacks_core::declare_discovered_project!(
+///     /// Doc comments and other outer attributes pass through.
+///     pub struct PythonPackage
+/// );
+/// ```
+#[macro_export]
+macro_rules! declare_discovered_project {
+    ($(#[$meta:meta])* pub struct $name:ident) => {
+        $(#[$meta])*
+        #[derive(::std::fmt::Debug)]
+        pub struct $name {
+            name: ::std::option::Option<::std::string::String>,
+            version: ::std::option::Option<::std::string::String>,
+            path: ::std::path::PathBuf,
+            relative_path: ::std::path::PathBuf,
+            is_changed: ::std::primitive::bool,
+            publishable_by_default: ::std::primitive::bool,
+            dependencies: ::std::collections::HashSet<::std::string::String>,
+        }
+
+        impl $name {
+            $crate::impl_discovered_new!();
+        }
+    };
+}
+
 /// Generates `fn language(&self) -> Language` for a fixed language variant.
 #[macro_export]
 macro_rules! impl_language {
