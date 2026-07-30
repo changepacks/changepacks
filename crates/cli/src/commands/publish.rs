@@ -653,8 +653,18 @@ async fn execute_dry_run_publish_loop(
     // `cargo publish --dry-run` failing to resolve a not-yet-published *Rust*
     // workspace crate, so a non-Rust project that merely shares a name with a
     // Rust crate's dependency must not land in this set. Names are borrowed
-    // from the projects, which outlive the loop.
-    let mut rust_batch_names: HashSet<&str> = HashSet::with_capacity(projects.len());
+    // from the projects, which outlive the loop. The capacity is the Rust
+    // project count and NOT `projects.len()`: since the `extend` below is
+    // filtered to Rust, the batch length is an upper bound the set can never
+    // reach on a mixed batch, and on a batch with no Rust project at all
+    // (Node, Python, Dart, Java or C#) it would allocate a whole table that
+    // then receives zero inserts. Counting first still lets a Rust workspace
+    // reserve enough buckets up front to avoid growth reallocations.
+    let rust_project_count = projects
+        .iter()
+        .filter(|p| p.language() == changepacks_core::Language::Rust)
+        .count();
+    let mut rust_batch_names: HashSet<&str> = HashSet::with_capacity(rust_project_count);
     rust_batch_names.extend(
         projects
             .iter()

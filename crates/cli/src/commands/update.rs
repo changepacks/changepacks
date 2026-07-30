@@ -436,11 +436,28 @@ fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<
     workspace_projects
 }
 
+/// Collect every path the update transaction must snapshot: one manifest per
+/// updated project, the sibling `gradle.properties` for each Java project, and
+/// the workspace manifests, sorted and deduplicated.
+///
+/// The reservation is exact, not an upper bound. Only `Language::Java`
+/// projects push a second path, so the previous `update_projects.len() * 2`
+/// formula over-reserved exactly one `PathBuf` slot per non-Java project —
+/// never written, on the transaction path of every `changepacks update`.
+/// Counting the Java entries once up front costs a single cheap pass over
+/// borrows already in cache and reserves only what the common path writes,
+/// the same policy `PublishLoopState` documents for its failure buffers in
+/// `commands::publish`.
 fn collect_update_snapshot_paths(
     update_projects: &[UpdateProjectMut<'_>],
     workspace_manifest_paths: Vec<PathBuf>,
 ) -> Vec<PathBuf> {
-    let mut paths = Vec::with_capacity(update_projects.len() * 2 + workspace_manifest_paths.len());
+    let java_count = update_projects
+        .iter()
+        .filter(|(project, _)| project.language() == Language::Java)
+        .count();
+    let mut paths =
+        Vec::with_capacity(update_projects.len() + java_count + workspace_manifest_paths.len());
     for (project, _) in update_projects {
         let manifest_path = project.path().to_path_buf();
         if project.language() == Language::Java {

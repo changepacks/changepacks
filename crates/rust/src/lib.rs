@@ -16,7 +16,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use changepacks_utils::{
-    assign_preserving_decor, read_and_parse, replace_version_keep_prefix, write_finalized,
+    assign_preserving_decor, read_and_parse, replace_version_keep_prefix, write_toml_table_version,
 };
 use toml_edit::DocumentMut;
 
@@ -40,12 +40,13 @@ pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "cargo publish --dry-run";
 /// Read and parse a Cargo.toml file, preserving the raw content for format finalization.
 ///
 /// Returns both the raw file content and the parsed `DocumentMut` to enable
-/// [`write_finalized`] to preserve formatting, comments, and the complete
-/// trailing-whitespace suffix.
+/// [`changepacks_utils::write_finalized`] to preserve formatting, comments,
+/// and the complete trailing-whitespace suffix.
 ///
 /// The read-then-parse-with-context sequence lives in
-/// [`changepacks_utils::read_and_parse`] — the mirror of [`write_finalized`] —
-/// so only the `Cargo.toml` label and the `toml_edit` parser stay here.
+/// [`changepacks_utils::read_and_parse`] — the mirror of
+/// [`changepacks_utils::write_finalized`] — so only the `Cargo.toml` label and
+/// the `toml_edit` parser stay here.
 ///
 /// # Errors
 /// Returns error if the file cannot be read or the TOML cannot be parsed.
@@ -64,16 +65,22 @@ pub(crate) async fn read_and_parse_cargo_toml(path: &Path) -> Result<(String, Do
 /// stay in [`crate::workspace::RustWorkspace::update_version`] because
 /// they need much more than a single key rewrite.
 ///
-/// Shared by future paths that need the same skeleton so a single edit
-/// here keeps the format-preservation invariants in one place — matching
-/// the Node/Python/Dart/CSharp convention documented in
-/// `crates/AGENTS.md`.
+/// The whole read → table-like guard → `[package]` creation →
+/// decor-preserving assign → trailing-whitespace-preserving write pipeline
+/// lives in [`changepacks_utils::write_toml_table_version`], because
+/// `changepacks-python`'s `write_pyproject_version` was the same skeleton
+/// modulo the manifest label, the table key, and one Python-only
+/// `project.dynamic` guard, and `crates/AGENTS.md` forbids importing one
+/// language crate into another. This wrapper stays so the `Cargo.toml`
+/// key/label pair is bound in ONE place and every call site inside this crate
+/// is unchanged; the Rust manifest has no extra rule, so the validator is a
+/// no-op.
 ///
 /// An empty `[package]` table is created if missing. The explicit
-/// `Table::new()` matters: plain `doc["package"]["version"] = ...`
-/// auto-creates an INLINE table (`package = { version = ... }`) at the top
-/// of the document instead of a proper `[package]` header — the same hazard
-/// guarded in `changepacks-python`'s `write_pyproject_version`.
+/// `Table::new()` in the shared helper matters: plain
+/// `doc["package"]["version"] = ...` auto-creates an INLINE table
+/// (`package = { version = ... }`) at the top of the document instead of a
+/// proper `[package]` header.
 ///
 /// The version assignment goes through
 /// [`changepacks_utils::assign_preserving_decor`] so an end-of-line comment on
@@ -81,14 +88,9 @@ pub(crate) async fn read_and_parse_cargo_toml(path: &Path) -> Result<(String, Do
 ///
 /// # Errors
 /// Returns error if the file cannot be read, the TOML cannot be parsed,
-/// or the write fails.
+/// `package` is present but not table-like, or the write fails.
 pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) -> Result<()> {
-    let (cargo_toml_raw, mut cargo_toml) = read_and_parse_cargo_toml(path).await?;
-    if !ensure_package_table_like(&cargo_toml, path)? {
-        cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-    assign_preserving_decor(&mut cargo_toml["package"]["version"], new_version);
-    write_finalized(path, cargo_toml.to_string(), &cargo_toml_raw, "Cargo.toml").await
+    write_toml_table_version(path, "Cargo.toml", "package", new_version, |_| Ok(())).await
 }
 
 /// Reject a `Cargo.toml` whose top-level `package` key exists but is NOT
@@ -99,16 +101,16 @@ pub(crate) async fn write_cargo_package_version(path: &Path, new_version: &str) 
 /// touching the document — "is the existing `package` item safe to index
 /// into?" and "does it already exist?" — and both previously open-coded the
 /// identical `is_some_and(|package| !package.is_table_like())` check plus a
-/// byte-identical `bail!`: once in [`write_cargo_package_version`] above and
-/// once in [`crate::workspace::RustWorkspace::update_version`]. Extracted here
-/// beside [`is_workspace_marker`] and [`workspace_dependencies_table_mut`] so
-/// the manifest-shape assumption AND its user-visible message live in ONE
-/// place, matching the repo-wide "one decoder, one place" convention.
+/// byte-identical `bail!`. Extracted here beside [`is_workspace_marker`] and
+/// [`workspace_dependencies_table_mut`] so the manifest-shape assumption AND
+/// its user-visible message live in ONE place, matching the repo-wide "one
+/// decoder, one place" convention.
 ///
-/// Callers reuse the returned flag for their own control flow — creating the
-/// missing `[package]` table in the package writer, or driving the
-/// hybrid/virtual-root branch in the workspace writer — so the extraction adds
-/// no extra lookup relative to the previous hand-rolled pairs.
+/// [`crate::workspace::RustWorkspace::update_version`] is now the only caller
+/// inside this crate — [`write_cargo_package_version`] reaches the same guard
+/// through [`changepacks_utils::write_toml_table_version`] — and it reuses the
+/// returned flag to drive its hybrid/virtual-root branch, so the extraction
+/// adds no extra lookup relative to the previous hand-rolled pair.
 ///
 /// Guarding BEFORE any mutation is the point: `toml_edit` indexing assignment
 /// would otherwise silently replace the scalar and rewrite the manifest.
@@ -425,7 +427,7 @@ mod tests {
     /// asserts COMPLETE-FILE equality over a realistic manifest (not a
     /// `contains` check), mirroring the `changepacks-python` and
     /// `changepacks-dart` round-trip tests, so any reformatting `toml_edit`
-    /// or [`write_finalized`] performs - dropped comment, reordered table,
+    /// or [`changepacks_utils::write_finalized`] performs - dropped comment, reordered table,
     /// collapsed array or inline table, lost blank line - fails the test
     /// rather than silently rewriting a user's manifest.
     #[tokio::test]

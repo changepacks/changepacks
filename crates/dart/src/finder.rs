@@ -45,6 +45,25 @@ impl DartProjectFinder {
     }
 }
 
+/// Collect every dependency name from the supported pubspec sections onto
+/// `project`. Dart workspace packages commonly use ordinary version
+/// constraints rather than `path:` mappings; graph consumers resolve these
+/// names against the complete project-name set and ignore unmatched external
+/// packages. Extracted from `visit` to mirror the identically named helper in
+/// `crates/node/src/finder.rs`, so the "walk the manifest's dependency
+/// sections" step is a named call site in every `HashMap`-backed finder.
+fn add_workspace_dependencies(project: &mut Project, pubspec: &yaml_serde::Value) {
+    for section in PUBSPEC_DEPENDENCY_SECTIONS {
+        if let Some(dependencies) = pubspec.get(*section).and_then(|d| d.as_mapping()) {
+            for dep_name in dependencies.keys() {
+                if let Some(dep_str) = dep_name.as_str() {
+                    project.add_dependency(dep_str);
+                }
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl ProjectFinder for DartProjectFinder {
     // `projects()` / `projects_mut()` share their byte-identical body with
@@ -148,20 +167,8 @@ impl ProjectFinder for DartProjectFinder {
             )))
         };
 
-        // Collect every dependency name from the supported pubspec sections.
-        // Dart workspace packages commonly use ordinary version constraints
-        // rather than `path:` mappings; graph consumers resolve these names
-        // against the complete project-name set and ignore unmatched external
-        // packages.
-        for section in PUBSPEC_DEPENDENCY_SECTIONS {
-            if let Some(dependencies) = pubspec.get(*section).and_then(|d| d.as_mapping()) {
-                for dep_name in dependencies.keys() {
-                    if let Some(dep_str) = dep_name.as_str() {
-                        project.add_dependency(dep_str);
-                    }
-                }
-            }
-        }
+        add_workspace_dependencies(&mut project, &pubspec);
+
         self.projects.insert(path_key, project);
         Ok(())
     }

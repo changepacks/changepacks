@@ -64,6 +64,13 @@
 //!   value's `toml_edit::Decor` across, so an end-of-line comment or unusual
 //!   spacing on a `version = "…"` line survives a bump; shared by every
 //!   `Cargo.toml` write site and by `pyproject.toml`'s `[project].version`.
+//! - **TOML `[table].version` writer** (optional `toml` feature) —
+//!   `write_toml_table_version` holds the whole read → table-like guard →
+//!   caller validation → table creation → decor-preserving assign →
+//!   trailing-whitespace-preserving write pipeline that `changepacks-rust`'s
+//!   `write_cargo_package_version` and `changepacks-python`'s
+//!   `write_pyproject_version` previously open-coded twice, leaving each crate
+//!   with only its manifest label, table key, and extra validation rule.
 //! - **Format-preservation helpers** — [`detect_indent_str`] recovers the
 //!   indent width/character of the on-disk JSON so `serde_json` roundtrips
 //!   don't reformat it; [`write_finalized`] is the shared manifest-write tail —
@@ -105,6 +112,8 @@ mod split_version;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 mod trailing_newline;
+#[cfg(feature = "toml")]
+mod write_toml_table_version;
 
 pub(crate) use is_changepack_log::read_log_bodies;
 
@@ -143,3 +152,5 @@ pub use sort_by_dep::{
 };
 pub use split_version::{replace_version_keep_prefix, split_version};
 pub use trailing_newline::write_finalized;
+#[cfg(feature = "toml")]
+pub use write_toml_table_version::write_toml_table_version;

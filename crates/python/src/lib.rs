@@ -25,7 +25,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use changepacks_core::UpdateType;
-use changepacks_utils::{assign_preserving_decor, read_and_parse, write_finalized};
+use changepacks_utils::{read_and_parse, write_toml_table_version};
 use toml_edit::DocumentMut;
 
 /// Compute the next version for `update_type`, write it into the
@@ -56,8 +56,9 @@ pub(crate) async fn bump_pyproject_version(
 /// (for trailing-newline preservation) and the parsed TOML document.
 ///
 /// The read-then-parse-with-context sequence lives in
-/// [`changepacks_utils::read_and_parse`] — the mirror of [`write_finalized`] —
-/// so only the `pyproject.toml` label and the `toml_edit` parser stay here.
+/// [`changepacks_utils::read_and_parse`] — the mirror of
+/// [`changepacks_utils::write_finalized`] — so only the `pyproject.toml` label
+/// and the `toml_edit` parser stay here.
 ///
 /// # Errors
 /// Returns error if the file cannot be read or is not valid TOML.
@@ -66,17 +67,34 @@ pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String
 }
 
 /// Update `pyproject.toml` at `path` to set `[project].version` to
-/// `new_version`, preserving the file's complete trailing-whitespace shape
-/// (via `write_finalized`) and its TOML formatting (via `toml_edit`).
+/// `new_version`, preserving the file's complete trailing-whitespace shape and
+/// its TOML formatting (via `toml_edit`).
 ///
 /// Shared by `PythonPackage::update_version` and
 /// `PythonWorkspace::update_version` so both paths emit byte-identical output.
+///
+/// The whole read → table-like guard → validation → `[project]` creation →
+/// decor-preserving assign → trailing-whitespace-preserving write pipeline
+/// lives in [`changepacks_utils::write_toml_table_version`], because
+/// `changepacks-rust`'s `write_cargo_package_version` was the same skeleton
+/// modulo the manifest label, the table key, and the `project.dynamic` guard
+/// below, and `crates/AGENTS.md` forbids importing one language crate into
+/// another. This wrapper stays so the `pyproject.toml` key/label pair and the
+/// Python-only rule are bound in ONE place and every call site inside this
+/// crate is unchanged.
+///
 /// An empty `[project]` table is created if missing — needed for workspace
 /// roots that only declare `[tool.uv.workspace]` and for `[build-system]`-only
-/// package manifests (a valid PEP 517 shape). The explicit `Table::new()`
-/// matters: plain `doc["project"]["version"] = ...` auto-creates an INLINE
-/// table (`project = { version = ... }`) at the top of the document instead
-/// of a proper `[project]` header.
+/// package manifests (a valid PEP 517 shape). The explicit `Table::new()` in
+/// the shared helper matters: plain `doc["project"]["version"] = ...`
+/// auto-creates an INLINE table (`project = { version = ... }`) at the top of
+/// the document instead of a proper `[project]` header.
+///
+/// The `project.dynamic` validator runs AFTER the table-like guard and BEFORE
+/// any mutation, exactly as the previous inline body did, so a manifest whose
+/// version is owned by the build backend is rejected without ever being
+/// rewritten — and a scalar `project` key still reports the table-like error
+/// first.
 ///
 /// The version assignment goes through
 /// [`changepacks_utils::assign_preserving_decor`], which carries the existing
@@ -84,74 +102,28 @@ pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String
 /// value replaces the whole `Item`, and a fresh value carries default (empty)
 /// decor, so without that the surrounding trivia — most visibly an
 /// end-of-line comment such as `version = "1.2.3" # pinned` — would be
-/// silently deleted from the user's manifest by a routine version bump. The
-/// helper is shared with `changepacks-rust`'s six `Cargo.toml` write sites
-/// instead of being open-coded here.
+/// silently deleted from the user's manifest by a routine version bump.
 ///
 /// # Errors
-/// Returns error if the file cannot be read, is not valid TOML, or the write
-/// fails.
+/// Returns error if the file cannot be read, is not valid TOML, `project` is
+/// present but not table-like, the version is backend-managed via
+/// `project.dynamic`, or the write fails.
 pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> Result<()> {
-    let (pyproject_toml_raw, mut pyproject_toml) = read_and_parse_pyproject_toml(path).await?;
-    let has_project = ensure_project_table_like(&pyproject_toml, path)?;
-    // The borrow ends at its last use, so the mutations that follow still
-    // type-check without re-walking the document.
-    let has_dynamic_version = pyproject_toml
-        .get("project")
-        .and_then(|project| project.get("dynamic"))
-        .and_then(toml_edit::Item::as_array)
-        .is_some_and(|dynamic| dynamic.iter().any(|item| item.as_str() == Some("version")));
-    if has_dynamic_version {
-        anyhow::bail!(
-            "pyproject.toml {} has backend-managed version in project.dynamic",
-            path.display()
-        );
-    }
-    if !has_project {
-        pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
-    }
-    // The indexed slot IS the value whose decor is preserved: when
-    // `[project].version` exists it is that value, and when `[project]` was
-    // just created — or exists without a `version` — `toml_edit` auto-vivifies
-    // a non-value `Item`, so there is no decor to carry and the helper falls
-    // back to a plain assignment.
-    assign_preserving_decor(&mut pyproject_toml["project"]["version"], new_version);
-    write_finalized(
-        path,
-        pyproject_toml.to_string(),
-        &pyproject_toml_raw,
-        "pyproject.toml",
-    )
+    write_toml_table_version(path, "pyproject.toml", "project", new_version, |doc| {
+        let has_dynamic_version = doc
+            .get("project")
+            .and_then(|project| project.get("dynamic"))
+            .and_then(toml_edit::Item::as_array)
+            .is_some_and(|dynamic| dynamic.iter().any(|item| item.as_str() == Some("version")));
+        if has_dynamic_version {
+            anyhow::bail!(
+                "pyproject.toml {} has backend-managed version in project.dynamic",
+                path.display()
+            );
+        }
+        Ok(())
+    })
     .await
-}
-
-/// Reject a `pyproject.toml` whose top-level `project` key exists but is NOT
-/// table-like (e.g. `project = 3`), and report whether the key is present at
-/// all.
-///
-/// [`write_pyproject_version`] needs the SAME two facts before touching the
-/// document — "is the existing `project` item safe to index into?" and "does
-/// it already exist?" — and previously answered them with two separate
-/// `get("project")` walks. Folding both into one call keeps the
-/// manifest-shape assumption AND its user-visible message in ONE place, and
-/// the returned flag drives the missing-`[project]` creation so no extra
-/// lookup is introduced.
-///
-/// Guarding BEFORE any mutation is the point: `toml_edit` indexing assignment
-/// would otherwise silently replace the scalar and rewrite the manifest.
-///
-/// This used to be a hand-copied mirror of `changepacks_rust`'s
-/// `ensure_package_table_like` — the same function modulo the key name and the
-/// manifest label. `crates/AGENTS.md` forbids importing one language crate
-/// into another, so the shared body now lives in
-/// [`changepacks_utils::ensure_toml_table_like`] and both crates keep a thin
-/// wrapper that binds their own key/label pair, leaving every call site
-/// unchanged.
-///
-/// # Errors
-/// Returns an error naming `path` when `project` is present but not table-like.
-pub(crate) fn ensure_project_table_like(doc: &DocumentMut, path: &Path) -> Result<bool> {
-    changepacks_utils::ensure_toml_table_like(doc, path, "project", "pyproject.toml")
 }
 
 #[cfg(test)]
