@@ -1047,6 +1047,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_run_publish_command_os_args_missing_working_dir_is_error() {
+        // The argv runner backs the whole C# managed dry-run pipeline, and its
+        // documented contract is that a spawn failure surfaces as `Err`, never
+        // as `Ok(PublishOutput { success: false })`. The existing argv tests
+        // only cover a missing *binary*; a missing *working directory* is the
+        // other way `current_dir` can make the spawn fail, and it is the case
+        // the shell-based siblings already pin
+        // (`test_publish_reports_missing_current_directory` in package.rs and
+        // workspace.rs). The program itself resolves fine here, so an `Err`
+        // can only come from the nonexistent directory.
+        let missing_dir =
+            std::env::temp_dir().join(format!("changepacks_osargs_missing_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&missing_dir);
+
+        let result = run_publish_command_os_args("git", ["--version"], &missing_dir, false).await;
+
+        assert!(
+            result.is_err(),
+            "expected a spawn error for a missing working directory, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_run_publish_command_os_args_non_zero_exit() {
         // The documented contract of `run_publish_command_os_args` is that a
         // non-zero exit code comes back as `Ok(PublishOutput { success: false })`

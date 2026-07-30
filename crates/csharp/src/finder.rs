@@ -3,7 +3,8 @@ use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder, has_extension_ignore_ascii_case, is_regular_file};
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
-use quick_xml::events::Event;
+use quick_xml::escape::resolve_predefined_entity;
+use quick_xml::events::{BytesRef, Event};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -62,6 +63,15 @@ impl CSharpProjectFinder {
         let mut element_depth = 0usize;
         let mut project_depth = None;
         let mut version: Option<String> = None;
+        // Fragment accumulator for the `<Version>` element currently being
+        // read. quick-xml splits element content at every `&...;` reference:
+        // `<Version>1.2&#46;3</Version>` arrives as `Text("1.2")`,
+        // `GeneralRef("#46")`, `Text("3")`. Recording only the first fragment
+        // therefore truncated such a version to `1.2`. Fragments are appended
+        // here while `in_version` holds and folded into `version` on the
+        // matching `</Version>`, so the "first non-empty `<Version>` wins"
+        // rule is unchanged for every manifest without a reference.
+        let mut version_text = String::new();
         let mut publishable_by_default = true;
         // Preallocate against the typical `<ProjectReference>` fan-out
         // observed in test fixtures (2 refs in
@@ -112,6 +122,18 @@ impl CSharpProjectFinder {
                         eligible_property_group_depth = None;
                     } else if name.as_ref() == b"Version" {
                         in_version = false;
+                        // Fold the accumulated fragments in. `version.is_none()`
+                        // keeps the original first-non-empty-wins rule: a
+                        // whitespace-only `<Version>` still leaves `None` (so a
+                        // later element may still win) and a second populated
+                        // `<Version>` is still ignored.
+                        if version.is_none() {
+                            let candidate = version_text.trim();
+                            if !candidate.is_empty() {
+                                version = Some(candidate.to_string());
+                            }
+                        }
+                        version_text.clear();
                     } else if name.as_ref() == b"IsPackable" {
                         in_is_packable = false;
                     }
@@ -123,16 +145,27 @@ impl CSharpProjectFinder {
                     e.decode(),
                     in_version,
                     in_is_packable,
-                    &mut version,
+                    &mut version_text,
                     &mut publishable_by_default,
-                ),
+                )?,
                 Ok(Event::CData(e)) => record_decoded_csproj_text(
                     e.decode(),
                     in_version,
                     in_is_packable,
-                    &mut version,
+                    &mut version_text,
                     &mut publishable_by_default,
-                ),
+                )?,
+                // A character or general entity reference inside the eligible
+                // `<Version>` is its own event, never part of the surrounding
+                // `Event::Text`. Without this arm it fell through the wildcard
+                // below and the version silently lost everything from the
+                // reference onwards. The C# *writer* already treats this event
+                // class explicitly (`xml_utils::update_version_in_xml`), so
+                // reader and writer now agree about the same document.
+                // References outside `<Version>` keep passing through untouched.
+                Ok(Event::GeneralRef(e)) if in_version => {
+                    append_resolved_reference(&e, &mut version_text)?;
+                }
                 Ok(Event::Eof) => {
                     anyhow::ensure!(element_depth == 0, "unexpected end of XML document");
                     break;
@@ -146,27 +179,63 @@ impl CSharpProjectFinder {
     }
 }
 
-fn record_decoded_csproj_text<E>(
-    decoded: std::result::Result<std::borrow::Cow<'_, str>, E>,
+/// Fold one decoded `<Version>` / `<IsPackable>` text or CDATA node into the
+/// accumulating metadata.
+///
+/// The `decoded` argument is exactly what `BytesText::decode` and
+/// `BytesCData::decode` return in the pinned quick-xml version, so a decode
+/// failure is surfaced to the caller instead of being discarded. The previous
+/// shape swallowed the `EncodingError`, which silently produced
+/// `version = None` and `publishable_by_default = true` for a `.csproj` whose
+/// text node could not be decoded — changepacks then treated a versioned
+/// project as unversioned and bumped it from `0.0.0`.
+fn record_decoded_csproj_text(
+    decoded: std::result::Result<std::borrow::Cow<'_, str>, quick_xml::encoding::EncodingError>,
     in_version: bool,
     in_is_packable: bool,
-    version: &mut Option<String>,
+    version_text: &mut String,
     publishable_by_default: &mut bool,
-) {
-    let Ok(text) = decoded else {
-        return;
-    };
+) -> Result<()> {
+    let text = decoded.context("Failed to decode .csproj text node")?;
     let text = text.as_ref();
-    // Preserve the previous parser's first-non-empty-wins version semantics.
-    if in_version && version.is_none() {
-        let candidate = text.trim();
-        if !candidate.is_empty() {
-            *version = Some(candidate.to_string());
-        }
+    // Append rather than commit: `</Version>` decides which accumulated value
+    // wins, so a value split across fragments by an entity reference survives
+    // intact while single-fragment values behave exactly as before.
+    if in_version {
+        version_text.push_str(text);
     }
     if in_is_packable && text.trim().eq_ignore_ascii_case("false") {
         *publishable_by_default = false;
     }
+    Ok(())
+}
+
+/// Append the resolved text of one `&...;` reference found inside an eligible
+/// `<Version>` element to the in-progress version value.
+///
+/// Numeric character references (`&#46;`, `&#x2E;`) resolve through quick-xml's
+/// own `resolve_char_ref`; the five predefined XML entities resolve through
+/// `resolve_predefined_entity`. Anything else is an entity this parser cannot
+/// expand — a DTD-declared one — and producing a silently wrong version number
+/// from it is worse than failing, so it surfaces as a contextual error naming
+/// the entity instead.
+fn append_resolved_reference(reference: &BytesRef<'_>, version_text: &mut String) -> Result<()> {
+    if let Some(character) = reference
+        .resolve_char_ref()
+        .context("Failed to resolve .csproj character reference")?
+    {
+        version_text.push(character);
+        return Ok(());
+    }
+
+    let name = reference
+        .decode()
+        .context("Failed to decode .csproj entity reference")?;
+    let resolved = resolve_predefined_entity(&name).with_context(|| {
+        format!("Unresolvable entity reference `&{name};` in .csproj <Version>")
+    })?;
+    version_text.push_str(resolved);
+    Ok(())
 }
 
 /// Walk a `<ProjectReference Include="...">` / `Update="..."` element's attributes and
@@ -852,6 +921,40 @@ mod tests {
   </PropertyGroup>
 </Project>"#;
 
+    // A decimal character reference splits the value into
+    // Text("1.2") / GeneralRef("#46") / Text("3"). Before the GeneralRef arm
+    // existed, only the first fragment was kept and the version read as `1.2`.
+    const XML_VERSION_WITH_DECIMAL_CHAR_REF: &str =
+        r#"<Project><PropertyGroup><Version>1.2&#46;3</Version></PropertyGroup></Project>"#;
+
+    // Same split, hexadecimal spelling of the same code point.
+    const XML_VERSION_WITH_HEX_CHAR_REF: &str =
+        r#"<Project><PropertyGroup><Version>1.2&#x2E;3</Version></PropertyGroup></Project>"#;
+
+    // A predefined XML entity is a GeneralRef too, and resolves to `&`.
+    const XML_VERSION_WITH_PREDEFINED_ENTITY: &str =
+        r#"<Project><PropertyGroup><Version>1.0.0-a&amp;b</Version></PropertyGroup></Project>"#;
+
+    // The reference is the WHOLE value, so the pre-fix parser saw no leading
+    // text fragment at all and returned None.
+    const XML_VERSION_IS_ONLY_A_CHAR_REF: &str =
+        r#"<Project><PropertyGroup><Version>&#49;&#46;&#48;</Version></PropertyGroup></Project>"#;
+
+    // Two `<Version>` elements in the same eligible group: the first still wins.
+    const XML_DUPLICATE_VERSION: &str = r#"<Project><PropertyGroup><Version>1.0.0</Version><Version>2.0.0</Version></PropertyGroup></Project>"#;
+
+    // Whitespace-only first `<Version>` must still leave the value unset, so a
+    // later populated element wins — the accumulator must not "claim" it.
+    const XML_EMPTY_THEN_POPULATED_VERSION: &str = r#"<Project><PropertyGroup><Version>  </Version><Version>2.0.0</Version></PropertyGroup></Project>"#;
+
+    // CDATA content is a separate event class and must accumulate the same way.
+    const XML_CDATA_VERSION: &str =
+        r#"<Project><PropertyGroup><Version><![CDATA[1.2.3]]></Version></PropertyGroup></Project>"#;
+
+    // A reference inside a conditional (non-eligible) group is not part of any
+    // candidate version and must be ignored, not accumulated.
+    const XML_CONDITIONAL_VERSION_WITH_CHAR_REF: &str = r#"<Project><PropertyGroup Condition="'$(Configuration)' == 'Release'"><Version>9.9&#46;9</Version></PropertyGroup><PropertyGroup><Version>1.2.3</Version></PropertyGroup></Project>"#;
+
     #[rstest]
     // Standard `<Version>` inside `<PropertyGroup>`.
     #[case(XML_STANDARD_VERSION, Some("1.2.3"))]
@@ -865,6 +968,22 @@ mod tests {
     #[case(XML_VERSION_AFTER_EMPTY_ELEMENT, Some("3.2.1"))]
     // Version element after an XML comment (Event::Comment path).
     #[case(XML_VERSION_AFTER_COMMENT, Some("4.0.0"))]
+    // Regression: a decimal character reference must not truncate the version.
+    #[case(XML_VERSION_WITH_DECIMAL_CHAR_REF, Some("1.2.3"))]
+    // Same for the hexadecimal spelling.
+    #[case(XML_VERSION_WITH_HEX_CHAR_REF, Some("1.2.3"))]
+    // Predefined entities resolve to their replacement text.
+    #[case(XML_VERSION_WITH_PREDEFINED_ENTITY, Some("1.0.0-a&b"))]
+    // A value made up entirely of references used to parse as None.
+    #[case(XML_VERSION_IS_ONLY_A_CHAR_REF, Some("1.0"))]
+    // Unchanged: the first populated `<Version>` wins.
+    #[case(XML_DUPLICATE_VERSION, Some("1.0.0"))]
+    // Unchanged: a whitespace-only element does not claim the value.
+    #[case(XML_EMPTY_THEN_POPULATED_VERSION, Some("2.0.0"))]
+    // Unchanged: CDATA content still yields the version.
+    #[case(XML_CDATA_VERSION, Some("1.2.3"))]
+    // Unchanged: a conditional group's `<Version>` is ignored, references included.
+    #[case(XML_CONDITIONAL_VERSION_WITH_CHAR_REF, Some("1.2.3"))]
     fn test_extract_version(#[case] content: &str, #[case] expected: Option<&str>) {
         assert_eq!(
             CSharpProjectFinder::parse_csproj_metadata(content)
@@ -872,6 +991,39 @@ mod tests {
                 .0,
             expected.map(std::string::ToString::to_string)
         );
+    }
+
+    // A DTD-declared entity cannot be expanded by this parser. Silently
+    // dropping it would emit a wrong version number (and then a wrong bump),
+    // so it must fail loudly and name the offending entity.
+    #[test]
+    fn test_unresolvable_version_entity_returns_contextual_error() {
+        let content =
+            r#"<Project><PropertyGroup><Version>1.0&mystery;0</Version></PropertyGroup></Project>"#;
+
+        let error = CSharpProjectFinder::parse_csproj_metadata(content).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Unresolvable entity reference `&mystery;`"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    // The GeneralRef arm is scoped to `<Version>`: an unresolvable entity
+    // anywhere else in the manifest stays a pass-through, exactly as before,
+    // and must neither fail the parse nor leak into the version.
+    #[test]
+    fn test_entity_reference_outside_version_is_ignored() {
+        let content = r#"<Project><PropertyGroup><Description>Hello &custom; World</Description><Version>1.2.3</Version><IsPackable>fa&#108;se</IsPackable></PropertyGroup></Project>"#;
+
+        let (version, refs, publishable_by_default) =
+            CSharpProjectFinder::parse_csproj_metadata(content).unwrap();
+
+        assert_eq!(version.as_deref(), Some("1.2.3"));
+        assert!(refs.is_empty());
+        // `<IsPackable>` keeps its unchanged per-fragment semantics: no
+        // fragment equals "false" on its own, so the default stands.
+        assert!(publishable_by_default);
     }
 
     #[test]
@@ -967,6 +1119,63 @@ mod tests {
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
         assert!(!projects[0].is_publishable_by_default());
+    }
+
+    // Happy-path anchor for the decode-error propagation change: a
+    // well-formed manifest whose `<Version>` arrives as plain text and whose
+    // `<IsPackable>` arrives as CDATA must still parse exactly as before.
+    // Both values now flow through a `?` at their call sites, so this pins
+    // that the added error path did not disturb the success path.
+    #[test]
+    fn test_parse_csproj_metadata_decodes_text_and_cdata_on_happy_path() {
+        let content = "<Project><PropertyGroup><Version>1.2.3</Version><IsPackable><![CDATA[false]]></IsPackable></PropertyGroup></Project>";
+
+        let (version, refs, publishable_by_default) =
+            CSharpProjectFinder::parse_csproj_metadata(content).unwrap();
+
+        assert_eq!(version.as_deref(), Some("1.2.3"));
+        assert!(refs.is_empty());
+        assert!(!publishable_by_default);
+    }
+
+    // A failed `BytesText::decode` / `BytesCData::decode` must surface as a
+    // contextual error rather than silently yielding `version = None` and
+    // `publishable_by_default = true` — the latter makes changepacks treat a
+    // versioned project as unversioned and bump it from `0.0.0`. The helper is
+    // exercised directly because `Reader::from_str` can never produce this
+    // error: a `&str` is valid UTF-8 by construction.
+    #[test]
+    fn test_record_decoded_csproj_text_propagates_decode_error() {
+        // Half of a two-byte UTF-8 sequence — invalid on its own. Sliced at
+        // runtime so the bytes are not a compile-time-known literal.
+        let truncated = &"é".as_bytes()[..1];
+        let utf8_error = std::str::from_utf8(truncated).unwrap_err();
+        // The accumulator is a `String` (fragments are appended and committed
+        // on `</Version>`); "nothing recorded" is therefore an empty buffer
+        // instead of `None`, which still means `version = None` at the
+        // `parse_csproj_metadata` boundary.
+        let mut version_text = String::new();
+        let mut publishable_by_default = true;
+
+        let error = super::record_decoded_csproj_text(
+            Err(quick_xml::encoding::EncodingError::from(utf8_error)),
+            true,
+            true,
+            &mut version_text,
+            &mut publishable_by_default,
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Failed to decode .csproj text node"),
+            "context missing from chain: {error:#}"
+        );
+        assert!(
+            format!("{error:#}").contains("cannot decode input using UTF-8"),
+            "root cause dropped from chain: {error:#}"
+        );
+        assert!(version_text.is_empty());
+        assert!(publishable_by_default);
     }
 
     #[test]

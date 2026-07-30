@@ -1087,6 +1087,32 @@ mod tests {
         assert!(finder.projects()[0].is_changed());
     }
 
+    // Every other `check_changed_many` test ends in `unwrap`, so the `?` on
+    // `project.check_changed(path)` inside the defaulted body was never
+    // exercised on its failing branch. The only way that call can fail is
+    // `should_mark_changed` finding no parent directory for the project
+    // manifest, so a project rooted at `/` — whose `Path::parent()` is `None`
+    // on both Windows and Unix — reaches it. The batch loop must surface that
+    // error instead of swallowing it and reporting the project as unchanged.
+    #[test]
+    fn test_project_finder_check_changed_many_propagates_check_changed_error() {
+        let mut finder = MockProjectFinder::new().with_package(MockPackage::same_path("root", "/"));
+
+        let error = finder
+            .check_changed_many(&[PathBuf::from("/src/index.js")])
+            .expect_err("a manifest without a parent directory must fail the batch");
+
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains("Parent not found"),
+            "error chain should carry the missing-parent context, got: {chain}"
+        );
+        assert!(
+            !finder.projects()[0].is_changed(),
+            "a project whose check_changed failed must not be reported as changed"
+        );
+    }
+
     #[test]
     fn project_finder_entry_points_are_included_in_coverage() {
         assert!(

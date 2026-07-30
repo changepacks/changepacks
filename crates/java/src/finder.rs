@@ -751,21 +751,10 @@ mod tests {
         }
     }
 
+    /// Render `value` as a JSON string literal (quotes included), escaping every
+    /// character JSON requires instead of the handful a hand-rolled escaper covers.
     fn json_string(value: &str) -> String {
-        let mut escaped = String::with_capacity(value.len() + 2);
-        escaped.push('"');
-        for character in value.chars() {
-            match character {
-                '"' => escaped.push_str("\\\""),
-                '\\' => escaped.push_str("\\\\"),
-                '\n' => escaped.push_str("\\n"),
-                '\r' => escaped.push_str("\\r"),
-                '\t' => escaped.push_str("\\t"),
-                character => escaped.push(character),
-            }
-        }
-        escaped.push('"');
-        escaped
+        serde_json::Value::String(value.to_owned()).to_string()
     }
 
     fn create_counting_multi_project_gradlew(
