@@ -414,9 +414,15 @@ fn collect_update_project_refs<'a>(
 /// looping `finder.projects()` per finder. The per-finder shape allocated and
 /// immediately dropped one intermediate `Vec<&Project>` for each of the six
 /// language finders. The merged buffer is still presized to
-/// `total_project_count(finders)` inside `collect_projects`, and the result
-/// buffer inherits that same capacity, so the previous capacity hint is
-/// preserved exactly.
+/// `total_project_count(finders)` inside `collect_projects`.
+///
+/// The result buffer, however, is reserved against the number of
+/// [`Project::Workspace`] entries rather than the merged project count: a
+/// monorepo holds O(1) workspace roots among O(N) packages, so inheriting the
+/// project-count hint over-reserved one never-written slot per package on
+/// every `changepacks update`. Counting the workspaces first costs one cheap
+/// pass over borrows already in cache and reserves exactly what the loop
+/// writes.
 ///
 /// `handle_update_with_prompter` calls this once per invocation, after the
 /// mutable project borrow is released, where a fresh borrow of the finders is
@@ -425,7 +431,11 @@ fn collect_update_project_refs<'a>(
 /// here.
 fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<WorkspaceRef<'a>> {
     let projects = collect_projects(finders);
-    let mut workspace_projects = Vec::with_capacity(projects.len());
+    let workspace_count = projects
+        .iter()
+        .filter(|project| matches!(project, Project::Workspace(_)))
+        .count();
+    let mut workspace_projects = Vec::with_capacity(workspace_count);
 
     for project in projects {
         if let Project::Workspace(workspace) = project {
@@ -710,11 +720,23 @@ fn merge_workspace_inherited_updates(
     // probe that preceded every `remove`.
     //
     // The returned pairs are the folds that actually happened, so the caller can
-    // clear each member's changepack log alongside its workspace root.
-    // `projects.len()` is a tight upper bound (each project folds at most once),
-    // matching the preallocation policy applied throughout this file and in
-    // `sort_by_dep.rs`, `find_project_dirs`, and `apply_reverse_dependencies`.
-    let mut merged_pairs: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(projects.len());
+    // clear each member's changepack log alongside its workspace root. Only a
+    // `Project::Package` that inherits its workspace version can ever push, so
+    // `projects.len()` was not a tight bound: in a polyglot monorepo the
+    // workspaces, the standalone packages, and every package that pins its own
+    // version are all counted by it and none of them can fold, leaving a
+    // two-`PathBuf` slot reserved and never written for each. Counting the
+    // inheriting members once up front is a cheap pass over borrows already in
+    // cache and reserves the real upper bound, the same exact-reservation
+    // policy `collect_update_snapshot_paths` already applies with its
+    // `java_count`.
+    let inheriting_count = projects
+        .iter()
+        .filter(
+            |project| matches!(project, Project::Package(pkg) if pkg.inherits_workspace_version()),
+        )
+        .count();
+    let mut merged_pairs: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(inheriting_count);
 
     for &project in projects {
         if let Project::Package(pkg) = project

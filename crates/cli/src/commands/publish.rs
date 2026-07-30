@@ -5,13 +5,16 @@ use std::{
 };
 
 use anyhow::Result;
-use changepacks_core::{Config, Project, PublishOutput, PublishResult, normalize_path_separators};
+use changepacks_core::{
+    Config, Project, PublishOutput, PublishResult, normalize_path_separators,
+    normalize_path_separators_of,
+};
 use changepacks_utils::sort_by_dependencies;
 use clap::Args;
 
 use crate::{
     CommandContext,
-    commands::writeln_stdout,
+    commands::{writeln_stderr, writeln_stdout},
     finders::collect_projects,
     options::{FormatOptions, retain_by_language},
     prompter::{InquirePrompter, Prompter},
@@ -84,13 +87,10 @@ pub async fn handle_publish_with_prompter(
                 .map(|p| normalize_path_separators(p).into_owned()),
         );
         projects.retain(|project| {
-            let relative_path = project.relative_path().to_string_lossy();
-            // `normalize_path_separators` only allocates when the path actually
-            // contains a backslash. Every `/`-only path (all Unix paths, and
-            // Windows paths already using `/`) comes back as a borrowed slice,
-            // and `HashSet<String>::contains` accepts a `&str` via
-            // `Borrow<str>`, so the no-backslash lookup is allocation-free.
-            normalized_args.contains(normalize_path_separators(&relative_path).as_ref())
+            // `normalize_path_separators_of` owns the lossy-then-normalize
+            // conversion and its allocation policy; see its docs in
+            // `changepacks_core::publish`.
+            normalized_args.contains(normalize_path_separators_of(project.relative_path()).as_ref())
         });
     }
 
@@ -204,15 +204,21 @@ fn print_projects_to_publish(projects: &[&Project], format: FormatOptions) -> Re
 /// The caller owns both the "are there failures at all" guard and the rendering
 /// of `failed_list`, so the comma-joined string is allocated once per run and
 /// shared with the `anyhow::bail!` message in [`finish_publish_run`].
+///
+/// # Errors
+/// Returns the underlying `io::Error` if writing to stderr fails.
 fn print_publish_failure_summary(
     failed_list: &str,
     failed_count: usize,
     total: usize,
     format: FormatOptions,
-) {
+) -> std::io::Result<()> {
     if let FormatOptions::Stdout = format {
-        eprintln!("\n{failed_count} of {total} projects failed to publish: {failed_list}");
+        writeln_stderr(format_args!(
+            "\n{failed_count} of {total} projects failed to publish: {failed_list}"
+        ))?;
     }
+    Ok(())
 }
 
 /// Performs the shared finish tail for both the dry-run and real-publish branches:
@@ -231,8 +237,8 @@ fn print_publish_failure_summary(
 /// with `?`.
 ///
 /// # Errors
-/// Returns an error if serializing the result map or writing to stdout fails,
-/// or if any project failed to publish.
+/// Returns an error if serializing the result map or writing to stdout/stderr
+/// fails, or if any project failed to publish.
 fn finish_publish_run(
     result_map: &BTreeMap<PathBuf, PublishResult>,
     failed_projects: &[String],
@@ -245,7 +251,7 @@ fn finish_publish_run(
     let failed_list = (!failed_projects.is_empty()).then(|| failed_projects.join(", "));
 
     if let Some(list) = failed_list.as_deref() {
-        print_publish_failure_summary(list, failed_projects.len(), total, format);
+        print_publish_failure_summary(list, failed_projects.len(), total, format)?;
     }
 
     if let FormatOptions::Json = format {
@@ -359,9 +365,9 @@ fn record_publish_success(
 /// stdout distinction the old loops maintained:
 ///
 ///   - `PublishFailureCause::Output(output)` prints
-///     `print_publish_output(&output); eprintln!("{label} {project}");`
-///   - `PublishFailureCause::Error(e)` prints `eprintln!("{label} {project}: {e:#}");`
-///     (with the `: {e:#}` suffix).
+///     `print_publish_output(&output)` then `"{label} {project}"` on stderr
+///   - `PublishFailureCause::Error(e)` prints `"{label} {project}: {e:#}"` on
+///     stderr (with the `: {e:#}` suffix).
 ///
 /// The trailing `failed_projects.push(project.to_string())` is shared by both
 /// causes. Ok(None) (dry-run unsupported) stays inline in the dry-run loop
@@ -379,7 +385,8 @@ fn record_publish_success(
 /// string grows.
 ///
 /// # Errors
-/// Returns the underlying `io::Error` if replaying the captured stdout fails.
+/// Returns the underlying `io::Error` if replaying the captured stdout or
+/// writing the failure line to stderr fails.
 fn record_publish_failure(
     result_map: &mut BTreeMap<PathBuf, PublishResult>,
     failed_projects: &mut Vec<String>,
@@ -392,10 +399,10 @@ fn record_publish_failure(
         match &cause {
             PublishFailureCause::Output(output) => {
                 print_publish_output(output)?;
-                eprintln!("{failure_label} {project}");
+                writeln_stderr(format_args!("{failure_label} {project}"))?;
             }
             PublishFailureCause::Error(e) => {
-                eprintln!("{failure_label} {project}: {e:#}");
+                writeln_stderr(format_args!("{failure_label} {project}: {e:#}"))?;
             }
         }
     }
@@ -678,12 +685,12 @@ async fn execute_dry_run_publish_loop(
         }
         if skip_dry_run_due_to_workspace_internal_dep(project, &rust_batch_names) {
             if let FormatOptions::Stdout = format {
-                eprintln!(
+                writeln_stderr(format_args!(
                     "Dry-run skipped for {project}: depends on workspace member also being \
                      published in this run. `cargo publish --dry-run` cannot resolve the \
                      not-yet-published version (rust-lang/cargo#1169). The real publish \
                      will run in topological order and succeed."
-                );
+                ))?;
             }
             record_json_skip(
                 &mut state.result_map,
@@ -706,11 +713,11 @@ async fn execute_dry_run_publish_loop(
             Ok(Some(output)) => ProjectPublishOutcome::from_output(output),
             Ok(None) => {
                 if let FormatOptions::Stdout = format {
-                    eprintln!(
+                    writeln_stderr(format_args!(
                         "Dry-run not supported for {project}; skipping. \
                          Configure `publishDryRun` in .changepacks/config.json \
                          to provide a custom dry-run command."
-                    );
+                    ))?;
                 }
                 record_json_skip(
                     &mut state.result_map,

@@ -581,6 +581,58 @@ mod tests {
         assert_eq!(fs::read(untouched_log).unwrap(), untouched_bytes);
     }
 
+    /// The rewrite-WRITE failure arm: a log whose `changes` map STRADDLES the
+    /// applied/unapplied boundary takes the rewrite arm, and the `write` that
+    /// executes it can still fail on disk (read-only file, revoked ACL, full
+    /// volume). `changepacks update` must not report success in that case,
+    /// because a log that silently failed to shrink re-applies the same version
+    /// bumps on the next run. Pins that the failure surfaces as an `Err` whose
+    /// chain carries the rewrite context, the offending path, and the
+    /// underlying `io::Error` — the `io::Error` link is what distinguishes this
+    /// arm from the same-worded context on the span-removal step above it.
+    #[tokio::test]
+    async fn clear_applied_update_logs_reports_rewrite_write_failure_with_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        // TWO entries with only the FIRST applied, so the log is classified
+        // onto the rewrite arm rather than the remove or the skip arm.
+        let log_file = changepacks_dir.join("changepack_log_straddling.json");
+        let original =
+            br#"{"changes":{"a/package.json":"Patch","b/package.json":"Minor"},"note":"keep"}"#;
+        fs::write(&log_file, original).unwrap();
+        crate::test_support::set_readonly(&log_file, true);
+
+        let applied_paths = HashSet::from([Path::new("a/package.json")]);
+        let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
+        // Restore BEFORE asserting so `TempDir` cleanup succeeds even if an
+        // assertion below panics first.
+        crate::test_support::set_readonly(&log_file, false);
+
+        let err = result.expect_err("an unwritable update log must not report success");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("Failed to rewrite update log"),
+            "error chain must carry the rewrite context message, got {rendered}"
+        );
+        assert!(
+            rendered.contains(&log_file.display().to_string()),
+            "error chain must name the offending path {}, got {rendered}",
+            log_file.display()
+        );
+        assert!(
+            err.chain()
+                .any(|cause| cause.downcast_ref::<std::io::Error>().is_some()),
+            "failure must originate from the rewrite write itself, got {rendered}"
+        );
+        assert_eq!(
+            fs::read(&log_file).unwrap(),
+            original,
+            "a log that could not be rewritten must stay byte-identical"
+        );
+    }
+
     #[tokio::test]
     async fn test_clear_applied_update_logs_rewrites_mixed_log_preserving_metadata() {
         let temp_dir = TempDir::new().unwrap();

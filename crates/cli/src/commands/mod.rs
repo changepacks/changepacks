@@ -58,6 +58,25 @@ pub(crate) fn writeln_stdout(args: std::fmt::Arguments<'_>) -> std::io::Result<(
     writeln!(std::io::stdout().lock(), "{args}")
 }
 
+/// Write one formatted line to a short-lived locked stderr handle.
+///
+/// The stderr counterpart of [`writeln_stdout`], and it exists for the same
+/// reason: `eprintln!` re-acquires the global stderr lock per line and *panics*
+/// when the write fails, which turns a closed stderr (`changepacks publish
+/// 2>&1 | head`) into an abort instead of a returnable error. A short-lived
+/// `StderrLock` emits the identical bytes — stderr is unbuffered in both cases
+/// — while letting the io error propagate as a typed error. `publish`'s
+/// `print_publish_output` already applies this policy to the captured child
+/// stderr; this helper extends it to the diagnostics the CLI writes itself.
+///
+/// # Errors
+/// Returns the underlying `io::Error` if writing to stderr fails.
+pub(crate) fn writeln_stderr(args: std::fmt::Arguments<'_>) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    writeln!(std::io::stderr().lock(), "{args}")
+}
+
 /// Join `items` into one `String`, inserting `separator` between elements.
 ///
 /// Several error messages render a list as `a, b, c`. Each site used to
