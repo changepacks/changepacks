@@ -5,14 +5,17 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 
 /// Generates `projects()`, `projects_mut()`, `project_count()`,
-/// `extend_projects()`, and `contains_project()` for finders backed by a
-/// `projects: HashMap<PathBuf, Project>` field.
+/// `extend_projects()`, `extend_projects_mut()`, and `contains_project()` for
+/// finders backed by a `projects: HashMap<PathBuf, Project>` field.
 ///
-/// The `extend_projects` body drains `self.projects.values()` straight into
-/// the caller's buffer, so the intermediate `Vec<&Project>` that `projects()`
-/// has to materialize is never built. Yield order is `HashMap::values()` in
-/// both bodies, so overriding is order-preserving with respect to the
-/// defaulted [`ProjectFinder::extend_projects`].
+/// The `extend_projects` / `extend_projects_mut` bodies drain
+/// `self.projects.values()` / `self.projects.values_mut()` straight into the
+/// caller's buffer, so the intermediate `Vec` that `projects()` /
+/// `projects_mut()` has to materialize is never built. Yield order is
+/// `HashMap::values()` / `HashMap::values_mut()` in both bodies, so overriding
+/// is order-preserving with respect to the defaulted
+/// [`ProjectFinder::extend_projects`] and
+/// [`ProjectFinder::extend_projects_mut`].
 ///
 /// The `contains_project` body is the O(1) hashed probe the map already
 /// offers, replacing the defaulted linear scan over `projects()` — see
@@ -32,6 +35,12 @@ macro_rules! impl_projects_hashmap_accessors {
         }
         fn extend_projects<'a>(&'a self, out: &mut ::std::vec::Vec<&'a $crate::Project>) {
             out.extend(self.projects.values());
+        }
+        fn extend_projects_mut<'a>(
+            &'a mut self,
+            out: &mut ::std::vec::Vec<&'a mut $crate::Project>,
+        ) {
+            out.extend(self.projects.values_mut());
         }
         fn contains_project(&self, path: &::std::path::Path) -> ::std::primitive::bool {
             self.projects.contains_key(path)
@@ -585,6 +594,28 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     fn extend_projects<'a>(&'a self, out: &mut Vec<&'a Project>) {
         out.extend(self.projects());
     }
+    /// Mutable counterpart of [`ProjectFinder::extend_projects`]: append every
+    /// project held by this finder onto `out` as `&mut Project`.
+    ///
+    /// Exists for the same allocation reason: `find_project_dirs`'s no-name
+    /// fallback merges every finder's projects into one buffer, and
+    /// `flat_map(|f| f.projects_mut())` paid one throwaway `Vec<&mut Project>`
+    /// per finder — six of them on every CLI run — allocated by `projects_mut()`
+    /// and dropped as soon as the flattening consumed it. Pushing into the
+    /// caller's buffer removes that per-finder allocation.
+    ///
+    /// The default body is the compatibility path for external implementors:
+    /// it forwards to `projects_mut()`, so an implementor that only supplies
+    /// the required accessors keeps compiling and keeps identical behaviour,
+    /// and merely forfeits the allocation elision. Implementors backed by a
+    /// `HashMap<PathBuf, Project>` get the elided override for free from
+    /// [`impl_projects_hashmap_accessors!`].
+    ///
+    /// Contract for overrides: append in exactly `projects_mut()` order and
+    /// never clear or reorder what `out` already holds.
+    fn extend_projects_mut<'a>(&'a mut self, out: &mut Vec<&'a mut Project>) {
+        out.extend(self.projects_mut());
+    }
     /// Whether a project keyed by exactly `path` has already been discovered
     /// by this finder.
     ///
@@ -904,6 +935,13 @@ mod tests {
             .collect()
     }
 
+    fn project_names_mut(projects: &[&mut Project]) -> Vec<String> {
+        projects
+            .iter()
+            .map(|project| project.name().unwrap_or_default().to_string())
+            .collect()
+    }
+
     // The defaulted `extend_projects` body is the compatibility path for
     // external implementors: `MockProjectFinder` does NOT override it, so this
     // pins that the default appends exactly `projects()`, in `projects()`
@@ -933,6 +971,38 @@ mod tests {
         assert!(out.is_empty());
     }
 
+    // Mutable twin of the test above: `MockProjectFinder` does NOT override
+    // `extend_projects_mut`, so this pins that the default appends exactly
+    // `projects_mut()`, in `projects_mut()` order, without disturbing what the
+    // buffer already holds — the contract `find_project_dirs`'s no-name
+    // fallback relies on when it merges every finder into one buffer.
+    #[test]
+    fn test_extend_projects_mut_default_matches_projects_and_preserves_buffer() {
+        let mut finder = MockProjectFinder::new()
+            .with_package(MockPackage::same_path("pkg1", "/project1/package.json"))
+            .with_workspace(MockWorkspace::same_path("root", "/project2/package.json"))
+            .with_package(MockPackage::same_path("pkg2", "/project3/package.json"));
+
+        let mut seed = MockProjectFinder::new()
+            .with_package(MockPackage::same_path("seed", "/seed/package.json"));
+        let mut out = seed.projects_mut();
+        finder.extend_projects_mut(&mut out);
+        let names = project_names_mut(&out);
+        drop(out);
+
+        let mut expected = vec!["seed".to_string()];
+        expected.extend(project_names(&finder.projects()));
+        assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn test_extend_projects_mut_default_on_empty_finder_is_a_no_op() {
+        let mut finder = MockProjectFinder::new();
+        let mut out: Vec<&mut Project> = Vec::new();
+        finder.extend_projects_mut(&mut out);
+        assert!(out.is_empty());
+    }
+
     // The macro override skips the intermediate Vec that `projects()` builds;
     // both must still yield the same projects in the same `HashMap::values()`
     // order, so a caller can swap one for the other without reordering output.
@@ -949,6 +1019,44 @@ mod tests {
 
         assert_eq!(out.len(), finder.project_count());
         assert_eq!(project_names(&out), project_names(&finder.projects()));
+    }
+
+    // Same equivalence for the mutable override: `HashMap::values_mut()` and
+    // `HashMap::values()` walk one unmodified map in the same order, so the
+    // elided body must yield exactly what `projects_mut()` would have.
+    #[test]
+    fn test_extend_projects_mut_macro_override_matches_projects_order() {
+        let mut finder = HashMapProjectFinder::with_packages(&[
+            ("pkg1", "/project1/package.json"),
+            ("pkg2", "/project2/package.json"),
+            ("pkg3", "/project3/package.json"),
+        ]);
+
+        let mut out: Vec<&mut Project> = Vec::new();
+        finder.extend_projects_mut(&mut out);
+        let out_len = out.len();
+        let names = project_names_mut(&out);
+        drop(out);
+
+        assert_eq!(out_len, finder.project_count());
+        assert_eq!(names, project_names_mut(&finder.projects_mut()));
+    }
+
+    // The borrows handed out must alias the finder's own storage: mutating a
+    // project through the merged buffer has to be visible on the finder
+    // afterwards, which is exactly what the no-name `set_name` fallback does.
+    #[test]
+    fn test_extend_projects_mut_yields_borrows_that_mutate_the_finder() {
+        let mut finder = HashMapProjectFinder::with_packages(&[("pkg1", "/project1/package.json")]);
+
+        let mut out: Vec<&mut Project> = Vec::new();
+        finder.extend_projects_mut(&mut out);
+        for project in &mut out {
+            project.set_name("renamed".to_string());
+        }
+        drop(out);
+
+        assert_eq!(project_names(&finder.projects()), vec!["renamed"]);
     }
 
     // `contains_project` has the same two-body shape as `extend_projects`: a
@@ -1090,6 +1198,19 @@ mod tests {
         second.extend_projects(&mut out);
 
         assert_eq!(project_names(&out), vec!["pkg1", "pkg2"]);
+    }
+
+    #[test]
+    fn test_extend_projects_mut_macro_override_preserves_existing_buffer_contents() {
+        let mut first = HashMapProjectFinder::with_packages(&[("pkg1", "/project1/package.json")]);
+        let mut second = HashMapProjectFinder::with_packages(&[("pkg2", "/project2/package.json")]);
+
+        // Mirrors `find_project_dirs`'s no-name fallback: one buffer, several finders.
+        let mut out: Vec<&mut Project> = Vec::new();
+        first.extend_projects_mut(&mut out);
+        second.extend_projects_mut(&mut out);
+
+        assert_eq!(project_names_mut(&out), vec!["pkg1", "pkg2"]);
     }
 
     #[test]

@@ -661,6 +661,71 @@ mod tests {
         assert_eq!(value["date"], "2026-01-01");
     }
 
+    /// Both execution arms in ONE call. The delete arm and the rewrite arm are
+    /// each pinned in isolation above, so nothing yet observes the two buffered
+    /// decision lists (`removals`, `rewrites`) being filled from the SAME
+    /// classify pass and then drained as two separate `try_join_all` batches.
+    /// A future refactor that reserved, drained or ordered those buffers wrongly
+    /// — deleting a straddling log, or rewriting a fully applied one — would
+    /// still pass every single-arm test. Asserts the exact rewritten BYTES, not
+    /// just the parsed shape, so the byte-preservation contract survives the
+    /// mixed batch too.
+    #[tokio::test]
+    async fn clear_applied_update_logs_deletes_and_rewrites_in_one_call() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        // Log 1: every `changes` entry is applied -> takes the REMOVE arm.
+        let full_log = changepacks_dir.join("changepack_log_full.json");
+        fs::write(
+            &full_log,
+            r#"{"changes":{"packages/x/package.json":"Major","packages/y/package.json":"Patch"},"note":"fully applied","date":"2026-01-02"}"#,
+        )
+        .unwrap();
+
+        // Log 2: straddles the boundary (a applied, b not) -> REWRITE arm.
+        // Indented + trailing newline so the byte assertion is meaningful.
+        let straddling_log = changepacks_dir.join("changepack_log_straddling.json");
+        let straddling_input = "{\n  \"changes\": {\n    \"packages/a/package.json\": \"Patch\",\n    \"packages/b/package.json\": \"Minor\"\n  },\n  \"note\": \"keep this\",\n  \"date\": \"2026-01-01\"\n}\n";
+        fs::write(&straddling_log, straddling_input.as_bytes()).unwrap();
+
+        let applied_paths = HashSet::from([
+            Path::new("packages/x/package.json"),
+            Path::new("packages/y/package.json"),
+            Path::new("packages/a/package.json"),
+        ]);
+        let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
+        assert!(result.is_ok(), "mixed cleanup failed: {result:?}");
+
+        // Remove arm ran.
+        assert!(
+            !full_log.exists(),
+            "fully applied log must be deleted in a mixed batch"
+        );
+
+        // Rewrite arm ran, and did NOT delete the straddling log.
+        assert!(
+            straddling_log.exists(),
+            "straddling log must be rewritten, not deleted"
+        );
+        let expected = "{\n  \"changes\": {\n    \"packages/b/package.json\": \"Minor\"\n  },\n  \"note\": \"keep this\",\n  \"date\": \"2026-01-01\"\n}\n";
+        assert_eq!(
+            fs::read(&straddling_log).unwrap(),
+            expected.as_bytes(),
+            "indentation, note, date and trailing newline bytes must survive the mixed batch"
+        );
+
+        let value: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&straddling_log).unwrap()).unwrap();
+        let changes = value["changes"].as_object().unwrap();
+        assert_eq!(changes.len(), 1, "only the unapplied entry may remain");
+        assert_eq!(changes["packages/b/package.json"], "Minor");
+        assert!(changes.get("packages/a/package.json").is_none());
+        assert_eq!(value["note"], "keep this");
+        assert_eq!(value["date"], "2026-01-01");
+    }
+
     #[tokio::test]
     async fn test_clear_applied_update_logs_ignores_config_and_non_json_files() {
         let temp_dir = TempDir::new().unwrap();

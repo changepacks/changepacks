@@ -179,11 +179,18 @@ async fn discover_project_dirs_with_gitignore(
     // package.json / Cargo.toml / pyproject.toml carries a `name` field),
     // `targets` is empty and we skip the `try_find_remote("origin")` git
     // config walk + URL parsing chain entirely.
-    let mut targets: Vec<&mut Project> = project_finders
-        .iter_mut()
-        .flat_map(|f| f.projects_mut())
-        .filter(|p| p.name().is_none())
-        .collect();
+    //
+    // `extend_projects_mut` drains each finder straight into the shared
+    // buffer, so the throwaway `Vec<&mut Project>` that
+    // `flat_map(|f| f.projects_mut())` allocated per finder — six per CLI run —
+    // is never built. Order is unchanged (`HashMap::values_mut()` either way),
+    // and the no-name filter simply moves from the iterator to a `retain` over
+    // the merged buffer.
+    let mut targets: Vec<&mut Project> = Vec::new();
+    for finder in project_finders.iter_mut() {
+        finder.extend_projects_mut(&mut targets);
+    }
+    targets.retain(|p| p.name().is_none());
     if !targets.is_empty() {
         let repo_name = repo
             .try_find_remote("origin")
@@ -1717,5 +1724,78 @@ mod tests {
         assert_eq!(projects.len(), 1);
         // Explicit name should NOT be overwritten by remote repo name
         assert_eq!(projects[0].name(), Some("explicit-name"));
+    }
+
+    // Every other no-name fallback test commits exactly ONE name-less manifest,
+    // so `targets.split_last_mut()` yields an empty `rest` and only the
+    // move-into-`last` arm ever runs. This case commits TWO name-less
+    // manifests, which is the only way to execute the `for project in rest`
+    // clone loop: with the loop removed, `a/package.json` keeps `name() ==
+    // None` while `b/package.json` still gets the remote-derived name.
+    #[tokio::test]
+    async fn test_find_project_dirs_sets_remote_name_on_every_no_name_project() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        init_git_repo(temp_path);
+        run_git(
+            temp_path,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/testuser/shared-repo-name.git",
+            ],
+        );
+
+        // Two manifests in different directories, BOTH without a name field.
+        for dir in ["a", "b"] {
+            fs::create_dir_all(temp_path.join(dir)).await.unwrap();
+            fs::write(
+                temp_path.join(dir).join("package.json"),
+                r#"{"version": "1.0.0"}"#,
+            )
+            .await
+            .unwrap();
+        }
+
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let repo = discover_repo(temp_path);
+        let config = Config::default();
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        find_project_dirs(&repo, &mut finders, &config, false)
+            .await
+            .unwrap();
+
+        // `projects()` is HashMap-ordered, so key by relative path instead of
+        // index to keep the assertion deterministic.
+        let mut named: Vec<(String, Option<String>)> = finders
+            .iter()
+            .flat_map(|f| f.projects())
+            .map(|project| {
+                (
+                    project.relative_path().to_string_lossy().replace('\\', "/"),
+                    project.name().map(String::from),
+                )
+            })
+            .collect();
+        named.sort();
+
+        assert_eq!(
+            named,
+            vec![
+                (
+                    "a/package.json".to_string(),
+                    Some("shared-repo-name".to_string())
+                ),
+                (
+                    "b/package.json".to_string(),
+                    Some("shared-repo-name".to_string())
+                ),
+            ],
+            "every no-name project must receive the repo-derived name"
+        );
     }
 }
