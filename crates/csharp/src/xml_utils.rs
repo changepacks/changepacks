@@ -151,6 +151,13 @@ pub fn update_version_in_xml(content: &str, new_version: &str) -> Result<String>
     } else {
         detected_indent
     };
+    // Probe order encodes a whole-file precedence, not a first-terminator
+    // one: CRLF anywhere outranks a lone LF that appears earlier. Each
+    // `str::contains` is memchr/SIMD-accelerated, so this ladder beats a
+    // hand-rolled single-pass byte scan even in its worst case (a
+    // terminator-free file, which pays all three probes); see
+    // `test_add_new_version_prefers_crlf_when_an_lf_appears_first` for the
+    // precedence guard.
     let line_ending = if content.contains("\r\n") {
         "\r\n"
     } else if content.contains('\n') {
@@ -942,6 +949,66 @@ mod tests {
         assert_eq!(
             result,
             "<msb:Project xmlns:msb=\"urn:msbuild\">\n    <msb:PropertyGroup>\n        <msb:Version>2.0.0</msb:Version>\n    </msb:PropertyGroup>\n</msb:Project>\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_new_version_uses_bare_carriage_return_line_ending() -> Result<()> {
+        // Classic-Mac `.csproj`: the only terminator is a bare `\r`, so the
+        // `line_ending` ladder must resolve to `"\r"` and NEVER synthesize an
+        // LF. `<PropertyGroup>` closes with no preceding whitespace text, so
+        // `close_ws` stays `None` and the insertion genuinely goes through the
+        // `line_ending` branch instead of reusing captured trailing
+        // whitespace. `detect_indent_str` splits on LF only, so a CR-only
+        // file reports no indent and the `"    "` default applies.
+        let content =
+            "<Project>\r  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>\r</Project>";
+
+        let result = update_version_in_xml(content, "2.0.0")?;
+
+        assert_eq!(
+            result,
+            "<Project>\r  <PropertyGroup><OutputType>Exe</OutputType>\r      <Version>2.0.0</Version>\r  </PropertyGroup>\r</Project>"
+        );
+        assert!(
+            !result.contains('\n'),
+            "no line feed may be introduced into a CR-only file:\n{result:?}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_new_version_prefers_crlf_when_an_lf_appears_first() -> Result<()> {
+        // Mixed-terminator `.csproj`: a lone LF precedes the first CRLF. The
+        // contract is "CRLF anywhere wins", NOT "first terminator wins", so
+        // the synthesized `<Version>` must be joined with `"\r\n"`. This pins
+        // the whole-file precedence that a first-terminator scan would break,
+        // silently rewriting the bytes of users' project files.
+        let content = "<Project>\n  <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>\r\n</Project>\r\n";
+
+        let result = update_version_in_xml(content, "2.0.0")?;
+
+        assert_eq!(
+            result,
+            "<Project>\n  <PropertyGroup><OutputType>Exe</OutputType>\r\n    <Version>2.0.0</Version>\r\n  </PropertyGroup>\r\n</Project>\r\n"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_new_version_omits_line_ending_for_terminator_free_content() -> Result<()> {
+        // A single-line `.csproj` with no terminator at all resolves the
+        // `line_ending` ladder to `""`; every `!line_ending.is_empty()` guard
+        // must then stay silent so the output remains a single line rather
+        // than gaining an invented terminator.
+        let content = "<Project/>";
+
+        let result = update_version_in_xml(content, "2.0.0")?;
+
+        assert_eq!(
+            result,
+            "<Project><PropertyGroup><Version>2.0.0</Version></PropertyGroup></Project>"
         );
         Ok(())
     }

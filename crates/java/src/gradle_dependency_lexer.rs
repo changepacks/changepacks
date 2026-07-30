@@ -159,16 +159,22 @@ impl Default for GradleDependencyContext {
 }
 
 impl GradleDependencyContext {
+    /// True only when the innermost open delimiter is a `dependencies { }` block.
+    ///
+    /// This is a top-of-stack test: searching for the last matching delimiter and
+    /// then requiring `position + 1 == len` is satisfiable only by
+    /// `position == len - 1`, i.e. by the final element, so inspecting
+    /// [`Vec::last`] alone is equivalent. Keeping it O(1) matters because the
+    /// method runs once per identifier token via [`Self::mark_identifier`], plus
+    /// once per `(` via [`Self::open_parenthesis`] and once per `project(` via
+    /// [`Self::allows_project_dependency`]; the previous form walked the whole
+    /// delimiter stack on every miss, which is the common case inside `plugins`,
+    /// `android` or any nested bracket.
     fn is_directly_in_dependencies_block(&self) -> bool {
-        self.delimiters
-            .iter()
-            .rposition(|delimiter| {
-                matches!(
-                    delimiter,
-                    GradleDependencyDelimiter::Block { dependencies: true }
-                )
-            })
-            .is_some_and(|position| position + 1 == self.delimiters.len())
+        matches!(
+            self.delimiters.last(),
+            Some(GradleDependencyDelimiter::Block { dependencies: true })
+        )
     }
 
     fn allows_project_dependency(&self) -> bool {
@@ -882,9 +888,8 @@ pub(crate) fn extract_gradle_project_dependencies(
         }
 
         let token_end = cursor + PROJECT_CALL.len();
-        let is_project_call = bytes
-            .get(cursor..)
-            .is_some_and(|rest| rest.starts_with(PROJECT_CALL))
+        // The `while cursor < bytes.len()` loop invariant makes `bytes[cursor..]` infallible.
+        let is_project_call = bytes[cursor..].starts_with(PROJECT_CALL)
             && cursor
                 .checked_sub(1)
                 .and_then(|previous| bytes.get(previous))
@@ -1080,6 +1085,28 @@ dependencies.add("compileOnly", project(":direct-add-real"))
         assert_eq!(
             extract_gradle_project_dependencies(content),
             vec![":real", ":nested-real", ":command-real", ":direct-add-real"]
+        );
+    }
+
+    #[test]
+    fn test_extract_gradle_project_dependencies_requires_innermost_dependencies_block() {
+        let content = r#"
+dependencies {
+    implementation(project(":direct"))
+    someNestedBlock {
+        implementation(project(":nested-block-decoy"))
+    }
+    plugins {
+        id("com.example.plugin")
+        implementation(project(":deeply:nested-decoy"))
+    }
+    implementation(project(":after-nested-blocks"))
+}
+"#;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec![":direct", ":after-nested-blocks"]
         );
     }
 

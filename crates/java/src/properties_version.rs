@@ -19,11 +19,20 @@ fn is_escaped(bytes: &[u8], index: usize) -> bool {
     preceding_backslashes % 2 == 1
 }
 
+/// Substrings that make a `version` property value computed rather than literal.
+///
+/// The scan window size is derived from each marker's own length, so editing a
+/// marker here can never desynchronise it from a hand-written length.
+const NON_LITERAL_MARKERS: [&[u8]; 4] = [b"${", b"providers.", b"project.", b"findProperty("];
+
+fn contains_marker(value: &[u8], marker: &[u8]) -> bool {
+    marker.len() <= value.len() && value.windows(marker.len()).any(|window| window == marker)
+}
+
 fn property_value_is_literal(value: &[u8]) -> bool {
-    !value.windows(2).any(|window| window == b"${")
-        && !value.windows(10).any(|window| window == b"providers.")
-        && !value.windows(8).any(|window| window == b"project.")
-        && !value.windows(13).any(|window| window == b"findProperty(")
+    !NON_LITERAL_MARKERS
+        .iter()
+        .any(|marker| contains_marker(value, marker))
         && !value
             .last()
             .is_some_and(|byte| *byte == b'\\' && is_escaped(value, value.len()))
@@ -130,6 +139,34 @@ mod tests {
         let assignments = property_assignments(content);
 
         assert_eq!(assignments, [PropertyAssignment::Unsupported]);
+    }
+
+    #[rstest]
+    #[case(
+        b"version=providers.gradleProperty(\"v\").get()\n",
+        &[PropertyAssignment::Unsupported],
+        None
+    )]
+    #[case(b"version=project.version\n", &[PropertyAssignment::Unsupported], None)]
+    #[case(b"version=findProperty(\"v\")\n", &[PropertyAssignment::Unsupported], None)]
+    #[case(
+        b"version=1.2.3-providers\n",
+        &[PropertyAssignment::Literal(8..23)],
+        Some(b"1.2.3-providers".as_slice())
+    )]
+    fn computed_property_markers_are_unsupported(
+        #[case] content: &[u8],
+        #[case] expected: &[PropertyAssignment],
+        #[case] expected_literal: Option<&[u8]>,
+    ) {
+        let assignments = property_assignments(content);
+
+        assert_eq!(assignments, expected);
+        let literal = assignments.iter().find_map(|assignment| match assignment {
+            PropertyAssignment::Literal(range) => Some(&content[range.start..range.end]),
+            PropertyAssignment::Unsupported => None,
+        });
+        assert_eq!(literal, expected_literal);
     }
 
     #[test]
