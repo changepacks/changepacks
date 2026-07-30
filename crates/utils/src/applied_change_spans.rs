@@ -62,8 +62,8 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Result<usize> {
     let start = skip_json_whitespace(bytes, start);
     match bytes.get(start) {
         Some(b'"') => scan_json_string_end(bytes, start),
-        Some(b'{') | Some(b'[') => {
-            let mut closers = vec![if bytes[start] == b'{' { b'}' } else { b']' }];
+        Some(open @ (b'{' | b'[')) => {
+            let mut closers = vec![if *open == b'{' { b'}' } else { b']' }];
             let mut cursor = start + 1;
             while cursor < bytes.len() {
                 match bytes[cursor] {
@@ -393,6 +393,59 @@ mod tests {
             r#"{
   "changes": {
     "packages/b/package.json": "Patch"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#
+        );
+    }
+
+    /// A log whose FIRST `changes` value is a nested object holding an array,
+    /// with a `}` and a `]` hidden inside a string literal.
+    ///
+    /// This is the only fixture that drives `scan_json_value_end` through its
+    /// closer stack for a member VALUE: the initial closer comes from the `{`
+    /// that opened the value, a `[` is pushed on top of it, and the braces and
+    /// brackets inside the quoted strings must be skipped rather than popped.
+    const NESTED_VALUE_LOG: &str = r#"{
+  "changes": {
+    "packages/a/package.json": { "bump": "Minor", "tags": ["}", "]"] },
+    "packages/b/package.json": "Patch"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#;
+
+    #[test]
+    fn remove_applied_change_spans_removes_a_nested_object_and_array_value() {
+        // The removed member's value spans a nested object, a nested array and
+        // two strings that each contain a closing delimiter, so the whole run
+        // is only found when the closer stack tracks them correctly.
+        assert_eq!(
+            rewrite(NESTED_VALUE_LOG, &["packages/a/package.json"]),
+            r#"{
+  "changes": {
+    "packages/b/package.json": "Patch"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#
+        );
+    }
+
+    #[test]
+    fn remove_applied_change_spans_keeps_a_nested_value_byte_for_byte() {
+        // The nested member is NOT applied, so every byte of its nested object,
+        // its array and its delimiter-bearing strings has to survive untouched
+        // while the member after it is spliced out.
+        assert_eq!(
+            rewrite(NESTED_VALUE_LOG, &["packages/b/package.json"]),
+            r#"{
+  "changes": {
+    "packages/a/package.json": { "bump": "Minor", "tags": ["}", "]"] }
   },
   "note": "hand formatted note",
   "date": "2026-01-01T00:00:00.000Z"

@@ -130,7 +130,12 @@ impl UpdatePlan {
             .filter(|path| !retain(path))
             .cloned()
             .collect::<Vec<_>>();
-        excluded_paths.sort_by(|left, right| compare_paths(left, right));
+        // Unstable sort: the keys come from `self.updates`, a `HashMap`, so they
+        // are pairwise distinct, and `compare_paths` is a total order over the
+        // whole `PathBuf` element (`Equal` only for byte-identical paths). No
+        // `Equal` pair exists to reorder, and the unstable sort allocates no
+        // scratch buffer.
+        excluded_paths.sort_unstable_by(|left, right| compare_paths(left, right));
 
         let mut carry_forward = Vec::new();
         for path in excluded_paths {
@@ -206,10 +211,20 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
     for (path, body) in paths.iter().zip(bodies) {
         let file_json: ChangePackLog = serde_json::from_str(&body)
             .with_context(|| format!("Failed to parse changepack log {}", path.display()))?;
+        // Gate on `OsStr::as_encoded_bytes`, the SAME policy as the sibling
+        // `.changepacks` filename gate in `crates/utils/src/is_changepack_log.rs:27-36`,
+        // which documents at length why the encoded-bytes form accepts exactly the
+        // same set of names: `CARRY_FORWARD_LOG_PREFIX` is pure ASCII, Unix bytes and
+        // Windows WTF-8 encode ASCII identically, and `to_string_lossy` only ever
+        // rewrites *invalid* sequences into the non-ASCII `U+FFFD` replacement char,
+        // so it can neither create nor destroy an ASCII-prefix match. Drops the
+        // `Cow::Owned` allocation on any non-UTF-8 log filename and — more
+        // importantly — puts both `.changepacks` filename gates on ONE policy so
+        // neither can drift from the other.
         let is_carry_forward = path.file_name().is_some_and(|file_name| {
             file_name
-                .to_string_lossy()
-                .starts_with(CARRY_FORWARD_LOG_PREFIX)
+                .as_encoded_bytes()
+                .starts_with(CARRY_FORWARD_LOG_PREFIX.as_bytes())
         });
         for (project_path, update_type) in file_json.changes() {
             if is_carry_forward {
@@ -327,7 +342,12 @@ fn apply_update_on_rules_from(
         // Preserve BTreeMap rule precedence within each breadth-first batch so
         // the lexicographically first matching trigger owns an inserted note.
         // The per-batch sort establishes canonical path order for every expansion level.
-        current.sort_by(|left, right| compare_paths(left, right));
+        // Unstable sort: every frontier entry is gated through `expansion_seeds`
+        // (a `HashSet`) before it is pushed, so a level holds pairwise-distinct
+        // paths, and `compare_paths` is a total order over the whole `PathBuf`
+        // element. Nothing compares `Equal`, so stability is unobservable and
+        // the unstable sort's zero-allocation behaviour is free.
+        current.sort_unstable_by(|left, right| compare_paths(left, right));
         // Glob triggers in `updateOn` are written with forward slashes, so the
         // filesystem-derived path is normalized through the shared core helper,
         // which keeps the allocation policy in one place. Normalization happens
@@ -539,7 +559,13 @@ fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHasher>(
     }
 
     for dependents in reverse_deps.values_mut() {
-        dependents.sort_by(|left, right| {
+        // Unstable sort: the comparator covers both tuple fields and bottoms out
+        // in `compare_paths`, which is `Equal` only for byte-identical paths, so
+        // an `Equal` pair would have to agree on path bytes AND name — i.e. be
+        // observably the same element (downstream only reads the pointed-to
+        // content, never the reference identity). Each entry is a distinct
+        // project's relative path, so ties do not arise. No scratch allocation.
+        dependents.sort_unstable_by(|left, right| {
             compare_paths(left.0, right.0).then_with(|| left.1.cmp(&right.1))
         });
     }
@@ -573,8 +599,13 @@ fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHasher>(
                     .map(|(seed_path, name)| (*seed_path, *name))
             }),
     );
-    initial_paths
-        .sort_by(|left, right| compare_paths(left.0, right.0).then_with(|| left.1.cmp(right.1)));
+    // Unstable sort: seeds are built from `update_map` keys, so their paths are
+    // pairwise distinct, and the comparator covers both tuple fields ending in
+    // `compare_paths` (`Equal` only for byte-identical paths). Nothing compares
+    // `Equal`, so stability is unobservable and no scratch buffer is allocated.
+    initial_paths.sort_unstable_by(|left, right| {
+        compare_paths(left.0, right.0).then_with(|| left.1.cmp(right.1))
+    });
     let mut to_process: VecDeque<&str> = initial_paths.into_iter().map(|(_, name)| name).collect();
     // `None` seeds every already-scheduled path, so borrow the keys straight out of `update_map`
     // instead of walking a cloned copy of them.
@@ -651,7 +682,15 @@ fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHasher>(
             ),
         ));
     }
-    ordered_entries.sort_by(|left, right| compare_paths(&left.0, &right.0));
+    // Unstable sort: this comparator looks only at the path, so it needs the keys
+    // to be distinct rather than the whole element to be ordered — and they are.
+    // The drained half are `HashMap` keys, and every `packages_to_add` path was
+    // gated on `!update_map.contains_key(..)` above with no intervening insert,
+    // so the two halves are disjoint and internally unique. `compare_paths` is
+    // `Equal` only for byte-identical paths, which therefore never happens here,
+    // and the unstable sort skips the up-to-n/2 scratch allocation on a vector
+    // holding every scheduled update.
+    ordered_entries.sort_unstable_by(|left, right| compare_paths(&left.0, &right.0));
     update_map.extend(ordered_entries);
 
     Ok(generated)
@@ -1197,6 +1236,70 @@ mod tests {
 
         assert_eq!(plan[&path].0, UpdateType::Minor);
         assert_eq!(plan[&generated_path].0, UpdateType::Patch);
+    }
+
+    // Pins the `is_carry_forward` filename gate in `gen_update_map` — the one that
+    // reads `OsStr::as_encoded_bytes` in lock-step with the sibling `.changepacks`
+    // gate in `is_changepack_log.rs` — directly at the provenance level: a
+    // `changepack_log_carry_forward_*.json` must record
+    // `Generated { state: Persisted }`, while a plain `changepack_log_*.json`
+    // sitting in the SAME directory must record `Explicit` and seed expansion.
+    // Both names share the `changepack_log_` stem, so a gate that stopped
+    // discriminating would collapse one into the other and either re-emit
+    // already-carried notes or drop a fresh explicit bump out of
+    // `updateOn`/reverse-dependency expansion.
+    #[tokio::test]
+    async fn carry_forward_filename_gate_discriminates_provenance() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            &format!("{CARRY_FORWARD_LOG_PREFIX}gate.json"),
+            "carried/package.json",
+            UpdateType::Patch,
+            "carried note",
+        )
+        .await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_gate.json",
+            "explicit/package.json",
+            UpdateType::Minor,
+            "explicit note",
+        )
+        .await;
+
+        let plan = gen_update_map(&changepacks_dir, &Config::default())
+            .await
+            .unwrap();
+
+        let carried = PathBuf::from("carried/package.json");
+        let explicit = PathBuf::from("explicit/package.json");
+        let Some(UpdateProvenance::Generated { notes, state }) = plan.provenance.get(&carried)
+        else {
+            panic!(
+                "a {CARRY_FORWARD_LOG_PREFIX}*.json log must record generated provenance, got {:?}",
+                plan.provenance.get(&carried)
+            );
+        };
+        assert_eq!(*state, GeneratedState::Persisted);
+        assert_eq!(notes.as_slice(), ["carried note"]);
+        assert!(
+            matches!(
+                plan.provenance.get(&explicit),
+                Some(UpdateProvenance::Explicit)
+            ),
+            "a plain changepack_log_*.json log must record explicit provenance, got {:?}",
+            plan.provenance.get(&explicit)
+        );
+        assert!(
+            plan.expansion_seeds.contains(&explicit),
+            "an explicit log must seed expansion"
+        );
+        assert!(
+            !plan.expansion_seeds.contains(&carried),
+            "a persisted carry-forward log must not seed expansion"
+        );
     }
 
     // `merge_provenance` skips any pair whose SOURCE has no recorded

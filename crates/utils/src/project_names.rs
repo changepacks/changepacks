@@ -127,7 +127,12 @@ fn sorted_candidates(projects: &[&Project], name: &str) -> Vec<PathBuf> {
         .filter(|project| project.name() == Some(name))
         .map(|project| project.relative_path().to_path_buf())
         .collect();
-    candidates.sort_by(|left, right| compare_paths(left, right));
+    // Unstable sort: `compare_paths` is a total order over the whole element
+    // (a bare `PathBuf`), reporting `Equal` only for byte-identical paths, so
+    // `Equal` elements are indistinguishable and stability is unobservable.
+    // Carriers are distinct projects with distinct manifest paths anyway.
+    // Unlike the stable sort, this allocates no scratch buffer.
+    candidates.sort_unstable_by(|left, right| compare_paths(left, right));
     candidates
 }
 

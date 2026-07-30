@@ -418,7 +418,15 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
                     path: projects[index].relative_path().to_path_buf(),
                 }),
         );
-        members.sort_by(|left, right| {
+        // Unstable sort: the comparator is a total order over the entire
+        // element. `DependencyCycleMember` is exactly `name` + `path`, and the
+        // tie-break chain ends in `compare_paths`, which only reports `Equal`
+        // for byte-identical paths — so two members compare `Equal` only when
+        // every field is equal and no reordering is observable. Members come
+        // from distinct project indices, so ties do not arise in practice
+        // either. `sort_unstable_by` avoids the up-to-n/2 scratch buffer that
+        // the stable merge sort heap-allocates on every cycle report.
+        members.sort_unstable_by(|left, right| {
             left.name
                 .cmp(&right.name)
                 .then_with(|| compare_paths(&left.path, &right.path))
