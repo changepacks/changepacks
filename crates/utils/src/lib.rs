@@ -9,9 +9,10 @@
 //! - **Git repository discovery / walk** — [`find_current_git_repo`] locates
 //!   the enclosing repo, [`find_project_dirs`] walks the git tree to discover
 //!   every recognized manifest, and [`get_relative_path`] normalizes a path
-//!   against the repo root. The concrete [`ThreadSafeRepository`] handle is
-//!   re-exported so downstream crates (e.g. `changepacks-cli`) can cache it
-//!   without a direct `gix` dep.
+//!   against the repo root. [`find_current_git_repo`] returns a
+//!   [`ThreadSafeRepository`] and [`find_project_dirs`] borrows one, so that
+//!   concrete `gix` handle type is re-exported for downstream crates (e.g.
+//!   `changepacks-cli`) to name without a direct `gix` dep.
 //! - **Workspace-by-sibling detection** — [`is_workspace_by_sibling`] decides
 //!   whether a discovered manifest roots a workspace, either from an
 //!   in-manifest field or a fixed sibling file (`pnpm-workspace.yaml`,
@@ -26,8 +27,8 @@
 //!   to a version string; [`next_version_or_default`] wraps it with a
 //!   `0.0.0` fallback for the unversioned-manifest case shared across every
 //!   language crate's `update_version`; [`bump_version_with`] is the shared
-//!   compute-write-store helper that four language crates use to atomically
-//!   bump a manifest's version field.
+//!   compute-write-store helper that all six language crates use from their
+//!   `update_version` to atomically bump a manifest's version field.
 //! - **Semver prefix split** — [`split_version`] cleaves a range specifier
 //!   (`^`, `~`, `>=`, `helloworld-`) from the numeric tail so callers can
 //!   rebuild `"<prefix><new_version>"` while preserving the prefix.
@@ -117,10 +118,12 @@ mod write_toml_table_version;
 
 pub(crate) use is_changepack_log::read_log_bodies;
 
-// Re-export the concrete `gix` handle type so downstream crates (e.g.
-// `changepacks-cli`) can hold onto it (e.g. caching on `CommandContext`)
-// without taking a direct dependency on `gix` — mirrors how utils already
-// wraps every other gix touch point.
+// Re-export the concrete `gix` handle type that this crate's own signatures
+// expose: `find_current_git_repo` returns a `ThreadSafeRepository` and
+// `find_project_dirs` takes one by reference. Re-exporting it lets downstream
+// crates (e.g. `changepacks-cli`) name and pass those values without taking a
+// direct dependency on `gix` — mirrors how utils already wraps every other
+// gix touch point.
 pub use gix::ThreadSafeRepository;
 
 #[cfg(feature = "toml")]

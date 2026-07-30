@@ -2664,7 +2664,59 @@ mod interactive_tests {
     }
 }
 
-// --- Python and Dart end-to-end integration tests ---
+// --- Node, Python, Dart and Rust end-to-end integration tests ---
+
+#[tokio::test]
+#[serial]
+async fn test_cli_language_e2e_node_update_preserves_manifest_formatting() {
+    // Tab indentation, `version` deliberately ahead of `name` in a
+    // non-alphabetical key order, and no trailing newline. Escapes are spelled
+    // out rather than embedded literally so the tabs stay visible and survive
+    // any editor or formatter that trims whitespace.
+    const BEFORE: &str = concat!(
+        "{\n",
+        "\t\"version\": \"1.2.3\",\n",
+        "\t\"name\": \"node-e2e\",\n",
+        "\t\"description\": \"Formatting stays\",\n",
+        "\t\"scripts\": {\n",
+        "\t\t\"build\": \"echo build\"\n",
+        "\t}\n",
+        "}"
+    );
+    const AFTER: &str = concat!(
+        "{\n",
+        "\t\"version\": \"1.2.4\",\n",
+        "\t\"name\": \"node-e2e\",\n",
+        "\t\"description\": \"Formatting stays\",\n",
+        "\t\"scripts\": {\n",
+        "\t\t\"build\": \"echo build\"\n",
+        "\t}\n",
+        "}"
+    );
+
+    // Given: a Node manifest and a patch changepack targeting it.
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_node.json",
+            r#"{"changes":{"package.json":"Patch"},"note":"Node patch","date":"2026-07-16T00:00:00Z"}"#,
+        ),
+        ("package.json", BEFORE),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: update runs non-interactively for Node.
+    let result = run_language_update("node").await;
+
+    // Then: only the version changes; indent bytes, key order and the missing
+    // trailing newline are all reproduced exactly.
+    assert!(result.is_ok(), "Node update failed: {:?}", result.err());
+    let content = tokio::fs::read_to_string(temp_path.join("package.json"))
+        .await
+        .unwrap();
+    assert_eq!(content, AFTER);
+}
 
 #[tokio::test]
 #[serial]
@@ -2898,6 +2950,66 @@ async fn test_cli_language_e2e_dart_publish_uses_override() {
 
     // Then: the language-level echo override executes successfully.
     assert!(result.is_ok(), "Dart publish failed: {:?}", result.err());
+}
+
+/// Rust joins Python and Dart in the end-to-end language matrix, and is the
+/// only one of the three whose fixture carries TOML *decor*: a leading
+/// full-line comment, an end-of-line comment on the version line, and
+/// non-standard spacing around the `=`.
+///
+/// `assign_preserving_decor` and `write_toml_table_version` exist precisely to
+/// keep that trivia across a bump, but until now they were only exercised by
+/// unit tests that call the writer directly. This pins the guarantee through
+/// the real `changepacks update` command, and compares the WHOLE file text
+/// rather than only the version line, so dropping the decor carry-over — or
+/// re-serializing the manifest through the plain `toml` crate — fails here.
+#[tokio::test]
+#[serial]
+async fn test_cli_language_e2e_rust_update_preserves_manifest_formatting() {
+    const BEFORE: &str = r##"# Keep this crate comment.
+[package]
+name = "rust-e2e"
+version   =    "1.2.3"  # pinned by release tooling
+description = "Formatting stays"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+"##;
+    const AFTER: &str = r##"# Keep this crate comment.
+[package]
+name = "rust-e2e"
+version   =    "1.2.4"  # pinned by release tooling
+description = "Formatting stays"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+"##;
+
+    // Given: a Rust manifest and a patch changepack targeting it.
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_rust.json",
+            r#"{"changes":{"Cargo.toml":"Patch"},"note":"Rust patch","date":"2026-07-16T00:00:00Z"}"#,
+        ),
+        ("Cargo.toml", BEFORE),
+        ("src/lib.rs", "pub const VALUE: u8 = 1;\n"),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: update runs non-interactively for Rust.
+    let result = run_language_update("rust").await;
+
+    // Then: only the numeric version changes; comments, the odd spacing around
+    // `=` and every other byte of the manifest are reproduced exactly.
+    assert!(result.is_ok(), "Rust update failed: {:?}", result.err());
+    let content = tokio::fs::read_to_string(temp_path.join("Cargo.toml"))
+        .await
+        .unwrap();
+    assert_eq!(content, AFTER);
 }
 
 // --- Language filter integration tests ---
