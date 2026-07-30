@@ -893,6 +893,25 @@ mod tests {
     }
 
     #[test]
+    fn test_residual_scc_membership_handles_multi_source_transpose_buckets() {
+        // 0 -> 1 -> 2 -> 0 is a three-node cycle; 3 and 4 are blocked dependents
+        // that both point into cycle node 0, and 4 also points at 3 (chain) and
+        // at cycle node 2. That gives the residual transpose two buckets with a
+        // fan-in above one - node 0 receives from {2, 3, 4} and node 2 from
+        // {1, 4} - so the per-bucket write cursor really advances and the single
+        // reverse shift that restores the start offsets is exercised.
+        let offsets = vec![0, 1, 2, 3, 4, 7];
+        let adj = vec![1, 2, 0, 0, 0, 2, 3];
+        // Every node is residual, i.e. Kahn left a non-zero in-degree behind.
+        let in_degree = vec![1usize; 5];
+
+        assert_eq!(
+            cycle_members_in_residual(&adj, &offsets, &in_degree),
+            vec![true, true, true, false, false]
+        );
+    }
+
+    #[test]
     fn test_cycle_error_excludes_a_chain_blocked_by_the_cycle() {
         let cycle_a = create_project("cycle-a", vec!["cycle-b"]);
         let cycle_b = create_project("cycle-b", vec!["cycle-a"]);

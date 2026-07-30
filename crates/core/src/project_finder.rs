@@ -1087,13 +1087,16 @@ mod tests {
         assert!(finder.projects()[0].is_changed());
     }
 
-    #[tokio::test]
-    async fn test_default_project_finder_finalize_is_covered_no_op() {
+    #[test]
+    fn project_finder_entry_points_are_included_in_coverage() {
         assert!(
             !include_str!("project_finder.rs")
                 .contains(concat!("#[cfg(not(", "tarpaulin_include))]"))
         );
+    }
 
+    #[tokio::test]
+    async fn test_default_project_finder_finalize_is_covered_no_op() {
         let mut finder = MockProjectFinder::new();
         let result = finder.finalize().await;
         assert!(result.is_ok());

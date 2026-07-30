@@ -107,9 +107,22 @@ impl<'a> ProjectNameAnalysis<'a> {
     /// deterministically. Pass the same slice that built the analysis.
     ///
     /// A name the index never saw provably has no carrier, so that case skips
-    /// the scan entirely.
+    /// the scan entirely. The one name already reported by
+    /// [`Self::referenced_ambiguity`] reuses the candidates computed in
+    /// [`Self::new`] instead of recomputing them.
     #[must_use]
     pub fn candidates_for(&self, projects: &[&Project], name: &str) -> Vec<PathBuf> {
+        // `new` stored `sorted_candidates(projects, dependency)` for the
+        // reported ambiguity, and the doc contract above requires callers to
+        // pass the same slice, so for that single name the stored vector is
+        // provably what the fall-through below would recompute. Reusing it
+        // drops one O(projects) filter plus one sort per ambiguity report and
+        // leaves a single source of truth for the reported candidate order.
+        if let Some(ambiguity) = &self.referenced_ambiguity
+            && ambiguity.dependency() == name
+        {
+            return ambiguity.candidates().to_vec();
+        }
         if self.resolve(name) == ProjectNameResolution::Missing {
             return Vec::new();
         }
@@ -281,6 +294,34 @@ mod tests {
             [PathBuf::from("app/package.json")]
         );
         assert!(analysis.candidates_for(&projects, "external").is_empty());
+    }
+
+    #[test]
+    fn candidates_for_matches_the_candidates_stored_on_the_referenced_ambiguity() {
+        // Given
+        let mut shared_zeta = create_project("zeta", vec![]);
+        shared_zeta.set_name("shared".to_string());
+        let mut shared_alpha = create_project("alpha", vec![]);
+        shared_alpha.set_name("shared".to_string());
+        let app = create_project("app", vec!["shared"]);
+        let projects = [&shared_zeta, &app, &shared_alpha];
+        let analysis = ProjectNameAnalysis::new(&projects);
+        let reported = analysis
+            .referenced_ambiguity()
+            .expect("the referenced duplicate must be ambiguous");
+
+        // When
+        let candidates = analysis.candidates_for(&projects, reported.dependency());
+
+        // Then
+        assert_eq!(candidates, reported.candidates());
+        assert_eq!(
+            candidates,
+            [
+                PathBuf::from("alpha/package.json"),
+                PathBuf::from("zeta/package.json"),
+            ]
+        );
     }
 
     #[test]

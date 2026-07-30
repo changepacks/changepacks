@@ -24,14 +24,25 @@ fn is_gradle_identifier_start(byte: u8) -> bool {
 
 /// Maps a Gradle bracket opener to the closer the scanner must see to balance it.
 ///
+/// # Caller invariant
+///
 /// Every call site gates on `byte @ (b'(' | b'[' | b'{')`, so only those three
-/// bytes ever reach this function. The wildcard arm therefore stands in for
-/// `b'{'` while keeping the mapping total, which avoids an unreachable panic
-/// branch.
-const fn gradle_closer_for(open: u8) -> u8 {
+/// bytes ever reach this function. The `debug_assert!` states that invariant
+/// explicitly, so a future ungated call site fails loudly under `cargo test`
+/// instead of silently mis-tracking bracket nesting. The mapping stays total in
+/// release builds — the wildcard keeps returning `b'}'`, so release behaviour is
+/// byte-for-byte unchanged and no unreachable panic branch is introduced.
+fn gradle_closer_for(open: u8) -> u8 {
+    debug_assert!(
+        matches!(open, b'(' | b'[' | b'{'),
+        "gradle_closer_for expects a Gradle bracket opener, got byte {open:#04x}"
+    );
     match open {
         b'(' => b')',
         b'[' => b']',
+        b'{' => b'}',
+        // Unreachable while the caller invariant above holds; retained so the
+        // mapping stays total for all 256 byte values.
         _ => b'}',
     }
 }
@@ -989,6 +1000,13 @@ mod tests {
 
     fn extract_gradle_project_dependencies(content: &str) -> Vec<&str> {
         super::extract_gradle_project_dependencies(content, GradleDialect::Groovy)
+    }
+
+    #[test]
+    fn test_gradle_closer_for_maps_every_legal_opener() {
+        assert_eq!(gradle_closer_for(b'('), b')');
+        assert_eq!(gradle_closer_for(b'['), b']');
+        assert_eq!(gradle_closer_for(b'{'), b'}');
     }
 
     #[test]

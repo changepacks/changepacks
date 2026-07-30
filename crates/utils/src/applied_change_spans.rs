@@ -401,6 +401,52 @@ mod tests {
         );
     }
 
+    /// The same hand-formatted shape with TWO root-level `changes` members:
+    /// the first holds only `packages/z/package.json`, the second holds
+    /// `packages/a/package.json` and `packages/b/package.json`.
+    ///
+    /// Duplicate object keys are legal JSON, and `serde_json` resolves them
+    /// last-key-wins. `clear_applied_update_logs` runs `serde_json` as its
+    /// up-front classifier, so the applied set it computes describes the LAST
+    /// `changes` object only; the rewriter has to splice from that same object
+    /// or it would edit members the classifier never looked at.
+    const DUPLICATE_CHANGES_LOG: &str = r#"{
+  "changes": {
+    "packages/z/package.json": "Major"
+  },
+  "changes": {
+    "packages/a/package.json": "Minor",
+    "packages/b/package.json": "Patch"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#;
+
+    #[test]
+    fn remove_applied_change_spans_edits_the_last_duplicate_changes_object() {
+        // `packages/a/package.json` only exists in the SECOND `changes` object,
+        // which is the one serde_json's last-key-wins semantics hand to the
+        // classifier. The member must be spliced out of that object through its
+        // trailing comma, while the first `changes` object - itself non-empty,
+        // so selecting it instead would silently rewrite nothing - and every
+        // surrounding byte survive unchanged.
+        assert_eq!(
+            rewrite(DUPLICATE_CHANGES_LOG, &["packages/a/package.json"]),
+            r#"{
+  "changes": {
+    "packages/z/package.json": "Major"
+  },
+  "changes": {
+    "packages/b/package.json": "Patch"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#
+        );
+    }
+
     /// A log whose FIRST `changes` value is a nested object holding an array,
     /// with a `}` and a `]` hidden inside a string literal.
     ///
