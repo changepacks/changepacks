@@ -122,12 +122,10 @@ mod tests {
             context.config.publish.get("node").map(String::as_str),
             Some("custom publish")
         );
+        // Same helper the production merge path uses (`collect_projects` sizes
+        // its buffer with it), so this assertion cannot drift from it.
         assert_eq!(
-            context
-                .project_finders
-                .iter()
-                .flat_map(|finder| finder.projects())
-                .count(),
+            crate::finders::total_project_count(&context.project_finders),
             1
         );
     }

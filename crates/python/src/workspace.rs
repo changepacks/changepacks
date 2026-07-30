@@ -62,8 +62,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_python_workspace_new() {
+    #[test]
+    fn test_python_workspace_new() {
         let workspace = PythonWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
@@ -74,8 +74,8 @@ mod tests {
         assert_python_workspace_defaults(&workspace);
     }
 
-    #[tokio::test]
-    async fn test_python_workspace_new_without_name_and_version() {
+    #[test]
+    fn test_python_workspace_new_without_name_and_version() {
         let workspace = PythonWorkspace::new(
             None,
             None,
@@ -108,20 +108,14 @@ mod tests {
         assert_eq!(workspace.is_publishable_by_default(), expected);
     }
 
-    #[tokio::test]
-    async fn test_python_workspace_set_changed() {
-        let mut workspace = PythonWorkspace::new(
+    #[test]
+    fn test_python_workspace_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(PythonWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pyproject.toml"),
             PathBuf::from("test/pyproject.toml"),
-        );
-
-        assert!(!workspace.is_changed());
-        workspace.set_changed(true);
-        assert!(workspace.is_changed());
-        workspace.set_changed(false);
-        assert!(!workspace.is_changed());
+        ));
     }
 
     #[rstest]
@@ -234,25 +228,11 @@ members = ["packages/*"]
             PathBuf::from("pyproject.toml"),
         );
 
-        let err = workspace
-            .update_version(UpdateType::Patch)
-            .await
-            .expect_err("a malformed pyproject.toml must fail the bump");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains("Failed to parse pyproject.toml"),
-            "error chain should name the parse failure, got: {chain}"
-        );
-        assert!(
-            chain.contains(&pyproject_toml.display().to_string()),
-            "error chain should name the manifest path, got: {chain}"
-        );
-
-        // Byte-for-byte: an unparseable manifest must never be rewritten.
-        assert_eq!(
-            fs::read(&pyproject_toml).unwrap(),
-            original.as_bytes(),
-            "a rejected bump must leave the manifest byte-identical"
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            workspace.update_version(UpdateType::Patch).await,
+            &pyproject_toml,
+            "pyproject.toml",
+            original
         );
 
         temp_dir.close().unwrap();

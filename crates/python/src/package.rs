@@ -61,8 +61,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_python_package_new() {
+    #[test]
+    fn test_python_package_new() {
         let package = PythonPackage::new(
             Some("test-package".to_string()),
             Some("1.0.0".to_string()),
@@ -89,20 +89,14 @@ mod tests {
         assert_eq!(package.is_publishable_by_default(), expected);
     }
 
-    #[tokio::test]
-    async fn test_python_package_set_changed() {
-        let mut package = PythonPackage::new(
+    #[test]
+    fn test_python_package_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(PythonPackage::new(
             Some("test-package".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pyproject.toml"),
             PathBuf::from("test/pyproject.toml"),
-        );
-
-        assert!(!package.is_changed());
-        package.set_changed(true);
-        assert!(package.is_changed());
-        package.set_changed(false);
-        assert!(!package.is_changed());
+        ));
     }
 
     #[rstest]
@@ -282,25 +276,11 @@ requires = ["setuptools"]
             PathBuf::from("pyproject.toml"),
         );
 
-        let err = package
-            .update_version(UpdateType::Patch)
-            .await
-            .expect_err("a malformed pyproject.toml must fail the bump");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains("Failed to parse pyproject.toml"),
-            "error chain should name the parse failure, got: {chain}"
-        );
-        assert!(
-            chain.contains(&pyproject_toml.display().to_string()),
-            "error chain should name the manifest path, got: {chain}"
-        );
-
-        // Byte-for-byte: an unparseable manifest must never be rewritten.
-        assert_eq!(
-            fs::read(&pyproject_toml).unwrap(),
-            original.as_bytes(),
-            "a rejected bump must leave the manifest byte-identical"
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            package.update_version(UpdateType::Patch).await,
+            &pyproject_toml,
+            "pyproject.toml",
+            original
         );
 
         temp_dir.close().unwrap();

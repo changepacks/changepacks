@@ -100,8 +100,8 @@ mod tests {
         .await;
     }
 
-    #[tokio::test]
-    async fn test_node_package_new() {
+    #[test]
+    fn test_node_package_new() {
         let package = NodePackage::new(
             Some("test-package".to_string()),
             Some("1.0.0".to_string()),
@@ -139,20 +139,14 @@ mod tests {
         assert_eq!(package.is_publishable_by_default(), expected);
     }
 
-    #[tokio::test]
-    async fn test_node_package_set_changed() {
-        let mut package = NodePackage::new(
+    #[test]
+    fn test_node_package_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(NodePackage::new(
             Some("test-package".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/package.json"),
             PathBuf::from("test/package.json"),
-        );
-
-        assert!(!package.is_changed());
-        package.set_changed(true);
-        assert!(package.is_changed());
-        package.set_changed(false);
-        assert!(!package.is_changed());
+        ));
     }
 
     #[rstest]
@@ -275,25 +269,11 @@ mod tests {
             PathBuf::from("package.json"),
         );
 
-        let err = package
-            .update_version(UpdateType::Patch)
-            .await
-            .expect_err("a malformed package.json must fail the bump");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains("Failed to parse package.json"),
-            "error chain should name the parse failure, got: {chain}"
-        );
-        assert!(
-            chain.contains(&package_json.display().to_string()),
-            "error chain should name the manifest path, got: {chain}"
-        );
-
-        // Byte-for-byte: an unparseable manifest must never be rewritten.
-        assert_eq!(
-            fs::read(&package_json).unwrap(),
-            original.as_bytes(),
-            "a rejected bump must leave the manifest byte-identical"
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            package.update_version(UpdateType::Patch).await,
+            &package_json,
+            "package.json",
+            original
         );
 
         temp_dir.close().unwrap();

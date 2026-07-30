@@ -100,8 +100,8 @@ mod tests {
         .await;
     }
 
-    #[tokio::test]
-    async fn test_node_workspace_new() {
+    #[test]
+    fn test_node_workspace_new() {
         let workspace = NodeWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
@@ -142,8 +142,8 @@ mod tests {
         assert_eq!(workspace.is_publishable_by_default(), expected);
     }
 
-    #[tokio::test]
-    async fn test_node_workspace_new_without_name_and_version() {
+    #[test]
+    fn test_node_workspace_new_without_name_and_version() {
         let workspace = NodeWorkspace::new(
             None,
             None,
@@ -155,20 +155,14 @@ mod tests {
         assert_eq!(workspace.version(), None);
     }
 
-    #[tokio::test]
-    async fn test_node_workspace_set_changed() {
-        let mut workspace = NodeWorkspace::new(
+    #[test]
+    fn test_node_workspace_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(NodeWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/package.json"),
             PathBuf::from("test/package.json"),
-        );
-
-        assert!(!workspace.is_changed());
-        workspace.set_changed(true);
-        assert!(workspace.is_changed());
-        workspace.set_changed(false);
-        assert!(!workspace.is_changed());
+        ));
     }
 
     #[rstest]
@@ -291,25 +285,11 @@ mod tests {
             PathBuf::from("package.json"),
         );
 
-        let err = workspace
-            .update_version(UpdateType::Patch)
-            .await
-            .expect_err("a malformed package.json must fail the bump");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains("Failed to parse package.json"),
-            "error chain should name the parse failure, got: {chain}"
-        );
-        assert!(
-            chain.contains(&package_json.display().to_string()),
-            "error chain should name the manifest path, got: {chain}"
-        );
-
-        // Byte-for-byte: an unparseable manifest must never be rewritten.
-        assert_eq!(
-            fs::read(&package_json).unwrap(),
-            original.as_bytes(),
-            "a rejected bump must leave the manifest byte-identical"
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            workspace.update_version(UpdateType::Patch).await,
+            &package_json,
+            "package.json",
+            original
         );
 
         temp_dir.close().unwrap();

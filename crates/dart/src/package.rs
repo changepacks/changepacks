@@ -39,8 +39,8 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    #[tokio::test]
-    async fn test_new() {
+    #[test]
+    fn test_new() {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
@@ -89,18 +89,12 @@ version: 1.0.0
 
     #[test]
     fn test_set_changed() {
-        let mut package = DartPackage::new(
+        changepacks_core::assert_set_changed_roundtrip!(DartPackage::new(
             Some("test_package".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pubspec.yaml"),
             PathBuf::from("pubspec.yaml"),
-        );
-
-        assert!(!package.is_changed());
-        package.set_changed(true);
-        assert!(package.is_changed());
-        package.set_changed(false);
-        assert!(!package.is_changed());
+        ));
     }
 
     #[rstest]
@@ -207,25 +201,11 @@ dependencies:
             PathBuf::from("pubspec.yaml"),
         );
 
-        let err = package
-            .update_version(UpdateType::Patch)
-            .await
-            .expect_err("a malformed pubspec.yaml must fail the bump");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains("Failed to parse pubspec.yaml"),
-            "error chain should name the parse failure, got: {chain}"
-        );
-        assert!(
-            chain.contains(&pubspec_path.display().to_string()),
-            "error chain should name the manifest path, got: {chain}"
-        );
-
-        // Byte-for-byte: an unparseable manifest must never be rewritten.
-        assert_eq!(
-            fs::read(&pubspec_path).unwrap(),
-            original.as_bytes(),
-            "a rejected bump must leave the manifest byte-identical"
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            package.update_version(UpdateType::Patch).await,
+            &pubspec_path,
+            "pubspec.yaml",
+            original
         );
 
         temp_dir.close().unwrap();

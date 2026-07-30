@@ -117,8 +117,8 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    #[tokio::test]
-    async fn test_new() {
+    #[test]
+    fn test_new() {
         let temp_dir = TempDir::new().unwrap();
         let csproj_path = temp_dir.path().join("Test.csproj");
         fs::write(
@@ -358,18 +358,12 @@ mod tests {
 
     #[test]
     fn test_set_changed() {
-        let mut package = CSharpPackage::new(
+        changepacks_core::assert_set_changed_roundtrip!(CSharpPackage::new(
             Some("Test".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/Test.csproj"),
             PathBuf::from("Test.csproj"),
-        );
-
-        assert!(!package.is_changed());
-        package.set_changed(true);
-        assert!(package.is_changed());
-        package.set_changed(false);
-        assert!(!package.is_changed());
+        ));
     }
 
     // Patch, Minor, and Major all share the same setup (write a csproj with

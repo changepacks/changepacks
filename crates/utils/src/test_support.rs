@@ -145,6 +145,58 @@ pub fn discover_repo(path: &Path) -> gix::ThreadSafeRepository {
     gix::discover(path).expect("discover test repo").into_sync()
 }
 
+/// Asserts that a rejected `update_version` bump surfaced the manifest parse
+/// failure and left the manifest byte-identical on disk.
+///
+/// Six `update_version` tests — `NodePackage`, `NodeWorkspace`,
+/// `PythonPackage`, `PythonWorkspace`, `DartPackage` and `DartWorkspace` —
+/// ended with the same assertion tail, differing only in the manifest label
+/// (`package.json` / `pyproject.toml` / `pubspec.yaml`). The tail pins the
+/// `Failed to <verb> <label> <path>` context template owned by
+/// [`crate::read_and_parse`], so the assertion about that template belongs in
+/// one place too, next to the helper that produces it.
+///
+/// Deliberately covers only the tail: each call site keeps its own
+/// `fs::write`, its own constructor, and its own
+/// `update_version(UpdateType::Patch).await`, and passes just the resulting
+/// `Result` in. The setup is what actually differs per language, so hiding it
+/// would cost more readability than it saves.
+///
+/// Contract: `$result` is the awaited `Result` from `update_version`, `$path`
+/// is anything that borrows as a [`Path`] pointing at the manifest, `$label`
+/// is the human-facing manifest name (`"package.json"`), and `$original` is
+/// the exact string written to the manifest before the bump.
+#[macro_export]
+macro_rules! assert_malformed_manifest_rejected {
+    ($result:expr, $path:expr, $label:expr, $original:expr) => {{
+        let manifest_path: &::std::path::Path = ::std::convert::AsRef::as_ref($path);
+        let manifest_label: &::std::primitive::str = $label;
+
+        let err = $result.expect_err(&::std::format!(
+            "a malformed {manifest_label} must fail the bump"
+        ));
+        let chain = ::std::format!("{err:#}");
+        ::std::assert!(
+            chain.contains(&::std::format!("Failed to parse {manifest_label}")),
+            "error chain should name the parse failure, got: {chain}"
+        );
+        ::std::assert!(
+            chain.contains(&manifest_path.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+
+        // Byte-for-byte: an unparseable manifest must never be rewritten.
+        ::std::assert_eq!(
+            ::std::fs::read(manifest_path).unwrap_or_else(|err| ::std::panic!(
+                "failed to re-read {}: {err}",
+                manifest_path.display()
+            )),
+            ::std::primitive::str::as_bytes($original),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+    }};
+}
+
 /// Set the readonly permission on a file for testing permission-denied scenarios.
 ///
 /// Reads the file's metadata, sets the readonly bit to the specified value, and

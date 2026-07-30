@@ -180,20 +180,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_rust_package_set_changed() {
-        let mut package = RustPackage::new(
+    #[test]
+    fn test_rust_package_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(RustPackage::new(
             Some("test-package".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/Cargo.toml"),
             PathBuf::from("test/Cargo.toml"),
-        );
-
-        assert!(!package.is_changed());
-        package.set_changed(true);
-        assert!(package.is_changed());
-        package.set_changed(false);
-        assert!(!package.is_changed());
+        ));
     }
 
     #[rstest]

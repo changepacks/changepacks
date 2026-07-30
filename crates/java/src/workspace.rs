@@ -192,20 +192,14 @@ mod tests {
         assert_eq!(workspace.version(), None);
     }
 
-    #[tokio::test]
-    async fn test_gradle_workspace_set_changed() {
-        let mut workspace = GradleWorkspace::new(
+    #[test]
+    fn test_gradle_workspace_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(GradleWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/build.gradle.kts"),
             PathBuf::from("test/build.gradle.kts"),
-        );
-
-        assert!(!workspace.is_changed());
-        workspace.set_changed(true);
-        assert!(workspace.is_changed());
-        workspace.set_changed(false);
-        assert!(!workspace.is_changed());
+        ));
     }
 
     #[tokio::test]

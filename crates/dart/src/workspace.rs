@@ -56,8 +56,8 @@ mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
 
-    #[tokio::test]
-    async fn test_new_with_name_and_version() {
+    #[test]
+    fn test_new_with_name_and_version() {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
@@ -107,8 +107,8 @@ workspace:
         assert!(!workspace.is_publishable_by_default());
     }
 
-    #[tokio::test]
-    async fn test_new_without_name_and_version() {
+    #[test]
+    fn test_new_without_name_and_version() {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
@@ -137,18 +137,12 @@ workspace:
 
     #[test]
     fn test_set_changed() {
-        let mut workspace = DartWorkspace::new(
+        changepacks_core::assert_set_changed_roundtrip!(DartWorkspace::new(
             Some("test_workspace".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pubspec.yaml"),
             PathBuf::from("pubspec.yaml"),
-        );
-
-        assert!(!workspace.is_changed());
-        workspace.set_changed(true);
-        assert!(workspace.is_changed());
-        workspace.set_changed(false);
-        assert!(!workspace.is_changed());
+        ));
     }
 
     #[rstest]
@@ -237,25 +231,11 @@ workspace:
             PathBuf::from("pubspec.yaml"),
         );
 
-        let err = workspace
-            .update_version(UpdateType::Patch)
-            .await
-            .expect_err("a malformed pubspec.yaml must fail the bump");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains("Failed to parse pubspec.yaml"),
-            "error chain should name the parse failure, got: {chain}"
-        );
-        assert!(
-            chain.contains(&pubspec_path.display().to_string()),
-            "error chain should name the manifest path, got: {chain}"
-        );
-
-        // Byte-for-byte: an unparseable manifest must never be rewritten.
-        assert_eq!(
-            fs::read(&pubspec_path).unwrap(),
-            original.as_bytes(),
-            "a rejected bump must leave the manifest byte-identical"
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            workspace.update_version(UpdateType::Patch).await,
+            &pubspec_path,
+            "pubspec.yaml",
+            original
         );
 
         temp_dir.close().unwrap();

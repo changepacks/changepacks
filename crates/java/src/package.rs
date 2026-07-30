@@ -172,20 +172,14 @@ mod tests {
         assert!(local_only.is_dry_run_publishable_by_default());
     }
 
-    #[tokio::test]
-    async fn test_gradle_package_set_changed() {
-        let mut package = GradlePackage::new(
+    #[test]
+    fn test_gradle_package_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(GradlePackage::new(
             Some("test-package".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/build.gradle.kts"),
             PathBuf::from("test/build.gradle.kts"),
-        );
-
-        assert!(!package.is_changed());
-        package.set_changed(true);
-        assert!(package.is_changed());
-        package.set_changed(false);
-        assert!(!package.is_changed());
+        ));
     }
 
     #[tokio::test]

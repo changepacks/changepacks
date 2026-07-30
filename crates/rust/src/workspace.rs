@@ -459,20 +459,14 @@ same-version-local = { path = "crates/same-version-local", version = "1.0.0" }
         );
     }
 
-    #[tokio::test]
-    async fn test_rust_workspace_set_changed() {
-        let mut workspace = RustWorkspace::new(
+    #[test]
+    fn test_rust_workspace_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(RustWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/Cargo.toml"),
             PathBuf::from("test/Cargo.toml"),
-        );
-
-        assert!(!workspace.is_changed());
-        workspace.set_changed(true);
-        assert!(workspace.is_changed());
-        workspace.set_changed(false);
-        assert!(!workspace.is_changed());
+        ));
     }
 
     #[rstest]
