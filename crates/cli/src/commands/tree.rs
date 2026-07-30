@@ -327,8 +327,12 @@ fn format_project_line(
             .sum::<usize>()
             + 9 * filtered_deps.len().saturating_sub(1),
     );
-    for (dep, _) in filtered_deps {
-        if !deps_str.is_empty() {
+    // Drive the separator off the element index, like `join_display` and every
+    // other join site: an empty first dependency name leaves the accumulator
+    // empty, so an `is_empty()` guard would silently drop the separator before
+    // the second name.
+    for (index, (dep, _)) in filtered_deps.iter().enumerate() {
+        if index > 0 {
             deps_str.push_str("\n        ");
         }
         deps_str.push_str(dep);
@@ -804,6 +808,48 @@ mod tests {
         assert!(line.contains("deps:"));
         // Verify sorted order: apple, mango, zebra
         assert!(line.contains("deps:\n        apple\n        mango\n        zebra"));
+    }
+
+    #[test]
+    fn test_format_project_line_separates_deps_after_empty_first_name() {
+        // An empty manifest name is indexed like any other name, so `""` can be
+        // the first resolved dependency. The separator must be driven by the
+        // element index, not by whether the accumulator is still empty.
+        let mut pkg = MockPackage::with_all(
+            Some("app"),
+            Some("1.0.0"),
+            "/repo/app/package.json",
+            "app/package.json",
+            Language::Node,
+        );
+        pkg.dependencies.insert(String::new());
+        pkg.dependencies.insert("second".to_string());
+        let project = Project::Package(Box::new(pkg));
+
+        let empty_named = Project::Package(Box::new(MockPackage::with_all(
+            Some(""),
+            Some("1.0.0"),
+            "/repo/empty/package.json",
+            "empty/package.json",
+            Language::Node,
+        )));
+        let second = Project::Package(Box::new(MockPackage::with_all(
+            Some("second"),
+            Some("1.0.0"),
+            "/repo/second/package.json",
+            "second/package.json",
+            Language::Node,
+        )));
+
+        let projects = [&project, &empty_named, &second];
+        let line =
+            format_project_line_for_test(&project, Path::new("/repo"), &HashMap::new(), &projects)
+                .unwrap();
+
+        assert!(
+            line.contains("deps:\n        \n        second"),
+            "empty first dependency name must still emit its separator: {line:?}"
+        );
     }
 
     #[test]

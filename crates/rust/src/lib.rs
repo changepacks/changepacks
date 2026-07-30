@@ -389,4 +389,59 @@ mod tests {
             "only the version literal may change"
         );
     }
+
+    /// Renders a realistically formatted `Cargo.toml` at `version`.
+    ///
+    /// Every construct here is one a re-serializing TOML writer silently
+    /// normalizes away: a header comment, `[dependencies]` declared BEFORE
+    /// `[package]` (non-canonical table order that Cargo accepts but no
+    /// serializer would reproduce), an end-of-line comment on the version
+    /// line, a multi-line array with a trailing comma, an inline table with
+    /// custom interior spacing, and the blank lines between tables.
+    fn round_trip_manifest(version: &str) -> String {
+        format!(
+            concat!(
+                "# demo crate manifest - this header comment must survive a bump\n",
+                "\n",
+                "[dependencies]\n",
+                "serde = {{ version = \"1\",  features = [\"derive\"] }}\n",
+                "demo-core = {{ path = \"../core\", version = \"0.1\" }}\n",
+                "\n",
+                "[package]\n",
+                "name = \"demo\"\n",
+                "version = \"{version}\" # bumped by changepacks\n",
+                "edition = \"2024\"\n",
+                "categories = [\n",
+                "    \"development-tools\",\n",
+                "    \"command-line-utilities\",\n",
+                "]\n",
+            ),
+            version = version
+        )
+    }
+
+    /// Format preservation is a hard project constraint, but the existing
+    /// whole-file assertion above uses a minimal three-key fixture. This
+    /// asserts COMPLETE-FILE equality over a realistic manifest (not a
+    /// `contains` check), mirroring the `changepacks-python` and
+    /// `changepacks-dart` round-trip tests, so any reformatting `toml_edit`
+    /// or [`write_finalized`] performs - dropped comment, reordered table,
+    /// collapsed array or inline table, lost blank line - fails the test
+    /// rather than silently rewriting a user's manifest.
+    #[tokio::test]
+    async fn test_write_cargo_package_version_preserves_comments_and_table_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, round_trip_manifest("1.2.3")).unwrap();
+
+        write_cargo_package_version(&cargo_toml, "2.0.0")
+            .await
+            .expect("a well-formed manifest must be writable");
+
+        assert_eq!(
+            fs::read_to_string(&cargo_toml).unwrap(),
+            round_trip_manifest("2.0.0"),
+            "only the version literal may change; everything else must be byte-identical"
+        );
+    }
 }

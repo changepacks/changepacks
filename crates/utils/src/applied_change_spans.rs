@@ -6,16 +6,33 @@
 //! them out. Everything the caller does not touch — key order, indentation,
 //! spacing, trailing newline — survives byte-for-byte.
 
-use std::{collections::HashSet, path::Path};
+use std::{borrow::Cow, collections::HashSet, path::Path};
 
 use anyhow::{Context, Result, bail};
 
-struct JsonObjectMember {
+struct JsonObjectMember<'a> {
     prefix_start: usize,
-    key: String,
+    /// Decoded member key, borrowed straight out of `content` whenever the
+    /// quoted span already equals its decoded form.
+    key: Cow<'a, str>,
     value_start: usize,
     value_end: usize,
     comma: Option<usize>,
+}
+
+/// Decode the key whose quoted span is `content[start..end]`.
+///
+/// A quoted JSON string body that contains neither a backslash nor a raw
+/// control byte is byte-identical to its decoded value, so it can be borrowed
+/// instead of allocated. Anything else - escapes to expand, or a control byte
+/// `serde_json` must reject - still goes through `serde_json`, which keeps the
+/// accepted input set exactly as strict as decoding every key did.
+fn decode_json_object_key(content: &str, start: usize, end: usize) -> Result<Cow<'_, str>> {
+    let body = &content[start + 1..end - 1];
+    if body.bytes().all(|byte| byte != b'\\' && byte >= 0x20) {
+        return Ok(Cow::Borrowed(body));
+    }
+    Ok(Cow::Owned(serde_json::from_str(&content[start..end])?))
 }
 
 fn skip_json_whitespace(bytes: &[u8], mut cursor: usize) -> usize {
@@ -90,7 +107,7 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Result<usize> {
     }
 }
 
-fn parse_json_object_members(content: &str, open: usize) -> Result<Vec<JsonObjectMember>> {
+fn parse_json_object_members(content: &str, open: usize) -> Result<Vec<JsonObjectMember<'_>>> {
     let bytes = content.as_bytes();
     if bytes.get(open) != Some(&b'{') {
         bail!("expected JSON object at byte {open}");
@@ -106,7 +123,7 @@ fn parse_json_object_members(content: &str, open: usize) -> Result<Vec<JsonObjec
         }
 
         let key_end = scan_json_string_end(bytes, key_start)?;
-        let key: String = serde_json::from_str(&content[key_start..key_end])?;
+        let key = decode_json_object_key(content, key_start, key_end)?;
         cursor = skip_json_whitespace(bytes, key_end);
         if bytes.get(cursor) != Some(&b':') {
             bail!("expected ':' after JSON object key at byte {cursor}");
@@ -159,7 +176,7 @@ pub(crate) fn remove_applied_change_spans(
     let members = parse_json_object_members(content, changes.value_start)?;
     let selected: Vec<bool> = members
         .iter()
-        .map(|member| applied_paths.contains(Path::new(&member.key)))
+        .map(|member| applied_paths.contains(Path::new(&*member.key)))
         .collect();
 
     let mut removals = Vec::new();
@@ -245,6 +262,23 @@ mod tests {
     "packages/a/package.json": "Minor",
     "packages/b/package.json": "Patch",
     "packages/c/package.json": "Major"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#;
+
+    /// The same hand-formatted shape, but the FIRST `changes` key spells its
+    /// path separators as `\u002f` escapes instead of literal slashes.
+    ///
+    /// A key holding a backslash is exactly what pushes
+    /// `decode_json_object_key` off its borrow fast path and onto `serde_json`,
+    /// and the decoded value - not the raw quoted slice - is what has to match
+    /// the plain `packages/a/package.json` path in `applied_paths`.
+    const ESCAPED_KEY_LOG: &str = r#"{
+  "changes": {
+    "packages\u002fa\u002fpackage.json": "Minor",
+    "packages/b/package.json": "Patch"
   },
   "note": "hand formatted note",
   "date": "2026-01-01T00:00:00.000Z"
@@ -344,6 +378,30 @@ mod tests {
     }
 
     #[test]
+    fn remove_applied_change_spans_matches_an_escaped_key_by_its_decoded_path() {
+        // Fixture sanity check: the key is stored ESCAPED in the input, so a
+        // raw-slice comparison against `applied_paths` could not match it.
+        assert!(
+            ESCAPED_KEY_LOG.contains(r#""packages\u002fa\u002fpackage.json""#),
+            "fixture must keep its escaped key: {ESCAPED_KEY_LOG}"
+        );
+        // Decoding it yields `packages/a/package.json`, which IS applied, so
+        // the member is spliced out through its trailing comma while the
+        // second, unescaped member and every surrounding byte survive.
+        assert_eq!(
+            rewrite(ESCAPED_KEY_LOG, &["packages/a/package.json"]),
+            r#"{
+  "changes": {
+    "packages/b/package.json": "Patch"
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#
+        );
+    }
+
+    #[test]
     fn remove_applied_change_spans_rejects_non_object_root() {
         assert_eq!(
             scanner_error(r#"["packages/a/package.json"]"#),
@@ -381,6 +439,19 @@ mod tests {
         let error = scanner_error(r#"{"\q":1}"#);
         assert!(
             error.contains("invalid escape"),
+            "unexpected error text: {error}"
+        );
+    }
+
+    #[test]
+    fn remove_applied_change_spans_rejects_raw_control_character_in_key() {
+        // `scan_json_string_end` happily walks over a raw tab, and the key body
+        // holds no backslash, so only the control-byte guard in
+        // `decode_json_object_key` keeps this off the borrow fast path and
+        // routes it to `serde_json`, which rejects it.
+        let error = scanner_error("{\"a\tb\":1}");
+        assert!(
+            error.contains("control character"),
             "unexpected error text: {error}"
         );
     }

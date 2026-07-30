@@ -103,3 +103,29 @@ pub use publish::handle_publish_with_prompter;
 pub use update::UpdateArgs;
 pub use update::handle_update;
 pub use update::handle_update_with_prompter;
+
+#[cfg(test)]
+mod tests {
+    use super::join_display;
+    use rstest::rstest;
+
+    /// Table over `join_display`'s separator placement.
+    ///
+    /// The two production assertions that reach this helper (`update`'s
+    /// unresolved-path error and `tree`'s ambiguity error) both pass two or
+    /// more non-empty elements, so the empty-iterator and single-element
+    /// branches were never executed. The `empty_first_element` case pins that
+    /// the separator is gated on the element *index* rather than on the
+    /// accumulator being non-empty: with an accumulator-based guard the leading
+    /// empty element would silently swallow its separator and yield `"b, c"`.
+    #[rstest]
+    #[case::empty(&[], ", ", "")]
+    #[case::single(&["only"], ", ", "only")]
+    #[case::three(&["a", "b", "c"], ", ", "a, b, c")]
+    #[case::multi_char_separator(&["apple", "mango"], "\n        ", "apple\n        mango")]
+    #[case::empty_first_element(&["", "b", "c"], ", ", ", b, c")]
+    #[case::empty_only_element(&[""], ", ", "")]
+    fn test_join_display(#[case] items: &[&str], #[case] separator: &str, #[case] expected: &str) {
+        assert_eq!(join_display(items.iter(), separator), expected);
+    }
+}

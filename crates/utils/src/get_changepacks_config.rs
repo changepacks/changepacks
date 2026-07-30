@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_changepacks_config_empty_file() {
+    async fn test_get_changepacks_config_empty_json_object() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
@@ -119,7 +119,7 @@ mod tests {
         fs::create_dir_all(&changepacks_dir).unwrap();
         let config_file = changepacks_dir.join("config.json");
 
-        // Write empty file
+        // Non-empty content: drives the serde parse branch with every field defaulted.
         write(&config_file, "{}").await.unwrap();
 
         let config = get_changepacks_config(temp_path).await.unwrap();
@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_changepacks_config_empty_json() {
+    async fn test_get_changepacks_config_empty_file() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
@@ -164,6 +164,7 @@ mod tests {
         fs::create_dir_all(&changepacks_dir).unwrap();
         let config_file = changepacks_dir.join("config.json");
 
+        // Zero-byte file: drives the `content.trim().is_empty()` early return.
         write(&config_file, "").await.unwrap();
 
         let config = get_changepacks_config(temp_path).await.unwrap();

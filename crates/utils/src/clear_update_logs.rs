@@ -90,14 +90,21 @@ pub async fn clear_applied_update_logs(
     let paths = collect_changepack_log_paths(changepacks_dir).await?;
     let bodies = read_log_bodies(&paths, "update log").await?;
     // The classify loop below walks `paths` exactly once and pushes each path
-    // into at most one of these two buffers, so `paths.len()` is a tight upper
-    // bound for each. Preallocating removes the ~log2(N) geometric-doubling
-    // reallocations `Vec::new()` would otherwise incur on every `update`.
-    // `error_details` in `clear_update_logs` is deliberately left unreserved:
-    // it stays empty on every success path, so reserving would be a
-    // pessimization rather than a saving.
+    // into AT MOST ONE of these two buffers, so `removals.len() + rewrites.len()
+    // <= paths.len()` always holds and reserving `paths.len()` for BOTH would
+    // reserve 2N slots to serve at most N pushes.
+    // `removals` keeps its reservation because it is the only arm that can take
+    // every path: a log all of whose `changes` entries were applied is deleted
+    // whole, which is what a single-language changepack looks like under the
+    // `--language` filter that is the sole caller of this function. The hint
+    // removes the ~log2(N) geometric-doubling reallocations there.
+    // `rewrites` instead follows the empty-on-the-common-path policy this
+    // comment already documents for `error_details` in `clear_update_logs`: it
+    // only fires for a log whose `changes` map STRADDLES the applied/unapplied
+    // boundary, so the other logs of the same run take the remove or the skip
+    // arm and its reservation is waste rather than a saving. It grows on demand.
     let mut removals: Vec<&PathBuf> = Vec::with_capacity(paths.len());
-    let mut rewrites: Vec<(&PathBuf, String)> = Vec::with_capacity(paths.len());
+    let mut rewrites: Vec<(&PathBuf, String)> = Vec::new();
     for (path, content) in paths.iter().zip(bodies) {
         let value: serde_json::Value = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse update log {}", path.display()))?;
