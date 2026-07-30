@@ -148,12 +148,14 @@ pub(crate) fn ensure_package_table_like(doc: &DocumentMut, path: &Path) -> Resul
 /// [`changepacks_utils::assign_preserving_decor`] and
 /// [`workspace_dependencies_table_mut`].
 ///
-/// The owned bumped string is built via
-/// [`changepacks_utils::replace_version_keep_prefix`] BEFORE the
-/// `get_mut("version")` mutable borrow is taken, so no shared borrow of the
-/// dependency table outlives it. `TableLike` exposes no `Index`/`[]` operator,
-/// so the value is rewritten in place through `get_mut` — a `version` key that
-/// does not already exist is NEVER inserted.
+/// The `version` slot is looked up ONCE through `get_mut`, and the current
+/// specifier is read back out of that same mutable borrow as a shared
+/// reborrow; NLL ends the reborrow at
+/// [`changepacks_utils::replace_version_keep_prefix`], which yields an OWNED
+/// bumped string, so the later mutable use of the slot is legal.
+/// `TableLike` exposes no `Index`/`[]` operator, so the value is rewritten in
+/// place through `get_mut` — a `version` key that does not already exist is
+/// NEVER inserted.
 ///
 /// Returns `false` — writing nothing — when the item is not table-like, has no
 /// `path`, has no string `version`, or `accept` rejects the current specifier.
@@ -168,16 +170,16 @@ pub(crate) fn sync_path_dependency_version(
     if dep.get("path").is_none() {
         return false;
     }
-    let Some(current_version) = dep.get("version").and_then(|v| v.as_str()) else {
+    let Some(slot) = dep.get_mut("version") else {
+        return false;
+    };
+    let Some(current_version) = slot.as_str() else {
         return false;
     };
     if !accept(current_version) {
         return false;
     }
     let bumped = replace_version_keep_prefix(current_version, next_version);
-    let Some(slot) = dep.get_mut("version") else {
-        return false;
-    };
     assign_preserving_decor(slot, &bumped);
     true
 }

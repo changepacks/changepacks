@@ -295,10 +295,18 @@ impl RustProjectFinder {
                 .filter(|(_, aliased_package_name)| *aliased_package_name == package_name)
                 .map(|(alias, _)| alias.clone())
                 .collect::<Vec<_>>();
-            let inherited_members = self
-                .inherited_workspace_members
-                .entry(root_path.clone())
-                .or_default();
+            // Probe before allocating: every inherited member of one workspace
+            // shares the same root key, so only the first call misses and the
+            // `entry(root_path.clone())` clone would be wasted on every later
+            // hit. Same policy as `crates/utils/src/gen_update_map.rs:271`.
+            let inherited_members =
+                if let Some(existing) = self.inherited_workspace_members.get_mut(root_path) {
+                    existing
+                } else {
+                    self.inherited_workspace_members
+                        .entry(root_path.clone())
+                        .or_default()
+                };
             let mut inherited_members = crate::workspace::lock_recovering(inherited_members);
             inherited_members.record(package_name, aliases);
         }
@@ -499,6 +507,25 @@ impl ProjectFinder for RustProjectFinder {
             .map(|package| (package.abs_path.clone(), package.relative_path.clone()))
             .collect::<Vec<_>>();
 
+        // Ancestor manifests that this walk already read and rejected — either the
+        // file does not exist, or it exists without a `[workspace.package].version`.
+        // Sibling members share almost all of their ancestor chain, so without this
+        // memo every member pays one failing `read` per missing intermediate manifest
+        // and one full read+TOML-parse per present-but-rejected ancestor (e.g. a root
+        // that has `[workspace]` but no `[workspace.package].version`).
+        //
+        // Idempotence: the loop body mutates finder state ONLY inside the accepting
+        // `if let` below, which always `break`s. Every path that reaches the memo
+        // insert has left `self` untouched, and acceptance depends purely on the
+        // candidate file's bytes, which cannot change mid-`finalize`. So skipping a
+        // rejected candidate is byte-identical to re-reading it.
+        //
+        // Deliberately NOT `self.non_workspace_manifest_candidates`: that field's
+        // invariant is the narrower "manifest has no `[workspace]` table" one relied
+        // on by `discover_workspace_dependency_aliases_for_member`, and widening it
+        // would make that walk skip real workspace roots.
+        let mut rejected_candidates: HashSet<PathBuf> = HashSet::new();
+
         // Roots can be omitted by ignore patterns, so discover the nearest root
         // independently for every unresolved member.
         for (abs_path, relative_path) in unresolved_packages {
@@ -515,6 +542,11 @@ impl ProjectFinder for RustProjectFinder {
                 let candidate = parent.join("Cargo.toml");
                 if self.workspace_package_versions.contains_key(&candidate) {
                     break;
+                }
+                // `continue`, never `break`: a rejected ancestor says nothing about
+                // the ancestors above it, which must still be walked.
+                if rejected_candidates.contains(&candidate) {
+                    continue;
                 }
                 let parsed = match crate::read_and_parse_cargo_toml(&candidate).await {
                     Ok((_, parsed)) => Some(parsed),
@@ -557,6 +589,8 @@ impl ProjectFinder for RustProjectFinder {
                     self.projects
                         .insert(root_path, Project::Workspace(Box::new(workspace)));
                     break;
+                } else {
+                    rejected_candidates.insert(candidate);
                 }
             }
         }
@@ -1928,6 +1962,112 @@ version.workspace = true
             .find(|p| p.name() == Some("my-crate"))
             .unwrap();
         assert_eq!(pkg.version(), Some("0.2.0"));
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_finalize_resolves_sibling_members_through_rejected_ancestor()
+    {
+        // Two `version.workspace = true` members share an ancestor chain that
+        // contains one rejected candidate (`crates/Cargo.toml`: it HAS a
+        // `[workspace]` table but no `[workspace.package].version`) before the
+        // real root. `finalize`'s rejected-candidate memo skips the second read
+        // of that ancestor; this test pins the observable contract the memo must
+        // preserve — both siblings still resolve to the SAME discovered workspace
+        // root and both still carry the inherited version.
+        let temp_dir = TempDir::new().unwrap();
+
+        let workspace_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            r#"[workspace]
+members = ["crates/*/*"]
+
+[workspace.package]
+version = "0.3.0"
+"#,
+        )
+        .unwrap();
+
+        // Rejected intermediate ancestor: `[workspace]` present, but no
+        // `[workspace.package].version`, so the walk must `continue` past it
+        // rather than adopt it or stop.
+        let intermediate_dir = temp_dir.path().join("crates");
+        fs::create_dir_all(&intermediate_dir).unwrap();
+        fs::write(
+            intermediate_dir.join("Cargo.toml"),
+            r#"[workspace]
+members = []
+"#,
+        )
+        .unwrap();
+
+        let mut member_tomls = Vec::new();
+        for name in ["app", "cli"] {
+            let member_dir = intermediate_dir.join(name).join("inner");
+            fs::create_dir_all(&member_dir).unwrap();
+            let member_toml = member_dir.join("Cargo.toml");
+            fs::write(
+                &member_toml,
+                format!("[package]\nname = \"{name}\"\nversion.workspace = true\n"),
+            )
+            .unwrap();
+            member_tomls.push((name, member_toml));
+        }
+
+        // The real root is never visited (simulates an ignore pattern), so
+        // `finalize` must discover it by walking up from each member.
+        let mut finder = RustProjectFinder::new();
+        for (name, member_toml) in &member_tomls {
+            finder
+                .visit(
+                    member_toml,
+                    Path::new(&format!("crates/{name}/inner/Cargo.toml")),
+                )
+                .await
+                .unwrap();
+        }
+        finder.finalize().await.unwrap();
+
+        // Exactly one workspace root is discovered, and it is the real root —
+        // not the rejected intermediate ancestor.
+        assert_eq!(
+            finder.workspace_package_versions.len(),
+            1,
+            "only the root carrying [workspace.package].version may be recorded"
+        );
+        assert_eq!(
+            finder.workspace_package_versions.get(&workspace_toml),
+            Some(&"0.3.0".to_string())
+        );
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 3, "two members plus one synthetic root");
+
+        let workspaces = projects
+            .iter()
+            .filter(|project| matches!(project, Project::Workspace(_)))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            workspaces.len(),
+            1,
+            "both siblings must share one discovered workspace root"
+        );
+        assert_eq!(workspaces[0].path(), workspace_toml.as_path());
+        assert_eq!(workspaces[0].version(), Some("0.3.0"));
+
+        for name in ["app", "cli"] {
+            let member = projects
+                .iter()
+                .find(|project| project.name() == Some(name))
+                .unwrap_or_else(|| panic!("{name} should be discovered"));
+            assert_eq!(
+                member.version(),
+                Some("0.3.0"),
+                "{name} should inherit the workspace version"
+            );
+        }
+
+        temp_dir.close().unwrap();
     }
 
     #[tokio::test]
