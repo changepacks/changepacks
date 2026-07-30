@@ -2,31 +2,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::Config;
 use changepacks_core::{Language, UpdateType, Workspace};
-use std::collections::HashSet;
-use std::path::PathBuf;
 
-#[derive(Debug)]
-pub struct GradleWorkspace {
-    path: PathBuf,
-    relative_path: PathBuf,
-    project_path: Option<String>,
-    version: Option<String>,
-    name: Option<String>,
-    is_changed: bool,
-    dependencies: HashSet<String>,
-    has_publish_task: bool,
-    has_publish_to_maven_local_task: bool,
-}
-
-impl GradleWorkspace {
-    // Byte-identical to `GradlePackage`'s three-step constructor chain
-    // (`new` -> `new_with_publish_tasks` ->
-    // `new_with_project_path_and_publish_tasks`). Consolidated via
-    // `impl_gradle_constructors!()` in `lib.rs` — the expansion uses
-    // field-init shorthand, so this struct's different field declaration
-    // order is irrelevant.
-    crate::impl_gradle_constructors!();
-}
+// Nine-field declaration plus the three-step constructor chain, shared
+// verbatim with `GradlePackage` (see `declare_gradle_project!` in `lib.rs`).
+crate::declare_gradle_project!(pub struct GradleWorkspace);
 
 #[async_trait]
 impl Workspace for GradleWorkspace {
@@ -126,6 +105,7 @@ mod tests {
     use changepacks_core::UpdateType;
     use rstest::rstest;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 

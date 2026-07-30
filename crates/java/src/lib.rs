@@ -124,6 +124,44 @@ macro_rules! impl_gradle_constructors {
 
 pub(crate) use impl_gradle_constructors;
 
+/// Declare a Gradle project struct plus its shared inherent constructors.
+///
+/// `GradlePackage` and `GradleWorkspace` carry exactly the same nine fields
+/// — previously declared in two different orders — and each followed the
+/// declaration with an inherent impl containing
+/// [`impl_gradle_constructors!`], which already hard-codes those field
+/// names. Canonicalizing the layout here keeps the two in lockstep; the
+/// expansion's struct literal uses field-init shorthand, so the former
+/// order difference was cosmetic. Java cannot use
+/// `changepacks_core::declare_discovered_project!`: it carries
+/// `project_path` plus the two publish-task flags and has no
+/// `publishable_by_default` field. Outer attributes (including doc
+/// comments) pass through; other inherent methods and every trait impl stay
+/// in separate blocks beside the invocation.
+macro_rules! declare_gradle_project {
+    ($(#[$meta:meta])* pub struct $name:ident) => {
+        $(#[$meta])*
+        #[derive(::std::fmt::Debug)]
+        pub struct $name {
+            name: ::std::option::Option<::std::string::String>,
+            version: ::std::option::Option<::std::string::String>,
+            path: ::std::path::PathBuf,
+            relative_path: ::std::path::PathBuf,
+            project_path: ::std::option::Option<::std::string::String>,
+            is_changed: ::std::primitive::bool,
+            dependencies: ::std::collections::HashSet<::std::string::String>,
+            has_publish_task: ::std::primitive::bool,
+            has_publish_to_maven_local_task: ::std::primitive::bool,
+        }
+
+        impl $name {
+            crate::impl_gradle_constructors!();
+        }
+    };
+}
+
+pub(crate) use declare_gradle_project;
+
 fn finish_isolated_gradle_dry_run(
     publish_result: Result<changepacks_core::publish::PublishOutput>,
     cleanup_result: Result<()>,

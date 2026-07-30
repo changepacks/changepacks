@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::Result;
-use colored::Colorize;
+use colored::{ColoredString, Colorize};
 
 use crate::{config::Config, package::Package, update_type::UpdateType, workspace::Workspace};
 
@@ -254,7 +254,13 @@ impl Project {
             self.name_or_noname().bright_white().bold(),
             format!("({version})").bright_green(),
             "-".bright_cyan(),
-            rel_path.display().to_string().bright_black(),
+            // `Path::display().to_string()` already produces an owned String.
+            // Going through `Colorize for &str` would deref-coerce and copy it
+            // a second time into `ColoredString::input`; `From<String> for
+            // ColoredString` moves the existing allocation instead. The
+            // resulting `ColoredString` is field-for-field identical, so the
+            // rendered bytes are unchanged.
+            ColoredString::from(rel_path.display().to_string()).bright_black(),
         )
     }
 }

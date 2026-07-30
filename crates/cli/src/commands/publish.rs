@@ -1019,6 +1019,11 @@ mod tests {
         Succeeds(bool),
     }
 
+    /// Owned dependency-name set for a [`TestPackage`] constructor.
+    fn deps_of(deps: &[&str]) -> HashSet<String> {
+        deps.iter().map(|dep| (*dep).to_string()).collect()
+    }
+
     impl TestPackage {
         /// `publish` and `dry_run_publish` both fail to spawn (was `FailSpawnPackage`).
         fn fail_spawn() -> Self {
@@ -1080,7 +1085,7 @@ mod tests {
                 path: PathBuf::from("Cargo.toml"),
                 relative_path: PathBuf::from(relative_path),
                 language: Language::Rust,
-                deps: deps.iter().map(|d| (*d).to_string()).collect(),
+                deps: deps_of(deps),
                 default_publish_command: "cargo publish",
                 default_dry_run_publish_command: Some("cargo publish --dry-run"),
                 publish_behavior: PublishBehavior::Unused,
@@ -1096,7 +1101,7 @@ mod tests {
                 path: PathBuf::from("Cargo.toml"),
                 relative_path: PathBuf::from(relative_path),
                 language: Language::Rust,
-                deps: deps.iter().map(|d| (*d).to_string()).collect(),
+                deps: deps_of(deps),
                 default_publish_command: "cargo publish",
                 default_dry_run_publish_command: Some("cargo publish --dry-run"),
                 publish_behavior: PublishBehavior::Unused,
@@ -1114,7 +1119,7 @@ mod tests {
                 path: PathBuf::from(relative_path),
                 relative_path: PathBuf::from(relative_path),
                 language: Language::Node,
-                deps: deps.iter().map(|d| (*d).to_string()).collect(),
+                deps: deps_of(deps),
                 default_publish_command: "npm publish",
                 default_dry_run_publish_command: Some("npm publish --dry-run"),
                 publish_behavior: PublishBehavior::Succeeds(succeeds),
@@ -1135,10 +1140,7 @@ mod tests {
                 path: PathBuf::from(relative_path),
                 relative_path: PathBuf::from(relative_path),
                 language: Language::Rust,
-                deps: dependencies
-                    .iter()
-                    .map(|dependency| (*dependency).to_string())
-                    .collect(),
+                deps: deps_of(dependencies),
                 default_publish_command: "cargo publish",
                 default_dry_run_publish_command: Some("cargo publish --dry-run"),
                 publish_behavior: PublishBehavior::Succeeds(true),
