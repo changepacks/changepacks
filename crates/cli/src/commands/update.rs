@@ -9,7 +9,7 @@ use changepacks_core::{
     Workspace,
 };
 use changepacks_utils::{
-    CARRY_FORWARD_LOG_PREFIX, clear_applied_update_logs, clear_update_logs,
+    CARRY_FORWARD_LOG_PREFIX, UpdatePlan, clear_applied_update_logs, clear_update_logs,
     collect_changepack_log_paths, display_update, gen_update_map, get_relative_path,
     get_relative_path_ref,
 };
@@ -18,7 +18,7 @@ use clap::Args;
 use crate::{
     CommandContext,
     commands::{changepack_result_json, join_display, writeln_stdout},
-    finders::collect_projects,
+    finders::{collect_projects, collect_projects_mut},
     options::{CliLanguage, FormatOptions, language_slice_contains},
     prompter::{InquirePrompter, Prompter},
 };
@@ -87,44 +87,14 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     update_map.merge_provenance(&merged_pairs);
 
     // Filter update_map by language if specified.
-    //
-    // Prebuild `path_to_language` once so `retain` does O(1) lookups instead
-    // of the previous O(N×M) any() closure that re-computed a `PathBuf` per
-    // (map entry × project) pair — dropping allocations from `M × N` to
-    // `N` (one PathBuf per project) plus `M` HashMap lookups.
     let language_filter_active = !args.language.is_empty();
     let carry_forward_logs = if language_filter_active {
-        // Preallocate: `HashMap::from_iter` (via `collect`) does NOT use
-        // `size_hint` to reserve capacity (unlike `Vec`), so on a
-        // language-filtered `changepacks update -l rust` against a large
-        // monorepo the map hits geometric-doubling reallocations.
-        // `projects.len()` yields a tight upper bound (the loop below can only
-        // shrink it when a project path lies outside the repo root). Matches
-        // the preallocation policy already applied in `sort_by_dep.rs` and
-        // `find_project_dirs.rs`.
-        //
-        // Iterates the `projects` slice collected above instead of re-running
-        // `flat_map(|finder| finder.projects())`, which rebuilt one throwaway
-        // `Vec<&Project>` per finder. `projects` is `collect_projects(&project_finders)`
-        // over the same, still-unmutated finders, so the visited set and its
-        // order are identical.
-        let mut path_to_language: HashMap<&Path, Language> = HashMap::with_capacity(projects.len());
-        for project in &projects {
-            if let Ok(rel) = get_relative_path_ref(&ctx.repo_root_path, project.path()) {
-                path_to_language.insert(rel, project.language());
-            }
-        }
-        // Filter through the shared `language_slice_contains` predicate — the
-        // same match rule `retain_by_language` uses in
-        // `options/language_options.rs`, so the "does this language match the
-        // `--language` selection" rule has one definition across both filter
-        // shells. Byte-identical filtering (short-circuits on the first match,
-        // iterates `args.language` in order).
-        update_map.retain_updates(|path| {
-            path_to_language
-                .get(path)
-                .is_some_and(|lang| language_slice_contains(&args.language, *lang))
-        })
+        filter_update_map_by_language(
+            &mut update_map,
+            &projects,
+            &ctx.repo_root_path,
+            &args.language,
+        )
     } else {
         Vec::new()
     };
@@ -142,32 +112,8 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
 
     // Snapshot applied paths before gen_changepack_result_map drains update_map.
-    //
-    // A workspace-inherited member folded by `merge_workspace_inherited_updates`
-    // is no longer a key in `update_map` (its bump is owned by the workspace
-    // root, whose path IS a key). Without re-adding the member path here,
-    // `clear_applied_update_logs` would retain the member's changepack log and
-    // re-apply it (double-bump) on the next `update`. Re-add each folded member
-    // path IFF its workspace root actually survived the language filter (its
-    // path is still in the applied set), so logs clear in lock-step with the
-    // bump that satisfied them.
-    //
-    // The set BORROWS its keys (`HashSet<&Path>`): `clear_applied_update_logs`
-    // only probes membership with `&Path`, and both sources outlive that call —
-    // `update_map` is not mutated after `retain_updates` above and is last read
-    // when the transaction runs, `merged_pairs` is never mutated after it is
-    // built. So the owned copies this used to make (one `PathBuf` clone per
-    // update-map key plus one per folded workspace member) are pure waste.
-    let applied_paths = language_filter_active.then(|| {
-        let mut set: HashSet<&Path> = HashSet::with_capacity(update_map.len() + merged_pairs.len());
-        set.extend(update_map.keys().map(PathBuf::as_path));
-        for (pkg_path, ws_path) in &merged_pairs {
-            if set.contains(ws_path.as_path()) {
-                set.insert(pkg_path.as_path());
-            }
-        }
-        set
-    });
+    let applied_paths =
+        language_filter_active.then(|| borrowed_applied_paths(&update_map, &merged_pairs));
 
     // In --dry-run mode, preview_and_confirm returns Ok(false) and the handler returns
     // early (line ~202-204), so json_output is never printed. Skip the expensive
@@ -255,6 +201,85 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     Ok(())
 }
 
+/// Drop every planned update whose project language is outside `languages`,
+/// returning the carry-forward changepack logs `retain_updates` emits for the
+/// generated updates it removed.
+///
+/// Prebuild `path_to_language` once so `retain` does O(1) lookups instead
+/// of the previous O(N×M) any() closure that re-computed a `PathBuf` per
+/// (map entry × project) pair — dropping allocations from `M × N` to
+/// `N` (one PathBuf per project) plus `M` HashMap lookups.
+///
+/// Preallocate: `HashMap::from_iter` (via `collect`) does NOT use
+/// `size_hint` to reserve capacity (unlike `Vec`), so on a
+/// language-filtered `changepacks update -l rust` against a large
+/// monorepo the map hits geometric-doubling reallocations.
+/// `projects.len()` yields a tight upper bound (the loop below can only
+/// shrink it when a project path lies outside the repo root). Matches
+/// the preallocation policy already applied in `sort_by_dep.rs` and
+/// `find_project_dirs.rs`.
+///
+/// Iterates the `projects` slice collected by the caller instead of re-running
+/// `flat_map(|finder| finder.projects())`, which rebuilt one throwaway
+/// `Vec<&Project>` per finder. `projects` is `collect_projects(&project_finders)`
+/// over the same, still-unmutated finders, so the visited set and its
+/// order are identical.
+fn filter_update_map_by_language(
+    update_map: &mut UpdatePlan,
+    projects: &[&Project],
+    repo_root_path: &Path,
+    languages: &[CliLanguage],
+) -> Vec<ChangePackLog> {
+    let mut path_to_language: HashMap<&Path, Language> = HashMap::with_capacity(projects.len());
+    for project in projects {
+        if let Ok(rel) = get_relative_path_ref(repo_root_path, project.path()) {
+            path_to_language.insert(rel, project.language());
+        }
+    }
+    // Filter through the shared `language_slice_contains` predicate — the
+    // same match rule `retain_by_language` uses in
+    // `options/language_options.rs`, so the "does this language match the
+    // `--language` selection" rule has one definition across both filter
+    // shells. Byte-identical filtering (short-circuits on the first match,
+    // iterates `languages` in order).
+    update_map.retain_updates(|path| {
+        path_to_language
+            .get(path)
+            .is_some_and(|lang| language_slice_contains(languages, *lang))
+    })
+}
+
+/// Snapshot the paths whose changepack logs the language-filtered run may clear.
+///
+/// A workspace-inherited member folded by `merge_workspace_inherited_updates`
+/// is no longer a key in `update_map` (its bump is owned by the workspace
+/// root, whose path IS a key). Without re-adding the member path here,
+/// `clear_applied_update_logs` would retain the member's changepack log and
+/// re-apply it (double-bump) on the next `update`. Re-add each folded member
+/// path IFF its workspace root actually survived the language filter (its
+/// path is still in the applied set), so logs clear in lock-step with the
+/// bump that satisfied them.
+///
+/// The set BORROWS its keys (`HashSet<&Path>`): `clear_applied_update_logs`
+/// only probes membership with `&Path`, and both sources outlive that call —
+/// `update_map` is not mutated after `retain_updates` and is last read
+/// when the transaction runs, `merged_pairs` is never mutated after it is
+/// built. So the owned copies this used to make (one `PathBuf` clone per
+/// update-map key plus one per folded workspace member) are pure waste.
+fn borrowed_applied_paths<'a>(
+    update_map: &'a UpdatePlan,
+    merged_pairs: &'a [(PathBuf, PathBuf)],
+) -> HashSet<&'a Path> {
+    let mut set: HashSet<&Path> = HashSet::with_capacity(update_map.len() + merged_pairs.len());
+    set.extend(update_map.keys().map(PathBuf::as_path));
+    for (pkg_path, ws_path) in merged_pairs {
+        if set.contains(ws_path.as_path()) {
+            set.insert(pkg_path.as_path());
+        }
+    }
+    set
+}
+
 /// Extract packages from projects, filtering to `Project::Package` variants.
 ///
 /// Preallocates to `len` (the filter only drops `Project::Workspace`
@@ -327,40 +352,36 @@ fn preview_and_confirm(
     Ok(true)
 }
 
-/// Shared body of the two `collect_update_project_*` collectors below, which
-/// are byte-identical except for the finder accessor: `projects_mut()` yields
-/// `&mut Project`, `projects()` yields `&Project`. That mutability difference
-/// cannot be abstracted by plain generics, so — matching the repo's "same
-/// body, different accessor" macro idiom (cf. the core crate's
-/// `impl_projects_hashmap_accessors!` / `impl_basic_accessors!`) — a file-local
-/// `macro_rules!` collapses the duplication. Preallocates to `update_map.len()`
-/// (the loop pushes at most one entry per project) and relies on the enclosing
-/// fn's `-> Result<...>` for the `?` on `get_relative_path_ref`.
-macro_rules! collect_update_projects {
-    ($finders:expr, $update_map:expr, $repo_root_path:expr, $accessor:ident) => {{
-        let mut update_projects = Vec::with_capacity($update_map.len());
-
-        for finder in $finders {
-            for project in finder.$accessor() {
-                if let Some((update_type, _)) =
-                    $update_map.get(get_relative_path_ref($repo_root_path, project.path())?)
-                {
-                    update_projects.push((project, *update_type));
-                }
-            }
-        }
-
-        update_projects
-    }};
-}
-
+/// Mutable half of the changepack-log -> project join: every project held by
+/// `project_finders` whose repo-relative manifest path is a key of
+/// `update_map`, paired with its [`UpdateType`], sorted.
+///
+/// Merges through [`collect_projects_mut`] — which drives
+/// [`ProjectFinder::extend_projects_mut`] into one pre-sized buffer — instead
+/// of the nested `for finder in .. { for project in finder.projects_mut() }`
+/// shape this used to carry, which allocated and immediately dropped one
+/// intermediate `Vec<&mut Project>` per finder (six per `changepacks update`).
+/// Order is unchanged: `collect_projects_mut` walks finders in `get_finders()`
+/// order and each finder appends in its own `projects_mut()` order, so the
+/// merged sequence is exactly the nesting the loops produced.
+///
+/// The result buffer is reserved against `update_map.len()` rather than the
+/// merged project count: the filter keeps at most one project per changepack
+/// entry, and a repo typically logs updates for a small subset of its
+/// packages.
 fn collect_update_project_muts<'a>(
     project_finders: &'a mut [Box<dyn ProjectFinder>],
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
 ) -> Result<Vec<UpdateProjectMut<'a>>> {
-    let mut update_projects =
-        collect_update_projects!(project_finders, update_map, repo_root_path, projects_mut);
+    let mut update_projects = Vec::with_capacity(update_map.len());
+    for project in collect_projects_mut(project_finders) {
+        if let Some((update_type, _)) =
+            update_map.get(get_relative_path_ref(repo_root_path, project.path())?)
+        {
+            update_projects.push((project, *update_type));
+        }
+    }
     update_projects.sort();
     Ok(update_projects)
 }
@@ -393,17 +414,26 @@ fn validate_update_project_paths(
     bail!("unresolved changepack update paths: {rendered_paths}")
 }
 
+/// Shared-borrow counterpart of [`collect_update_project_muts`], used by the
+/// dry-run / preview path that only needs to display the pending updates.
+///
+/// Same merge and same capacity reasoning, over [`collect_projects`] rather
+/// than [`collect_projects_mut`]; the result is intentionally left unsorted
+/// because the caller prints it in discovery order.
 fn collect_update_project_refs<'a>(
     project_finders: &'a [Box<dyn ProjectFinder>],
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
 ) -> Result<Vec<UpdateProjectRef<'a>>> {
-    Ok(collect_update_projects!(
-        project_finders,
-        update_map,
-        repo_root_path,
-        projects
-    ))
+    let mut update_projects = Vec::with_capacity(update_map.len());
+    for project in collect_projects(project_finders) {
+        if let Some((update_type, _)) =
+            update_map.get(get_relative_path_ref(repo_root_path, project.path())?)
+        {
+            update_projects.push((project, *update_type));
+        }
+    }
+    Ok(update_projects)
 }
 
 /// Collect every workspace root held by `finders`, in finder order and, within

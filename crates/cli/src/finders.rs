@@ -44,6 +44,26 @@ pub(crate) fn collect_projects(finders: &[Box<dyn ProjectFinder>]) -> Vec<&Proje
     projects
 }
 
+/// Mutable counterpart of [`collect_projects`]: collect every project from
+/// `finders` as `&mut Project` into a single pre-allocated Vec.
+///
+/// Drives [`ProjectFinder::extend_projects_mut`] for the same reason
+/// [`collect_projects`] drives `extend_projects`: `flat_map(|f| f.projects_mut())`
+/// (or a nested `for project in finder.projects_mut()` loop) allocated — and
+/// immediately dropped — one intermediate `Vec<&mut Project>` per finder, six
+/// of them per `changepacks update` run. Order is identical to the nested-loop
+/// shape: finders are walked in `get_finders()` order and each one appends in
+/// its own `projects_mut()` order.
+#[must_use]
+pub(crate) fn collect_projects_mut(finders: &mut [Box<dyn ProjectFinder>]) -> Vec<&mut Project> {
+    let cap = total_project_count(finders);
+    let mut projects = Vec::with_capacity(cap);
+    for finder in finders.iter_mut() {
+        finder.extend_projects_mut(&mut projects);
+    }
+    projects
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +90,18 @@ mod tests {
         let finders = get_finders();
         let projects = collect_projects(&finders);
         assert_eq!(projects.len(), total_project_count(&finders));
+        assert!(projects.is_empty());
+    }
+
+    // `collect_projects_mut` must agree with `collect_projects` on both the
+    // seeded capacity and the emitted order; undiscovered finders contribute
+    // nothing to either.
+    #[test]
+    fn test_collect_projects_mut_matches_total_project_count() {
+        let mut finders = get_finders();
+        let expected = total_project_count(&finders);
+        let projects = collect_projects_mut(&mut finders);
+        assert_eq!(projects.len(), expected);
         assert!(projects.is_empty());
     }
 }

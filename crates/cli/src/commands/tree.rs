@@ -71,6 +71,41 @@ fn resolved_monorepo_deps<'a>(
     Ok(resolved)
 }
 
+/// Select the projects the tree is rendered from: those nothing else depends on.
+///
+/// Pure function of `projects` plus the already resolved `resolved_deps`, so it
+/// decides only WHAT is rendered and never HOW.
+///
+/// Manifest paths keep same-named projects distinct in root detection.
+/// The set only ever holds distinct project manifest paths, so `projects.len()`
+/// is an exact upper bound on its size — that is what made the previous clamp
+/// against the edge count correct, and it makes the extra edge-count pass
+/// redundant. Reserve it unconditionally, like the allocations below.
+///
+/// Root order remains name-first; manifest path breaks ties for duplicates.
+fn tree_roots<'a>(projects: &[&'a Project], resolved_deps: &ResolvedDeps<'a>) -> Vec<&'a Project> {
+    let mut has_dependents: HashSet<&Path> = HashSet::with_capacity(projects.len());
+    has_dependents.extend(
+        resolved_deps
+            .values()
+            .flatten()
+            .map(|(_, project)| project.path()),
+    );
+
+    let mut sorted_roots: Vec<&Project> = Vec::with_capacity(projects.len());
+    for project in projects {
+        if !has_dependents.contains(project.path()) {
+            sorted_roots.push(project);
+        }
+    }
+    sorted_roots.sort_unstable_by(|left, right| {
+        left.name_or_noname()
+            .cmp(right.name_or_noname())
+            .then_with(|| left.relative_path().cmp(right.relative_path()))
+    });
+    sorted_roots
+}
+
 /// Display projects as a dependency tree
 ///
 pub(super) fn display_tree(
@@ -93,31 +128,7 @@ pub(super) fn display_tree(
         );
     }
 
-    // Manifest paths keep same-named projects distinct in root detection.
-    // The set only ever holds distinct project manifest paths, so `projects.len()`
-    // is an exact upper bound on its size — that is what made the previous clamp
-    // against the edge count correct, and it makes the extra edge-count pass
-    // redundant. Reserve it unconditionally, like the allocations below.
-    let mut has_dependents: HashSet<&Path> = HashSet::with_capacity(projects.len());
-    has_dependents.extend(
-        resolved_deps
-            .values()
-            .flatten()
-            .map(|(_, project)| project.path()),
-    );
-
-    // Root order remains name-first; manifest path breaks ties for duplicates.
-    let mut sorted_roots: Vec<&Project> = Vec::with_capacity(projects.len());
-    for project in projects {
-        if !has_dependents.contains(project.path()) {
-            sorted_roots.push(project);
-        }
-    }
-    sorted_roots.sort_unstable_by(|left, right| {
-        left.name_or_noname()
-            .cmp(right.name_or_noname())
-            .then_with(|| left.relative_path().cmp(right.relative_path()))
-    });
+    let sorted_roots = tree_roots(projects, &resolved_deps);
 
     // Display tree starting from roots.
     let mut visited: HashSet<&Path> = HashSet::with_capacity(projects.len());

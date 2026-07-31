@@ -643,6 +643,73 @@ impl PublishLoopState {
     }
 }
 
+/// Names of ALL Rust projects in the current publish batch (not just
+/// version-bumped ones — no bump information is consulted here), consulted
+/// solely by `skip_dry_run_due_to_workspace_internal_dep` (which returns
+/// `false` for all non-Rust projects): the skip only guards against
+/// `cargo publish --dry-run` failing to resolve a not-yet-published *Rust*
+/// workspace crate, so a non-Rust project that merely shares a name with a
+/// Rust crate's dependency must not land in this set. Names are borrowed
+/// from the projects, which outlive the loop. The capacity is the Rust
+/// project count and NOT `projects.len()`: since the `extend` below is
+/// filtered to Rust, the batch length is an upper bound the set can never
+/// reach on a mixed batch, and on a batch with no Rust project at all
+/// (Node, Python, Dart, Java or C#) it would allocate a whole table that
+/// then receives zero inserts. Counting first still lets a Rust workspace
+/// reserve enough buckets up front to avoid growth reallocations.
+///
+/// Loop-invariant, so `execute_dry_run_publish_loop` calls this once before
+/// its per-project loop rather than inlining the two passes into the loop
+/// function's prologue.
+fn rust_batch_names<'a>(projects: &[&'a Project]) -> HashSet<&'a str> {
+    let rust_project_count = projects
+        .iter()
+        .filter(|p| p.language() == changepacks_core::Language::Rust)
+        .count();
+    let mut rust_batch_names: HashSet<&str> = HashSet::with_capacity(rust_project_count);
+    rust_batch_names.extend(
+        projects
+            .iter()
+            .filter(|p| p.language() == changepacks_core::Language::Rust)
+            .filter_map(|p| p.name()),
+    );
+    rust_batch_names
+}
+
+/// Records the `rust-lang/cargo#1169` workspace-internal-dependency dry-run
+/// skip for `project`, once [`skip_dry_run_due_to_workspace_internal_dep`] has
+/// decided the skip applies.
+///
+/// Both user-visible strings are reproduced byte-for-byte from the inline
+/// branch this replaces: the stderr diagnostic on the stdout path and the
+/// `dry-run skipped (workspace-internal dep)` note recorded as a JSON success
+/// entry (`record_json_skip` is a no-op on the stdout path, which is why the
+/// stderr write above it is guarded separately).
+///
+/// # Errors
+/// Returns the underlying `io::Error` if writing the stderr diagnostic fails.
+fn record_workspace_internal_dep_skip(
+    state: &mut PublishLoopState,
+    project: &Project,
+    format: FormatOptions,
+) -> std::io::Result<()> {
+    if let FormatOptions::Stdout = format {
+        writeln_stderr(format_args!(
+            "Dry-run skipped for {project}: depends on workspace member also being \
+             published in this run. `cargo publish --dry-run` cannot resolve the \
+             not-yet-published version (rust-lang/cargo#1169). The real publish \
+             will run in topological order and succeed."
+        ))?;
+    }
+    record_json_skip(
+        &mut state.result_map,
+        project,
+        "dry-run skipped (workspace-internal dep)",
+        format,
+    );
+    Ok(())
+}
+
 /// # Errors
 /// Returns the underlying `io::Error` if writing the stdout report fails.
 async fn execute_dry_run_publish_loop(
@@ -657,51 +724,14 @@ async fn execute_dry_run_publish_loop(
         failure: "Dry-run failed for",
     };
 
-    // Names of ALL Rust projects in the current publish batch (not just
-    // version-bumped ones — no bump information is consulted here), consulted
-    // solely by `skip_dry_run_due_to_workspace_internal_dep` (which returns
-    // `false` for all non-Rust projects): the skip only guards against
-    // `cargo publish --dry-run` failing to resolve a not-yet-published *Rust*
-    // workspace crate, so a non-Rust project that merely shares a name with a
-    // Rust crate's dependency must not land in this set. Names are borrowed
-    // from the projects, which outlive the loop. The capacity is the Rust
-    // project count and NOT `projects.len()`: since the `extend` below is
-    // filtered to Rust, the batch length is an upper bound the set can never
-    // reach on a mixed batch, and on a batch with no Rust project at all
-    // (Node, Python, Dart, Java or C#) it would allocate a whole table that
-    // then receives zero inserts. Counting first still lets a Rust workspace
-    // reserve enough buckets up front to avoid growth reallocations.
-    let rust_project_count = projects
-        .iter()
-        .filter(|p| p.language() == changepacks_core::Language::Rust)
-        .count();
-    let mut rust_batch_names: HashSet<&str> = HashSet::with_capacity(rust_project_count);
-    rust_batch_names.extend(
-        projects
-            .iter()
-            .filter(|p| p.language() == changepacks_core::Language::Rust)
-            .filter_map(|p| p.name()),
-    );
+    let rust_batch_names = rust_batch_names(projects);
 
     for project in projects {
         if state.skip_if_dependency_failed(project, "Dry-run skipped for", format)? {
             continue;
         }
         if skip_dry_run_due_to_workspace_internal_dep(project, &rust_batch_names) {
-            if let FormatOptions::Stdout = format {
-                writeln_stderr(format_args!(
-                    "Dry-run skipped for {project}: depends on workspace member also being \
-                     published in this run. `cargo publish --dry-run` cannot resolve the \
-                     not-yet-published version (rust-lang/cargo#1169). The real publish \
-                     will run in topological order and succeed."
-                ))?;
-            }
-            record_json_skip(
-                &mut state.result_map,
-                project,
-                "dry-run skipped (workspace-internal dep)",
-                format,
-            );
+            record_workspace_internal_dep_skip(&mut state, project, format)?;
             continue;
         }
         if let FormatOptions::Stdout = format {
