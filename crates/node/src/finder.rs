@@ -216,6 +216,34 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    #[tokio::test]
+    async fn test_node_project_finder_visit_package_without_name() {
+        // Regression: a package.json without a `name` field is legitimate for
+        // private/unpublished packages, and the resulting `None` name is what
+        // later drives the repo-name fallback in
+        // `changepacks_utils::find_project_dirs`. Every other fixture in this
+        // module goes through `package_json_with_private`, which always emits a
+        // name, so this shape would otherwise never be exercised. Mirrors the
+        // Python equivalent `test_python_project_finder_visit_package_without_project_section`.
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(&package_json, r#"{"version": "1.0.0"}"#).unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.project_count(), 1);
+        let projects = finder.projects();
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), None);
+        assert_eq!(pkg.version(), Some("1.0.0"));
+
+        temp_dir.close().unwrap();
+    }
+
     #[rstest]
     #[case(Some("true"), false)]
     #[case(Some("false"), true)]

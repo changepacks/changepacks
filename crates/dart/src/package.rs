@@ -180,6 +180,51 @@ dependencies:
         temp_dir.close().unwrap();
     }
 
+    /// A `DartPackage` whose manifest carries no `version` key must have one
+    /// ADDED, not fail. `DartWorkspace` pins this via
+    /// `test_update_version_without_version`, but the `Package` surface had no
+    /// equivalent: every existing `DartPackage` update test starts from
+    /// `Some("1.0.0")`, so only the `Replace` route was exercised here.
+    ///
+    /// This drives the `existing_version == false` path of
+    /// `bump_pubspec_version` (crates/dart/src/lib.rs:49) into the
+    /// `yamlpatch::Op::Add` root-route branch of `write_pubspec_version`
+    /// (crates/dart/src/lib.rs:86-92). It pins the order-sensitive pre-read of
+    /// `version.is_some()`: `bump_version_with` sets `version` to `Some(..)`
+    /// unconditionally, so reading the flag after the bump would take the
+    /// `Replace` route and fail against a manifest with no `version` key.
+    #[tokio::test]
+    async fn test_dart_package_update_version_adds_missing_version_key() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            "name: test_package\ndescription: A test package\n",
+        )
+        .unwrap();
+
+        let mut package = DartPackage::new(
+            Some("test_package".to_string()),
+            None,
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        package.update_version(UpdateType::Minor).await.unwrap();
+
+        // Full-file equality: the added key must not disturb either original
+        // line, and `next_version_or_default` falls back to `0.0.0` before the
+        // Minor bump, so the written version is `0.1.0`.
+        assert_eq!(
+            fs::read_to_string(&pubspec_path).unwrap(),
+            "name: test_package\ndescription: A test package\nversion: 0.1.0\n"
+        );
+        // The in-memory version must track the written manifest.
+        assert_eq!(package.version(), Some("0.1.0"));
+
+        temp_dir.close().unwrap();
+    }
+
     /// A `pubspec.yaml` that does not parse must abort the bump BEFORE the
     /// writer touches the file. The finder covers a malformed manifest
     /// (`test_visit_malformed_pubspec_yaml`), but nothing pinned the

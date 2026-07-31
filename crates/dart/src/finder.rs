@@ -273,6 +273,25 @@ version: 1.0.0
         temp_dir.close().unwrap();
     }
 
+    // A pubspec.yaml without a `name:` key is the only shape that makes
+    // `pubspec_str(&pubspec, "name")` return `None`; every other finder test
+    // supplies a name, so the missing-name branch of the helper was never
+    // exercised. The discovered project must still be a package carrying the
+    // declared version, with `name()` reported as `None` rather than a
+    // substituted placeholder.
+    #[tokio::test]
+    async fn test_visit_package_without_name() {
+        let (_temp_dir, finder) =
+            discover_single_pubspec("version: 1.0.0\ndescription: A package without a name\n")
+                .await;
+        let projects = finder.projects();
+
+        assert_eq!(projects.len(), 1);
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), None);
+        assert_eq!(pkg.version(), Some("1.0.0"));
+    }
+
     #[rstest]
     #[case("workspace:\n  - packages/*\n")]
     #[case("workspace: []\n")]

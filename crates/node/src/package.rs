@@ -235,6 +235,55 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    /// A `package.json` with no `version` key at all must gain one instead of
+    /// being left untouched. This drives the `obj.insert("version", ...)` arm
+    /// of `crate::write_package_json_version` through the `Package` trait
+    /// surface - the only other route to that arm is `NodeWorkspace`, so a
+    /// writer that silently skipped a manifest without a `version` field would
+    /// still leave every `NodePackage` test green. `next_version_or_default`
+    /// starts from `0.0.0`, so `Patch` must land on `0.0.1`. Mirrors
+    /// `test_python_package_update_version_without_project_section` and
+    /// `test_update_version_without_property_group_creates_global_version`.
+    #[tokio::test]
+    async fn test_node_package_update_version_adds_missing_version_field() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-package"
+}
+"#,
+        )
+        .unwrap();
+
+        let mut package = NodePackage::new(
+            Some("test-package".to_string()),
+            None,
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&package_json).await.unwrap();
+        assert!(
+            content.contains(r#""version": "0.0.1""#),
+            "a missing version field must be inserted, got: {content}"
+        );
+        assert!(
+            content.contains(r#""name": "test-package""#),
+            "the existing fields must survive the insert, got: {content}"
+        );
+        assert!(
+            content.ends_with("}\n"),
+            "the trailing newline shape must be preserved, got: {content}"
+        );
+        assert_eq!(package.version(), Some("0.0.1"));
+
+        temp_dir.close().unwrap();
+    }
+
     /// A `package.json` that does not parse must abort the bump BEFORE the
     /// writer touches the file. The finder covers a malformed manifest
     /// (`test_node_project_finder_visit_malformed_package_json`), but nothing

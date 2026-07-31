@@ -24,7 +24,6 @@ use crate::{
 };
 
 type UpdateProjectMut<'a> = (&'a mut Project, UpdateType);
-type UpdateProjectRef<'a> = (&'a Project, UpdateType);
 type WorkspaceRef<'a> = &'a dyn Workspace;
 
 #[derive(Args, Debug)]
@@ -172,13 +171,9 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         // Collect filtered workspace projects after the mutable borrow is released.
         let workspace_projects = collect_workspace_projects(&project_finders);
         if !workspace_projects.is_empty() {
-            let update_projects =
-                collect_update_project_refs(&project_finders, &update_map, &ctx.repo_root_path)?;
-            let projects = packages_of(
-                update_projects.len(),
-                update_projects.iter().map(|(p, _)| *p),
-            );
-            apply_workspace_dependency_updates(&workspace_projects, &projects).await?;
+            let packages =
+                collect_update_packages(&project_finders, &update_map, &ctx.repo_root_path)?;
+            apply_workspace_dependency_updates(&workspace_projects, &packages).await?;
         }
 
         persist_carry_forward_logs(&ctx.changepacks_dir, &carry_forward_logs).await?;
@@ -280,25 +275,6 @@ fn borrowed_applied_paths<'a>(
     set
 }
 
-/// Extract packages from projects, filtering to `Project::Package` variants.
-///
-/// Preallocates to `len` (the filter only drops `Project::Workspace`
-/// variants — typically 0-1 entries in a package-heavy update). Matches the
-/// preallocation policy applied throughout `sort_by_dep.rs`, `gen_update_map.rs`,
-/// and `apply_reverse_dependencies`.
-fn packages_of<'a>(
-    len: usize,
-    projects: impl IntoIterator<Item = &'a Project>,
-) -> Vec<&'a dyn Package> {
-    let mut packages: Vec<&'a dyn Package> = Vec::with_capacity(len);
-    for project in projects {
-        if let Project::Package(package) = project {
-            packages.push(package.as_ref());
-        }
-    }
-    packages
-}
-
 /// Display the pending updates, then apply the dry-run / confirmation gate.
 ///
 /// Returns `Ok(false)` when the caller must stop without applying anything —
@@ -383,16 +359,14 @@ fn collect_update_project_muts<'a>(
     Ok(update_projects)
 }
 
-/// The changepack-log -> project join shared by [`collect_update_project_muts`]
-/// and [`collect_update_project_refs`]: keep every project whose repo-relative
-/// manifest path is a key of `update_map`, paired with its [`UpdateType`].
+/// The changepack-log -> project join behind [`collect_update_project_muts`]:
+/// keep every project whose repo-relative manifest path is a key of
+/// `update_map`, paired with its [`UpdateType`].
 ///
-/// Generic over `P: Borrow<Project>` so the same loop serves both the
-/// `&mut Project` and the `&Project` collection — the two wrappers previously
-/// carried byte-identical bodies that differed only in which `collect_projects`
-/// they drove. Ordering is inherited from the caller's input order; neither the
-/// filter nor the pairing reorders, so the mutable wrapper's `sort()` and the
-/// shared wrapper's deliberate lack of one stay exactly where they were.
+/// Generic over `P: Borrow<Project>` so the loop is independent of how the
+/// caller borrows its projects. Ordering is inherited from the caller's input
+/// order; neither the filter nor the pairing reorders, so the mutable
+/// wrapper's `sort()` stays exactly where it was.
 ///
 /// The result buffer is reserved against `update_map.len()` rather than the
 /// merged project count: the filter keeps at most one project per changepack
@@ -442,22 +416,42 @@ fn validate_update_project_paths(
     bail!("unresolved changepack update paths: {rendered_paths}")
 }
 
-/// Shared-borrow counterpart of [`collect_update_project_muts`], used by the
-/// dry-run / preview path that only needs to display the pending updates.
+/// Shared-borrow counterpart of [`collect_update_project_muts`], narrowed to
+/// what the workspace-dependency rewrite actually consumes: the updated
+/// [`Project::Package`] entries as `&dyn Package`.
 ///
-/// Same merge and same capacity reasoning, over [`collect_projects`] rather
-/// than [`collect_projects_mut`]; the result is intentionally left unsorted
-/// because the caller prints it in discovery order.
-fn collect_update_project_refs<'a>(
+/// Single pass on purpose. The previous shape collected
+/// `Vec<(&Project, UpdateType)>` and then re-walked it to drop the
+/// `UpdateType` half — which the only caller never read — and to narrow to
+/// packages, so every `changepacks update` with at least one workspace built
+/// and threw away one intermediate `Vec` of pairs. The join and the narrowing
+/// now happen in the same loop.
+///
+/// The result buffer is reserved against `update_map.len()`, the same bound
+/// [`collect_update_project_muts`] uses: the filter keeps at most one project
+/// per changepack entry, and the `Project::Workspace` arm can only shrink it
+/// further.
+///
+/// The result is intentionally left unsorted, exactly as the pair-producing
+/// predecessor was: [`collect_projects`] walks finders in `get_finders()`
+/// order and each finder appends in its own `projects()` order, and
+/// [`Workspace::update_workspace_dependencies`] treats this slice as an
+/// unordered lookup set.
+fn collect_update_packages<'a>(
     project_finders: &'a [Box<dyn ProjectFinder>],
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
-) -> Result<Vec<UpdateProjectRef<'a>>> {
-    filter_projects_by_update_map(
-        collect_projects(project_finders),
-        update_map,
-        repo_root_path,
-    )
+) -> Result<Vec<&'a dyn Package>> {
+    let mut packages: Vec<&'a dyn Package> = Vec::with_capacity(update_map.len());
+    for project in collect_projects(project_finders) {
+        if !update_map.contains_key(get_relative_path_ref(repo_root_path, project.path())?) {
+            continue;
+        }
+        if let Project::Package(package) = project {
+            packages.push(package.as_ref());
+        }
+    }
+    Ok(packages)
 }
 
 /// Collect every workspace root held by `finders`, in finder order and, within
@@ -832,11 +826,10 @@ fn merge_workspace_inherited_updates(
 mod tests {
     use super::{
         UpdateArgs, UpdateProjectMut, WorkspaceRef, apply_project_version_updates,
-        apply_workspace_dependency_updates, collect_projects, collect_update_project_muts,
-        collect_update_project_refs, collect_update_snapshot_paths, collect_workspace_projects,
-        merge_workspace_inherited_updates, packages_of, persist_carry_forward_logs,
-        preview_and_confirm, rollback_update_error, snapshot_update_state,
-        validate_update_project_paths,
+        apply_workspace_dependency_updates, collect_projects, collect_update_packages,
+        collect_update_project_muts, collect_update_snapshot_paths, collect_workspace_projects,
+        merge_workspace_inherited_updates, persist_carry_forward_logs, preview_and_confirm,
+        rollback_update_error, snapshot_update_state, validate_update_project_paths,
     };
     use anyhow::{Result, bail};
     use async_trait::async_trait;
@@ -878,10 +871,12 @@ mod tests {
             return Ok(());
         }
 
-        let projects = packages_of(
-            update_projects.len(),
-            update_projects.iter().map(|(p, _)| &**p),
-        );
+        let mut projects: Vec<&dyn Package> = Vec::with_capacity(update_projects.len());
+        for (project, _) in &*update_projects {
+            if let Project::Package(package) = &**project {
+                projects.push(package.as_ref());
+            }
+        }
 
         apply_workspace_dependency_updates(workspace_projects, &projects).await?;
 
@@ -1733,7 +1728,7 @@ path = "../visible"
     }
 
     #[test]
-    fn test_collect_update_project_refs_matches_manifest_paths_in_finder_order() -> Result<()> {
+    fn test_collect_update_packages_matches_manifest_paths_in_finder_order() -> Result<()> {
         let repo_root = Path::new("/repo");
         let project_finders: Vec<Box<dyn ProjectFinder>> = vec![
             Box::new(MockFinder::new(vec![
@@ -1768,18 +1763,17 @@ path = "../visible"
             ),
         ]);
 
-        let update_projects =
-            collect_update_project_refs(&project_finders, &update_map, repo_root)?;
-        let actual = update_projects
+        let packages = collect_update_packages(&project_finders, &update_map, repo_root)?;
+        let actual = packages
             .iter()
-            .map(|(project, update_type)| (project.relative_path(), *update_type))
+            .map(|package| package.relative_path())
             .collect::<Vec<_>>();
 
         assert_eq!(
             actual,
             vec![
-                (Path::new("crates/z/Cargo.toml"), UpdateType::Major),
-                (Path::new("crates/a/Cargo.toml"), UpdateType::Minor),
+                Path::new("crates/z/Cargo.toml"),
+                Path::new("crates/a/Cargo.toml"),
             ]
         );
         Ok(())
