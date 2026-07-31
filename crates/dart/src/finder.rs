@@ -64,6 +64,34 @@ fn add_workspace_dependencies(project: &mut Project, pubspec: &yaml_serde::Value
     }
 }
 
+/// Decide whether the manifest at `path` describes a Dart workspace.
+///
+/// Short-circuit: when the pubspec's inline `workspace:` field is a sequence,
+/// skip the sibling `melos.yaml` stat. Shared with the Node finder via
+/// `changepacks_utils::is_workspace_by_sibling` — the one source of truth for
+/// the "declared field OR fixed sibling file" policy (stat error → not-a-
+/// workspace; all file ops via `tokio::fs`).
+///
+/// The absent/valid/invalid triage itself is
+/// `changepacks_utils::ensure_declared_shape`, shared verbatim with the Node
+/// and Python finders; only the shape predicate stays here because it is the
+/// one part that speaks `yaml_serde::Value`.
+///
+/// Extracted verbatim from `visit` — which was an 87 line body — so the
+/// workspace triage is a named call site beside `add_workspace_dependencies`.
+/// Pure extraction: the `ensure_declared_shape` arguments, the resulting
+/// error message template, and the `is_workspace_by_sibling` call and its
+/// error propagation are unchanged.
+async fn detect_dart_workspace(pubspec: &yaml_serde::Value, path: &Path) -> Result<bool> {
+    let has_workspace_declaration = changepacks_utils::ensure_declared_shape(
+        pubspec.get("workspace").map(yaml_serde::Value::is_sequence),
+        path,
+        "workspace",
+        "a sequence",
+    )?;
+    changepacks_utils::is_workspace_by_sibling(has_workspace_declaration, path, "melos.yaml").await
+}
+
 #[async_trait]
 impl ProjectFinder for DartProjectFinder {
     // `projects()` / `projects_mut()` share their byte-identical body with
@@ -97,30 +125,10 @@ impl ProjectFinder for DartProjectFinder {
             })
             .await?;
 
-        // Check if this is a workspace (melos workspace or similar).
-        // Short-circuit: when the pubspec's inline `workspace:` field is a
-        // sequence, skip the sibling `melos.yaml` stat. Shared with
-        // the Node finder via `changepacks_utils::is_workspace_by_sibling`
-        // — the one source of truth for the "declared field OR fixed
-        // sibling file" policy (stat error → not-a-workspace; all file ops
-        // via `tokio::fs`).
-        //
-        // The absent/valid/invalid triage itself is
-        // `changepacks_utils::ensure_declared_shape`, shared verbatim with the
-        // Node and Python finders; only the shape predicate stays here because
-        // it is the one part that speaks `yaml_serde::Value`.
-        let has_workspace_declaration = changepacks_utils::ensure_declared_shape(
-            pubspec.get("workspace").map(yaml_serde::Value::is_sequence),
-            path,
-            "workspace",
-            "a sequence",
-        )?;
-        let is_workspace = changepacks_utils::is_workspace_by_sibling(
-            has_workspace_declaration,
-            path,
-            "melos.yaml",
-        )
-        .await?;
+        // Check if this is a workspace (melos workspace or similar); the
+        // declared-shape triage and the sibling `melos.yaml` fallback live in
+        // the module-private `detect_dart_workspace` helper.
+        let is_workspace = detect_dart_workspace(&pubspec, path).await?;
 
         // Both branches use the same name/version and the same path;
         // hoist so each branch collapses to a single constructor call.

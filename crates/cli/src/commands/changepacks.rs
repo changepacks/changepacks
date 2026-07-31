@@ -30,6 +30,95 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     handle_changepack_with_prompter(args, &InquirePrompter).await
 }
 
+/// Resolve which of the surviving `entries` should be bumped with `update_type`
+/// during a single selection turn.
+///
+/// This is the per-update-type half of [`select_changepack`]'s loop: it owns the
+/// `--yes` / single-patch short circuit, the "changed projects are pre-checked"
+/// defaults, and the prompt itself, so the caller is left owning only the outer
+/// loop over update types and the final note prompt. The returned projects are
+/// copies of the very same `&Project` references stored in `entries`, which is
+/// what lets [`partition_selected_entries`] identify them by pointer.
+///
+/// # Errors
+/// Returns an error if prompting fails (including user cancellation).
+fn select_projects_for_update_type<'a>(
+    entries: &[(&'a Project, PathBuf)],
+    update_type: UpdateType,
+    args: &ChangepackArgs,
+    prompter: &dyn Prompter,
+) -> Result<Vec<&'a Project>> {
+    // Cheap per-turn view of the surviving projects for the prompter /
+    // `--yes` / single-patch branches — a pointer collect over `entries`,
+    // no path recomputation (each path was allocated once, up front).
+    let projects: Vec<&Project> = entries.iter().map(|(p, _)| *p).collect();
+
+    if args.yes || (update_type == UpdateType::Patch && projects.len() == 1) {
+        return Ok(projects);
+    }
+
+    let message = format!("Select projects to update for {update_type}");
+    // Preallocate: `FilterMap`'s `size_hint` reports
+    // `(0, Some(projects.len()))` and `Vec::from_iter` reserves
+    // against the LOWER bound (0), so a plain `.collect()` here
+    // hits geometric-doubling reallocations whenever many projects
+    // are marked changed. `projects.len()` is a tight upper bound
+    // (each iteration pushes AT MOST one index). Matches the
+    // preallocation policy already applied across `sort_by_dep.rs`,
+    // `gen_update_map.rs`, `find_project_dirs.rs`,
+    // `apply_reverse_dependencies`, and `finders.rs`'s
+    // `collect_projects` (which pre-sizes from
+    // `total_project_count`). Byte-identical output (same indices,
+    // same order).
+    let mut defaults = Vec::with_capacity(projects.len());
+    for (index, project) in projects.iter().enumerate() {
+        if project.is_changed() {
+            defaults.push(index);
+        }
+    }
+    prompter.multi_select(&message, projects, defaults)
+}
+
+/// Record every selected entry in `update_map` under `update_type` and return
+/// the entries that survive into the next turn.
+///
+/// Identify selected projects by pointer equality — every entry in
+/// `selected_projects` is a copy of the `&Project` reference that already lives
+/// in `entries`, so their addresses match and an O(1) `HashSet` lookup drives
+/// the combined pass below. That pass fuses "insert if selected" and "keep if
+/// not" so `entries` is walked ONCE per update-type turn: selected entries MOVE
+/// their `PathBuf` into `update_map` (no clone), unselected entries are kept for
+/// the next turn. The sort order is preserved because the kept entries
+/// accumulate in input order, matching the previous filter behaviour
+/// byte-for-byte.
+fn partition_selected_entries<'a>(
+    entries: Vec<(&'a Project, PathBuf)>,
+    selected_projects: &[&Project],
+    update_type: UpdateType,
+    update_map: &mut BTreeMap<PathBuf, UpdateType>,
+) -> Vec<(&'a Project, PathBuf)> {
+    // Preallocate: `HashSet::from_iter` (via `.collect()`) does NOT reserve
+    // from `Iterator::size_hint`, so the fill rehashes as it grows — and it
+    // runs inside the per-update-type loop (≤3 turns). `selected_projects.len()`
+    // is the exact upper bound, so seeding + `.extend(...)` skips those
+    // rehashes. Matches the preallocation policy already applied throughout
+    // this file (`defaults`, `keep_entries`) and the workspace. Byte-identical
+    // pointer-set membership.
+    let mut selected_ptrs: std::collections::HashSet<*const Project> =
+        std::collections::HashSet::with_capacity(selected_projects.len());
+    selected_ptrs.extend(selected_projects.iter().map(|&p| std::ptr::from_ref(p)));
+
+    let mut keep_entries: Vec<(&Project, PathBuf)> = Vec::with_capacity(entries.len());
+    for (project, rel_path) in entries {
+        if selected_ptrs.contains(&std::ptr::from_ref(project)) {
+            update_map.insert(rel_path, update_type);
+        } else {
+            keep_entries.push((project, rel_path));
+        }
+    }
+    keep_entries
+}
+
 /// Select projects and resolve the changepack notes without performing git or file I/O.
 ///
 /// # Errors
@@ -79,68 +168,11 @@ fn select_changepack(
             break;
         }
 
-        // Cheap per-turn view of the surviving projects for the prompter /
-        // `--yes` / single-patch branches — a pointer collect over `entries`,
-        // no path recomputation (each path was allocated once, up front).
-        let projects: Vec<&Project> = entries.iter().map(|(p, _)| *p).collect();
-
         let selected_projects =
-            if args.yes || (update_type == UpdateType::Patch && projects.len() == 1) {
-                projects
-            } else {
-                let message = format!("Select projects to update for {update_type}");
-                // Preallocate: `FilterMap`'s `size_hint` reports
-                // `(0, Some(projects.len()))` and `Vec::from_iter` reserves
-                // against the LOWER bound (0), so a plain `.collect()` here
-                // hits geometric-doubling reallocations whenever many projects
-                // are marked changed. `projects.len()` is a tight upper bound
-                // (each iteration pushes AT MOST one index). Matches the
-                // preallocation policy already applied across `sort_by_dep.rs`,
-                // `gen_update_map.rs`, `find_project_dirs.rs`,
-                // `apply_reverse_dependencies`, and `finders.rs`'s
-                // `collect_projects` (which pre-sizes from
-                // `total_project_count`). Byte-identical output (same indices,
-                // same order).
-                let mut defaults = Vec::with_capacity(projects.len());
-                for (index, project) in projects.iter().enumerate() {
-                    if project.is_changed() {
-                        defaults.push(index);
-                    }
-                }
-                prompter.multi_select(&message, projects, defaults)?
-            };
+            select_projects_for_update_type(&entries, update_type, args, prompter)?;
 
-        // Identify selected projects by pointer equality — every entry
-        // in `selected_projects` is a copy of the `&Project` reference
-        // that already lives in `entries`, so their addresses match and
-        // an O(1) HashSet lookup drives the combined pass below. That pass
-        // fuses "insert if selected" and "keep if not" so `entries` is
-        // walked ONCE per update-type turn: selected entries MOVE their
-        // `PathBuf` into `update_map` (no clone), unselected entries are
-        // kept for the next turn. The sort order is preserved because
-        // `keep_entries` accumulates in input order, matching the previous
-        // filter behaviour byte-for-byte.
-        //
-        // Preallocate: `HashSet::from_iter` (via `.collect()`) does NOT reserve
-        // from `Iterator::size_hint`, so the fill rehashes as it grows — and it
-        // runs inside the per-update-type loop (≤3 turns). `selected_projects.len()`
-        // is the exact upper bound, so seeding + `.extend(...)` skips those
-        // rehashes. Matches the preallocation policy already applied throughout
-        // this file (`defaults`, `keep_entries`) and the workspace. Byte-identical
-        // pointer-set membership.
-        let mut selected_ptrs: std::collections::HashSet<*const Project> =
-            std::collections::HashSet::with_capacity(selected_projects.len());
-        selected_ptrs.extend(selected_projects.iter().map(|&p| std::ptr::from_ref(p)));
-
-        let mut keep_entries: Vec<(&Project, PathBuf)> = Vec::with_capacity(entries.len());
-        for (project, rel_path) in entries {
-            if selected_ptrs.contains(&std::ptr::from_ref(project)) {
-                update_map.insert(rel_path, update_type);
-            } else {
-                keep_entries.push((project, rel_path));
-            }
-        }
-        entries = keep_entries;
+        entries =
+            partition_selected_entries(entries, &selected_projects, update_type, &mut update_map);
     }
 
     if update_map.is_empty() {

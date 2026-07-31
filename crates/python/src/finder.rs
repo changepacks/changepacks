@@ -14,20 +14,6 @@ use crate::{package::PythonPackage, read_and_parse_pyproject_toml, workspace::Py
 /// a `&'static [&'static str]`.
 const PROJECT_FILES: &[&str] = &["pyproject.toml"];
 
-/// Look up `[project].<field>` as an owned string, mirroring the
-/// `project.and_then(|p| p.get(field)).and_then(|v| v.as_str()).map(String::from)`
-/// chain that used to be open-coded twice inside `visit` (once for
-/// `version`, once for `name`). Extracted so a future manifest shape
-/// change (e.g. inline-table `name = { workspace = true }`) only needs
-/// to be adapted in one place — mirrors `package_str` /
-/// `workspace_package_str` in the `changepacks-rust` finder.
-fn project_str(project: Option<&toml_edit::Item>, field: &str) -> Option<String> {
-    project
-        .and_then(|p| p.get(field))
-        .and_then(|v| v.as_str())
-        .map(std::string::ToString::to_string)
-}
-
 #[derive(Debug, Default)]
 pub struct PythonProjectFinder {
     projects: HashMap<PathBuf, Project>,
@@ -37,6 +23,35 @@ impl PythonProjectFinder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+/// Register every local workspace dependency declared under `[tool.uv.sources]`.
+///
+/// `[tool.uv.sources]` is a TOML **table** keyed by dependency name
+/// (e.g. `pkg-a = { path = "../pkg-a" }`), not an array of strings, so it is
+/// iterated as a table — otherwise Python packages never register their
+/// workspace deps for topological publish ordering.
+///
+/// Takes the already-cached `[tool.uv]` item from `visit` so no extra manifest
+/// lookup or re-parse is introduced. Mirrors `add_workspace_dependencies` in
+/// the Node and Dart finders, which hoist the equivalent scan into a named
+/// free function.
+fn add_uv_source_dependencies(project: &mut Project, uv_table: Option<&toml_edit::Item>) {
+    let Some(sources) = uv_table
+        .and_then(|u| u.get("sources"))
+        .and_then(toml_edit::Item::as_table_like)
+    else {
+        return;
+    };
+    for (dep_name, source) in sources.iter() {
+        let is_local_source = source.as_table_like().is_some_and(|source| {
+            source.contains_key("path")
+                || source.get("workspace").and_then(toml_edit::Item::as_bool) == Some(true)
+        });
+        if is_local_source {
+            project.add_dependency(dep_name);
+        }
     }
 }
 
@@ -75,8 +90,13 @@ impl ProjectFinder for PythonProjectFinder {
 
         // Both branches use the same name/version and the same path;
         // hoist so each branch collapses to a single constructor call.
-        let version = project_str(project_table, "version");
-        let name = project_str(project_table, "name");
+        // `toml_item_str` is the shared `<table>.<field>` string read, also
+        // used by the `changepacks-rust` finder's `[package]` /
+        // `[workspace.package]` readers; a non-string value (e.g. an
+        // inline-table inheritance marker) resolves to `None`, exactly as the
+        // local helper this replaces did.
+        let version = changepacks_utils::toml_item_str(project_table, "version");
+        let name = changepacks_utils::toml_item_str(project_table, "name");
         let publishable_by_default = name.is_some();
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();
@@ -116,26 +136,8 @@ impl ProjectFinder for PythonProjectFinder {
             publishable_by_default,
         );
 
-        // read tool.uv.sources section
-        //
-        // `[tool.uv.sources]` is a TOML **table** keyed by dependency name
-        // (e.g. `pkg-a = { path = "../pkg-a" }`), not an array of strings.
-        // Iterate it as a table so Python packages actually register their
-        // workspace deps for topological publish ordering.
-        if let Some(sources) = uv_table
-            .and_then(|u| u.get("sources"))
-            .and_then(toml_edit::Item::as_table_like)
-        {
-            for (dep_name, source) in sources.iter() {
-                let is_local_source = source.as_table_like().is_some_and(|source| {
-                    source.contains_key("path")
-                        || source.get("workspace").and_then(toml_edit::Item::as_bool) == Some(true)
-                });
-                if is_local_source {
-                    project.add_dependency(dep_name);
-                }
-            }
-        }
+        // read tool.uv.sources section — see `add_uv_source_dependencies`.
+        add_uv_source_dependencies(&mut project, uv_table);
 
         self.projects.insert(path_key, project);
         Ok(())

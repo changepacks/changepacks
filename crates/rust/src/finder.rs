@@ -43,9 +43,9 @@ fn cargo_toml_does_not_exist(error: &anyhow::Error) -> bool {
 /// path context [`crate::read_and_parse_cargo_toml`] attached.
 ///
 /// Both ancestor walks (`discover_workspace_dependency_aliases_for_member` and
-/// `finalize`) need exactly this discrimination, so it has a single definition
-/// here next to [`cargo_toml_does_not_exist`]; the two cannot drift into
-/// disagreeing about which errors are "missing".
+/// `discover_workspace_root_for_member`) need exactly this discrimination, so
+/// it has a single definition here next to [`cargo_toml_does_not_exist`]; the
+/// two cannot drift into disagreeing about which errors are "missing".
 async fn read_cargo_toml_if_absent_ok(candidate: &Path) -> Result<Option<toml_edit::DocumentMut>> {
     match crate::read_and_parse_cargo_toml(candidate).await {
         Ok((_, parsed)) => Ok(Some(parsed)),
@@ -60,12 +60,13 @@ async fn read_cargo_toml_if_absent_ok(candidate: &Path) -> Result<Option<toml_ed
 /// a future manifest shape change (e.g. inline-table `name = { workspace = true }`)
 /// only needs to be adapted in one place.
 ///
+/// This helper now only encodes WHERE the table lives; the shared read tail is
+/// [`changepacks_utils::toml_item_str`], which `changepacks-python`'s
+/// `[project]` reader uses too.
+///
 /// See [`workspace_package_str`] for the `[workspace.package].<field>` sibling.
 fn package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<String> {
-    doc.get("package")
-        .and_then(|p| p.get(field))
-        .and_then(|v| v.as_str())
-        .map(String::from)
+    changepacks_utils::toml_item_str(doc.get("package"), field)
 }
 
 /// Cargo accepts either a boolean or a registry allow-list for a `publish`
@@ -148,10 +149,7 @@ fn workspace_package_table(doc: &toml_edit::DocumentMut) -> Option<&toml_edit::I
 /// `finalize` to walk up to a missed workspace root), matching the
 /// `[package].<field>` sibling helper.
 fn workspace_package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<String> {
-    workspace_package_table(doc)
-        .and_then(|p| p.get(field))
-        .and_then(|v| v.as_str())
-        .map(String::from)
+    changepacks_utils::toml_item_str(workspace_package_table(doc), field)
 }
 
 /// Apply the [`publish_item_publishable`] rule to `[workspace.package].publish`
@@ -296,6 +294,26 @@ fn repository_root(manifest_path: &Path, relative_path: &Path) -> PathBuf {
         .map_or_else(|| manifest_path.to_path_buf(), Path::to_path_buf)
 }
 
+/// The ancestor manifest that [`RustProjectFinder::discover_workspace_root_for_member`]
+/// accepted as a pending member's workspace root, handed back to `finalize`
+/// so the (pure) search stays separate from the state mutation it feeds.
+///
+/// The parsed manifest travels with the path because `finalize` reads four
+/// more fields out of the very same bytes (`[package].name`,
+/// `[package].version`, `[package].publish`, `[workspace.package].publish`);
+/// returning only the path would force a second read+parse of a file the walk
+/// has already decoded.
+#[derive(Debug)]
+struct DiscoveredWorkspaceRoot {
+    /// Absolute path of the accepted ancestor `Cargo.toml`.
+    root_path: PathBuf,
+    /// Its parsed contents, already validated to carry
+    /// `[workspace.package].version`.
+    manifest: toml_edit::DocumentMut,
+    /// That `[workspace.package].version` value.
+    workspace_version: String,
+}
+
 #[derive(Debug, Default)]
 pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
@@ -396,6 +414,72 @@ impl RustProjectFinder {
             };
             ancestor = parent.to_path_buf();
         }
+    }
+
+    /// Find the nearest ancestor `Cargo.toml` above `abs_path` that declares a
+    /// `[workspace.package].version`, stopping at `git_root` so discovery never
+    /// adopts a manifest living outside the repository.
+    ///
+    /// Read-only on `self` by design: the caller ([`Self::finalize`]) owns every
+    /// mutation the acceptance implies, so the walk cannot half-record a root it
+    /// then fails to insert. Returns `Ok(None)` when the walk leaves the
+    /// repository, when it reaches an already-known root (that member is already
+    /// resolvable through `workspace_package_versions`), or when it runs out of
+    /// ancestors.
+    ///
+    /// `rejected_candidates` is the caller's cross-member memo of ancestor
+    /// manifests this walk already read and rejected — either the file does not
+    /// exist, or it exists without a `[workspace.package].version`. Sibling
+    /// members share almost all of their ancestor chain, so without it every
+    /// member pays one failing `read` per missing intermediate manifest and one
+    /// full read+TOML-parse per present-but-rejected ancestor (e.g. a root that
+    /// has `[workspace]` but no `[workspace.package].version`). Skipping a
+    /// memoized candidate is byte-identical to re-reading it: this fn touches no
+    /// finder state, and acceptance depends purely on the candidate file's
+    /// bytes, which cannot change mid-`finalize`.
+    ///
+    /// Deliberately NOT `self.non_workspace_manifest_candidates`: that field's
+    /// invariant is the narrower "manifest has no `[workspace]` table" one relied
+    /// on by [`Self::discover_workspace_dependency_aliases_for_member`], and
+    /// widening it would make that walk skip real workspace roots.
+    ///
+    /// # Errors
+    /// Propagates a malformed ancestor manifest or a permission problem with its
+    /// path context attached; a merely missing ancestor `Cargo.toml` is an
+    /// ordinary negative answer (see [`read_cargo_toml_if_absent_ok`]).
+    async fn discover_workspace_root_for_member(
+        &self,
+        abs_path: &Path,
+        git_root: &Path,
+        rejected_candidates: &mut HashSet<PathBuf>,
+    ) -> Result<Option<DiscoveredWorkspaceRoot>> {
+        for parent in abs_path.ancestors().skip(2) {
+            if !parent.starts_with(git_root) {
+                return Ok(None);
+            }
+            let candidate = parent.join("Cargo.toml");
+            if self.workspace_package_versions.contains_key(&candidate) {
+                return Ok(None);
+            }
+            // `continue`, never stop: a rejected ancestor says nothing about
+            // the ancestors above it, which must still be walked.
+            if rejected_candidates.contains(&candidate) {
+                continue;
+            }
+            let parsed = read_cargo_toml_if_absent_ok(&candidate).await?;
+            if let Some((manifest, workspace_version)) = parsed.and_then(|parsed| {
+                workspace_package_str(&parsed, "version")
+                    .map(|workspace_version| (parsed, workspace_version))
+            }) {
+                return Ok(Some(DiscoveredWorkspaceRoot {
+                    root_path: candidate,
+                    manifest,
+                    workspace_version,
+                }));
+            }
+            rejected_candidates.insert(candidate);
+        }
+        Ok(None)
     }
 
     fn insert_workspace_member(
@@ -653,89 +737,66 @@ impl ProjectFinder for RustProjectFinder {
         let pending = std::mem::take(&mut self.pending_workspace_packages);
         self.pending_workspace_paths.clear();
 
-        // Ancestor manifests that this walk already read and rejected — either the
-        // file does not exist, or it exists without a `[workspace.package].version`.
-        // Sibling members share almost all of their ancestor chain, so without this
-        // memo every member pays one failing `read` per missing intermediate manifest
-        // and one full read+TOML-parse per present-but-rejected ancestor (e.g. a root
-        // that has `[workspace]` but no `[workspace.package].version`).
-        //
-        // Idempotence: the loop body mutates finder state ONLY inside the accepting
-        // `if let` below, which always `break`s. Every path that reaches the memo
-        // insert has left `self` untouched, and acceptance depends purely on the
-        // candidate file's bytes, which cannot change mid-`finalize`. So skipping a
-        // rejected candidate is byte-identical to re-reading it.
-        //
-        // Deliberately NOT `self.non_workspace_manifest_candidates`: that field's
-        // invariant is the narrower "manifest has no `[workspace]` table" one relied
-        // on by `discover_workspace_dependency_aliases_for_member`, and widening it
-        // would make that walk skip real workspace roots.
+        // Cross-member memo of already-rejected ancestor manifests, owned here so
+        // sibling members that share an ancestor chain read each dead candidate
+        // once for the whole `finalize`. See
+        // [`Self::discover_workspace_root_for_member`] for the rejection rule and
+        // why re-reading a memoized candidate would be redundant rather than
+        // different.
         let mut rejected_candidates: HashSet<PathBuf> = HashSet::new();
 
         // Roots can be omitted by ignore patterns, so discover the nearest root
         // independently for every unresolved member.
         for package in &pending {
-            let abs_path = &package.abs_path;
-            let relative_path = &package.relative_path;
-            let git_root = repository_root(abs_path, relative_path);
+            let git_root = repository_root(&package.abs_path, &package.relative_path);
+            let Some(DiscoveredWorkspaceRoot {
+                root_path,
+                manifest,
+                workspace_version,
+            }) = self
+                .discover_workspace_root_for_member(
+                    &package.abs_path,
+                    &git_root,
+                    &mut rejected_candidates,
+                )
+                .await?
+            else {
+                continue;
+            };
 
-            for parent in abs_path.ancestors().skip(2) {
-                if !parent.starts_with(&git_root) {
-                    break;
-                }
-                let candidate = parent.join("Cargo.toml");
-                if self.workspace_package_versions.contains_key(&candidate) {
-                    break;
-                }
-                // `continue`, never `break`: a rejected ancestor says nothing about
-                // the ancestors above it, which must still be walked.
-                if rejected_candidates.contains(&candidate) {
-                    continue;
-                }
-                let parsed = read_cargo_toml_if_absent_ok(&candidate).await?;
-                if let Some((parsed, workspace_version)) = parsed.and_then(|parsed| {
-                    workspace_package_str(&parsed, "version")
-                        .map(|workspace_version| (parsed, workspace_version))
-                }) {
-                    let root_path = candidate;
-                    self.workspace_package_versions
-                        .insert(root_path.clone(), workspace_version.clone());
-                    self.record_workspace_root(root_path.clone(), &parsed);
+            self.workspace_package_versions
+                .insert(root_path.clone(), workspace_version.clone());
+            self.record_workspace_root(root_path.clone(), &manifest);
 
-                    // Insert synthetic workspace project so apply_updates() can find it
-                    let ws_name = package_str(&parsed, "name");
-                    let ws_pkg_version = package_str(&parsed, "version");
-                    // This manifest is itself the workspace root, so a hybrid
-                    // `[package] publish.workspace = true` inherits from the
-                    // `[workspace.package].publish` in these very bytes.
-                    let publishable_by_default = package_publish_default(&parsed)
-                        .resolve(|| Some(workspace_package_publishable_by_default(&parsed)));
-                    let ws_relative_path = root_path
-                        .strip_prefix(&git_root)
-                        .unwrap_or(Path::new("Cargo.toml"))
-                        .to_path_buf();
+            // Insert synthetic workspace project so apply_updates() can find it
+            let ws_name = package_str(&manifest, "name");
+            let ws_pkg_version = package_str(&manifest, "version");
+            // This manifest is itself the workspace root, so a hybrid
+            // `[package] publish.workspace = true` inherits from the
+            // `[workspace.package].publish` in these very bytes.
+            let publishable_by_default = package_publish_default(&manifest)
+                .resolve(|| Some(workspace_package_publishable_by_default(&manifest)));
+            let ws_relative_path = root_path
+                .strip_prefix(&git_root)
+                .unwrap_or(Path::new("Cargo.toml"))
+                .to_path_buf();
 
-                    let inherited_workspace_members = self
-                        .inherited_workspace_members
-                        .entry(root_path.clone())
-                        .or_default()
-                        .clone();
-                    let workspace = RustWorkspace::new_with_inherited_workspace_members(
-                        ws_name,
-                        // For virtual workspaces (no [package]), use [workspace.package].version
-                        ws_pkg_version.or(Some(workspace_version)),
-                        root_path.clone(),
-                        ws_relative_path,
-                        inherited_workspace_members,
-                        publishable_by_default,
-                    );
-                    self.projects
-                        .insert(root_path, Project::Workspace(Box::new(workspace)));
-                    break;
-                } else {
-                    rejected_candidates.insert(candidate);
-                }
-            }
+            let inherited_workspace_members = self
+                .inherited_workspace_members
+                .entry(root_path.clone())
+                .or_default()
+                .clone();
+            let workspace = RustWorkspace::new_with_inherited_workspace_members(
+                ws_name,
+                // For virtual workspaces (no [package]), use [workspace.package].version
+                ws_pkg_version.or(Some(workspace_version)),
+                root_path.clone(),
+                ws_relative_path,
+                inherited_workspace_members,
+                publishable_by_default,
+            );
+            self.projects
+                .insert(root_path, Project::Workspace(Box::new(workspace)));
         }
 
         self.resolve_pending_workspace_packages(pending);

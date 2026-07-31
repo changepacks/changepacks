@@ -116,6 +116,52 @@ impl RustWorkspace {
     fn fallback_package_name(&self) -> &str {
         self.name.as_deref().unwrap_or("_")
     }
+
+    /// Sync `[workspace.dependencies]` entries for discovered members that
+    /// inherit the workspace package version and whose local dependency
+    /// version matched `old_version`.
+    ///
+    /// Split out of `update_version` — which otherwise mixes "compute and
+    /// write the workspace root's own version" with this separate
+    /// member-fan-out concern. Extracting it also makes the lock scope
+    /// structural rather than a hand-maintained inner block: the guard cannot
+    /// outlive this synchronous, non-`async` helper, so it is always dropped
+    /// before the caller reaches its `.await` and the caller's future stays
+    /// `Send` for the N-API and PyO3 bridges.
+    ///
+    /// `old_version` is passed in rather than re-derived so the "reserve
+    /// 0.0.0 when unversioned" fallback stays expressed exactly ONCE, in
+    /// `update_version`.
+    fn sync_workspace_dependency_versions(
+        &self,
+        ws_deps: &mut toml_edit::Table,
+        old_version: &str,
+        new_version: &str,
+    ) {
+        // Hold the lock GUARD instead of deep-cloning the two
+        // `HashSet<String>` behind it: the clone used to run on every
+        // workspace bump even when the caller's `if let` did not fire.
+        // Auto-deref makes `contains_dependency` read unchanged through the
+        // guard.
+        let inherited_workspace_members = lock_recovering(&self.inherited_workspace_members);
+        for (dependency_key, value) in ws_deps.iter_mut() {
+            let dependency_key = dependency_key.get();
+            let package_name = crate::finder::effective_dependency_name(dependency_key, value);
+            if !inherited_workspace_members.contains_dependency(dependency_key, package_name) {
+                continue;
+            }
+            // The path-dep shape gates (`as_table_like_mut`, an existing
+            // `path`, an existing string `version`) and the decor-preserving
+            // in-place rewrite are shared with `update_workspace_dependencies`
+            // and live in `crate::sync_path_dependency_version`; only the
+            // in-scope decision differs and is passed in here. Only the numeric
+            // tail (`split_version`'s `.1`) gates this sync, so a member pinned
+            // at some other version is left alone.
+            crate::sync_path_dependency_version(value, new_version, |ver_str| {
+                split_version(ver_str).1 == old_version
+            });
+        }
+    }
 }
 
 #[async_trait]
@@ -210,37 +256,15 @@ impl Workspace for RustWorkspace {
         // Sync [workspace.dependencies] only for discovered members that inherit
         // the workspace package version and whose local dependency version matched
         // the old workspace version.
+        // The fan-out itself is a separate concern from computing and writing
+        // this manifest's own version, so it lives in the synchronous
+        // `Self::sync_workspace_dependency_versions` — see its doc comment for
+        // why that also makes the lock scoping structural. `old_version` is
+        // hoisted to the top of this function so both the `next_version`
+        // fallback and this sync share one "reserve 0.0.0 when unversioned"
+        // source.
         if let Some(ws_deps) = crate::workspace_dependencies_table_mut(&mut cargo_toml) {
-            // Hold the lock GUARD instead of deep-cloning the two
-            // `HashSet<String>` behind it: the clone used to run on every
-            // workspace bump even when this `if let` did not fire. Taken
-            // inside the block so the guard is dropped at its closing brace,
-            // strictly before the `.await` below — that keeps this future
-            // `Send` for the N-API and PyO3 bridges. Auto-deref makes
-            // `contains_dependency` read unchanged through the guard.
-            //
-            // `old_version` is hoisted to the top of this function so both the
-            // `next_version` fallback and this workspace-deps sync share the
-            // same "reserve 0.0.0 when unversioned" source.
-            let inherited_workspace_members = lock_recovering(&self.inherited_workspace_members);
-            for (dependency_key, value) in ws_deps.iter_mut() {
-                let dependency_key = dependency_key.get();
-                let package_name = crate::finder::effective_dependency_name(dependency_key, value);
-                if !inherited_workspace_members.contains_dependency(dependency_key, package_name) {
-                    continue;
-                }
-                // The path-dep shape gates (`as_table_like_mut`, an existing
-                // `path`, an existing string `version`) and the decor-preserving
-                // in-place rewrite are shared with
-                // `update_workspace_dependencies` below and live in
-                // `crate::sync_path_dependency_version`; only the in-scope
-                // decision differs and is passed in here. Only the numeric tail
-                // (`split_version`'s `.1`) gates this sync, so a member pinned
-                // at some other version is left alone.
-                crate::sync_path_dependency_version(value, &new_version, |ver_str| {
-                    split_version(ver_str).1 == old_version
-                });
-            }
+            self.sync_workspace_dependency_versions(ws_deps, old_version, &new_version);
         }
 
         write_finalized(

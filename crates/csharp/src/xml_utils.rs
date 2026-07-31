@@ -126,6 +126,87 @@ fn write_line_break_and_indent<W: std::io::Write>(
     Ok(())
 }
 
+/// Insert a synthesized `<Version>` immediately before the `</PropertyGroup>`
+/// that is closing now.
+///
+/// `close_ws` is the whitespace run that directly preceded the close tag, when
+/// the group ended with one. That run already carries the group's own
+/// indentation, so it is replayed verbatim after the new element (keeping
+/// `</PropertyGroup>` in its original column) and the new element only needs
+/// one further level of `indent` in front of it. A group that had no such run
+/// was written inline, so both sides are synthesized from `line_ending` plus
+/// `group_indent` instead.
+fn write_version_before_property_group_end<W: std::io::Write>(
+    writer: &mut Writer<W>,
+    version_qname: &str,
+    new_version: &str,
+    close_ws: Option<&str>,
+    group_indent: &str,
+    line_ending: &str,
+    indent: &str,
+) -> Result<()> {
+    if let Some(trailing) = close_ws {
+        if contains_line_break(trailing) {
+            writer.write_event(Event::Text(BytesText::new(indent)))?;
+        }
+    } else if !line_ending.is_empty() {
+        let inner_indent = format!("{group_indent}{indent}");
+        write_line_break_and_indent(writer, line_ending, &inner_indent)?;
+    }
+    write_version_element(writer, version_qname, new_version)?;
+    if let Some(trailing) = close_ws {
+        writer.write_event(Event::Text(BytesText::new(trailing)))?;
+    } else {
+        write_line_break_and_indent(writer, line_ending, group_indent)?;
+    }
+    Ok(())
+}
+
+/// Synthesize a whole `<PropertyGroup><Version>...</Version></PropertyGroup>`
+/// immediately before the `</Project>` that is closing now, for a document that
+/// offered no eligible group to insert into.
+///
+/// Both new qualified names inherit `project_qname`'s prefix. `group_indent` is
+/// the column the document already uses for `<Project>`'s children, and
+/// `project_close_ws` is the whitespace run that directly preceded
+/// `</Project>`: when it exists it is replayed verbatim after the new group, so
+/// only the indent ahead of the group has to be re-emitted, and only when that
+/// run actually broke the line.
+fn write_property_group_before_project_end<W: std::io::Write>(
+    writer: &mut Writer<W>,
+    project_qname: &str,
+    new_version: &str,
+    project_close_ws: Option<&str>,
+    group_indent: &str,
+    line_ending: &str,
+    indent: &str,
+) -> Result<()> {
+    let property_group_qname = qname_with_local_name(project_qname, "PropertyGroup");
+    let version_qname = qname_with_local_name(project_qname, "Version");
+    if let Some(trailing) = project_close_ws {
+        if contains_line_break(trailing) {
+            writer.write_event(Event::Text(BytesText::new(group_indent)))?;
+        }
+    } else {
+        write_line_break_and_indent(writer, line_ending, group_indent)?;
+    }
+
+    writer.write_event(Event::Start(BytesStart::new(&property_group_qname)))?;
+    if !line_ending.is_empty() {
+        let inner_indent = format!("{group_indent}{indent}");
+        write_line_break_and_indent(writer, line_ending, &inner_indent)?;
+    }
+    write_version_element(writer, &version_qname, new_version)?;
+    write_line_break_and_indent(writer, line_ending, group_indent)?;
+    writer.write_event(Event::End(BytesEnd::new(&property_group_qname)))?;
+    if let Some(trailing) = project_close_ws {
+        writer.write_event(Event::Text(BytesText::new(trailing)))?;
+    } else if !line_ending.is_empty() {
+        writer.write_event(Event::Text(BytesText::new(line_ending)))?;
+    }
+    Ok(())
+}
+
 fn trailing_indentation(whitespace: &str) -> &str {
     let start = whitespace
         .as_bytes()
@@ -264,24 +345,15 @@ fn rewrite_version(content: &str, new_version: &str, has_version: bool) -> Resul
                         && !has_version
                         && let Some(version_qname) = property_group.version_qname
                     {
-                        if let Some(trailing) = property_group.close_ws.as_deref() {
-                            if contains_line_break(trailing) {
-                                writer.write_event(Event::Text(BytesText::new(indent)))?;
-                            }
-                        } else if !line_ending.is_empty() {
-                            let inner_indent = format!("{}{indent}", property_group.indent);
-                            write_line_break_and_indent(&mut writer, line_ending, &inner_indent)?;
-                        }
-                        write_version_element(&mut writer, &version_qname, new_version)?;
-                        if let Some(trailing) = property_group.close_ws.as_deref() {
-                            writer.write_event(Event::Text(BytesText::new(trailing)))?;
-                        } else {
-                            write_line_break_and_indent(
-                                &mut writer,
-                                line_ending,
-                                &property_group.indent,
-                            )?;
-                        }
+                        write_version_before_property_group_end(
+                            &mut writer,
+                            &version_qname,
+                            new_version,
+                            property_group.close_ws.as_deref(),
+                            &property_group.indent,
+                            line_ending,
+                            indent,
+                        )?;
                         version_updated = true;
                     }
                 } else if name.as_ref() == b"Version" {
@@ -304,36 +376,15 @@ fn rewrite_version(content: &str, new_version: &str, has_version: bool) -> Resul
                     && !has_version
                     && let Some(project_qname) = project_qname.as_deref()
                 {
-                    let property_group_qname =
-                        qname_with_local_name(project_qname, "PropertyGroup");
-                    let version_qname = qname_with_local_name(project_qname, "Version");
-                    let fallback_group_indent = fallback_group_indent.as_deref().unwrap_or("");
-                    if let Some(trailing) = project_close_ws.as_deref() {
-                        if contains_line_break(trailing) {
-                            writer
-                                .write_event(Event::Text(BytesText::new(fallback_group_indent)))?;
-                        }
-                    } else {
-                        write_line_break_and_indent(
-                            &mut writer,
-                            line_ending,
-                            fallback_group_indent,
-                        )?;
-                    }
-
-                    writer.write_event(Event::Start(BytesStart::new(&property_group_qname)))?;
-                    if !line_ending.is_empty() {
-                        let inner_indent = format!("{fallback_group_indent}{indent}");
-                        write_line_break_and_indent(&mut writer, line_ending, &inner_indent)?;
-                    }
-                    write_version_element(&mut writer, &version_qname, new_version)?;
-                    write_line_break_and_indent(&mut writer, line_ending, fallback_group_indent)?;
-                    writer.write_event(Event::End(BytesEnd::new(&property_group_qname)))?;
-                    if let Some(trailing) = project_close_ws.as_deref() {
-                        writer.write_event(Event::Text(BytesText::new(trailing)))?;
-                    } else if !line_ending.is_empty() {
-                        writer.write_event(Event::Text(BytesText::new(line_ending)))?;
-                    }
+                    write_property_group_before_project_end(
+                        &mut writer,
+                        project_qname,
+                        new_version,
+                        project_close_ws.as_deref(),
+                        fallback_group_indent.as_deref().unwrap_or(""),
+                        line_ending,
+                        indent,
+                    )?;
                     version_updated = true;
                 }
                 writer.write_event(Event::End(e))?;

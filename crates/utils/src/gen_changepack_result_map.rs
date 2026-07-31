@@ -94,14 +94,6 @@ mod tests {
         Project::Package(Box::new(package))
     }
 
-    // Helper function to extract field from JSON
-    fn get_json_field<'a>(
-        json: &'a serde_json::Value,
-        field: &str,
-    ) -> Option<&'a serde_json::Value> {
-        json.get(field)
-    }
-
     #[test]
     fn test_gen_changepack_result_map_with_update_result() {
         let temp_dir = TempDir::new().unwrap();
@@ -142,26 +134,18 @@ mod tests {
 
         // Serialize to JSON to verify fields
         let json = serde_json::to_value(change_result).unwrap();
+        assert_eq!(json.get("version").and_then(|v| v.as_str()), Some("1.0.0"));
         assert_eq!(
-            get_json_field(&json, "version").and_then(|v| v.as_str()),
-            Some("1.0.0")
-        );
-        assert_eq!(
-            get_json_field(&json, "nextVersion").and_then(|v| v.as_str()),
+            json.get("nextVersion").and_then(|v| v.as_str()),
             Some("1.0.1")
         );
         assert_eq!(
-            get_json_field(&json, "name").and_then(|v| v.as_str()),
+            json.get("name").and_then(|v| v.as_str()),
             Some("test-package")
         );
+        assert_eq!(json.get("changed").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(
-            get_json_field(&json, "changed").and_then(|v| v.as_bool()),
-            Some(true)
-        );
-        assert_eq!(
-            get_json_field(&json, "logs")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
+            json.get("logs").and_then(|v| v.as_array()).map(|a| a.len()),
             Some(1)
         );
 
@@ -199,26 +183,15 @@ mod tests {
 
         // Serialize to JSON to verify fields
         let json = serde_json::to_value(change_result).unwrap();
+        assert_eq!(json.get("version").and_then(|v| v.as_str()), Some("2.5.3"));
+        assert!(json.get("nextVersion").is_none() || json.get("nextVersion").unwrap().is_null());
         assert_eq!(
-            get_json_field(&json, "version").and_then(|v| v.as_str()),
-            Some("2.5.3")
-        );
-        assert!(
-            get_json_field(&json, "nextVersion").is_none()
-                || get_json_field(&json, "nextVersion").unwrap().is_null()
-        );
-        assert_eq!(
-            get_json_field(&json, "name").and_then(|v| v.as_str()),
+            json.get("name").and_then(|v| v.as_str()),
             Some("test-package-2")
         );
+        assert_eq!(json.get("changed").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(
-            get_json_field(&json, "changed").and_then(|v| v.as_bool()),
-            Some(false)
-        );
-        assert_eq!(
-            get_json_field(&json, "logs")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
+            json.get("logs").and_then(|v| v.as_array()).map(|a| a.len()),
             Some(0)
         );
 
@@ -286,16 +259,14 @@ mod tests {
 
         let result1 = result.get(&PathBuf::from("project1/package.json")).unwrap();
         let json1 = serde_json::to_value(result1).unwrap();
+        assert_eq!(json1.get("version").and_then(|v| v.as_str()), Some("1.0.0"));
         assert_eq!(
-            get_json_field(&json1, "version").and_then(|v| v.as_str()),
-            Some("1.0.0")
-        );
-        assert_eq!(
-            get_json_field(&json1, "nextVersion").and_then(|v| v.as_str()),
+            json1.get("nextVersion").and_then(|v| v.as_str()),
             Some("1.1.0")
         );
         assert_eq!(
-            get_json_field(&json1, "logs")
+            json1
+                .get("logs")
                 .and_then(|v| v.as_array())
                 .map(|a| a.len()),
             Some(1)
@@ -303,16 +274,11 @@ mod tests {
 
         let result2 = result.get(&PathBuf::from("project2/package.json")).unwrap();
         let json2 = serde_json::to_value(result2).unwrap();
+        assert_eq!(json2.get("version").and_then(|v| v.as_str()), Some("2.0.0"));
+        assert!(json2.get("nextVersion").is_none() || json2.get("nextVersion").unwrap().is_null());
         assert_eq!(
-            get_json_field(&json2, "version").and_then(|v| v.as_str()),
-            Some("2.0.0")
-        );
-        assert!(
-            get_json_field(&json2, "nextVersion").is_none()
-                || get_json_field(&json2, "nextVersion").unwrap().is_null()
-        );
-        assert_eq!(
-            get_json_field(&json2, "logs")
+            json2
+                .get("logs")
                 .and_then(|v| v.as_array())
                 .map(|a| a.len()),
             Some(0)
@@ -360,12 +326,9 @@ mod tests {
 
         let change_result = result.get(&PathBuf::from("project3/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
+        assert_eq!(json.get("version").and_then(|v| v.as_str()), Some("1.2.3"));
         assert_eq!(
-            get_json_field(&json, "version").and_then(|v| v.as_str()),
-            Some("1.2.3")
-        );
-        assert_eq!(
-            get_json_field(&json, "nextVersion").and_then(|v| v.as_str()),
+            json.get("nextVersion").and_then(|v| v.as_str()),
             Some("2.0.0")
         );
 
@@ -411,12 +374,9 @@ mod tests {
         let change_result = result.get(&PathBuf::from("project4/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
         // When version is "0.0.0", next_version should be "0.0.1" for Patch update
+        assert_eq!(json.get("version").and_then(|v| v.as_str()), Some("0.0.0"));
         assert_eq!(
-            get_json_field(&json, "version").and_then(|v| v.as_str()),
-            Some("0.0.0")
-        );
-        assert_eq!(
-            get_json_field(&json, "nextVersion").and_then(|v| v.as_str()),
+            json.get("nextVersion").and_then(|v| v.as_str()),
             Some("0.0.1")
         );
 
@@ -455,15 +415,9 @@ mod tests {
         let change_result = result.get(&PathBuf::from("nameless/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
         // The missing name must survive as JSON `null`, not be defaulted away.
-        assert_eq!(
-            get_json_field(&json, "name"),
-            Some(&serde_json::Value::Null)
-        );
+        assert_eq!(json.get("name"), Some(&serde_json::Value::Null));
         // The rest of the entry is unaffected by the missing name.
-        assert_eq!(
-            get_json_field(&json, "version").and_then(|v| v.as_str()),
-            Some("1.0.0")
-        );
+        assert_eq!(json.get("version").and_then(|v| v.as_str()), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -509,9 +463,7 @@ mod tests {
         let change_result = result.get(&PathBuf::from("project5/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
         assert_eq!(
-            get_json_field(&json, "logs")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
+            json.get("logs").and_then(|v| v.as_array()).map(|a| a.len()),
             Some(3)
         );
 
@@ -570,10 +522,7 @@ mod tests {
         let change_result = result.get(&PathBuf::from("projectA/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
         // No matching entry means no nextVersion
-        assert!(
-            get_json_field(&json, "nextVersion").is_none()
-                || get_json_field(&json, "nextVersion").unwrap().is_null()
-        );
+        assert!(json.get("nextVersion").is_none() || json.get("nextVersion").unwrap().is_null());
         // gen_changepack_result_map no longer drains its input, so every entry remains
         assert_eq!(update_result.len(), 1);
 

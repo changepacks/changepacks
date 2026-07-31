@@ -60,6 +60,12 @@
 //!   (`[package]` in `Cargo.toml`, `[project]` in `pyproject.toml`) holds a
 //!   non-table scalar, and reports whether the key exists, so the Rust and
 //!   Python writers share ONE guard instead of two mirrored copies.
+//! - **TOML table field string reader** (optional `toml` feature) —
+//!   `toml_item_str` reads `<table>.<field>` as an owned `String`, yielding
+//!   `None` for an absent table, a missing field, or a non-string value, so
+//!   the Rust finder's `[package]` / `[workspace.package]` readers and the
+//!   Python finder's `[project]` reader share ONE lookup chain instead of
+//!   three byte-identical copies.
 //! - **TOML decor-preserving assignment** (optional `toml` feature) —
 //!   `assign_preserving_decor` overwrites a value slot while carrying the old
 //!   value's `toml_edit::Decor` across, so an end-of-line comment or unusual
@@ -113,6 +119,8 @@ mod sort_by_dep;
 mod split_version;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+#[cfg(feature = "toml")]
+mod toml_item_str;
 mod trailing_newline;
 #[cfg(feature = "toml")]
 mod write_toml_table_version;
@@ -154,6 +162,8 @@ pub use sort_by_dep::{
     sort_by_dependencies,
 };
 pub use split_version::{replace_version_keep_prefix, split_version};
+#[cfg(feature = "toml")]
+pub use toml_item_str::toml_item_str;
 pub use trailing_newline::write_finalized;
 #[cfg(feature = "toml")]
 pub use write_toml_table_version::write_toml_table_version;
