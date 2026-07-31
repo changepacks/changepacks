@@ -50,59 +50,6 @@ pub(crate) fn is_unconditional_project_property_group(
     )
 }
 
-fn has_eligible_version(content: &str) -> Result<bool> {
-    let mut reader = Reader::from_str(content);
-    let mut buf = Vec::with_capacity(256);
-    let mut element_depth = 0usize;
-    let mut project_depth = None;
-    let mut eligible_property_group_depth = None;
-
-    loop {
-        match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(element)) => {
-                element_depth += 1;
-                let name = element.local_name();
-                if name.as_ref() == b"Project" && project_depth.is_none() {
-                    project_depth = Some(element_depth);
-                } else if name.as_ref() == b"PropertyGroup"
-                    && is_unconditional_project_property_group(
-                        &element,
-                        element_depth,
-                        project_depth,
-                    )?
-                {
-                    eligible_property_group_depth = Some(element_depth);
-                } else if name.as_ref() == b"Version"
-                    && eligible_property_group_depth.is_some_and(|depth| element_depth == depth + 1)
-                {
-                    return Ok(true);
-                }
-            }
-            Ok(Event::Empty(element)) => {
-                if element.local_name().as_ref() == b"Version"
-                    && eligible_property_group_depth.is_some_and(|depth| element_depth == depth)
-                {
-                    return Ok(true);
-                }
-            }
-            Ok(Event::End(element)) => {
-                if element.local_name().as_ref() == b"PropertyGroup"
-                    && eligible_property_group_depth == Some(element_depth)
-                {
-                    eligible_property_group_depth = None;
-                }
-                element_depth = element_depth
-                    .checked_sub(1)
-                    .context("unexpected XML end tag")?;
-            }
-            Ok(Event::Eof) => return Ok(false),
-            Err(error) => return Err(anyhow::anyhow!("XML parsing error: {error}")),
-            Ok(_) => {}
-        }
-        buf.clear();
-    }
-}
-
 fn qname_with_local_name(qname: &str, local_name: &str) -> String {
     qname.rsplit_once(':').map_or_else(
         || local_name.to_owned(),
@@ -126,11 +73,19 @@ fn contains_line_break(whitespace: &str) -> bool {
         .any(|byte| matches!(byte, b'\n' | b'\r'))
 }
 
-/// Update version in csproj XML content using quick-xml
-/// Returns the updated XML content or adds Version if it doesn't exist.
-/// Errors when no supported XML node can be updated.
-pub fn update_version_in_xml(content: &str, new_version: &str) -> Result<String> {
-    let has_version = has_eligible_version(content)?;
+/// Render `content` with `new_version` applied and report whether any XML node
+/// was actually mutated.
+///
+/// `has_version` claims that the document already carries an eligible
+/// `<Version>` element. It gates *only* the four synthesis branches (adding a
+/// `<Version>` to a `PropertyGroup`, adding a whole `PropertyGroup` to
+/// `<Project>`, and the two self-closing counterparts); the branches that
+/// rewrite an existing `<Version>` in place are never gated by it. A
+/// `has_version = true` pass therefore flips `version_updated` exactly when an
+/// eligible `<Version>` exists, which is what lets [`update_version_in_xml`]
+/// use it as the eligibility probe instead of running a separate detection
+/// parse over the same document.
+fn rewrite_version(content: &str, new_version: &str, has_version: bool) -> Result<(String, bool)> {
     let mut reader = Reader::from_str(content);
     let mut writer = Writer::new(Cursor::new(Vec::with_capacity(content.len())));
 
@@ -511,14 +466,33 @@ pub fn update_version_in_xml(content: &str, new_version: &str) -> Result<String>
         buf.clear();
     }
 
-    if !version_updated {
-        return Err(anyhow::anyhow!(
-            "C# version update did not mutate any XML node"
-        ));
+    let result = writer.into_inner().into_inner();
+    let rendered = String::from_utf8(result).context("Failed to convert XML to UTF-8")?;
+    Ok((rendered, version_updated))
+}
+
+/// Update version in csproj XML content using quick-xml
+/// Returns the updated XML content or adds Version if it doesn't exist.
+/// Errors when no supported XML node can be updated.
+pub fn update_version_in_xml(content: &str, new_version: &str) -> Result<String> {
+    // First pass doubles as the eligibility probe: with `has_version = true`
+    // every synthesis branch is disabled, so the pass mutates a node exactly
+    // when the document already holds an eligible `<Version>` — and when it
+    // does, its output is already the final answer. Only a document that needs
+    // a `<Version>` synthesized pays a second parse.
+    let (rendered, version_updated) = rewrite_version(content, new_version, true)?;
+    if version_updated {
+        return Ok(rendered);
     }
 
-    let result = writer.into_inner().into_inner();
-    String::from_utf8(result).context("Failed to convert XML to UTF-8")
+    let (rendered, version_updated) = rewrite_version(content, new_version, false)?;
+    if version_updated {
+        return Ok(rendered);
+    }
+
+    Err(anyhow::anyhow!(
+        "C# version update did not mutate any XML node"
+    ))
 }
 
 #[cfg(test)]

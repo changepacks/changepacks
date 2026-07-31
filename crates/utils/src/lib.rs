@@ -87,6 +87,7 @@
 //!   from the git repository root.
 
 mod applied_change_spans;
+mod apply_reverse_dependencies;
 #[cfg(feature = "toml")]
 mod assign_preserving_decor;
 mod bump_version_with;
@@ -126,6 +127,7 @@ pub(crate) use is_changepack_log::read_log_bodies;
 // gix touch point.
 pub use gix::ThreadSafeRepository;
 
+pub use apply_reverse_dependencies::apply_reverse_dependencies;
 #[cfg(feature = "toml")]
 pub use assign_preserving_decor::assign_preserving_decor;
 pub use bump_version_with::bump_version_with;
@@ -138,9 +140,7 @@ pub use ensure_toml_table_like::ensure_toml_table_like;
 pub use find_current_git_repo::find_current_git_repo;
 pub use find_project_dirs::find_project_dirs;
 pub use gen_changepack_result_map::gen_changepack_result_map;
-pub use gen_update_map::{
-    CARRY_FORWARD_LOG_PREFIX, UpdatePlan, apply_reverse_dependencies, gen_update_map,
-};
+pub use gen_update_map::{CARRY_FORWARD_LOG_PREFIX, UpdatePlan, gen_update_map};
 pub use get_changepacks_config::{get_changepacks_config, get_changepacks_config_at};
 pub use get_changepacks_dir::get_changepacks_dir;
 pub use get_relative_path::{get_relative_path, get_relative_path_ref};
