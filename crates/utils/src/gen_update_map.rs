@@ -15,7 +15,7 @@ use crate::{
     apply_reverse_dependencies::{
         ReverseDependencyContext, apply_reverse_dependencies_with_provenance,
     },
-    collect_changepack_log_paths,
+    collect_changepack_log_paths, file_name_has_ascii_prefix,
     project_names::compare_paths,
     read_log_bodies,
 };
@@ -213,20 +213,12 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
     for (path, body) in paths.iter().zip(bodies) {
         let file_json: ChangePackLog = serde_json::from_str(&body)
             .with_context(|| format!("Failed to parse changepack log {}", path.display()))?;
-        // Gate on `OsStr::as_encoded_bytes`, the SAME policy as the sibling
-        // `.changepacks` filename gate in `crates/utils/src/is_changepack_log.rs:27-36`,
-        // which documents at length why the encoded-bytes form accepts exactly the
-        // same set of names: `CARRY_FORWARD_LOG_PREFIX` is pure ASCII, Unix bytes and
-        // Windows WTF-8 encode ASCII identically, and `to_string_lossy` only ever
-        // rewrites *invalid* sequences into the non-ASCII `U+FFFD` replacement char,
-        // so it can neither create nor destroy an ASCII-prefix match. Drops the
-        // `Cow::Owned` allocation on any non-UTF-8 log filename and — more
-        // importantly — puts both `.changepacks` filename gates on ONE policy so
-        // neither can drift from the other.
+        // Both `.changepacks` filename gates run through the ONE shared
+        // encoded-bytes policy owned by `file_name_has_ascii_prefix`, so neither
+        // can drift from the other. See that helper for why the encoded-bytes
+        // form accepts exactly the same names as a lossy `&str` view.
         let is_carry_forward = path.file_name().is_some_and(|file_name| {
-            file_name
-                .as_encoded_bytes()
-                .starts_with(CARRY_FORWARD_LOG_PREFIX.as_bytes())
+            file_name_has_ascii_prefix(file_name, CARRY_FORWARD_LOG_PREFIX)
         });
         for (project_path, update_type) in file_json.changes() {
             if is_carry_forward {
@@ -281,9 +273,9 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
                 *update_type,
                 file_json.note().to_string(),
             ));
-            if ret.0 > *update_type {
-                ret.0 = *update_type;
-            }
+            // `UpdateType` orders `Major < Minor < Patch`, so the minimum is the
+            // most severe bump requested for this project across all logs.
+            ret.0 = ret.0.min(*update_type);
         }
     }
 

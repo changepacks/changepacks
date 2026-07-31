@@ -13,6 +13,32 @@ fn read_dir_context(dir: &Path) -> String {
     format!("Failed to read changepacks directory {}", dir.display())
 }
 
+/// Returns `true` iff the raw `file_name` starts with the pure-ASCII `prefix`.
+///
+/// THE single filename-prefix policy for every `.changepacks/` filename gate:
+/// the `changepack_log_` gate in [`is_changepack_log_json_name`] below and the
+/// [`crate::CARRY_FORWARD_LOG_PREFIX`] gate in [`crate::gen_update_map`]. Both
+/// classify entries of the same directory, so a drift between two hand-rolled
+/// copies would silently split one policy into two.
+///
+/// Takes an [`OsStr`] and gates on [`OsStr::as_encoded_bytes`] so the per-entry
+/// `to_string_lossy` scan-and-maybe-allocate is gone: the sought prefixes are
+/// pure ASCII, Unix bytes and Windows WTF-8 encode ASCII identically, and
+/// `to_string_lossy` only ever rewrites *invalid* sequences (into non-ASCII
+/// `U+FFFD`), so it can neither create nor destroy an ASCII-prefix match and the
+/// encoded-bytes gate accepts exactly the same names.
+///
+/// Callers must pass an ASCII-only `prefix`; a non-ASCII one would compare raw
+/// UTF-8 bytes against a platform-specific encoding and is not a supported input.
+#[must_use]
+pub(crate) fn file_name_has_ascii_prefix(file_name: &OsStr, prefix: &str) -> bool {
+    debug_assert!(
+        prefix.is_ascii(),
+        "file_name_has_ascii_prefix requires an ASCII prefix, got {prefix:?}"
+    );
+    file_name.as_encoded_bytes().starts_with(prefix.as_bytes())
+}
+
 /// Returns `true` iff `file_name` matches `changepack_log_*.json`, with a
 /// case-insensitive extension match.
 ///
@@ -24,14 +50,11 @@ fn read_dir_context(dir: &Path) -> String {
 /// still going to parse, or (b) let the reader parse a file the cleaner would have
 /// deleted — both silent-data-loss shapes.
 ///
-/// Takes an [`OsStr`] and gates on [`OsStr::as_encoded_bytes`] so the per-entry
-/// `to_string_lossy` scan-and-maybe-allocate is gone: the sought prefix is pure
-/// ASCII, Unix bytes and Windows WTF-8 encode ASCII identically, and
-/// `to_string_lossy` only ever rewrites *invalid* sequences (into non-ASCII
-/// `U+FFFD`), so the encoded-bytes gate accepts exactly the same names.
+/// The prefix half is delegated to [`file_name_has_ascii_prefix`], which owns the
+/// encoded-bytes policy shared with the carry-forward gate.
 #[must_use]
 fn is_changepack_log_json_name(file_name: &OsStr) -> bool {
-    file_name.as_encoded_bytes().starts_with(b"changepack_log_")
+    file_name_has_ascii_prefix(file_name, "changepack_log_")
         && has_extension_ignore_ascii_case(Path::new(file_name), "json")
 }
 

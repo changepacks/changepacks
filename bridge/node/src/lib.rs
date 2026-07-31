@@ -15,8 +15,8 @@ use napi_derive::napi;
 /// Returns an error if the CLI command execution fails.
 #[cfg(not(tarpaulin_include))]
 pub async fn main() -> Result<()> {
-  changepacks_cli::main_from_env(true).await.map_err(|e| {
-    changepacks_cli::exit_if_user_cancelled(&e);
-    Error::from_reason(format!("{e:#}"))
-  })
+  changepacks_cli::main_from_env(true)
+    .await
+    .inspect_err(changepacks_cli::exit_if_user_cancelled)
+    .map_err(|e| Error::from_reason(format!("{e:#}")))
 }

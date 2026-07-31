@@ -117,7 +117,7 @@ mod trailing_newline;
 #[cfg(feature = "toml")]
 mod write_toml_table_version;
 
-pub(crate) use is_changepack_log::read_log_bodies;
+pub(crate) use is_changepack_log::{file_name_has_ascii_prefix, read_log_bodies};
 
 // Re-export the concrete `gix` handle type that this crate's own signatures
 // expose: `find_current_git_repo` returns a `ThreadSafeRepository` and

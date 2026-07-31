@@ -113,16 +113,6 @@ mod tests {
         assert!(matches!(filter, FilterOptions::Package));
     }
 
-    fn rust_package() -> Project {
-        Project::Package(Box::new(MockPackage::with_all(
-            Some("rust-pkg"),
-            Some("1.0.0"),
-            "/repo/crates/pkg/Cargo.toml",
-            "crates/pkg/Cargo.toml",
-            Language::Rust,
-        )))
-    }
-
     fn node_package() -> Project {
         Project::Package(Box::new(MockPackage::with_all(
             Some("node-pkg"),
@@ -156,7 +146,7 @@ mod tests {
         #[case] langs: &[CliLanguage],
         #[case] expected: &[&str],
     ) {
-        let projects = [workspace_project(), rust_package(), node_package()];
+        let projects = [workspace_project(), package_project(), node_package()];
         let mut refs: Vec<&Project> = projects.iter().collect();
 
         retain_by_filters(&mut refs, filter, langs);

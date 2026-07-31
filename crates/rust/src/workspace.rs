@@ -963,10 +963,7 @@ path = "crates/utils"
 core = { version = "~1.2.3", path = "crates/core" }
 "#;
         fs::write(&cargo_toml, original).unwrap();
-        let writable_permissions = fs::metadata(&cargo_toml).unwrap().permissions();
-        let mut readonly_permissions = writable_permissions.clone();
-        readonly_permissions.set_readonly(true);
-        fs::set_permissions(&cargo_toml, readonly_permissions).unwrap();
+        changepacks_utils::test_support::set_readonly(&cargo_toml, true);
 
         let workspace = RustWorkspace::new(
             Some("test-workspace".to_string()),
@@ -987,7 +984,7 @@ core = { version = "~1.2.3", path = "crates/core" }
             .unwrap();
 
         assert_eq!(fs::read(&cargo_toml).unwrap(), original.as_bytes());
-        fs::set_permissions(&cargo_toml, writable_permissions).unwrap();
+        changepacks_utils::test_support::set_readonly(&cargo_toml, false);
         temp_dir.close().unwrap();
     }
 
@@ -1003,10 +1000,7 @@ version = "^2.0.0"
 path = "crates/core"
 "#;
         fs::write(&cargo_toml, original).unwrap();
-        let writable_permissions = fs::metadata(&cargo_toml).unwrap().permissions();
-        let mut readonly_permissions = writable_permissions.clone();
-        readonly_permissions.set_readonly(true);
-        fs::set_permissions(&cargo_toml, readonly_permissions).unwrap();
+        changepacks_utils::test_support::set_readonly(&cargo_toml, true);
 
         let workspace = RustWorkspace::new(
             Some("test-workspace".to_string()),
@@ -1027,7 +1021,7 @@ path = "crates/core"
             .unwrap();
 
         assert_eq!(fs::read(&cargo_toml).unwrap(), original.as_bytes());
-        fs::set_permissions(&cargo_toml, writable_permissions).unwrap();
+        changepacks_utils::test_support::set_readonly(&cargo_toml, false);
         temp_dir.close().unwrap();
     }
 
