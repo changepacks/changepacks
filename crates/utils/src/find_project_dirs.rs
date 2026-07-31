@@ -385,6 +385,7 @@ pub async fn find_project_dirs(
 mod tests {
     use super::*;
     use crate::test_support::{discover_repo, git_add_and_commit, init_git_repo, run_git};
+    use changepacks_core::normalize_path_separators_of;
     use changepacks_node::finder::NodeProjectFinder;
     use std::{
         future::Future,
@@ -1811,7 +1812,7 @@ mod tests {
             .flat_map(|f| f.projects())
             .map(|project| {
                 (
-                    project.relative_path().to_string_lossy().replace('\\', "/"),
+                    normalize_path_separators_of(project.relative_path()).into_owned(),
                     project.name().map(String::from),
                 )
             })

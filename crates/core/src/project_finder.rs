@@ -536,9 +536,9 @@ pub fn has_extension_ignore_ascii_case(path: &Path, ext: &str) -> bool {
 
 /// Returns `Ok(true)` when `path` refers to an existing regular file.
 ///
-/// AGENTS.md rule: never blocking I/O in async — use `tokio::fs::metadata`.
-/// A missing path or directory returns `Ok(false)`. Other metadata errors are
-/// propagated with the failing path in their context.
+/// Boolean shorthand over [`regular_file_metadata`], which owns the triage:
+/// a missing path or directory returns `Ok(false)`, and other metadata errors
+/// are propagated with the failing path in their context.
 ///
 /// Shared between `ProjectFinder::matches_project_file` (name-based match
 /// used by every language) and `CSharpProjectFinder::visit` (extension-based
@@ -546,9 +546,30 @@ pub fn has_extension_ignore_ascii_case(path: &Path, ext: &str) -> bool {
 /// place. Public so cross-crate callers (e.g. `changepacks-csharp`) can
 /// reuse it via the re-export from `changepacks_core::lib.rs`.
 pub async fn is_regular_file(path: &Path) -> Result<bool> {
+    Ok(regular_file_metadata(path).await?.is_some())
+}
+
+/// Returns `Ok(Some(metadata))` when `path` refers to an existing regular
+/// file, and `Ok(None)` when it is missing or is not a regular file.
+///
+/// This is the single owner of the metadata triage ladder shared by every
+/// language crate: `is_file()` decides regular-vs-other,
+/// [`std::io::ErrorKind::NotFound`] is normalized to "absent", and any other
+/// metadata error is propagated with the failing path in its context.
+///
+/// [`is_regular_file`] is the boolean shorthand over this function. Callers
+/// that additionally need something *from* the same
+/// [`std::fs::Metadata`] — e.g. `changepacks-java` reading the Unix
+/// permission bits of a `java` candidate — must use this function rather
+/// than `is_regular_file` followed by their own `metadata` call, because a
+/// second stat is both a wasted syscall and a TOCTOU window.
+///
+/// AGENTS.md rule: never blocking I/O in async — uses `tokio::fs::metadata`.
+pub async fn regular_file_metadata(path: &Path) -> Result<Option<std::fs::Metadata>> {
     match tokio::fs::metadata(path).await {
-        Ok(metadata) => Ok(metadata.is_file()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Ok(metadata) if metadata.is_file() => Ok(Some(metadata)),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => {
             Err(error).with_context(|| format!("Failed to read metadata for {}", path.display()))
         }
@@ -1411,6 +1432,67 @@ mod tests {
         assert!(
             chain.contains(&invalid_path.display().to_string()),
             "error chain should name the path whose metadata failed, got: {chain}"
+        );
+    }
+
+    // `regular_file_metadata` is the ladder `is_regular_file` and the Java
+    // executable probe both sit on, and it is the only one of the two that
+    // hands the caller the stat'ed `Metadata`. These cases pin that extra
+    // guarantee: the returned metadata must describe the file itself, and the
+    // non-file exits must stay indistinguishable `None`s.
+    #[tokio::test]
+    async fn test_regular_file_metadata_returns_metadata_for_existing_file() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        std::fs::write(&file_path, "test content").unwrap();
+
+        let metadata = regular_file_metadata(&file_path)
+            .await
+            .unwrap()
+            .expect("an existing regular file must yield its metadata");
+        assert!(metadata.is_file());
+        assert_eq!(metadata.len(), "test content".len() as u64);
+    }
+
+    #[tokio::test]
+    async fn test_regular_file_metadata_returns_none_for_directory_and_missing_path() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let dir_path = temp_dir.path().join("subdir");
+        std::fs::create_dir(&dir_path).unwrap();
+
+        assert!(regular_file_metadata(&dir_path).await.unwrap().is_none());
+        assert!(
+            regular_file_metadata(&temp_dir.path().join("nonexistent.txt"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_regular_file_metadata_propagates_error_with_path_context() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        #[cfg(windows)]
+        let invalid_path = temp_dir.path().join("invalid\0path");
+        #[cfg(unix)]
+        let invalid_path = {
+            use std::os::unix::fs::symlink;
+
+            let path = temp_dir.path().join("metadata-loop");
+            symlink(&path, &path).unwrap();
+            path
+        };
+
+        let error = regular_file_metadata(&invalid_path)
+            .await
+            .expect_err("metadata errors other than NotFound must be propagated");
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to read metadata for {}",
+                invalid_path.display()
+            )),
+            "error chain should carry the shared metadata context, got: {chain}"
         );
     }
 

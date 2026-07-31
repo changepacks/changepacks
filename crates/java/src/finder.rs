@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use changepacks_core::{Project, ProjectFinder};
+use changepacks_core::{Project, ProjectFinder, manifest_parent_dir};
 #[cfg(test)]
 use std::process::Stdio;
 use std::{
@@ -111,11 +111,13 @@ impl GradleProjectFinder {
 
     /// Look up the metadata record Gradle emitted for one project directory.
     ///
-    /// Both lookups (wrapper record, then project record inside it) report the
-    /// same context, so the shared closure lives here instead of inline in
-    /// `visit`. The wrapper record is handed back alongside the project's Gradle
-    /// path and properties because the caller resolves dependency project names
-    /// against that same record and must not repeat the lookup.
+    /// The two lookups fail for structurally different reasons and therefore
+    /// carry distinct contexts: the first means this wrapper root produced no
+    /// batch at all, the second means the batch exists but never mentioned this
+    /// project directory. The wrapper record is handed back alongside the
+    /// project's Gradle path and properties because the caller resolves
+    /// dependency project names against that same record and must not repeat
+    /// the lookup.
     fn gradle_project_metadata<'a>(
         &'a self,
         normalized_wrapper_dir: &Path,
@@ -123,22 +125,28 @@ impl GradleProjectFinder {
         normalized_project_dir: &Path,
         gradlew: &Path,
     ) -> Result<(&'a GradleWrapperMetadata, String, GradleProperties)> {
-        let missing_metadata_context = || {
-            format!(
-                "missing Gradle metadata record for project directory '{}' (normalized: '{}') from wrapper '{}'",
-                project_dir.display(),
-                normalized_project_dir.display(),
-                gradlew.display()
-            )
-        };
         let wrapper_metadata = self
             .metadata_by_wrapper
             .get(normalized_wrapper_dir)
-            .with_context(missing_metadata_context)?;
+            .with_context(|| {
+                format!(
+                    "missing Gradle metadata batch for wrapper root '{}' (wrapper '{}') while resolving project directory '{}'",
+                    normalized_wrapper_dir.display(),
+                    gradlew.display(),
+                    project_dir.display()
+                )
+            })?;
         let metadata = wrapper_metadata
             .by_project_dir
             .get(normalized_project_dir)
-            .with_context(missing_metadata_context)?;
+            .with_context(|| {
+                format!(
+                    "missing Gradle metadata record for project directory '{}' (normalized: '{}') in the batch emitted by wrapper '{}'",
+                    project_dir.display(),
+                    normalized_project_dir.display(),
+                    gradlew.display()
+                )
+            })?;
         Ok((
             wrapper_metadata,
             metadata.project_path.clone(),
@@ -179,27 +187,29 @@ impl GradleProjectFinder {
     }
 }
 
+/// Whether `path` is an existing regular file that could be the `java`
+/// executable (on Unix: with at least one exec bit set).
+///
+/// The missing/non-regular/other-error triage is delegated to
+/// [`changepacks_core::regular_file_metadata`], which is also what
+/// [`changepacks_core::is_regular_file`] is built on, so the ladder and its
+/// `Failed to read metadata for ...` context live in exactly one place. That
+/// helper hands back the very [`std::fs::Metadata`] it stat'ed, so the Unix
+/// permission check costs no second syscall.
 async fn is_java_executable_candidate(path: &Path) -> Result<bool> {
-    let metadata = match tokio::fs::metadata(path).await {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("Failed to read metadata for {}", path.display()));
-        }
-    };
-    if !metadata.is_file() {
-        return Ok(false);
-    }
-
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        Ok(metadata.permissions().mode() & 0o111 != 0)
+
+        Ok(changepacks_core::regular_file_metadata(path)
+            .await?
+            .is_some_and(|metadata| metadata.permissions().mode() & 0o111 != 0))
     }
     #[cfg(not(unix))]
     {
-        Ok(true)
+        // No exec bit to inspect: being a regular file is the whole test, and
+        // `is_regular_file` is the same `regular_file_metadata` ladder.
+        changepacks_core::is_regular_file(path).await
     }
 }
 
@@ -449,9 +459,7 @@ impl ProjectFinder for GradleProjectFinder {
             return Ok(());
         }
 
-        let project_dir = path
-            .parent()
-            .with_context(|| format!("Parent not found - {}", path.display()))?;
+        let project_dir = manifest_parent_dir(path)?;
 
         let java_available = match self.java_available {
             Some(value) => value,
@@ -1165,6 +1173,53 @@ mod tests {
         );
 
         temp_dir.close().unwrap();
+    }
+
+    /// The wrapper-record miss and the project-record miss are structurally
+    /// different failures, so they must not collapse into one indistinguishable
+    /// message.
+    #[tokio::test]
+    async fn test_gradle_project_metadata_distinguishes_wrapper_and_project_misses() {
+        let wrapper_dir = PathBuf::from("repo");
+        let gradlew = wrapper_dir.join(gradle_wrapper_name(cfg!(windows)));
+        let project_dir = wrapper_dir.join("module one");
+
+        // Wrapper batch present, but it holds no record for the queried project.
+        let mut finder = finder_with_java_available();
+        finder.metadata_by_wrapper.insert(
+            wrapper_dir.clone(),
+            GradleWrapperMetadata {
+                by_project_dir: HashMap::new(),
+                project_names_by_path: HashMap::new(),
+            },
+        );
+
+        let project_miss = finder
+            .gradle_project_metadata(&wrapper_dir, &project_dir, &project_dir, &gradlew)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            project_miss.contains("missing Gradle metadata record for project directory"),
+            "unexpected error: {project_miss}"
+        );
+        assert!(project_miss.contains("in the batch emitted by wrapper"));
+        assert!(project_miss.contains(project_dir.to_string_lossy().as_ref()));
+        assert!(project_miss.contains(gradlew.to_string_lossy().as_ref()));
+
+        // No batch at all was recorded for this wrapper root.
+        let unknown_wrapper_dir = PathBuf::from("other-repo");
+        let wrapper_miss = finder
+            .gradle_project_metadata(&unknown_wrapper_dir, &project_dir, &project_dir, &gradlew)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            wrapper_miss.contains("missing Gradle metadata batch for wrapper root"),
+            "unexpected error: {wrapper_miss}"
+        );
+        assert!(wrapper_miss.contains(unknown_wrapper_dir.to_string_lossy().as_ref()));
+        assert!(wrapper_miss.contains(gradlew.to_string_lossy().as_ref()));
+
+        assert_ne!(project_miss, wrapper_miss);
     }
 
     #[test]
