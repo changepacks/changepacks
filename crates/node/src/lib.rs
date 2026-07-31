@@ -439,13 +439,10 @@ impl PackageManager {
 /// npm, yarn, pnpm, and `bun install` all prepend these directories to `PATH`
 /// when running package scripts, but `bun publish` / `bun pm pack` do not
 /// (oven-sh/bun#16071, #18055, #23594). changepacks runs the publish command
-/// itself, so it replicates that behaviour to keep `prepare` / `prepack`
-/// hooks such as `husky` resolving during publish and dry-run.
-///
-/// Used by the publish / dry-run flow (`run_publish_for_path` /
-/// `run_dry_run_publish_for_path`) to prepend `node_modules/.bin` to `PATH`
-/// so lifecycle hooks such as `husky` resolve during `bun publish` / `bun pm
-/// pack` (oven-sh/bun#16071, #18055, #23594).
+/// itself, so the publish / dry-run flow (`run_publish_for_path` /
+/// `run_dry_run_publish_for_path`) replicates that behaviour to keep
+/// `prepare` / `prepack` hooks such as `husky` resolving during publish and
+/// dry-run.
 ///
 /// The probes are order-INDEPENDENT, so all `max_depth` candidates are
 /// resolved concurrently with `join_all` instead of one `await` per ancestor:

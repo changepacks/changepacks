@@ -13,13 +13,8 @@ pub fn get_relative_path_ref<'a>(
     git_root_path: &Path,
     absolute_path: &'a Path,
 ) -> Result<&'a Path> {
-    // Idiomatic anyhow shape used throughout the workspace
-    // (`find_current_git_repo`, `changepacks_core::publish::run_publish_flow`
-    // etc.): map the successful `strip_prefix` result then attach lazy
-    // context to the `Err`. Byte-identical error text to the previous
-    // `anyhow::anyhow!(...)` construction so any downstream
-    // `.to_string().contains(...)` assertions stay stable, and future
-    // callers can chain additional `.with_context(...)` uniformly.
+    // The context message is a pinned contract: `test_get_relative_path_ref_error_context_names_both_paths`
+    // below asserts it byte-for-byte, so the wording must not drift.
     absolute_path.strip_prefix(git_root_path).with_context(|| {
         format!(
             "Failed to get relative path: '{}' is not within '{}'",

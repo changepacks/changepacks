@@ -608,6 +608,41 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    // The complement of the missing-index case above: the index EXISTS and is
+    // populated, but not one tracked file is a recognized manifest. This is the
+    // empty-workspace edge case (a docs-only or scripts-only repository), and
+    // the walk must complete successfully with zero projects rather than
+    // erroring or fabricating a nameless project from the repo-name fallback.
+    #[tokio::test]
+    async fn find_project_dirs_yields_no_projects_for_manifest_free_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+        init_git_repo(temp_path);
+        fs::write(temp_path.join("README.md"), "# docs only\n")
+            .await
+            .unwrap();
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        find_project_dirs(
+            &discover_repo(temp_path),
+            &mut finders,
+            &Config::default(),
+            false,
+        )
+        .await
+        .expect("a manifest-free index must not abort discovery");
+
+        let projects: Vec<_> = finders.iter().flat_map(|f| f.projects()).collect();
+        assert!(
+            projects.is_empty(),
+            "a manifest-free index must yield no projects, got: {projects:?}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     // A bare repository is discovered successfully but exposes no work dir, so
     // it is the only way to reach the `work_dir()` -> None arm of
     // `find_project_dirs`. Pin the documented message so the branch cannot

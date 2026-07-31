@@ -423,6 +423,51 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    // Every other test builds its project through `create_test_project`, which
+    // always passes `Some(name)`, so the `None` arm of
+    // `project.name().map(...)` was never executed. A nameless manifest is a
+    // real supported state: the Python finder builds `PythonPackage` with
+    // `name = None` for uv workspace-only roots, and that must serialize as a
+    // `null` name rather than an empty string or a panic.
+    #[test]
+    fn test_gen_changepack_result_map_project_without_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_root = temp_dir.path();
+
+        let project_path = repo_root.join("nameless");
+        fs::create_dir_all(&project_path).unwrap();
+        let package_json = project_path.join("package.json");
+        fs::write(&package_json, r#"{"version": "1.0.0"}"#).unwrap();
+
+        let mut package = NodePackage::new(
+            None,
+            Some("1.0.0".to_string()),
+            package_json,
+            PathBuf::from("nameless/package.json"),
+        );
+        package.set_changed(false);
+        let project = Project::Package(Box::new(package));
+
+        let projects = vec![&project];
+        let result = gen_changepack_result_map(&projects, repo_root, &HashMap::new()).unwrap();
+
+        assert_eq!(result.len(), 1);
+        let change_result = result.get(&PathBuf::from("nameless/package.json")).unwrap();
+        let json = serde_json::to_value(change_result).unwrap();
+        // The missing name must survive as JSON `null`, not be defaulted away.
+        assert_eq!(
+            get_json_field(&json, "name"),
+            Some(&serde_json::Value::Null)
+        );
+        // The rest of the entry is unaffected by the missing name.
+        assert_eq!(
+            get_json_field(&json, "version").and_then(|v| v.as_str()),
+            Some("1.0.0")
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     #[test]
     fn test_gen_changepack_result_map_multiple_logs() {
         let temp_dir = TempDir::new().unwrap();
