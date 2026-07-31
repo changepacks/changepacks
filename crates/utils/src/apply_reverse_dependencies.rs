@@ -134,18 +134,18 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
                 continue;
             }
 
-            // Fast-path: `HashMap::get_mut` on an existing key skips the
-            // `entry` API's key move on hits — common when multiple
-            // monorepo packages depend on the same core crate (e.g.
-            // `bridge/node` + `bridge/python` both depend on
-            // `changepacks`). Keys and values are `&str` borrowed from
-            // `projects`, so both paths are zero-alloc.
-            let entry = if let Some(existing) = reverse_deps.get_mut(dep_name.as_str()) {
-                existing
-            } else {
-                reverse_deps.entry(dep_name.as_str()).or_default()
-            };
-            entry.push((rel_path, worklist_name));
+            // Straight `entry` insert: the key is `&'projects str`, which is
+            // `Copy`, so `entry` neither moves nor allocates anything a
+            // `get_mut` probe would have saved. A `get_mut` fast-path costs
+            // the same single hash plus probe on a hit but TWO hashes plus
+            // probes on a miss, and the first edge to any given dependency
+            // name always takes the miss path — so the extra branch was pure
+            // overhead proportional to the number of distinct dependency
+            // names.
+            reverse_deps
+                .entry(dep_name.as_str())
+                .or_default()
+                .push((rel_path, worklist_name));
         }
 
         // `rel_path` is a `Copy` borrow of `projects`, so both consumers above and

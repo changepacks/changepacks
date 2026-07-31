@@ -10,9 +10,10 @@ readme = "../../README.md"
 
 [dependencies]
 changepacks-core.workspace = true
-# `toml` pulls in the shared `ensure_toml_table_like` manifest guard; this
-# crate already depends on `toml_edit` directly, so the feature adds no new
-# transitive dependency.
+# `toml` pulls in the shared `write_toml_table_version` helper (and the
+# `assign_preserving_decor` it drives) used to write the `[project]` version;
+# this crate already depends on `toml_edit` directly, so the feature adds no
+# new transitive dependency.
 changepacks-utils = { workspace = true, features = ["toml"] }
 anyhow.workspace = true
 tokio = { workspace = true, features = ["fs"] }

@@ -87,6 +87,28 @@ fn scope_is_supported(scopes: &[BraceScope], policy: GradleVersionScope) -> bool
             && scopes == [BraceScope::AllProjects])
 }
 
+/// Cheap first-byte gate run before the per-line version regexes.
+///
+/// Every pattern this module applies to a line (`KTS_SIMPLE_PATTERN`,
+/// `KTS_FALLBACK_PATTERN`, `GROOVY_ASSIGN_PATTERN`, `GROOVY_SPACE_PATTERN` and
+/// `SCRIPT_VERSION_DECLARATION_PATTERN`) is anchored as `^\s*` followed by a
+/// literal starting with `version`, `project.`, `this.` or `setVersion`, so the
+/// first non-whitespace byte of any line one of them can match is `v`, `p`, `t`
+/// or `s`.
+///
+/// [`str::trim_start`] strips exactly [`char::is_whitespace`], the Unicode
+/// `White_Space` property, which is the same class the regex crate's `\s`
+/// matches in its default Unicode mode. The gate therefore cannot disagree with
+/// the patterns about where a line's leading whitespace ends, making it strictly
+/// conservative: it only rejects lines no pattern could ever match, so
+/// [`candidate_ranges`] output stays byte-identical.
+fn may_declare_version(line: &str) -> bool {
+    matches!(
+        line.trim_start().as_bytes().first(),
+        Some(b'v' | b'p' | b't' | b's')
+    )
+}
+
 fn kts_value_range(line: &str) -> Option<Range<usize>> {
     [&*KTS_SIMPLE_PATTERN, &*KTS_FALLBACK_PATTERN]
         .into_iter()
@@ -223,10 +245,12 @@ pub(crate) fn candidate_ranges(
                 .map_or(bytes.len(), |offset| index + offset);
             if in_script_code(&contexts) && scope_is_supported(&scopes, policy) {
                 let line = &content[index..line_end];
-                if let Some(range) = value_range(line) {
-                    ranges.push(index + range.start..index + range.end);
-                } else if SCRIPT_VERSION_DECLARATION_PATTERN.is_match(line) {
-                    has_unsupported = true;
+                if may_declare_version(line) {
+                    if let Some(range) = value_range(line) {
+                        ranges.push(index + range.start..index + range.end);
+                    } else if SCRIPT_VERSION_DECLARATION_PATTERN.is_match(line) {
+                        has_unsupported = true;
+                    }
                 }
             }
             at_line_start = false;
@@ -608,9 +632,123 @@ pub(crate) fn candidate_ranges(
 
 #[cfg(test)]
 mod tests {
+    use super::{
+        GROOVY_ASSIGN_PATTERN, GROOVY_SPACE_PATTERN, KTS_FALLBACK_PATTERN, KTS_SIMPLE_PATTERN,
+        SCRIPT_VERSION_DECLARATION_PATTERN, may_declare_version,
+    };
     use crate::version_updater::{
         GradleVersionScope, update_version_in_groovy, update_version_in_kts, write_gradle_version,
     };
+
+    /// Lines exercising every declaration form the per-line patterns accept.
+    const DECLARATION_LINES: [&str; 10] = [
+        "  version = \"1.0\"",
+        "\tversion\t=\tproject.findProperty(\"releaseVersion\") ?: \"1.0\"",
+        "    version = '1.0'",
+        "  version '1.0'",
+        "version.set(\"1.0\")",
+        "version(\"1.0\")",
+        "project.version = \"1.0\"",
+        "project.setVersion(\"1.0\")",
+        "this.setVersion(\"1.0\")",
+        "setVersion(\"1.0\")",
+    ];
+
+    /// Lines no per-line pattern can match, including whitespace-only and
+    /// non-ASCII leading bytes.
+    const NON_DECLARATION_LINES: [&str; 8] = [
+        "",
+        "    ",
+        "id(\"java\")",
+        "group = \"com.example\"",
+        "// version = \"1.0\"",
+        "}",
+        "\u{ac00}version = \"1.0\"",
+        "def quotient = total / divisor",
+    ];
+
+    /// Lines that pass the first-byte gate but that no pattern matches; the
+    /// gate only has to be conservative, never exact.
+    const OVER_ACCEPTED_LINES: [&str; 3] = ["plugins {", "subprojects {", "tasks.register(\"x\")"];
+
+    fn any_pattern_matches(line: &str) -> bool {
+        [
+            &*KTS_SIMPLE_PATTERN,
+            &*KTS_FALLBACK_PATTERN,
+            &*GROOVY_ASSIGN_PATTERN,
+            &*GROOVY_SPACE_PATTERN,
+            &*SCRIPT_VERSION_DECLARATION_PATTERN,
+        ]
+        .into_iter()
+        .any(|pattern| pattern.is_match(line))
+    }
+
+    #[test]
+    fn may_declare_version_rejection_implies_no_pattern_matches_for_every_ascii_prefix() {
+        for byte in 0..=127u8 {
+            let prefix = char::from(byte);
+            for line in [
+                format!("{prefix}version = \"1.0\""),
+                format!("{prefix}setVersion(\"1.0\")"),
+                format!("  {prefix}version = '1.0'"),
+            ] {
+                assert!(
+                    may_declare_version(&line) || !any_pattern_matches(&line),
+                    "prefilter rejected a matching line {line:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn may_declare_version_accepts_every_declaration_form() {
+        for line in DECLARATION_LINES {
+            assert!(
+                any_pattern_matches(line),
+                "fixture is vacuous, no pattern matches {line:?}"
+            );
+            assert!(may_declare_version(line), "prefilter rejected {line:?}");
+        }
+    }
+
+    #[test]
+    fn may_declare_version_rejects_lines_no_pattern_can_match() {
+        for line in NON_DECLARATION_LINES {
+            assert!(
+                !any_pattern_matches(line),
+                "fixture is wrong, a pattern matches {line:?}"
+            );
+            assert!(!may_declare_version(line), "prefilter accepted {line:?}");
+        }
+    }
+
+    #[test]
+    fn may_declare_version_may_over_accept_because_the_patterns_still_decide() {
+        for line in OVER_ACCEPTED_LINES {
+            assert!(may_declare_version(line), "prefilter rejected {line:?}");
+            assert!(
+                !any_pattern_matches(line),
+                "fixture is wrong, a pattern matches {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn may_declare_version_agrees_with_regex_leading_whitespace_class() {
+        // `str::trim_start` and the regex crate's `\s` must treat the same
+        // characters as leading whitespace, including non-ASCII `White_Space`.
+        for whitespace in [
+            " ", "\t", "\u{0b}", "\u{0c}", "\u{85}", "\u{a0}", "\u{3000}",
+        ] {
+            let line = format!("{whitespace}version = \"1.0\"");
+            assert_eq!(
+                may_declare_version(&line),
+                any_pattern_matches(&line),
+                "prefilter and patterns disagree on {line:?}"
+            );
+            assert!(may_declare_version(&line), "prefilter rejected {line:?}");
+        }
+    }
 
     #[test]
     fn test_update_version_in_kts_simple() {
