@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, HashSet},
     io::Write as _,
     path::PathBuf,
@@ -66,11 +67,11 @@ pub async fn handle_publish_with_prompter(
     retain_by_language(&args.language, &mut projects);
 
     // Filter by project relative path if specified.
-    // `HashSet<String>` gives O(1) lookup vs `Vec::contains` O(A) per project,
+    // `HashSet<Cow<str>>` gives O(1) lookup vs `Vec::contains` O(A) per project,
     // dropping the overall filter cost from O(P × A) to O(P + A) — meaningful in
     // large monorepos where both P and A can reach the dozens. Behavior is
     // unchanged: same case-sensitive `\` → `/` normalization and the same
-    // set-membership result (`HashSet<String>` matches what `Vec<String>`
+    // set-membership result (`HashSet<Cow<str>>` matches what `Vec<String>`
     // returned).
     if !args.project.is_empty() {
         // Preallocate: `HashSet::from_iter` (via `collect`) does NOT use
@@ -80,12 +81,15 @@ pub async fn handle_publish_with_prompter(
         // Matches the preallocation policy already applied to
         // `rust_batch_names` a few lines below and to every other
         // `HashSet` preallocation site in the workspace.
-        let mut normalized_args: HashSet<String> = HashSet::with_capacity(args.project.len());
-        normalized_args.extend(
-            args.project
-                .iter()
-                .map(|p| normalize_path_separators(p).into_owned()),
-        );
+        //
+        // The element type is `Cow<str>`, not `String`: the documented common
+        // spelling of a `--project` value carries no backslash, so
+        // `normalize_path_separators` hands back a `Cow::Borrowed` that needs
+        // no heap allocation at all. Lookups are unaffected — `Cow<str>`
+        // borrows as `str` and hashes exactly like the `str` it wraps, so the
+        // membership result is identical to the `HashSet<String>` form.
+        let mut normalized_args: HashSet<Cow<'_, str>> = HashSet::with_capacity(args.project.len());
+        normalized_args.extend(args.project.iter().map(|p| normalize_path_separators(p)));
         projects.retain(|project| {
             // `normalize_path_separators_of` owns the lossy-then-normalize
             // conversion and its allocation policy; see its docs in
