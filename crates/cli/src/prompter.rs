@@ -136,13 +136,22 @@ impl Prompter for InquirePrompter {
     }
 }
 
-/// Mock implementation that returns predefined values (for testing)
+/// Mock implementation that returns predefined values (for testing).
+///
+/// Gated behind `cfg(any(test, feature = "test-support"))` — the same
+/// convention documented in `changepacks_core::test_support` and used by
+/// `changepacks-utils` — so this pure test double is not compiled into the
+/// released `changepacks` binary or either FFI bridge. Its consumers are this
+/// crate's `#[cfg(test)]` modules and `tests/integration.rs`, which reaches it
+/// through the self dev-dependency that enables `test-support`.
+#[cfg(any(test, feature = "test-support"))]
 pub struct MockPrompter {
     pub select_all: bool,
     pub confirm_value: bool,
     pub text_value: String,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Default for MockPrompter {
     fn default() -> Self {
         Self {
@@ -153,6 +162,7 @@ impl Default for MockPrompter {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Prompter for MockPrompter {
     fn multi_select<'a>(
         &self,

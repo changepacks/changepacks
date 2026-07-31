@@ -4,7 +4,7 @@
 //! point, per the one-utility-per-file convention of this crate.
 
 use std::{
-    collections::{HashMap, HashSet, VecDeque, hash_map::Entry},
+    collections::{HashMap, HashSet, hash_map::Entry},
     hash::BuildHasher,
     path::{Path, PathBuf},
 };
@@ -203,7 +203,21 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
     initial_paths.sort_unstable_by(|left, right| {
         compare_paths(left.0, right.0).then_with(|| left.1.cmp(right.1))
     });
-    let mut to_process: VecDeque<&str> = initial_paths.into_iter().map(|(_, name)| name).collect();
+    // `to_process` is a plain `Vec` used as a FIFO queue: `head` is the read
+    // cursor and the tail is the vector's end, so the live queue is exactly the
+    // `to_process[head..]` window. Every push — the seed fill below and both
+    // pushes inside the loop — is gated on a path being newly reached
+    // (`reached_paths.insert` returning `true`, with the seed paths pre-inserted
+    // into `reached_paths`), so a given path is enqueued at most once and the
+    // total number of pushes is bounded by the number of distinct project paths,
+    // i.e. `projects.len()`. The capacity below is therefore an exact upper
+    // bound and the vector never reallocates. Because entries are appended in
+    // the same order a deque would have received them and consumed in that same
+    // order, never revisited, a monotonically advancing head cursor yields
+    // byte-identical FIFO order to popping a deque front, while dropping the
+    // separate `VecDeque` allocation.
+    let mut to_process: Vec<&str> = Vec::with_capacity(projects.len());
+    to_process.extend(initial_paths.into_iter().map(|(_, name)| name));
     // `None` seeds every already-scheduled path, so borrow the keys straight out of `update_map`
     // instead of walking a cloned copy of them.
     let mut reached_paths: HashSet<&Path> = match context.expansion_seeds {
@@ -218,14 +232,17 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
             reached
         }
     };
-    while let Some(trigger_name) = to_process.pop_front() {
+    let mut head = 0;
+    while head < to_process.len() {
+        let trigger_name = to_process[head];
+        head += 1;
         if let Some(dependents) = reverse_deps.get(trigger_name) {
             for (dependent_path, dependent_name) in dependents {
                 let dependent_path = *dependent_path;
                 let newly_reached = reached_paths.insert(dependent_path);
                 if update_map.contains_key(dependent_path) {
                     if newly_reached && let Some(dependent_name) = dependent_name {
-                        to_process.push_back(*dependent_name);
+                        to_process.push(*dependent_name);
                     }
                     continue;
                 }
@@ -234,7 +251,7 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
                     Entry::Vacant(entry) => {
                         entry.insert(trigger_name);
                         if newly_reached && let Some(dependent_name) = dependent_name {
-                            to_process.push_back(*dependent_name);
+                            to_process.push(*dependent_name);
                         }
                     }
                     Entry::Occupied(mut entry) => {

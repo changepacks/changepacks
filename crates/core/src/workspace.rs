@@ -63,100 +63,19 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
 mod tests {
     use super::*;
     use crate::Config;
-    use crate::test_support::{MockWorkspace, UnsupportedDryRunProject};
-    use rstest::rstest;
-    use std::collections::{BTreeMap, HashSet};
+    use crate::test_support::MockWorkspace;
+    use std::collections::BTreeMap;
 
-    #[test]
-    fn test_check_changed_already_changed() {
-        let mut workspace =
-            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
-        workspace.is_changed = true;
-
-        // Should return early if already changed
-        workspace
-            .check_changed(Path::new("/project/src/index.js"))
-            .unwrap();
-        assert!(workspace.is_changed());
-    }
-
-    #[rstest]
-    // A file inside the project dir marks it changed; a changepack log or a
-    // file that belongs to another project does not.
-    #[case("/project/src/index.js", true)]
-    #[case("/project/.changepacks/change.json", false)]
-    #[case("/other-project/src/index.js", false)]
-    fn test_check_changed(#[case] changed_path: &str, #[case] expected: bool) {
-        let mut workspace =
-            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
-        workspace.check_changed(Path::new(changed_path)).unwrap();
-        assert_eq!(workspace.is_changed(), expected);
-    }
-
-    #[test]
-    fn test_workspace_is_publishable_by_default() {
-        let workspace =
-            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
-
-        assert!(workspace.is_publishable_by_default());
-        assert_eq!(
-            workspace.is_dry_run_publishable_by_default(),
-            workspace.is_publishable_by_default()
-        );
-    }
-
-    #[test]
-    fn test_get_publish_command_by_path() {
-        let workspace = MockWorkspace::with_paths(
-            Some("test"),
-            "/project/package.json",
-            "packages/core/package.json",
-        );
-        let mut publish = BTreeMap::new();
-        publish.insert(
-            "packages/core/package.json".to_string(),
-            "custom publish".to_string(),
-        );
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(workspace.get_publish_command(&config), "custom publish");
-    }
-
-    #[rstest]
-    #[case(Language::Node, "node", "npm publish --access public")]
-    #[case(Language::Python, "python", "poetry publish")]
-    #[case(Language::Rust, "rust", "cargo publish")]
-    #[case(Language::Dart, "dart", "dart pub publish")]
-    #[case(Language::Java, "java", "./gradlew publish")]
-    #[case(Language::CSharp, "csharp", "dotnet nuget push")]
-    fn test_get_publish_command_by_language(
-        #[case] language: Language,
-        #[case] key: &str,
-        #[case] command: &str,
-    ) {
-        let workspace = MockWorkspace::with_paths(Some("test"), "/project/manifest", "manifest")
-            .with_language(language);
-        let mut publish = BTreeMap::new();
-        publish.insert(key.to_string(), command.to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(workspace.get_publish_command(&config), command);
-    }
-
-    #[test]
-    fn test_get_publish_command_default() {
-        let workspace =
-            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
-        let config = Config::default();
-
-        assert_eq!(workspace.get_publish_command(&config), "echo publish");
-    }
+    // The seventeen tests pinning the shared trait defaults are generated from
+    // one surface shared with `package.rs`; only the `Workspace`-only defaults
+    // below stay hand-written here.
+    crate::test_support::shared_project_default_tests!(
+        mock: MockWorkspace,
+        trait_name: Workspace,
+        kind: "workspace",
+        dir_not_found: "Workspace directory not found",
+        publishable_test: test_workspace_is_publishable_by_default,
+    );
 
     #[test]
     fn test_get_dry_run_publish_command_falls_back_to_workspace_default() {
@@ -220,83 +139,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_publish_success() {
-        let temp_dir = std::env::temp_dir();
-        let path = temp_dir.join("package.json");
-        let workspace =
-            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
-        let config = Config::default();
-
-        // This will run "echo publish" which should succeed
-        let output = workspace.publish(&config).await.unwrap();
-        assert!(output.success);
-        assert!(output.stdout.contains("publish"));
-    }
-
-    #[tokio::test]
-    async fn test_publish_uses_project_path_override() {
-        let path = std::env::temp_dir().join("package.json");
-        let workspace = MockWorkspace::with_paths(
-            Some("test"),
-            path.to_str().unwrap(),
-            "packages/core/package.json",
-        );
-        let config = Config {
-            publish: BTreeMap::from([(
-                "packages/core/package.json".to_string(),
-                "echo workspace-path-override".to_string(),
-            )]),
-            ..Default::default()
-        };
-
-        let output = workspace.publish(&config).await.unwrap();
-
-        assert!(output.success);
-        assert!(output.stdout.contains("workspace-path-override"));
-    }
-
-    #[tokio::test]
-    async fn test_publish_uses_language_override() {
-        let path = std::env::temp_dir().join("package.json");
-        let workspace =
-            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
-        let config = Config {
-            publish: BTreeMap::from([(
-                "node".to_string(),
-                "echo workspace-language-override".to_string(),
-            )]),
-            ..Default::default()
-        };
-
-        let output = workspace.publish(&config).await.unwrap();
-
-        assert!(output.success);
-        assert!(output.stdout.contains("workspace-language-override"));
-    }
-
-    #[tokio::test]
-    async fn test_publish_failure() {
-        let temp_dir = std::env::temp_dir();
-        let path = temp_dir.join("package.json");
-        let workspace =
-            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
-        let mut publish = BTreeMap::new();
-        let fail_cmd = if cfg!(target_os = "windows") {
-            "cmd /c exit 1"
-        } else {
-            "exit 1"
-        };
-        publish.insert("node".to_string(), fail_cmd.to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        let output = workspace.publish(&config).await.unwrap();
-        assert!(!output.success);
-    }
-
-    #[tokio::test]
     async fn test_update_workspace_dependencies_default() {
         let workspace =
             MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
@@ -304,120 +146,5 @@ mod tests {
 
         let result = workspace.update_workspace_dependencies(&packages).await;
         assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_publish_no_parent_directory() {
-        let workspace = MockWorkspace::with_paths(Some("test"), "", "");
-        let config = Config::default();
-        let result = workspace.publish(&config).await;
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Workspace directory not found")
-        );
-    }
-
-    #[tokio::test]
-    async fn test_publish_reports_missing_current_directory() {
-        let missing_dir = std::env::temp_dir().join(format!(
-            "changepacks_missing_workspace_dir_{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&missing_dir);
-        let path = missing_dir.join("package.json");
-        let workspace =
-            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
-
-        let result = workspace.publish(&Config::default()).await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    async fn test_dry_run_publish_uses_project_path_override() {
-        let path = std::env::temp_dir().join("package.json");
-        let workspace = MockWorkspace::with_paths(
-            Some("test"),
-            path.to_str().unwrap(),
-            "packages/core/package.json",
-        );
-        let config = Config {
-            publish_dry_run: BTreeMap::from([(
-                "packages/core/package.json".to_string(),
-                "echo workspace-dry-path-override".to_string(),
-            )]),
-            ..Default::default()
-        };
-
-        let output = workspace.dry_run_publish(&config).await.unwrap().unwrap();
-
-        assert!(output.success);
-        assert!(output.stdout.contains("workspace-dry-path-override"));
-    }
-
-    #[tokio::test]
-    async fn test_dry_run_publish_uses_language_override() {
-        let path = std::env::temp_dir().join("package.json");
-        let workspace =
-            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
-        let config = Config {
-            publish_dry_run: BTreeMap::from([(
-                "node".to_string(),
-                "echo workspace-dry-language-override".to_string(),
-            )]),
-            ..Default::default()
-        };
-
-        let output = workspace.dry_run_publish(&config).await.unwrap().unwrap();
-
-        assert!(output.success);
-        assert!(output.stdout.contains("workspace-dry-language-override"));
-    }
-
-    #[tokio::test]
-    async fn test_dry_run_publish_uses_default_command() {
-        let path = std::env::temp_dir().join("package.json");
-        let workspace =
-            MockWorkspace::with_paths(Some("test"), path.to_str().unwrap(), "package.json");
-
-        let output = workspace
-            .dry_run_publish(&Config::default())
-            .await
-            .unwrap()
-            .unwrap();
-
-        assert!(output.success);
-        assert!(output.stdout.contains("publish --dry-run"));
-    }
-
-    #[tokio::test]
-    async fn test_dry_run_publish_returns_none_when_unsupported() {
-        let workspace = UnsupportedDryRunProject {
-            path: std::env::temp_dir().join("project.csproj"),
-            dependencies: HashSet::new(),
-        };
-
-        let output = Workspace::dry_run_publish(&workspace, &Config::default())
-            .await
-            .unwrap();
-
-        assert!(output.is_none());
-    }
-
-    #[test]
-    fn test_set_name_updates_via_impl_basic_accessors_macro() {
-        // Regression guard for the shared-macro accessor contract — see the
-        // sibling test in
-        // `package.rs::tests::test_set_name_updates_via_impl_basic_accessors_macro`
-        // for the full rationale. The mock's `Workspace` impl uses
-        // `crate::impl_basic_accessors!()`, so `set_name` MUST update the
-        // underlying `name` field.
-        let mut workspace =
-            MockWorkspace::with_paths(Some("original"), "/project/package.json", "package.json");
-        workspace.set_name("new-name".to_string());
-        assert_eq!(workspace.name(), Some("new-name"));
     }
 }

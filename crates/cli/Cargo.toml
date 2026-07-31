@@ -8,6 +8,13 @@ homepage.workspace = true
 description = "CLI interface and commands for changepacks"
 readme = "../../README.md"
 
+[features]
+# Exports this crate's test doubles (`prompter::MockPrompter`) to test-only
+# builds. Off by default so the mock never ships in the release binary or the
+# FFI bridges; `tests/integration.rs` turns it on via the self dev-dependency
+# below, which Cargo drops at publish time because it carries no version req.
+test-support = []
+
 [dependencies]
 nanoid = "0.5"
 clap = { version = "^4", features = ["derive"] }
@@ -35,6 +42,7 @@ serial_test = "4"
 tokio = { workspace = true, features = ["fs", "rt-multi-thread", "macros"] }
 changepacks-utils = { workspace = true, features = ["test-support"] }
 changepacks-core = { workspace = true, features = ["test-support"] }
+changepacks-cli = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

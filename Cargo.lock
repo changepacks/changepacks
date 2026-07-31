@@ -225,6 +225,7 @@ version = "0.2.37"
 dependencies = [
  "anyhow",
  "async-trait",
+ "changepacks-cli",
  "changepacks-core",
  "changepacks-csharp",
  "changepacks-dart",
