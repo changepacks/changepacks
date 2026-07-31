@@ -72,6 +72,7 @@ pub(crate) async fn write_csproj_version(path: &Path, new_version: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use changepacks_utils::test_support;
     use tempfile::TempDir;
 
     /// A realistic `.csproj` shared by the two round-trip tests below: CRLF
@@ -214,6 +215,43 @@ mod tests {
                 csproj_path.display()
             )),
             "error chain should carry the update context naming the manifest path, got: {chain}"
+        );
+        temp_dir.close().unwrap();
+    }
+
+    /// The write leg is the last of the three `write_csproj_version` error
+    /// contexts and the only one left unpinned: `tokio::fs::write` reports a
+    /// bare `os error` (permission denied) with no filename, so without the
+    /// `.with_context(...)` wrapper a failed bump would be unattributable to a
+    /// particular `.csproj`. Mirrors the Java sibling
+    /// (`version_updater.rs::test_write_gradle_version_build_file_write_error_names_context_and_path`):
+    /// seed a valid manifest, flip the readonly bit AFTER seeding so the read
+    /// and the XML update both still succeed, and request a DIFFERENT version
+    /// so the `updated != csproj_raw` guard actually attempts the write.
+    #[tokio::test]
+    async fn test_write_csproj_version_write_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Readonly.csproj");
+        tokio::fs::write(&csproj_path, REALISTIC_CSPROJ_CRLF)
+            .await
+            .unwrap();
+
+        test_support::set_readonly(&csproj_path, true);
+
+        let result = write_csproj_version(&csproj_path, "1.0.1").await;
+
+        // Restore write permission BEFORE asserting so `TempDir` cleanup
+        // succeeds even if an assertion below panics.
+        test_support::set_readonly(&csproj_path, false);
+
+        let err = result.expect_err("a write to a readonly .csproj must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to write C# project {}",
+                csproj_path.display()
+            )),
+            "error chain should carry the write context naming the manifest path, got: {chain}"
         );
         temp_dir.close().unwrap();
     }

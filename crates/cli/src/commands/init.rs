@@ -309,6 +309,64 @@ mod tests {
             .expect("init retry succeeds after failed claim cleanup");
     }
 
+    // The `create_dir_all` context arm: a regular file already occupying the
+    // `.changepacks` path makes directory creation fail on every platform, so
+    // this pins the message a user sees when the path is unusable.
+    #[tokio::test]
+    async fn test_init_reports_changepacks_directory_creation_failure() {
+        let repository = temporary_repository();
+        let changepacks_dir = repository.path().join(".changepacks");
+        std::fs::write(&changepacks_dir, "not a directory")
+            .expect("occupy changepacks path with a regular file");
+
+        let error = handle_init_at(&InitArgs { dry_run: false }, repository.path())
+            .await
+            .expect_err("init must fail when .changepacks is a regular file");
+
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("Failed to create changepacks directory"),
+            "directory creation failure keeps its context: {rendered}"
+        );
+        assert!(
+            rendered.contains(&changepacks_dir.display().to_string()),
+            "directory creation failure names the offending path: {rendered}"
+        );
+    }
+
+    // The cleanup-failure half of `write_claimed_config`: the write fails and
+    // the follow-up `remove_file` also fails (the parent directory does not
+    // exist), so both failures must survive in the reported chain.
+    #[tokio::test]
+    async fn test_failed_config_write_reports_cleanup_failure() {
+        let repository = tempdir().expect("create temporary directory");
+        let config_file = repository.path().join("missing-dir").join("config.json");
+        let contents = serde_json::to_string_pretty(&Config::default())
+            .expect("serialize default changepacks config");
+
+        let error = write_claimed_config(
+            FailAfterPartialWrite::new(tokio::io::sink()),
+            &config_file,
+            contents.as_bytes(),
+        )
+        .await
+        .expect_err("partial config write must fail");
+
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("Failed to write changepacks config"),
+            "cleanup failure keeps the write context: {rendered}"
+        );
+        assert!(
+            rendered.contains("additionally failed to remove incomplete config"),
+            "cleanup failure is reported alongside the write failure: {rendered}"
+        );
+        assert!(
+            rendered.contains("injected failure after partial write"),
+            "cleanup failure keeps the original I/O failure: {rendered}"
+        );
+    }
+
     #[tokio::test]
     async fn test_concurrent_init_creates_default_config_once() {
         let repository = temporary_repository();

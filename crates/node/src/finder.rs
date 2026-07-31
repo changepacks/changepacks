@@ -163,7 +163,6 @@ impl ProjectFinder for NodeProjectFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use changepacks_core::Project;
     use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
@@ -210,13 +209,9 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("test-package"));
-                assert_eq!(pkg.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("test-package"));
+        assert_eq!(pkg.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -247,12 +242,10 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(package) => {
-                assert_eq!(package.is_publishable_by_default(), expected);
-            }
-            _ => panic!("Expected Package"),
-        }
+        assert_eq!(
+            projects[0].expect_package().is_publishable_by_default(),
+            expected
+        );
     }
 
     #[tokio::test]
@@ -274,16 +267,12 @@ mod tests {
             .unwrap();
         fs::remove_file(lockfile).unwrap();
 
-        match finder.projects()[0] {
-            Project::Package(package) => {
-                assert_eq!(package.default_publish_command(), "pnpm publish");
-                assert_eq!(
-                    package.default_dry_run_publish_command().as_deref(),
-                    Some("pnpm publish --dry-run")
-                );
-            }
-            _ => panic!("Expected Package"),
-        }
+        let package = finder.projects()[0].expect_package();
+        assert_eq!(package.default_publish_command(), "pnpm publish");
+        assert_eq!(
+            package.default_dry_run_publish_command().as_deref(),
+            Some("pnpm publish --dry-run")
+        );
     }
 
     #[rstest]
@@ -318,13 +307,9 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test-workspace"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test-workspace"));
+        assert_eq!(ws.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -355,12 +340,10 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(workspace) => {
-                assert_eq!(workspace.is_publishable_by_default(), expected);
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        assert_eq!(
+            projects[0].expect_workspace().is_publishable_by_default(),
+            expected
+        );
     }
 
     #[rstest]
@@ -434,13 +417,9 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test-workspace"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test-workspace"));
+        assert_eq!(ws.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -467,13 +446,9 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test-workspace"));
-                assert_eq!(ws.version(), None);
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test-workspace"));
+        assert_eq!(ws.version(), None);
 
         temp_dir.close().unwrap();
     }

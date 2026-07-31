@@ -458,13 +458,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("TestProject"));
-                assert_eq!(pkg.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = finder.projects()[0].expect_package();
+        assert_eq!(pkg.name(), Some("TestProject"));
+        assert_eq!(pkg.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -499,13 +495,9 @@ mod tests {
 
         assert_eq!(finder.project_count(), 1);
         assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("App"));
-                assert_eq!(pkg.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = finder.projects()[0].expect_package();
+        assert_eq!(pkg.name(), Some("App"));
+        assert_eq!(pkg.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -682,10 +674,10 @@ mod tests {
             .await
             .unwrap();
 
-        match finder.projects()[0] {
-            Project::Package(pkg) => assert_eq!(pkg.version(), Some("1.2.3")),
-            _ => panic!("Expected Package"),
-        }
+        assert_eq!(
+            finder.projects()[0].expect_package().version(),
+            Some("1.2.3")
+        );
 
         temp_dir.close().unwrap();
     }
@@ -745,13 +737,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("TestProject"));
-                assert_eq!(pkg.version(), None);
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = finder.projects()[0].expect_package();
+        assert_eq!(pkg.name(), Some("TestProject"));
+        assert_eq!(pkg.version(), None);
 
         temp_dir.close().unwrap();
     }
@@ -886,14 +874,10 @@ mod tests {
 
         let mut projects = finder.projects_mut();
         assert_eq!(projects.len(), 1);
-        match &mut projects[0] {
-            Project::Package(pkg) => {
-                assert!(!pkg.is_changed());
-                pkg.set_changed(true);
-                assert!(pkg.is_changed());
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package_mut();
+        assert!(!pkg.is_changed());
+        pkg.set_changed(true);
+        assert!(pkg.is_changed());
 
         temp_dir.close().unwrap();
     }
@@ -928,17 +912,13 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("TestProject"));
-                let deps = pkg.dependencies();
-                // Only ProjectReferences are tracked (not PackageReferences)
-                assert_eq!(deps.len(), 2);
-                assert!(deps.contains("CoreLib"));
-                assert!(deps.contains("Utils"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("TestProject"));
+        let deps = pkg.dependencies();
+        // Only ProjectReferences are tracked (not PackageReferences)
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains("CoreLib"));
+        assert!(deps.contains("Utils"));
 
         temp_dir.close().unwrap();
     }

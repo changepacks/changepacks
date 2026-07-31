@@ -189,14 +189,10 @@ version = "1.0.0"
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("test-package"));
-                assert_eq!(pkg.version(), Some("1.0.0"));
-                assert!(pkg.is_publishable_by_default());
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("test-package"));
+        assert_eq!(pkg.version(), Some("1.0.0"));
+        assert!(pkg.is_publishable_by_default());
 
         temp_dir.close().unwrap();
     }
@@ -240,14 +236,10 @@ version = "1.0.0"
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test-workspace"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-                assert!(ws.is_publishable_by_default());
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test-workspace"));
+        assert_eq!(ws.version(), Some("1.0.0"));
+        assert!(ws.is_publishable_by_default());
 
         temp_dir.close().unwrap();
     }
@@ -320,13 +312,9 @@ name = "test-workspace"
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test-workspace"));
-                assert_eq!(ws.version(), None);
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test-workspace"));
+        assert_eq!(ws.version(), None);
 
         temp_dir.close().unwrap();
     }
@@ -540,14 +528,10 @@ members = ["packages/*"]
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), None);
-                assert_eq!(ws.version(), None);
-                assert!(!ws.is_publishable_by_default());
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), None);
+        assert_eq!(ws.version(), None);
+        assert!(!ws.is_publishable_by_default());
 
         temp_dir.close().unwrap();
     }
@@ -619,22 +603,17 @@ version = "1.0.0"
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                let deps = ws.dependencies();
-                assert_eq!(
-                    deps.len(),
-                    2,
-                    "expected only local tool.uv.sources entries, got {deps:?}"
-                );
-                assert!(deps.contains("pkg-a"), "missing pkg-a in {deps:?}");
-                assert!(deps.contains("pkg-b"), "missing pkg-b in {deps:?}");
-                assert!(!deps.contains("pkg-c"), "unexpected pkg-c in {deps:?}");
-                assert!(!deps.contains("pkg-d"), "unexpected pkg-d in {deps:?}");
-                assert!(!deps.contains("pkg-e"), "unexpected pkg-e in {deps:?}");
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let deps = projects[0].expect_workspace().dependencies();
+        assert_eq!(
+            deps.len(),
+            2,
+            "expected only local tool.uv.sources entries, got {deps:?}"
+        );
+        assert!(deps.contains("pkg-a"), "missing pkg-a in {deps:?}");
+        assert!(deps.contains("pkg-b"), "missing pkg-b in {deps:?}");
+        assert!(!deps.contains("pkg-c"), "unexpected pkg-c in {deps:?}");
+        assert!(!deps.contains("pkg-d"), "unexpected pkg-d in {deps:?}");
+        assert!(!deps.contains("pkg-e"), "unexpected pkg-e in {deps:?}");
 
         temp_dir.close().unwrap();
     }

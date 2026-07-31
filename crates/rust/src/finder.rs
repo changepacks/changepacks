@@ -883,14 +883,10 @@ version = "1.0.0"
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("test-package"));
-                assert_eq!(pkg.version(), Some("1.0.0"));
-                assert!(pkg.is_publishable_by_default());
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("test-package"));
+        assert_eq!(pkg.version(), Some("1.0.0"));
+        assert!(pkg.is_publishable_by_default());
 
         temp_dir.close().unwrap();
     }
@@ -986,13 +982,9 @@ version = "1.0.0"
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test-workspace"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test-workspace"));
+        assert_eq!(ws.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -1037,14 +1029,10 @@ members = ["crates/*"]
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), None);
-                assert_eq!(ws.version(), None);
-                assert!(!ws.is_publishable_by_default());
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), None);
+        assert_eq!(ws.version(), None);
+        assert!(!ws.is_publishable_by_default());
 
         temp_dir.close().unwrap();
     }
@@ -1339,15 +1327,11 @@ edition = "2024"
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                // No [package] name, but the version is inherited from
-                // [workspace.package].version via the new fallback.
-                assert_eq!(ws.name(), None);
-                assert_eq!(ws.version(), Some("0.1.33"));
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        // No [package] name, but the version is inherited from
+        // [workspace.package].version via the new fallback.
+        assert_eq!(ws.name(), None);
+        assert_eq!(ws.version(), Some("0.1.33"));
 
         temp_dir.close().unwrap();
     }
@@ -1556,18 +1540,14 @@ external = "1.0"
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("test-package"));
-                let deps = pkg.dependencies();
-                assert_eq!(deps.len(), 2);
-                assert!(deps.contains("core"));
-                assert!(deps.contains("utils"));
-                // external is not a workspace dependency
-                assert!(!deps.contains("external"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("test-package"));
+        let deps = pkg.dependencies();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains("core"));
+        assert!(deps.contains("utils"));
+        // external is not a workspace dependency
+        assert!(!deps.contains("external"));
 
         temp_dir.close().unwrap();
     }
@@ -1601,15 +1581,10 @@ external = "1.0"
         // Then: the path dependency is tracked, the registry one is not
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                let deps = pkg.dependencies();
-                assert_eq!(deps.len(), 1, "expected only the path dep, got {deps:?}");
-                assert!(deps.contains("foo"));
-                assert!(!deps.contains("external"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let deps = projects[0].expect_package().dependencies();
+        assert_eq!(deps.len(), 1, "expected only the path dep, got {deps:?}");
+        assert!(deps.contains("foo"));
+        assert!(!deps.contains("external"));
 
         temp_dir.close().unwrap();
     }
@@ -1908,23 +1883,18 @@ wasm-build-helper = { workspace = true }
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                let deps = pkg.dependencies();
-                assert_eq!(deps.len(), 6, "expected all workspace deps, got {deps:?}");
-                assert!(deps.contains("runtime-core"));
-                assert!(deps.contains("test-support"));
-                assert!(deps.contains("build-helper"));
-                assert!(deps.contains("unix-support"));
-                assert!(deps.contains("windows-test-support"));
-                assert!(deps.contains("wasm-build-helper"));
-                assert!(!deps.contains("external"));
-                assert!(!deps.contains("tempfile"));
-                assert!(!deps.contains("cc"));
-                assert!(!deps.contains("libc"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let deps = projects[0].expect_package().dependencies();
+        assert_eq!(deps.len(), 6, "expected all workspace deps, got {deps:?}");
+        assert!(deps.contains("runtime-core"));
+        assert!(deps.contains("test-support"));
+        assert!(deps.contains("build-helper"));
+        assert!(deps.contains("unix-support"));
+        assert!(deps.contains("windows-test-support"));
+        assert!(deps.contains("wasm-build-helper"));
+        assert!(!deps.contains("external"));
+        assert!(!deps.contains("tempfile"));
+        assert!(!deps.contains("cc"));
+        assert!(!deps.contains("libc"));
 
         temp_dir.close().unwrap();
     }
@@ -1982,15 +1952,10 @@ wasm-build-helper = { workspace = true }
                 .find(|project| project.name() == Some(name))
                 .unwrap();
             assert_eq!(package.version(), Some(version));
-            match package {
-                Project::Package(package) => {
-                    assert_eq!(
-                        package.workspace_root_path(),
-                        Some(workspace_root.as_path())
-                    );
-                }
-                Project::Workspace(_) => panic!("expected package"),
-            }
+            assert_eq!(
+                package.expect_package().workspace_root_path(),
+                Some(workspace_root.as_path())
+            );
         }
     }
 
@@ -2039,15 +2004,10 @@ wasm-build-helper = { workspace = true }
                 .find(|project| project.name() == Some(name))
                 .unwrap();
             assert_eq!(package.version(), Some(version));
-            match package {
-                Project::Package(package) => {
-                    assert_eq!(
-                        package.workspace_root_path(),
-                        Some(workspace_root.as_path())
-                    );
-                }
-                Project::Workspace(_) => panic!("expected package"),
-            }
+            assert_eq!(
+                package.expect_package().workspace_root_path(),
+                Some(workspace_root.as_path())
+            );
         }
     }
 

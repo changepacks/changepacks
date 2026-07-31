@@ -55,4 +55,25 @@ mod tests {
             expected
         );
     }
+
+    /// `display_update` renders the `changepacks update` preview straight from
+    /// whatever version string the on-disk manifest carries, so a malformed
+    /// value reaches it unfiltered. Pin that the `?` at the
+    /// `next_version_or_default` call propagates instead of silently falling
+    /// back to a placeholder preview, and that the flattened chain still names
+    /// the offending text so the operator can find the bad manifest.
+    #[test]
+    fn test_display_update_rejects_malformed_version() {
+        let error = display_update(Some("abc"), UpdateType::Patch)
+            .expect_err("a non-semver current version must not render a preview");
+        let chain = error
+            .chain()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(": ");
+        assert!(
+            chain.contains("abc"),
+            "error chain must name the offending version, got: {chain}"
+        );
+    }
 }

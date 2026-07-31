@@ -740,18 +740,27 @@ mod tests {
         }
     }
 
+    /// Text the failing wrapper writes to its stderr. Asserting on this exact
+    /// marker is what proves the `; stderr: ...` suffix of the metadata-failure
+    /// message carries the WRAPPER's own diagnostics, rather than some
+    /// incidental text that would also satisfy a bare "is_err" check.
+    const FAILING_GRADLEW_STDERR_MARKER: &str = "changepacks-gradle-failure-marker";
+
+    /// Create a wrapper that runs successfully but exits non-zero after writing
+    /// to stderr — the shape of an ordinary failing Gradle build, as opposed to
+    /// a wrapper that cannot be spawned at all.
     fn create_failing_gradlew(dir: &Path) {
         if cfg!(windows) {
             fs::write(
                 dir.join("gradlew.bat"),
-                "@echo off\n(echo broken build script) >&2\nexit /b 1\n",
+                format!("@echo off\r\n(echo {FAILING_GRADLEW_STDERR_MARKER})>&2\r\nexit /b 1\r\n"),
             )
             .unwrap();
         } else {
             let gradlew_path = dir.join("gradlew");
             fs::write(
                 &gradlew_path,
-                "#!/bin/sh\necho 'broken build script' >&2\nexit 1\n",
+                format!("#!/bin/sh\necho '{FAILING_GRADLEW_STDERR_MARKER}' >&2\nexit 1\n"),
             )
             .unwrap();
             #[cfg(unix)]
@@ -2378,12 +2387,33 @@ def second = 20 / 4
         create_failing_gradlew(&project_dir);
 
         let mut finder = finder_with_java_available();
-        let result = finder
+        let error = finder
             .visit(&build_gradle, &PathBuf::from("my-project/build.gradle.kts"))
-            .await;
+            .await
+            .unwrap_err();
 
-        // Visit should propagate the error from batched metadata discovery.
-        assert!(result.is_err());
+        // Visit propagates the batched metadata discovery failure verbatim, so
+        // pin all three parts of that message: the stable headline, the wrapper
+        // root it names, and the `; stderr: ...` suffix that only appears when
+        // the wrapper actually wrote diagnostics (the empty-stderr branch emits
+        // no suffix at all).
+        let flattened = error
+            .chain()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(": ");
+        assert!(
+            flattened.contains("Gradle metadata discovery failed"),
+            "{flattened}"
+        );
+        assert!(
+            flattened.contains(&project_dir.display().to_string()),
+            "{flattened}"
+        );
+        assert!(
+            flattened.contains(&format!("; stderr: {FAILING_GRADLEW_STDERR_MARKER}")),
+            "{flattened}"
+        );
         // No projects should be added when gradlew fails
         assert_eq!(finder.project_count(), 0);
 

@@ -567,6 +567,59 @@ mod tests {
         assert!(!log_file.exists(), "fully applied log should be deleted");
     }
 
+    /// The removal-FAILURE arm of [`clear_applied_update_logs`]: a log whose
+    /// `changes` map is fully applied takes the `remove_file` branch, and that
+    /// removal can still fail on disk (revoked directory write bit, a held
+    /// handle, a locked volume). `changepacks update` must not report success
+    /// then, because a log that silently survived deletion re-applies the same
+    /// version bumps on the next run. The sibling `clear_update_logs` failure
+    /// test pins a DIFFERENT, aggregated message; the per-path
+    /// `"Failed to remove update log {path}"` context of the selective cleaner
+    /// is pinned only here.
+    #[cfg(any(unix, windows))]
+    #[tokio::test]
+    async fn clear_applied_update_logs_reports_removal_failure_with_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+
+        // EVERY `changes` entry is applied, so the log is classified onto the
+        // remove arm rather than the rewrite or the skip arm.
+        let log_file = changepacks_dir.join("changepack_log_fully_applied.json");
+        let original = br#"{"changes":{"packages/a/package.json":"Patch"},"note":"done"}"#;
+        fs::write(&log_file, original).unwrap();
+
+        let logs = [log_file.as_path()];
+        let guard = DenyLogRemoval::new(&changepacks_dir, &logs);
+        let applied_paths = HashSet::from([Path::new("packages/a/package.json")]);
+        let result = clear_applied_update_logs(&changepacks_dir, &applied_paths).await;
+        // Restore BEFORE asserting so `TempDir` cleanup succeeds on both
+        // platforms even if an assertion below panics first.
+        drop(guard);
+
+        let err = result.expect_err("an undeletable update log must not report success");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("Failed to remove update log"),
+            "error chain must carry the removal context message, got {rendered}"
+        );
+        assert!(
+            rendered.contains(&log_file.display().to_string()),
+            "error chain must name the offending path {}, got {rendered}",
+            log_file.display()
+        );
+        assert!(
+            err.chain()
+                .any(|cause| cause.downcast_ref::<std::io::Error>().is_some()),
+            "failure must originate from the removal itself, got {rendered}"
+        );
+        assert_eq!(
+            fs::read(&log_file).unwrap(),
+            original,
+            "a log that could not be removed must stay byte-identical"
+        );
+    }
+
     #[tokio::test]
     async fn clear_applied_update_logs_skips_untouched_readonly_log() {
         // Given an applied log and a byte-sensitive log with no applied paths.

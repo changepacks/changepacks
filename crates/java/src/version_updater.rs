@@ -237,4 +237,99 @@ mod tests {
             "error chain should carry the build file write context, got: {chain}"
         );
     }
+
+    /// The `gradle.properties` READ arm distinguishes "absent" (a legitimate
+    /// `None`) from "unreadable" (a hard failure). Only a non-`NotFound` error
+    /// reaches the context branch, so the fixture makes `gradle.properties` a
+    /// DIRECTORY: reading it fails on every supported platform (`EISDIR` on
+    /// Unix, access-denied on Windows) without depending on permission bits.
+    ///
+    /// The build script deliberately carries a perfectly editable declaration,
+    /// pinning that an unreadable properties file aborts the whole update
+    /// instead of silently falling through to the build-script write — the
+    /// ambiguity checks cannot run without the properties content.
+    #[tokio::test]
+    async fn test_write_gradle_version_properties_read_error_names_context_and_path() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle.kts");
+        let build_source = "version = \"1.0.0\"\n";
+        std::fs::write(&build_path, build_source).unwrap();
+
+        let properties_path = temp_dir.path().join("gradle.properties");
+        std::fs::create_dir(&properties_path).unwrap();
+
+        let error = write_gradle_version(&build_path, "2.0.0", GradleVersionScope::ScriptOnly)
+            .await
+            .expect_err("an unreadable gradle.properties must not be treated as absent");
+
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to read Gradle properties file {}",
+                properties_path.display()
+            )),
+            "error chain should carry the properties read context and path, got: {chain}"
+        );
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.downcast_ref::<std::io::Error>().is_some()),
+            "failure must originate from the read itself, got: {chain}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&build_path).unwrap(),
+            build_source,
+            "the build file must stay untouched when the properties read fails"
+        );
+    }
+
+    /// The `gradle.properties` WRITE arm is only reached when the build script
+    /// declares no editable version, so the fixture keeps the script version
+    /// free and lets the properties file own the literal. A readonly properties
+    /// file then fails the write, which must stay attributable to the
+    /// properties file rather than surfacing as a bare `os error`.
+    #[tokio::test]
+    async fn test_write_gradle_version_properties_write_error_names_context_and_path() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("build.gradle.kts");
+        std::fs::write(&build_path, "plugins {\n    id(\"java\")\n}\n").unwrap();
+
+        let properties_path = temp_dir.path().join("gradle.properties");
+        let properties_source = b"group=com.example\nversion=1.0.0\n";
+        std::fs::write(&properties_path, properties_source).unwrap();
+
+        // The read succeeds (readonly still permits reads); it is the
+        // write-back that must fail, so flip the readonly bit after seeding.
+        test_support::set_readonly(&properties_path, true);
+
+        // A NEW version guarantees the write is actually attempted against the
+        // readonly file rather than being short-circuited as an unchanged no-op.
+        let result =
+            write_gradle_version(&build_path, "2.0.0", GradleVersionScope::ScriptOnly).await;
+
+        // Restore write permission BEFORE asserting so `TempDir` cleanup
+        // succeeds even if an assertion panics.
+        test_support::set_readonly(&properties_path, false);
+
+        let error = result.expect_err("write to a readonly gradle.properties must fail");
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to write Gradle properties file {}",
+                properties_path.display()
+            )),
+            "error chain should carry the properties write context and path, got: {chain}"
+        );
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.downcast_ref::<std::io::Error>().is_some()),
+            "failure must originate from the write itself, got: {chain}"
+        );
+        assert_eq!(
+            std::fs::read(&properties_path).unwrap(),
+            properties_source,
+            "a properties file that could not be written must stay byte-identical"
+        );
+    }
 }

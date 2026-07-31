@@ -266,13 +266,9 @@ version: 1.0.0
             .unwrap();
 
         assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("test_package"));
-                assert_eq!(pkg.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = finder.projects()[0].expect_package();
+        assert_eq!(pkg.name(), Some("test_package"));
+        assert_eq!(pkg.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -301,13 +297,9 @@ version: 1.0.0
             .unwrap();
 
         assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test_workspace"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = finder.projects()[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test_workspace"));
+        assert_eq!(ws.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -372,13 +364,9 @@ version: 1.0.0
             .unwrap();
 
         assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test_workspace"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = finder.projects()[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test_workspace"));
+        assert_eq!(ws.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -403,13 +391,9 @@ workspace:
             .unwrap();
 
         assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test_workspace"));
-                assert_eq!(ws.version(), None);
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = finder.projects()[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test_workspace"));
+        assert_eq!(ws.version(), None);
 
         temp_dir.close().unwrap();
     }
@@ -532,14 +516,10 @@ version: 1.0.0
 
         let mut projects = finder.projects_mut();
         assert_eq!(projects.len(), 1);
-        match &mut projects[0] {
-            Project::Package(pkg) => {
-                assert!(!pkg.is_changed());
-                pkg.set_changed(true);
-                assert!(pkg.is_changed());
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package_mut();
+        assert!(!pkg.is_changed());
+        pkg.set_changed(true);
+        assert!(pkg.is_changed());
 
         temp_dir.close().unwrap();
     }
@@ -570,17 +550,13 @@ dependencies:
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("test_package"));
-                let deps = pkg.dependencies();
-                assert_eq!(deps.len(), 3);
-                assert!(deps.contains("core"));
-                assert!(deps.contains("utils"));
-                assert!(deps.contains("http"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("test_package"));
+        let deps = pkg.dependencies();
+        assert_eq!(deps.len(), 3);
+        assert!(deps.contains("core"));
+        assert!(deps.contains("utils"));
+        assert!(deps.contains("http"));
 
         temp_dir.close().unwrap();
     }
@@ -609,16 +585,12 @@ dependencies:
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("test_package"));
-                assert_eq!(pkg.dependencies().len(), 3);
-                assert!(pkg.dependencies().contains("http"));
-                assert!(pkg.dependencies().contains("path"));
-                assert!(pkg.dependencies().contains("intl"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("test_package"));
+        assert_eq!(pkg.dependencies().len(), 3);
+        assert!(pkg.dependencies().contains("http"));
+        assert!(pkg.dependencies().contains("path"));
+        assert!(pkg.dependencies().contains("intl"));
 
         temp_dir.close().unwrap();
     }
@@ -647,16 +619,12 @@ dev_dependencies:
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("test_package"));
-                let deps = pkg.dependencies();
-                assert_eq!(deps.len(), 2);
-                assert!(deps.contains("test_utils"));
-                assert!(deps.contains("lints"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("test_package"));
+        let deps = pkg.dependencies();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains("test_utils"));
+        assert!(deps.contains("lints"));
 
         temp_dir.close().unwrap();
     }
@@ -688,17 +656,13 @@ dependency_overrides:
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("test_package"));
-                let deps = pkg.dependencies();
-                assert_eq!(deps.len(), 3);
-                assert!(deps.contains("core"));
-                assert!(deps.contains("other"));
-                assert!(deps.contains("http"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("test_package"));
+        let deps = pkg.dependencies();
+        assert_eq!(deps.len(), 3);
+        assert!(deps.contains("core"));
+        assert!(deps.contains("other"));
+        assert!(deps.contains("http"));
 
         temp_dir.close().unwrap();
     }

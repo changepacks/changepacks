@@ -25,6 +25,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros"] }
 rstest.workspace = true
 changepacks-utils = { workspace = true, features = ["test-support"] }
+changepacks-core = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

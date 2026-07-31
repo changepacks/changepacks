@@ -531,4 +531,18 @@ mod tests {
         assert_eq!(normalized, "1.0.0");
         assert_eq!(normalized.as_ptr(), original_ptr);
     }
+
+    /// The guard rejects the call before any temporary file is created or any
+    /// process is spawned, so this test stays portable and touches neither the
+    /// filesystem nor a Gradle wrapper even though the paths below do not exist.
+    #[tokio::test]
+    async fn test_get_gradle_metadata_rejects_unavailable_java() {
+        let error = get_gradle_metadata(Path::new("gradlew"), Path::new("."), false)
+            .await
+            .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("Java is required"), "{message}");
+        assert!(message.contains("JAVA_HOME"), "{message}");
+    }
 }

@@ -266,6 +266,70 @@ impl Project {
     }
 }
 
+/// Variant-asserting accessors for tests.
+///
+/// Every language crate's `finder.rs` test module repeated the same six-line
+/// `match project { Project::Package(pkg) => { ... } _ => panic!("Expected
+/// Package") }` shape purely to reach the inner trait object, and the wording
+/// of the catch-all arm had already drifted between copies ("Expected
+/// Package" vs "expected package"). These accessors own the assertion once, so
+/// a call site shrinks to a single `let` binding and every failure reports the
+/// same message.
+///
+/// Gated on `cfg(any(test, feature = "test-support"))` for the same reason
+/// [`crate::test_support`] is: this is test scaffolding, so it must not appear
+/// in the crate's shipped API surface. Downstream crates opt in through the
+/// `test-support` feature in their `[dev-dependencies]`.
+///
+/// `#[track_caller]` makes a failed assertion point at the test line that
+/// called the accessor rather than at this file.
+#[cfg(any(test, feature = "test-support"))]
+impl Project {
+    /// Borrow the inner [`Package`] trait object.
+    ///
+    /// # Panics
+    /// Panics when this project is a [`Project::Workspace`].
+    #[must_use]
+    #[track_caller]
+    pub fn expect_package(&self) -> &dyn Package {
+        match self {
+            Self::Package(package) => package.as_ref(),
+            Self::Workspace(_) => panic!("expected Project::Package, got Project::Workspace"),
+        }
+    }
+
+    /// Mutably borrow the inner [`Package`] trait object.
+    ///
+    /// Exists because two finder tests (`csharp` and `dart`'s
+    /// `test_projects_mut`) reach through `projects_mut()` to flip
+    /// `set_changed`. There is deliberately no `expect_workspace_mut` twin: no
+    /// in-tree test needs one, and an unused accessor is dead weight.
+    ///
+    /// # Panics
+    /// Panics when this project is a [`Project::Workspace`].
+    #[must_use]
+    #[track_caller]
+    pub fn expect_package_mut(&mut self) -> &mut dyn Package {
+        match self {
+            Self::Package(package) => package.as_mut(),
+            Self::Workspace(_) => panic!("expected Project::Package, got Project::Workspace"),
+        }
+    }
+
+    /// Borrow the inner [`Workspace`] trait object.
+    ///
+    /// # Panics
+    /// Panics when this project is a [`Project::Package`].
+    #[must_use]
+    #[track_caller]
+    pub fn expect_workspace(&self) -> &dyn Workspace {
+        match self {
+            Self::Workspace(workspace) => workspace.as_ref(),
+            Self::Package(_) => panic!("expected Project::Workspace, got Project::Package"),
+        }
+    }
+}
+
 impl PartialEq for Project {
     fn eq(&self, other: &Self) -> bool {
         self.cmp(other) == Ordering::Equal
@@ -1113,6 +1177,54 @@ mod tests {
         let mut project = Project::Package(Box::new(package));
         project.set_name("new-name".to_string());
         assert_eq!(project.name(), Some("new-name"));
+    }
+
+    /// Direct coverage for the `expect_package` / `expect_package_mut` /
+    /// `expect_workspace` accessors shared by every language crate's
+    /// `finder.rs` test module.
+    ///
+    /// The migrated call sites only ever exercise the matching-variant path,
+    /// so the panicking arm — the whole reason the accessors exist — would
+    /// otherwise go unasserted.
+    #[test]
+    fn expect_package_and_workspace_return_the_matching_variant() {
+        let package = pkg(Some("my-package"), Some("2.0.0"), Language::Rust);
+        assert_eq!(package.expect_package().name(), Some("my-package"));
+        assert_eq!(package.expect_package().version(), Some("2.0.0"));
+
+        let workspace = ws(Some("my-workspace"), Some("1.0.0"), Language::Node);
+        assert_eq!(workspace.expect_workspace().name(), Some("my-workspace"));
+        assert_eq!(workspace.expect_workspace().version(), Some("1.0.0"));
+    }
+
+    #[test]
+    fn expect_package_mut_yields_a_borrow_that_mutates_the_project() {
+        let mut project = pkg(Some("my-package"), Some("2.0.0"), Language::Rust);
+
+        assert!(!project.expect_package_mut().is_changed());
+        project.expect_package_mut().set_changed(true);
+        assert!(project.expect_package().is_changed());
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Project::Package, got Project::Workspace")]
+    fn expect_package_panics_on_a_workspace() {
+        let workspace = ws(Some("my-workspace"), Some("1.0.0"), Language::Node);
+        let _package = workspace.expect_package();
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Project::Package, got Project::Workspace")]
+    fn expect_package_mut_panics_on_a_workspace() {
+        let mut workspace = ws(Some("my-workspace"), Some("1.0.0"), Language::Node);
+        let _package = workspace.expect_package_mut();
+    }
+
+    #[test]
+    #[should_panic(expected = "expected Project::Workspace, got Project::Package")]
+    fn expect_workspace_panics_on_a_package() {
+        let package = pkg(Some("my-package"), Some("2.0.0"), Language::Rust);
+        let _workspace = package.expect_workspace();
     }
 
     #[test]
