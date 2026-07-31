@@ -97,8 +97,10 @@ fn select_changepack(
                 // (each iteration pushes AT MOST one index). Matches the
                 // preallocation policy already applied across `sort_by_dep.rs`,
                 // `gen_update_map.rs`, `find_project_dirs.rs`,
-                // `apply_reverse_dependencies`, and `check.rs`. Byte-identical
-                // output (same indices, same order).
+                // `apply_reverse_dependencies`, and `finders.rs`'s
+                // `collect_projects` (which pre-sizes from
+                // `total_project_count`). Byte-identical output (same indices,
+                // same order).
                 let mut defaults = Vec::with_capacity(projects.len());
                 for (index, project) in projects.iter().enumerate() {
                     if project.is_changed() {

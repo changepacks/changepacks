@@ -74,7 +74,7 @@ impl Project {
     /// the manifest supplies no `name` field.
     ///
     /// Centralizes the `project.name().unwrap_or("noname")` sentinel used
-    /// throughout `check.rs::display_tree` and matched inside
+    /// throughout `commands/tree.rs::display_tree` and matched inside
     /// `Project::format_line` for its own `noname` fallback. A future
     /// rename of the sentinel (e.g. `"anonymous"`, `"unknown"`) lands in
     /// one place instead of every open-coded call site. Byte-identical
@@ -211,7 +211,7 @@ impl Project {
     ///
     /// Single source of truth for the "unknown"/"v{v}" version-formatting
     /// pattern shared by `Project::format_line` (when no `version_override`
-    /// is supplied) and `check.rs::format_project_line` (the CLI's tree /
+    /// is supplied) and `commands/tree.rs::format_project_line` (the CLI's tree /
     /// stdout display). A future rewording (e.g. "no version" instead of
     /// "unknown", or a different prefix) now lands in exactly one place.
     ///
@@ -230,7 +230,8 @@ impl Project {
     /// pre-formatted "v1.0.0 -> v1.1.0 (minor)" upgrade string from
     /// `changepacks_utils::display_update`); when `None`, the current version
     /// is rendered via `self.version_display()`. Extracted from `Display` so
-    /// `check.rs::format_project_line` reuses the exact same base formatting.
+    /// `commands/tree.rs::format_project_line` reuses the exact same base
+    /// formatting.
     #[must_use]
     pub fn format_line(&self, version_override: Option<&str>) -> String {
         // Both variants render identical bytes except for the header prefix:
@@ -243,7 +244,7 @@ impl Project {
         };
         // Route the None-override branch through `format_version_display` so
         // the "unknown"/"v{v}" formatting policy lives in exactly one place —
-        // shared with `check.rs::format_project_line`'s CLI display path.
+        // shared with `commands/tree.rs::format_project_line`'s CLI display path.
         // Borrowed via Cow to skip a per-line String copy when an override is
         // supplied, and to skip the allocation entirely for the "unknown" case.
         let version: Cow<'_, str> =

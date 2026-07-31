@@ -861,9 +861,9 @@ mod tests {
     // macro contract (see `crates/core/src/project_finder.rs`) so the
     // shared macro can generate every trivial accessor. Locks the
     // macro's field-name contract at this CLI-test surface the same way
-    // `MockPackageForCheck` / `MockWorkspaceForCheck` in `check.rs` and
-    // the core-crate test mocks do — a future rename of the macro's
-    // expected field name trips a compile error here immediately.
+    // the core-crate test mocks `MockPackage` / `MockWorkspace` in
+    // `crates/core/src/test_support.rs` do — a future rename of the
+    // macro's expected field name trips a compile error here immediately.
     // Extra fields (`inherits_ws_version`, `workspace_root`) stay put
     // — the macro is scoped to the seven basic accessors and leaves the
     // Rust-specific `inherits_workspace_version` /

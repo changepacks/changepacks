@@ -239,25 +239,7 @@ async fn java_home_has_java(java_home: Option<&OsStr>) -> Result<bool> {
     is_java_executable_candidate(&candidate).await
 }
 
-/// Find gradlew executable by walking up the directory tree.
-///
-/// In multi-module Gradle builds, `gradlew` lives at the root while subprojects
-/// only contain `build.gradle.kts`. This function searches upward from `start_dir`
-/// until it finds `gradlew` (Unix) or `gradlew.bat` (Windows).
-///
-/// The ancestor walk is BOUNDED to the repository root by `max_depth`: the
-/// caller passes `relative_path.components().count()` — the number of
-/// directories from the project dir up to and INCLUDING the repo root — so
-/// `start_dir.ancestors().take(max_depth)` stops AT the repository root and
-/// never touches the drive root, the user's home dir, or a sibling checkout.
-/// An out-of-repo `gradlew` must never be discovered (and then executed):
-/// project discovery is git-scoped, so a stray wrapper ABOVE the repo root
-/// must not be picked up and run. Mirrors the git-scoped bounds the sibling
-/// C# finder applies in `is_workspace` and the Rust finder applies in its
-/// version-inheritance walk.
-///
-/// Returns `(gradlew_path, gradlew_dir)`, or `None` if not found within the bound.
-///
+/// The platform-appropriate Gradle wrapper filename.
 fn gradle_wrapper_name(windows: bool) -> &'static str {
     if windows { "gradlew.bat" } else { "gradlew" }
 }
@@ -283,6 +265,24 @@ async fn find_gradlew(start_dir: &Path, max_depth: usize) -> Result<Option<(Path
     find_gradlew_named(start_dir, max_depth, gradle_wrapper_name(cfg!(windows))).await
 }
 
+/// Find gradlew executable by walking up the directory tree.
+///
+/// In multi-module Gradle builds, `gradlew` lives at the root while subprojects
+/// only contain `build.gradle.kts`. This function searches upward from `start_dir`
+/// until it finds `gradlew` (Unix) or `gradlew.bat` (Windows).
+///
+/// The ancestor walk is BOUNDED to the repository root by `max_depth`: the
+/// caller passes `relative_path.components().count()` — the number of
+/// directories from the project dir up to and INCLUDING the repo root — so
+/// `start_dir.ancestors().take(max_depth)` stops AT the repository root and
+/// never touches the drive root, the user's home dir, or a sibling checkout.
+/// An out-of-repo `gradlew` must never be discovered (and then executed):
+/// project discovery is git-scoped, so a stray wrapper ABOVE the repo root
+/// must not be picked up and run. Mirrors the git-scoped bounds the sibling
+/// C# finder applies in `is_workspace` and the Rust finder applies in its
+/// version-inheritance walk.
+///
+/// Returns `(gradlew_path, gradlew_dir)`, or `None` if not found within the bound.
 async fn find_gradlew_named(
     start_dir: &Path,
     max_depth: usize,
@@ -1216,6 +1216,53 @@ mod tests {
                 OsString::from(":api:publish"),
                 OsString::from(":api:publishToMavenLocal")
             ]
+        );
+    }
+
+    #[test]
+    fn test_gradle_task_arg_from_project_dir_for_wrapper_root_project() {
+        let root = Path::new("/repo");
+
+        let arg = gradle_task_arg_from_project_dir(root, root, "publish").unwrap();
+
+        assert_eq!(arg, OsString::from("publish"));
+    }
+
+    #[test]
+    fn test_gradle_task_arg_from_project_dir_for_nested_project() {
+        let arg =
+            gradle_task_arg_from_project_dir(Path::new("/repo/sub"), Path::new("/repo"), "publish")
+                .unwrap();
+
+        assert_eq!(arg, OsString::from(":sub:publish"));
+    }
+
+    #[test]
+    fn test_gradle_task_arg_from_project_dir_for_deeply_nested_project() {
+        let arg = gradle_task_arg_from_project_dir(
+            Path::new("/repo/libs/core"),
+            Path::new("/repo"),
+            "publishToMavenLocal",
+        )
+        .unwrap();
+
+        assert_eq!(arg, OsString::from(":libs:core:publishToMavenLocal"));
+    }
+
+    #[test]
+    fn test_gradle_task_arg_from_project_dir_rejects_non_descendant_project() {
+        let error = gradle_task_arg_from_project_dir(
+            Path::new("/elsewhere/sub"),
+            Path::new("/repo"),
+            "publish",
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to compute subproject path"),
+            "unexpected error: {error}"
         );
     }
 
