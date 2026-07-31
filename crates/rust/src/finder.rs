@@ -203,6 +203,7 @@ pub struct RustProjectFinder {
     /// O(members^2) in a Cargo workspace where nearly every crate inherits
     /// `version.workspace = true`). Kept in lockstep with the `Vec`: inserted
     /// at the single push site, cleared alongside the `std::mem::take` in
+    /// `finalize`, which then hands the taken `Vec` to
     /// `resolve_pending_workspace_packages`.
     pending_workspace_paths: HashSet<PathBuf>,
 }
@@ -334,9 +335,11 @@ impl RustProjectFinder {
             .insert(abs_path, Project::Package(Box::new(pkg)));
     }
 
-    fn resolve_pending_workspace_packages(&mut self) {
-        let pending = std::mem::take(&mut self.pending_workspace_packages);
-        self.pending_workspace_paths.clear();
+    /// Resolves the members `finalize` already took out of
+    /// `pending_workspace_packages`; the caller owns the `Vec` (and has
+    /// already cleared `pending_workspace_paths` in lockstep) so it can read
+    /// the member paths by reference before handing ownership over here.
+    fn resolve_pending_workspace_packages(&mut self, pending: Vec<PendingWorkspacePackage>) {
         for package in pending {
             let (version, root_path) = self
                 .nearest_workspace_package(&package.abs_path)
@@ -501,11 +504,15 @@ impl ProjectFinder for RustProjectFinder {
     }
 
     async fn finalize(&mut self) -> Result<()> {
-        let unresolved_packages = self
-            .pending_workspace_packages
-            .iter()
-            .map(|package| (package.abs_path.clone(), package.relative_path.clone()))
-            .collect::<Vec<_>>();
+        // Take ownership of the deferred members up front. That ends the
+        // borrow of `self`, so the discovery loop below can read each member's
+        // paths BY REFERENCE while still mutating other `self` fields —
+        // replacing the throwaway `Vec` of deep-copied `abs_path` /
+        // `relative_path` pairs this used to build for every pending member.
+        // `pending_workspace_paths` is cleared here to keep the documented
+        // lockstep invariant with the `Vec`.
+        let pending = std::mem::take(&mut self.pending_workspace_packages);
+        self.pending_workspace_paths.clear();
 
         // Ancestor manifests that this walk already read and rejected — either the
         // file does not exist, or it exists without a `[workspace.package].version`.
@@ -528,12 +535,14 @@ impl ProjectFinder for RustProjectFinder {
 
         // Roots can be omitted by ignore patterns, so discover the nearest root
         // independently for every unresolved member.
-        for (abs_path, relative_path) in unresolved_packages {
+        for package in &pending {
+            let abs_path = &package.abs_path;
+            let relative_path = &package.relative_path;
             let git_root = abs_path
                 .ancestors()
                 .nth(relative_path.components().count())
                 .map(Path::to_path_buf)
-                .unwrap_or_else(|| abs_path.clone());
+                .unwrap_or_else(|| abs_path.to_path_buf());
 
             for parent in abs_path.ancestors().skip(2) {
                 if !parent.starts_with(&git_root) {
@@ -595,7 +604,7 @@ impl ProjectFinder for RustProjectFinder {
             }
         }
 
-        self.resolve_pending_workspace_packages();
+        self.resolve_pending_workspace_packages(pending);
         Ok(())
     }
 }

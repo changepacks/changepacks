@@ -407,6 +407,25 @@ mod tests {
         format_project_line(project, repo_root_path, update_map, &resolved_deps)
     }
 
+    /// Pins two things at once.
+    ///
+    /// First, that `display_tree` emits no bytes at all for an empty project
+    /// set — the state `changepacks check --tree` reaches whenever `--filter`
+    /// or `--language` removes every project, which no other test in this
+    /// module exercises because they all pass at least one project.
+    ///
+    /// Second, that the root loop's `is_last` computation
+    /// (`idx == sorted_roots.len() - 1`) stays underflow-safe. It only is
+    /// because the loop body never runs when `sorted_roots` is empty; hoisting
+    /// the `sorted_roots.len() - 1` term out of the loop panics here with a
+    /// debug `usize` underflow. Empty input is the most direct way to reach
+    /// zero roots — a rootless cycle reaches it only incidentally — so this
+    /// case is what keeps such a refactor from regressing silently.
+    #[test]
+    fn test_display_tree_renders_nothing_for_empty_project_slice() {
+        assert_eq!(render_tree(&[]), "");
+    }
+
     #[test]
     fn test_display_tree_renders_sorted_roots_with_both_connectors() {
         let alpha = package("alpha", &[]);
