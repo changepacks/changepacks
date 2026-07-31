@@ -374,15 +374,43 @@ fn collect_update_project_muts<'a>(
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
 ) -> Result<Vec<UpdateProjectMut<'a>>> {
+    let mut update_projects = filter_projects_by_update_map(
+        collect_projects_mut(project_finders),
+        update_map,
+        repo_root_path,
+    )?;
+    update_projects.sort();
+    Ok(update_projects)
+}
+
+/// The changepack-log -> project join shared by [`collect_update_project_muts`]
+/// and [`collect_update_project_refs`]: keep every project whose repo-relative
+/// manifest path is a key of `update_map`, paired with its [`UpdateType`].
+///
+/// Generic over `P: Borrow<Project>` so the same loop serves both the
+/// `&mut Project` and the `&Project` collection — the two wrappers previously
+/// carried byte-identical bodies that differed only in which `collect_projects`
+/// they drove. Ordering is inherited from the caller's input order; neither the
+/// filter nor the pairing reorders, so the mutable wrapper's `sort()` and the
+/// shared wrapper's deliberate lack of one stay exactly where they were.
+///
+/// The result buffer is reserved against `update_map.len()` rather than the
+/// merged project count: the filter keeps at most one project per changepack
+/// entry, and a repo typically logs updates for a small subset of its packages.
+fn filter_projects_by_update_map<P: std::borrow::Borrow<Project>>(
+    projects: Vec<P>,
+    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+    repo_root_path: &Path,
+) -> Result<Vec<(P, UpdateType)>> {
     let mut update_projects = Vec::with_capacity(update_map.len());
-    for project in collect_projects_mut(project_finders) {
-        if let Some((update_type, _)) =
-            update_map.get(get_relative_path_ref(repo_root_path, project.path())?)
-        {
+    for project in projects {
+        if let Some((update_type, _)) = update_map.get(get_relative_path_ref(
+            repo_root_path,
+            project.borrow().path(),
+        )?) {
             update_projects.push((project, *update_type));
         }
     }
-    update_projects.sort();
     Ok(update_projects)
 }
 
@@ -425,15 +453,11 @@ fn collect_update_project_refs<'a>(
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
 ) -> Result<Vec<UpdateProjectRef<'a>>> {
-    let mut update_projects = Vec::with_capacity(update_map.len());
-    for project in collect_projects(project_finders) {
-        if let Some((update_type, _)) =
-            update_map.get(get_relative_path_ref(repo_root_path, project.path())?)
-        {
-            update_projects.push((project, *update_type));
-        }
-    }
-    Ok(update_projects)
+    filter_projects_by_update_map(
+        collect_projects(project_finders),
+        update_map,
+        repo_root_path,
+    )
 }
 
 /// Collect every workspace root held by `finders`, in finder order and, within

@@ -21,7 +21,7 @@ pub use finder::GradleProjectFinder;
 pub use version_updater::write_gradle_version;
 
 use anyhow::{Context, Result};
-use changepacks_core::Config;
+use changepacks_core::{Config, UpdateType};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::future::Future;
@@ -161,6 +161,37 @@ macro_rules! declare_gradle_project {
 }
 
 pub(crate) use declare_gradle_project;
+
+/// Compute the next semver version and write it into the Gradle build file.
+///
+/// `GradlePackage::update_version` and `GradleWorkspace::update_version` had
+/// byte-identical bodies apart from the [`GradleVersionScope`] they select
+/// (`ScriptOnly` for a package, `ScriptAndAllProjects` for a workspace root),
+/// so the shared body lives here and each trait method is a single delegating
+/// call that supplies its own scope.
+///
+/// This is a plain free function rather than a `macro_rules!`: `#[async_trait]`
+/// rewrites the `impl` block before macro bodies expand, so a macro invocation
+/// inside the impl would emit an `async fn` that no longer matches the
+/// desugared trait signature (E0195) — see the matching note in `package.rs`.
+///
+/// [`GradleVersionScope`]: version_updater::GradleVersionScope
+///
+/// # Errors
+/// Returns an error when the next version cannot be computed, or when the
+/// Gradle build file (or its sibling `gradle.properties`) cannot be rewritten.
+/// A failed write leaves `version` untouched.
+pub(crate) async fn bump_gradle_version(
+    version: &mut Option<String>,
+    path: &Path,
+    update_type: UpdateType,
+    scope: version_updater::GradleVersionScope,
+) -> Result<()> {
+    changepacks_utils::bump_version_with(version, path, update_type, async |new| {
+        write_gradle_version(path, new, scope).await
+    })
+    .await
+}
 
 fn finish_isolated_gradle_dry_run(
     publish_result: Result<changepacks_core::publish::PublishOutput>,

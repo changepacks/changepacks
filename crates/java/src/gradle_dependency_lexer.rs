@@ -366,6 +366,21 @@ fn gradle_identifier_end(bytes: &[u8], start: usize) -> usize {
     end
 }
 
+/// Returns the end offset of the identifier starting at `cursor`, or `None`
+/// when `cursor` does not sit on an identifier start byte.
+///
+/// The three lexer loops that walk raw Gradle bytes (`gradle_quarantine_resume`,
+/// `scan_gradle_call` and `extract_gradle_project_dependencies`) all need the
+/// same "is this an identifier, and where does it end" step before feeding the
+/// span to their lexical state, so the guard lives here once.
+fn gradle_identifier_span(bytes: &[u8], cursor: usize) -> Option<usize> {
+    bytes
+        .get(cursor)
+        .copied()
+        .is_some_and(is_gradle_identifier_start)
+        .then(|| gradle_identifier_end(bytes, cursor))
+}
+
 /// Single source of truth for the Groovy keywords after which a `/` opens a
 /// slashy string instead of being division.
 ///
@@ -631,12 +646,7 @@ fn gradle_quarantine_resume(
             GradleLiteralScan::NotLiteral => {}
         }
 
-        if bytes
-            .get(cursor)
-            .copied()
-            .is_some_and(is_gradle_identifier_start)
-        {
-            let end = gradle_identifier_end(bytes, cursor);
+        if let Some(end) = gradle_identifier_span(bytes, cursor) {
             lexical.mark_identifier(&bytes[cursor..end]);
             cursor = end;
             continue;
@@ -718,12 +728,7 @@ fn scan_gradle_call(bytes: &[u8], open: usize, dialect: GradleDialect) -> Gradle
             GradleLiteralScan::NotLiteral => {}
         }
 
-        if bytes
-            .get(cursor)
-            .copied()
-            .is_some_and(is_gradle_identifier_start)
-        {
-            let end = gradle_identifier_end(bytes, cursor);
+        if let Some(end) = gradle_identifier_span(bytes, cursor) {
             lexical.mark_identifier(&bytes[cursor..end]);
             cursor = end;
             continue;
@@ -945,12 +950,7 @@ pub(crate) fn extract_gradle_project_dependencies(
             }
         }
 
-        if bytes
-            .get(cursor)
-            .copied()
-            .is_some_and(is_gradle_identifier_start)
-        {
-            let end = gradle_identifier_end(bytes, cursor);
+        if let Some(end) = gradle_identifier_span(bytes, cursor) {
             dependency_context.mark_identifier(&bytes[cursor..end], lexical.is_member_access());
             lexical.mark_identifier(&bytes[cursor..end]);
             cursor = end;

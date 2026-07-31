@@ -36,6 +36,24 @@ fn cargo_toml_does_not_exist(error: &anyhow::Error) -> bool {
     })
 }
 
+/// Parse an ancestor `Cargo.toml` that is only a *candidate*: the walk that
+/// produced `candidate` guessed the path, so "no such file" is an ordinary
+/// negative answer (`Ok(None)`) rather than a failure. Any other error — a
+/// malformed manifest, a permission problem — is still propagated with the
+/// path context [`crate::read_and_parse_cargo_toml`] attached.
+///
+/// Both ancestor walks (`discover_workspace_dependency_aliases_for_member` and
+/// `finalize`) need exactly this discrimination, so it has a single definition
+/// here next to [`cargo_toml_does_not_exist`]; the two cannot drift into
+/// disagreeing about which errors are "missing".
+async fn read_cargo_toml_if_absent_ok(candidate: &Path) -> Result<Option<toml_edit::DocumentMut>> {
+    match crate::read_and_parse_cargo_toml(candidate).await {
+        Ok((_, parsed)) => Ok(Some(parsed)),
+        Err(error) if cargo_toml_does_not_exist(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 /// Look up `[package].<field>` as an owned string, mirroring the
 /// `doc.get("package").and_then(|p| p.get(field)).and_then(|v| v.as_str()).map(String::from)`
 /// chain that used to be open-coded across `visit` and `finalize`. Extracted so
@@ -366,11 +384,7 @@ impl RustProjectFinder {
                 return Ok(());
             }
             if !self.non_workspace_manifest_candidates.contains(&candidate) {
-                let parsed = match crate::read_and_parse_cargo_toml(&candidate).await {
-                    Ok((_, parsed)) => Some(parsed),
-                    Err(error) if cargo_toml_does_not_exist(&error) => None,
-                    Err(error) => return Err(error),
-                };
+                let parsed = read_cargo_toml_if_absent_ok(&candidate).await?;
                 if let Some(parsed) = parsed.filter(|parsed| parsed.get("workspace").is_some()) {
                     self.record_workspace_root(candidate, &parsed);
                     return Ok(());
@@ -678,11 +692,7 @@ impl ProjectFinder for RustProjectFinder {
                 if rejected_candidates.contains(&candidate) {
                     continue;
                 }
-                let parsed = match crate::read_and_parse_cargo_toml(&candidate).await {
-                    Ok((_, parsed)) => Some(parsed),
-                    Err(error) if cargo_toml_does_not_exist(&error) => None,
-                    Err(error) => return Err(error),
-                };
+                let parsed = read_cargo_toml_if_absent_ok(&candidate).await?;
                 if let Some((parsed, workspace_version)) = parsed.and_then(|parsed| {
                     workspace_package_str(&parsed, "version")
                         .map(|workspace_version| (parsed, workspace_version))

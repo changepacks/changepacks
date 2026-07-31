@@ -16,18 +16,17 @@ impl Workspace for GradleWorkspace {
     // — expansion is byte-identical to the previous hand-rolled bodies.
     changepacks_core::impl_basic_accessors!();
 
-    // Route version calculation through the shared bump helper (matching
-    // Node/Dart) and leave only the Gradle file rewrite to the Java writer.
+    // Body shared verbatim with `GradlePackage::update_version` via
+    // `crate::bump_gradle_version`; only the scope differs. A workspace root
+    // may also declare the version inside a top-level `allprojects { ... }`
+    // block, which fans the bump out to every subproject.
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let path = &self.path;
-        changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
-            crate::write_gradle_version(
-                path,
-                new,
-                crate::version_updater::GradleVersionScope::ScriptAndAllProjects,
-            )
-            .await
-        })
+        crate::bump_gradle_version(
+            &mut self.version,
+            &self.path,
+            update_type,
+            crate::version_updater::GradleVersionScope::ScriptAndAllProjects,
+        )
         .await
     }
 

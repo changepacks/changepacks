@@ -12,18 +12,16 @@ impl Package for GradlePackage {
     // Standard package/workspace accessors.
     changepacks_core::impl_basic_accessors!();
 
-    // Route version calculation through the shared bump helper (matching
-    // Node/Dart) and leave only the Gradle file rewrite to the Java writer.
+    // Body shared verbatim with `GradleWorkspace::update_version` via
+    // `crate::bump_gradle_version`; only the scope differs. A package owns
+    // exactly one project, so only an outermost declaration is editable.
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let path = &self.path;
-        changepacks_utils::bump_version_with(&mut self.version, path, update_type, async |new| {
-            crate::write_gradle_version(
-                path,
-                new,
-                crate::version_updater::GradleVersionScope::ScriptOnly,
-            )
-            .await
-        })
+        crate::bump_gradle_version(
+            &mut self.version,
+            &self.path,
+            update_type,
+            crate::version_updater::GradleVersionScope::ScriptOnly,
+        )
         .await
     }
 
