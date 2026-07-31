@@ -309,7 +309,8 @@ pub(crate) async fn get_gradle_metadata(
         })?);
     }
 
-    let mut by_project_dir = HashMap::with_capacity(records.len());
+    let mut by_project_dir: HashMap<PathBuf, GradleMetadataRecord> =
+        HashMap::with_capacity(records.len());
     let mut project_names_by_path = HashMap::with_capacity(records.len());
     for (record, normalized_dir) in records.into_iter().zip(normalized_dirs) {
         let project_path = record.project_path.clone();
@@ -330,11 +331,11 @@ pub(crate) async fn get_gradle_metadata(
                     gradlew.display()
                 )
             })?;
-        match project_names_by_path.entry(project_path.clone()) {
+        match project_names_by_path.entry(project_path) {
             Entry::Occupied(previous) => {
                 return Err(anyhow::anyhow!(
                     "Duplicate Gradle metadata project path '{}' from '{}': projects '{}' and '{}'",
-                    project_path,
+                    previous.key(),
                     gradlew.display(),
                     previous.get(),
                     project_name
@@ -344,14 +345,19 @@ pub(crate) async fn get_gradle_metadata(
                 slot.insert(project_name);
             }
         }
-        if let Some(previous) = by_project_dir.insert(normalized_dir.clone(), record) {
-            return Err(anyhow::anyhow!(
-                "Duplicate Gradle metadata records for normalized directory '{}' from '{}': projects '{}' and '{}'",
-                normalized_dir.display(),
-                gradlew.display(),
-                previous.project_path,
-                project_path
-            ));
+        match by_project_dir.entry(normalized_dir) {
+            Entry::Occupied(previous) => {
+                return Err(anyhow::anyhow!(
+                    "Duplicate Gradle metadata records for normalized directory '{}' from '{}': projects '{}' and '{}'",
+                    previous.key().display(),
+                    gradlew.display(),
+                    previous.get().project_path,
+                    record.project_path
+                ));
+            }
+            Entry::Vacant(slot) => {
+                slot.insert(record);
+            }
         }
     }
 

@@ -50,13 +50,71 @@ fn package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<String> {
         .map(String::from)
 }
 
-/// Cargo accepts either a boolean or a registry allow-list for
-/// `[package].publish`; only the exact boolean `false` disables publishing.
-fn package_publishable_by_default(doc: &toml_edit::DocumentMut) -> bool {
-    doc.get("package")
+/// Cargo accepts either a boolean or a registry allow-list for a `publish`
+/// value. Publishing is disabled by the exact boolean `false` *and* by an
+/// empty allow-list `publish = []` — Cargo refuses `cargo publish` for both,
+/// so treating `[]` as publishable would list a crate that always fails to
+/// publish. A missing key, `true`, or a non-empty list all stay publishable,
+/// as does any other scalar shape Cargo would itself reject.
+///
+/// Shared by the `[package].publish` decoder ([`package_publish_default`]) and
+/// its `[workspace.package].publish` sibling
+/// ([`workspace_package_publishable_by_default`]) so the rule lives in one
+/// place and inherited answers cannot drift from standalone ones.
+fn publish_item_publishable(publish: &toml_edit::Item) -> bool {
+    if publish.as_bool() == Some(false) {
+        return false;
+    }
+    if let Some(registries) = publish.as_array() {
+        return !registries.is_empty();
+    }
+    true
+}
+
+/// How a manifest answers "is this package publishable by default?".
+///
+/// `publish` is an inheritable Cargo `[package]` field, so a workspace member
+/// may write `publish.workspace = true` and take the value from the workspace
+/// root's `[workspace.package].publish`. That shape is table-like, so the
+/// scalar rule in [`publish_item_publishable`] cannot answer it on its own and
+/// the decision has to be deferred to the workspace root the same way an
+/// inherited `version` already is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PublishDefault {
+    /// The manifest answers on its own — no workspace lookup needed.
+    Standalone(bool),
+    /// `publish.workspace = true`: the answer lives in the workspace root's
+    /// `[workspace.package].publish`.
+    InheritWorkspace,
+}
+
+impl PublishDefault {
+    /// Collapse to a plain `bool`, consulting `workspace_answer` only for the
+    /// inherit shape. `None` from `workspace_answer` means no workspace root
+    /// was found, which Cargo treats as an error but which this finder reports
+    /// as publishable — the same permissive default a manifest without a
+    /// `publish` key gets.
+    fn resolve(self, workspace_answer: impl FnOnce() -> Option<bool>) -> bool {
+        match self {
+            Self::Standalone(publishable) => publishable,
+            Self::InheritWorkspace => workspace_answer().unwrap_or(true),
+        }
+    }
+}
+
+/// Decode `[package].publish`, distinguishing a standalone answer from the
+/// `publish.workspace = true` inherit marker.
+fn package_publish_default(doc: &toml_edit::DocumentMut) -> PublishDefault {
+    let Some(publish) = doc
+        .get("package")
         .and_then(|package| package.get("publish"))
-        .and_then(toml_edit::Item::as_bool)
-        != Some(false)
+    else {
+        return PublishDefault::Standalone(true);
+    };
+    if crate::is_workspace_marker(publish) {
+        return PublishDefault::InheritWorkspace;
+    }
+    PublishDefault::Standalone(publish_item_publishable(publish))
 }
 
 /// Look up `[workspace.package].<field>` as an owned string, mirroring the
@@ -71,6 +129,19 @@ fn workspace_package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<St
         .and_then(|p| p.get(field))
         .and_then(|v| v.as_str())
         .map(String::from)
+}
+
+/// Apply the [`publish_item_publishable`] rule to `[workspace.package].publish`
+/// — the value a member inheriting via `publish.workspace = true` resolves to.
+/// A root that declares nothing is publishable, matching Cargo's own default.
+///
+/// Sibling of [`workspace_package_str`], keeping the `[workspace.package]`
+/// manifest-shape assumption in one place.
+fn workspace_package_publishable_by_default(doc: &toml_edit::DocumentMut) -> bool {
+    doc.get("workspace")
+        .and_then(|w| w.get("package"))
+        .and_then(|p| p.get("publish"))
+        .is_none_or(publish_item_publishable)
 }
 
 /// Return `true` for a `toml_edit::Item` whose value is table-like with a
@@ -193,6 +264,14 @@ pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
     workspace_package_versions: HashMap<PathBuf, String>,
     workspace_dependency_aliases: HashMap<PathBuf, HashMap<String, String>>,
+    /// `[workspace.package].publish`, decoded per discovered workspace root, so
+    /// a member writing `publish.workspace = true` can inherit it. An entry is
+    /// recorded for EVERY discovered root — including roots that declare no
+    /// `publish` (value `true`) — because the nearest root has to win over a
+    /// shallower one that does declare it. Written in lockstep with
+    /// `workspace_dependency_aliases`, whose presence check is what lets
+    /// `discover_workspace_dependency_aliases_for_member` stop walking early.
+    workspace_package_publishable: HashMap<PathBuf, bool>,
     non_workspace_manifest_candidates: HashSet<PathBuf>,
     inherited_workspace_members: HashMap<PathBuf, InheritedWorkspaceMembers>,
     pending_workspace_packages: Vec<PendingWorkspacePackage>,
@@ -225,6 +304,24 @@ impl RustProjectFinder {
     ) -> Option<&HashMap<String, String>> {
         nearest_workspace_entry(&self.workspace_dependency_aliases, member_path)
             .map(|(_, aliases)| aliases)
+    }
+
+    /// The `[workspace.package].publish` answer of the nearest discovered
+    /// workspace root above `member_path`, or `None` when no root was found.
+    fn nearest_workspace_publishable(&self, member_path: &Path) -> Option<bool> {
+        nearest_workspace_entry(&self.workspace_package_publishable, member_path)
+            .map(|(_, publishable)| *publishable)
+    }
+
+    /// Record everything a member may later inherit from `root_path`, keeping
+    /// the two root-keyed maps written together at every discovery site.
+    fn record_workspace_root(&mut self, root_path: PathBuf, doc: &toml_edit::DocumentMut) {
+        self.workspace_package_publishable.insert(
+            root_path.clone(),
+            workspace_package_publishable_by_default(doc),
+        );
+        self.workspace_dependency_aliases
+            .insert(root_path, workspace_dependency_aliases(doc));
     }
 
     async fn discover_workspace_dependency_aliases_for_member(
@@ -260,8 +357,7 @@ impl RustProjectFinder {
                     Err(error) => return Err(error),
                 };
                 if let Some(parsed) = parsed.filter(|parsed| parsed.get("workspace").is_some()) {
-                    self.workspace_dependency_aliases
-                        .insert(candidate, workspace_dependency_aliases(&parsed));
+                    self.record_workspace_root(candidate, &parsed);
                     return Ok(());
                 }
                 self.non_workspace_manifest_candidates.insert(candidate);
@@ -374,13 +470,25 @@ impl ProjectFinder for RustProjectFinder {
         }
         // read Cargo.toml
         let (_cargo_toml_raw, cargo_toml) = crate::read_and_parse_cargo_toml(path).await?;
-        let publishable_by_default = package_publishable_by_default(&cargo_toml);
+        let publish_default = package_publish_default(&cargo_toml);
         let is_workspace = cargo_toml.get("workspace").is_some();
 
         if !is_workspace {
             self.discover_workspace_dependency_aliases_for_member(path, relative_path)
                 .await?;
         }
+
+        // A manifest carrying `[workspace]` IS its own workspace root, so an
+        // inherited `publish` resolves against its own `[workspace.package]`.
+        // Every other manifest resolves against the nearest root, which the
+        // discovery walk above has just guaranteed is recorded when one exists
+        // on disk — no visit ordering dependency, and no root means the
+        // permissive default.
+        let publishable_by_default = if is_workspace {
+            publish_default.resolve(|| Some(workspace_package_publishable_by_default(&cargo_toml)))
+        } else {
+            publish_default.resolve(|| self.nearest_workspace_publishable(path))
+        };
 
         // Collect workspace dependencies for this file — the same
         // `dep_names` list feeds every branch below (workspace /
@@ -399,8 +507,7 @@ impl ProjectFinder for RustProjectFinder {
         if is_workspace {
             let path_key = path.to_path_buf();
 
-            self.workspace_dependency_aliases
-                .insert(path_key.clone(), workspace_dependency_aliases(&cargo_toml));
+            self.record_workspace_root(path_key.clone(), &cargo_toml);
 
             // Read [workspace.package].version if present
             let ws_pkg_version = workspace_package_str(&cargo_toml, "version");
@@ -569,13 +676,16 @@ impl ProjectFinder for RustProjectFinder {
                     let root_path = candidate;
                     self.workspace_package_versions
                         .insert(root_path.clone(), workspace_version.clone());
-                    self.workspace_dependency_aliases
-                        .insert(root_path.clone(), workspace_dependency_aliases(&parsed));
+                    self.record_workspace_root(root_path.clone(), &parsed);
 
                     // Insert synthetic workspace project so apply_updates() can find it
                     let ws_name = package_str(&parsed, "name");
                     let ws_pkg_version = package_str(&parsed, "version");
-                    let publishable_by_default = package_publishable_by_default(&parsed);
+                    // This manifest is itself the workspace root, so a hybrid
+                    // `[package] publish.workspace = true` inherits from the
+                    // `[workspace.package].publish` in these very bytes.
+                    let publishable_by_default = package_publish_default(&parsed)
+                        .resolve(|| Some(workspace_package_publishable_by_default(&parsed)));
                     let ws_relative_path = root_path
                         .strip_prefix(&git_root)
                         .unwrap_or(Path::new("Cargo.toml"))
@@ -793,6 +903,41 @@ publish = ["internal"]
         assert!(projects[0].is_publishable_by_default());
     }
 
+    // `publish = []` is an empty registry allow-list: Cargo refuses to publish
+    // such a crate exactly like `publish = false`, so the finder must not
+    // advertise it as publishable.
+    #[tokio::test]
+    async fn test_rust_project_finder_empty_publish_list_is_not_publishable_by_default() {
+        let (_temp_dir, finder) = visit_single_manifest(
+            r#"[package]
+name = "empty-allow-list-package"
+version = "1.0.0"
+publish = []
+"#,
+        )
+        .await;
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(!projects[0].is_publishable_by_default());
+    }
+
+    #[tokio::test]
+    async fn test_rust_project_finder_multi_registry_publish_list_remains_publishable_by_default() {
+        let (_temp_dir, finder) = visit_single_manifest(
+            r#"[package]
+name = "multi-registry-package"
+version = "1.0.0"
+publish = ["internal", "mirror"]
+"#,
+        )
+        .await;
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(projects[0].is_publishable_by_default());
+    }
+
     #[tokio::test]
     async fn test_rust_project_finder_visit_workspace() {
         let temp_dir = TempDir::new().unwrap();
@@ -917,6 +1062,227 @@ publish = false
         assert!(matches!(member, Project::Package(_)));
         assert_eq!(member.version(), Some("1.0.0"));
         assert!(!member.is_publishable_by_default());
+    }
+
+    /// Run a full discovery pass over a two-manifest workspace and report
+    /// whether the member came out publishable by default.
+    ///
+    /// `workspace_package_extra` is appended verbatim to the root's
+    /// `[workspace.package]` table (so a test can add `publish = ...` or leave
+    /// it out entirely) and `member_package_body` is appended verbatim to the
+    /// member's `[package]` table after its `name`.
+    async fn discover_member_publishable(
+        workspace_package_extra: &str,
+        member_package_body: &str,
+    ) -> bool {
+        let temp_dir = TempDir::new().unwrap();
+        let workspace_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            format!(
+                "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\nversion = \"1.0.0\"\n{workspace_package_extra}"
+            ),
+        )
+        .unwrap();
+
+        let member_dir = temp_dir.path().join("crates").join("member");
+        fs::create_dir_all(&member_dir).unwrap();
+        let member_toml = member_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            format!("[package]\nname = \"member\"\n{member_package_body}"),
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&workspace_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+        finder
+            .visit(&member_toml, &PathBuf::from("crates/member/Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        let publishable = finder
+            .projects()
+            .into_iter()
+            .find(|project| project.name() == Some("member"))
+            .expect("member should be discovered")
+            .is_publishable_by_default();
+
+        temp_dir.close().unwrap();
+        publishable
+    }
+
+    // `publish` is an inheritable Cargo [package] field: a member writing
+    // `publish.workspace = true` takes the workspace root's
+    // [workspace.package].publish. Both disabling shapes (`false` and the empty
+    // allow-list) must therefore reach the member, and both enabling shapes
+    // plus an absent key must leave it publishable.
+    #[tokio::test]
+    async fn test_inherited_publish_member_resolves_workspace_publish_value() {
+        for (workspace_publish, expected) in [
+            ("publish = false\n", false),
+            ("publish = []\n", false),
+            ("publish = true\n", true),
+            ("publish = [\"internal\"]\n", true),
+            ("", true),
+        ] {
+            let publishable = discover_member_publishable(
+                workspace_publish,
+                "version.workspace = true\npublish.workspace = true\n",
+            )
+            .await;
+            assert_eq!(
+                publishable, expected,
+                "member inheriting publish under root {workspace_publish:?}"
+            );
+        }
+    }
+
+    // The inline-table spelling of the same inherit marker must behave
+    // identically to the dotted-key one.
+    #[tokio::test]
+    async fn test_inherited_publish_inline_table_marker_resolves_workspace_publish_value() {
+        assert!(
+            !discover_member_publishable(
+                "publish = false\n",
+                "version.workspace = true\npublish = { workspace = true }\n",
+            )
+            .await
+        );
+    }
+
+    // A member that does NOT inherit its version still inherits `publish`; the
+    // answer must not depend on the version-deferral path.
+    #[tokio::test]
+    async fn test_inherited_publish_member_with_literal_version_honours_workspace_root() {
+        assert!(
+            !discover_member_publishable(
+                "publish = false\n",
+                "version = \"2.0.0\"\npublish.workspace = true\n",
+            )
+            .await
+        );
+    }
+
+    // Standalone answers are untouched by workspace-level `publish`: a literal
+    // non-empty registry list stays publishable even under a root that disables
+    // publishing, and a literal `false` stays unpublishable under a root that
+    // enables it.
+    #[tokio::test]
+    async fn test_standalone_publish_answers_ignore_workspace_publish_value() {
+        assert!(
+            discover_member_publishable(
+                "publish = false\n",
+                "version.workspace = true\npublish = [\"internal\"]\n",
+            )
+            .await
+        );
+        assert!(
+            !discover_member_publishable(
+                "publish = true\n",
+                "version.workspace = true\npublish = false\n",
+            )
+            .await
+        );
+        assert!(
+            discover_member_publishable("publish = false\n", "version.workspace = true\n").await
+        );
+    }
+
+    // A hybrid root ([workspace] + [package]) is its own workspace root, so its
+    // `publish.workspace = true` resolves against the [workspace.package].publish
+    // in the very same manifest.
+    #[tokio::test]
+    async fn test_hybrid_root_inherited_publish_resolves_from_own_workspace_package() {
+        let (_temp_dir, finder) = visit_single_manifest(
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+publish = false
+
+[package]
+name = "hybrid-root"
+version = "1.0.0"
+publish.workspace = true
+"#,
+        )
+        .await;
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(matches!(projects[0], Project::Workspace(_)));
+        assert!(!projects[0].is_publishable_by_default());
+    }
+
+    // With no workspace root anywhere above it, an inherited `publish` has
+    // nothing to resolve against and falls back to the permissive default
+    // rather than being reported as unpublishable.
+    #[tokio::test]
+    async fn test_inherited_publish_without_workspace_root_defaults_to_publishable() {
+        let (_temp_dir, finder) = visit_single_manifest(
+            r#"[package]
+name = "orphan"
+version = "1.0.0"
+publish.workspace = true
+"#,
+        )
+        .await;
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(projects[0].is_publishable_by_default());
+    }
+
+    // The NEAREST workspace root wins: an inner root that says nothing about
+    // `publish` must not let an outer root's `publish = false` leak through.
+    #[tokio::test]
+    async fn test_inherited_publish_uses_nearest_workspace_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let outer_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &outer_toml,
+            "[workspace]\nmembers = [\"inner\"]\n\n[workspace.package]\nversion = \"1.0.0\"\npublish = false\n",
+        )
+        .unwrap();
+
+        let inner_dir = temp_dir.path().join("inner");
+        let member_dir = inner_dir.join("crates").join("member");
+        fs::create_dir_all(&member_dir).unwrap();
+        fs::write(
+            inner_dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n\n[workspace.package]\nversion = \"2.0.0\"\n",
+        )
+        .unwrap();
+        let member_toml = member_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            "[package]\nname = \"member\"\nversion = \"2.0.0\"\npublish.workspace = true\n",
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(
+                &member_toml,
+                &PathBuf::from("inner/crates/member/Cargo.toml"),
+            )
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        let member = finder
+            .projects()
+            .into_iter()
+            .find(|project| project.name() == Some("member"))
+            .expect("member should be discovered");
+        assert!(member.is_publishable_by_default());
+
+        temp_dir.close().unwrap();
     }
 
     #[tokio::test]
