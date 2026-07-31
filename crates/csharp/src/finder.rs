@@ -102,11 +102,15 @@ impl CSharpProjectFinder {
                     {
                         eligible_property_group_depth = Some(element_depth);
                     } else if name.as_ref() == b"Version" {
-                        in_version = eligible_property_group_depth
-                            .is_some_and(|depth| element_depth == depth + 1);
+                        in_version = is_eligible_property_child(
+                            eligible_property_group_depth,
+                            element_depth,
+                        );
                     } else if name.as_ref() == b"IsPackable" {
-                        in_is_packable = eligible_property_group_depth
-                            .is_some_and(|depth| element_depth == depth + 1);
+                        in_is_packable = is_eligible_property_child(
+                            eligible_property_group_depth,
+                            element_depth,
+                        );
                     } else if name.as_ref() == b"ProjectReference" {
                         collect_project_reference(&e, &mut projects)?;
                     }
@@ -177,6 +181,23 @@ impl CSharpProjectFinder {
         }
         Ok((version, projects, publishable_by_default))
     }
+}
+
+/// Whether the element currently being opened is a DIRECT child of the
+/// currently open unconditional `<PropertyGroup>`.
+///
+/// `<Version>` and `<IsPackable>` are only honoured one level below an
+/// eligible `<PropertyGroup>`; a deeper nesting (or no open eligible group at
+/// all) must not switch the accumulators on. Both element arms of
+/// `parse_csproj_metadata` evaluated this identical predicate inline, so it
+/// lives here once. It stays *inside* those arms rather than being hoisted
+/// above the else-if chain, keeping it evaluated only for those two element
+/// names and the per-event parse cost unchanged.
+const fn is_eligible_property_child(
+    eligible_property_group_depth: Option<usize>,
+    element_depth: usize,
+) -> bool {
+    matches!(eligible_property_group_depth, Some(depth) if element_depth == depth + 1)
 }
 
 /// Fold one decoded `<Version>` / `<IsPackable>` text or CDATA node into the

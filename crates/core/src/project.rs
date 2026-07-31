@@ -943,6 +943,34 @@ mod tests {
         }
     }
 
+    /// Direct coverage for the public `format_version_display` contract.
+    ///
+    /// Every other assertion in this module reaches the function through
+    /// `Display for Project`, which routes via `Project::version_display` and
+    /// immediately calls `into_owned` on the result, so the borrowed-vs-owned
+    /// `Cow` variant the doc comment promises is never observed.
+    /// `format_version_display` is public, re-exported from `lib.rs`, and
+    /// consumed cross-crate by `changepacks_utils::display_update`, so its
+    /// allocation contract is pinned here on its own terms.
+    #[test]
+    fn format_version_display_borrows_unknown_and_allocates_only_for_some() {
+        let absent = format_version_display(None);
+        // The `None` branch hands back the `"unknown"` literal itself; an
+        // `Cow::Owned` here would mean a `String` was allocated for a constant.
+        assert!(matches!(&absent, Cow::Borrowed(_)), "{absent:?}");
+        assert_eq!(absent, "unknown");
+
+        let present = format_version_display(Some("1.2.3"));
+        assert!(matches!(&present, Cow::Owned(_)), "{present:?}");
+        assert_eq!(present, "v1.2.3");
+
+        // An empty version is still `Some`, so it gets the `v` prefix rather
+        // than falling back to the `None`-only `"unknown"` sentinel.
+        let empty = format_version_display(Some(""));
+        assert!(matches!(&empty, Cow::Owned(_)), "{empty:?}");
+        assert_eq!(empty, "v");
+    }
+
     /// Pins the `Some(version_override)` arm of `Project::format_line`.
     ///
     /// Every other test in this module reaches `format_line` through

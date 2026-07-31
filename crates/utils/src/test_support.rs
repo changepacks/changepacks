@@ -75,6 +75,28 @@ pub(crate) fn create_project(name: &str, dependencies: Vec<&str>) -> Project {
     Project::Package(Box::new(package))
 }
 
+/// Create a test project (a `NodePackage` at version `1.0.0`) with no
+/// dependencies, at a caller-chosen relative manifest path.
+///
+/// Complements [`create_project`], which derives the manifest path from the
+/// name: this one fixes the *path* instead, for the tests that assert on
+/// manifest paths (ambiguity diagnostics, path ordering) and therefore need
+/// several projects to share one name at different paths, or a nameless
+/// project at a known path. The absolute path is the relative one rooted at
+/// `/test`, matching [`create_project`].
+///
+/// Tests whose relative path is not valid UTF-8 (the lossy-collision cases)
+/// cannot express it as a `&str` and keep constructing `NodePackage` inline.
+#[cfg(test)]
+pub(crate) fn create_project_at(name: Option<&str>, relative_path: &str) -> Project {
+    Project::Package(Box::new(NodePackage::new(
+        name.map(str::to_string),
+        Some("1.0.0".to_string()),
+        PathBuf::from("/test").join(relative_path),
+        PathBuf::from(relative_path),
+    )))
+}
+
 /// Run `git <args>` in `path` under hermetic config, asserting the command
 /// succeeded. Shared by [`init_git_repo`] and [`git_add_and_commit`] and by the
 /// test modules that drive git-backed discovery.

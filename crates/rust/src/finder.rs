@@ -117,15 +117,20 @@ fn package_publish_default(doc: &toml_edit::DocumentMut) -> PublishDefault {
     PublishDefault::Standalone(publish_item_publishable(publish))
 }
 
-/// Look up `[workspace.package].<field>` as an owned string, mirroring the
-/// `doc.get("workspace").and_then(|w| w.get("package")).and_then(|p| p.get(field)).and_then(|v| v.as_str()).map(String::from)`
-/// chain that was previously open-coded twice in this file (once in `visit`
-/// to seed `workspace_package_version`, once in `finalize` to walk up to a
-/// missed workspace root). Extracted so the manifest-shape assumption lives
-/// in one place, matching the `[package].<field>` sibling helper.
+/// Locate the `[workspace.package]` table — the single place this file encodes
+/// where inheritable Cargo fields live in a workspace root manifest. Every
+/// reader of that table goes through here, so a future manifest shape change
+/// only has to be adapted once.
+fn workspace_package_table(doc: &toml_edit::DocumentMut) -> Option<&toml_edit::Item> {
+    doc.get("workspace").and_then(|w| w.get("package"))
+}
+
+/// Look up `[workspace.package].<field>` as an owned string. Used twice in this
+/// file (once in `visit` to seed `workspace_package_version`, once in
+/// `finalize` to walk up to a missed workspace root), matching the
+/// `[package].<field>` sibling helper.
 fn workspace_package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<String> {
-    doc.get("workspace")
-        .and_then(|w| w.get("package"))
+    workspace_package_table(doc)
         .and_then(|p| p.get(field))
         .and_then(|v| v.as_str())
         .map(String::from)
@@ -135,11 +140,10 @@ fn workspace_package_str(doc: &toml_edit::DocumentMut, field: &str) -> Option<St
 /// — the value a member inheriting via `publish.workspace = true` resolves to.
 /// A root that declares nothing is publishable, matching Cargo's own default.
 ///
-/// Sibling of [`workspace_package_str`], keeping the `[workspace.package]`
-/// manifest-shape assumption in one place.
+/// Sibling of [`workspace_package_str`]; both read the table located by
+/// [`workspace_package_table`].
 fn workspace_package_publishable_by_default(doc: &toml_edit::DocumentMut) -> bool {
-    doc.get("workspace")
-        .and_then(|w| w.get("package"))
+    workspace_package_table(doc)
         .and_then(|p| p.get("publish"))
         .is_none_or(publish_item_publishable)
 }
@@ -259,6 +263,21 @@ fn nearest_workspace_entry<'a, V>(
         .max_by_key(|(root_path, _)| root_path.components().count())
 }
 
+/// The git repository root that `manifest_path` was discovered under.
+///
+/// `relative_path` MUST be the manifest's repo-root-relative path, so its
+/// component count is exactly the number of ancestor steps from
+/// `manifest_path` back up to that root. Callers use the result as the
+/// ancestor-walk boundary that stops discovery from adopting a `Cargo.toml`
+/// living above the repository. Falls back to `manifest_path` itself when the
+/// two paths disagree and the walk runs out of ancestors.
+fn repository_root(manifest_path: &Path, relative_path: &Path) -> PathBuf {
+    manifest_path
+        .ancestors()
+        .nth(relative_path.components().count())
+        .map_or_else(|| manifest_path.to_path_buf(), Path::to_path_buf)
+}
+
 #[derive(Debug, Default)]
 pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
@@ -329,11 +348,7 @@ impl RustProjectFinder {
         member_path: &Path,
         relative_path: &Path,
     ) -> Result<()> {
-        let repository_root = member_path
-            .ancestors()
-            .nth(relative_path.components().count())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| member_path.to_path_buf());
+        let repository_root = repository_root(member_path, relative_path);
         let Some(mut ancestor) = member_path
             .parent()
             .and_then(Path::parent)
@@ -645,11 +660,7 @@ impl ProjectFinder for RustProjectFinder {
         for package in &pending {
             let abs_path = &package.abs_path;
             let relative_path = &package.relative_path;
-            let git_root = abs_path
-                .ancestors()
-                .nth(relative_path.components().count())
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| abs_path.to_path_buf());
+            let git_root = repository_root(abs_path, relative_path);
 
             for parent in abs_path.ancestors().skip(2) {
                 if !parent.starts_with(&git_root) {

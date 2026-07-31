@@ -456,8 +456,7 @@ mod tests {
 
     use super::*;
 
-    use crate::test_support::create_project;
-    use changepacks_node::package::NodePackage;
+    use crate::test_support::{create_project, create_project_at};
 
     /// Narrow a sort error to its cycle details, panicking on any other variant.
     fn cycle_of(error: &DependencySortError) -> &DependencyCycleError {
@@ -473,15 +472,6 @@ mod tests {
             panic!("expected an ambiguous dependency error, got: {error}");
         };
         ambiguity
-    }
-
-    fn create_project_at(name: &str, relative_path: &str) -> Project {
-        Project::Package(Box::new(NodePackage::new(
-            Some(name.to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test").join(relative_path),
-            PathBuf::from(relative_path),
-        )))
     }
 
     #[test]
@@ -620,8 +610,8 @@ mod tests {
 
     #[test]
     fn test_sort_rejects_referenced_ambiguous_dependency() {
-        let core_a = create_project_at("core", "packages/core/package.json");
-        let core_b = create_project_at("core", "crates/core/Cargo.toml");
+        let core_a = create_project_at(Some("core"), "packages/core/package.json");
+        let core_b = create_project_at(Some("core"), "crates/core/Cargo.toml");
         let app = create_project("app", vec!["core"]);
 
         let projects = vec![&app, &core_a, &core_b];
@@ -644,8 +634,8 @@ mod tests {
 
     #[test]
     fn test_ambiguous_dependency_diagnostic_is_deterministic() {
-        let zeta = create_project_at("shared", "zeta/package.json");
-        let alpha = create_project_at("shared", "alpha/package.json");
+        let zeta = create_project_at(Some("shared"), "zeta/package.json");
+        let alpha = create_project_at(Some("shared"), "alpha/package.json");
         let app = create_project("app", vec!["shared"]);
 
         let first = sort_by_dependencies(vec![&app, &zeta, &alpha])
@@ -664,8 +654,8 @@ mod tests {
 
     #[test]
     fn test_ambiguous_dependency_diagnostic_breaks_normalized_path_ties() {
-        let slash = create_project_at("shared", "a/b/package.json");
-        let backslash = create_project_at("shared", "a\\b/package.json");
+        let slash = create_project_at(Some("shared"), "a/b/package.json");
+        let backslash = create_project_at(Some("shared"), "a\\b/package.json");
         let app = create_project("app", vec!["shared"]);
 
         let first = sort_by_dependencies(vec![&app, &slash, &backslash])
@@ -690,8 +680,8 @@ mod tests {
 
     #[test]
     fn test_sort_allows_unreferenced_duplicate_names() {
-        let core_a = create_project_at("core", "packages/core/package.json");
-        let core_b = create_project_at("core", "crates/core/Cargo.toml");
+        let core_a = create_project_at(Some("core"), "packages/core/package.json");
+        let core_b = create_project_at(Some("core"), "crates/core/Cargo.toml");
         let app = create_project("app", vec![]);
 
         let sorted = sort_by_dependencies(vec![&app, &core_a, &core_b]).unwrap();
@@ -717,9 +707,9 @@ mod tests {
         // order verbatim, and unreferenced duplicate names are still legal
         // (no ambiguity error) even though the fast path skips
         // `ProjectNameAnalysis` entirely.
-        let core_a = create_project_at("core", "packages/core/package.json");
-        let core_b = create_project_at("core", "crates/core/Cargo.toml");
-        let app = create_project_at("app", "apps/app/package.json");
+        let core_a = create_project_at(Some("core"), "packages/core/package.json");
+        let core_b = create_project_at(Some("core"), "crates/core/Cargo.toml");
+        let app = create_project_at(Some("app"), "apps/app/package.json");
 
         let sorted = sort_by_dependencies(vec![&core_b, &app, &core_a]).unwrap();
         let paths: Vec<_> = sorted
@@ -955,10 +945,10 @@ mod tests {
 
     #[test]
     fn test_disjoint_cycles_are_all_reported_in_deterministic_order() {
-        let zeta = create_project_at("zeta", "z/zeta.json");
-        let alpha = create_project_at("alpha", "a/alpha.json");
-        let delta = create_project_at("delta", "d/delta.json");
-        let beta = create_project_at("beta", "b/beta.json");
+        let zeta = create_project_at(Some("zeta"), "z/zeta.json");
+        let alpha = create_project_at(Some("alpha"), "a/alpha.json");
+        let delta = create_project_at(Some("delta"), "d/delta.json");
+        let beta = create_project_at(Some("beta"), "b/beta.json");
 
         let mut zeta = zeta;
         let mut alpha = alpha;
@@ -993,8 +983,8 @@ mod tests {
         let beta = create_project("beta", vec!["alpha"]);
         let cycle = sort_by_dependencies(vec![&alpha, &beta]).expect_err("cycle must fail");
 
-        let core_a = create_project_at("core", "packages/core/package.json");
-        let core_b = create_project_at("core", "crates/core/Cargo.toml");
+        let core_a = create_project_at(Some("core"), "packages/core/package.json");
+        let core_b = create_project_at(Some("core"), "crates/core/Cargo.toml");
         let app = create_project("app", vec!["core"]);
         let ambiguity = sort_by_dependencies(vec![&app, &core_a, &core_b])
             .expect_err("ambiguous edge must fail");

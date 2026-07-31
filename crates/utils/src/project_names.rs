@@ -170,7 +170,7 @@ mod tests {
     use changepacks_core::Project;
     use changepacks_node::package::NodePackage;
 
-    use crate::test_support::create_project;
+    use crate::test_support::{create_project, create_project_at};
 
     use super::{ProjectNameAnalysis, ProjectNameResolution, compare_paths};
 
@@ -356,18 +356,8 @@ mod tests {
         shared_alpha.set_name("shared".to_string());
         let mut shared_zeta = create_project("zeta", vec![]);
         shared_zeta.set_name("shared".to_string());
-        let nameless_alpha = Project::Package(Box::new(NodePackage::new(
-            None,
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/nameless-alpha/package.json"),
-            PathBuf::from("nameless-alpha/package.json"),
-        )));
-        let nameless_zeta = Project::Package(Box::new(NodePackage::new(
-            None,
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/nameless-zeta/package.json"),
-            PathBuf::from("nameless-zeta/package.json"),
-        )));
+        let nameless_alpha = create_project_at(None, "nameless-alpha/package.json");
+        let nameless_zeta = create_project_at(None, "nameless-zeta/package.json");
 
         // When
         let analysis = ProjectNameAnalysis::new(&[
