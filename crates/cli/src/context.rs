@@ -122,10 +122,11 @@ mod tests {
             context.config.publish.get("node").map(String::as_str),
             Some("custom publish")
         );
-        // Same helper the production merge path uses (`collect_projects` sizes
-        // its buffer with it), so this assertion cannot drift from it.
+        // Asserted through the production collector itself, so this covers both
+        // the discovered-project count and the buffer `collect_projects` sizes
+        // from it — strictly stronger than checking the capacity hint alone.
         assert_eq!(
-            crate::finders::total_project_count(&context.project_finders),
+            crate::finders::collect_projects(&context.project_finders).len(),
             1
         );
     }

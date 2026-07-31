@@ -26,10 +26,14 @@ pub struct Config {
 
     /// Custom dry-run publish commands by language key or project path.
     ///
-    /// Overrides the default dry-run derivation (appending `--dry-run` to the
-    /// resolved publish command). Use this for ecosystems whose publish tool
-    /// does not support `--dry-run` (e.g., `dotnet nuget push`) or when a
-    /// custom verification flow is preferred.
+    /// `changepacks publish --dry-run` resolves its command in three steps:
+    /// this map keyed by the repo-relative project path, then this map keyed by
+    /// the language key, then the language crate's own built-in dry-run command
+    /// (e.g., `npm publish --dry-run`, `cargo publish --dry-run`). A custom
+    /// [`Config::publish`] entry does not change the dry-run command; only this
+    /// map does. Use it for ecosystems whose publish tool has no built-in
+    /// `--dry-run` (e.g., `dotnet nuget push`) or when a custom verification
+    /// flow is preferred.
     #[serde(default)]
     pub publish_dry_run: BTreeMap<String, String>,
 

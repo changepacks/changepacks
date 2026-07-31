@@ -19,9 +19,8 @@ const PROJECT_FILES: &[&str] = &["pyproject.toml"];
 /// chain that used to be open-coded twice inside `visit` (once for
 /// `version`, once for `name`). Extracted so a future manifest shape
 /// change (e.g. inline-table `name = { workspace = true }`) only needs
-/// to be adapted in one place — matches the `package_str` /
-/// `workspace_package_str` idiom in [`crate::finder`]'s sibling Rust
-/// finder ([`crates/rust/src/finder.rs`](../../../rust/src/finder.rs)).
+/// to be adapted in one place — mirrors `package_str` /
+/// `workspace_package_str` in the `changepacks-rust` finder.
 fn project_str(project: Option<&toml_edit::Item>, field: &str) -> Option<String> {
     project
         .and_then(|p| p.get(field))
@@ -106,23 +105,16 @@ impl ProjectFinder for PythonProjectFinder {
             "a table or inline table",
         )?;
 
-        let mut project = if has_workspace_declaration {
-            Project::Workspace(Box::new(PythonWorkspace::new_discovered(
-                name,
-                version,
-                path_key.clone(),
-                relative_path_key,
-                publishable_by_default,
-            )))
-        } else {
-            Project::Package(Box::new(PythonPackage::new_discovered(
-                name,
-                version,
-                path_key.clone(),
-                relative_path_key,
-                publishable_by_default,
-            )))
-        };
+        let mut project = changepacks_core::discovered_project!(
+            has_workspace_declaration,
+            PythonWorkspace::new_discovered,
+            PythonPackage::new_discovered,
+            name,
+            version,
+            path_key.clone(),
+            relative_path_key,
+            publishable_by_default,
+        );
 
         // read tool.uv.sources section
         //

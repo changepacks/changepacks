@@ -23,9 +23,9 @@ const PUBSPEC_DEPENDENCY_SECTIONS: &[&str] =
 /// `pubspec.get(field).and_then(|v| v.as_str()).map(String::from)` chain
 /// that used to be open-coded twice inside `visit`. Extracted so the
 /// manifest-shape assumption ("top-level key, string value") lives in one
-/// place — matches the `project_str` / `package_str` sibling helpers
-/// already established in `crates/python/src/finder.rs` and
-/// `crates/rust/src/finder.rs`, closing the last workspace-wide gap.
+/// place — mirrors `project_str` in the `changepacks-python` finder and
+/// `package_str` in the `changepacks-rust` finder, closing the last
+/// workspace-wide gap.
 fn pubspec_str(pubspec: &yaml_serde::Value, field: &str) -> Option<String> {
     pubspec
         .get(field)
@@ -149,23 +149,16 @@ impl ProjectFinder for DartProjectFinder {
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();
 
-        let mut project = if is_workspace {
-            Project::Workspace(Box::new(DartWorkspace::new_discovered(
-                name,
-                version,
-                path_key.clone(),
-                relative_path_key,
-                publishable_by_default,
-            )))
-        } else {
-            Project::Package(Box::new(DartPackage::new_discovered(
-                name,
-                version,
-                path_key.clone(),
-                relative_path_key,
-                publishable_by_default,
-            )))
-        };
+        let mut project = changepacks_core::discovered_project!(
+            is_workspace,
+            DartWorkspace::new_discovered,
+            DartPackage::new_discovered,
+            name,
+            version,
+            path_key.clone(),
+            relative_path_key,
+            publishable_by_default,
+        );
 
         add_workspace_dependencies(&mut project, &pubspec);
 

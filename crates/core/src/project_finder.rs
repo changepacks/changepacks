@@ -506,6 +506,55 @@ macro_rules! declare_discovered_project {
     };
 }
 
+/// Builds the [`Project`](crate::Project) a finder just discovered, choosing
+/// the `Workspace` or `Package` variant from `$is_workspace`.
+///
+/// Four finders — Node, Python, Dart and Java — ended their `visit()` with the
+/// same ten-line `if is_workspace { Project::Workspace(Box::new(WsCtor(..))) }
+/// else { Project::Package(Box::new(PkgCtor(..))) }`, and in every copy the
+/// argument list was byte-identical in both arms because the finder had
+/// already hoisted the shared `name` / `version` / `path_key` bindings above
+/// the branch. Only the two constructor paths and that argument list actually
+/// vary, so they are what this macro takes.
+///
+/// Evaluation is unchanged from the hand-written shape: `$is_workspace` is
+/// evaluated once, and each `$arg` is evaluated exactly once and only inside
+/// the branch that is taken. A `path_key.clone()` argument therefore still
+/// performs exactly one `PathBuf` allocation per visit, not two, and the
+/// moved-once `name` / `version` bindings keep type-checking because only one
+/// arm ever runs.
+///
+/// Deliberately NOT used by two finders:
+/// - `crates/csharp/src/finder.rs` has no workspace variant — it always
+///   constructs a `Project::Package`, so there is no branch to factor out.
+/// - `crates/rust/src/finder.rs` builds its two variants from separate
+///   control-flow blocks with different argument lists, not from one `if/else`
+///   over a shared list.
+///
+/// ```ignore
+/// let mut project = changepacks_core::discovered_project!(
+///     is_workspace,
+///     NodeWorkspace::new_discovered,
+///     NodePackage::new_discovered,
+///     name,
+///     version,
+///     path_key.clone(),
+///     relative_path_key,
+///     package_manager,
+///     publishable_by_default,
+/// );
+/// ```
+#[macro_export]
+macro_rules! discovered_project {
+    ($is_workspace:expr, $ws:path, $pkg:path, $($arg:expr),* $(,)?) => {
+        if $is_workspace {
+            $crate::Project::Workspace(::std::boxed::Box::new($ws($($arg),*)))
+        } else {
+            $crate::Project::Package(::std::boxed::Box::new($pkg($($arg),*)))
+        }
+    };
+}
+
 /// Generates `fn language(&self) -> Language` for a fixed language variant.
 #[macro_export]
 macro_rules! impl_language {

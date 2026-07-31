@@ -534,31 +534,18 @@ impl ProjectFinder for GradleProjectFinder {
         // `.clone()` into the constructor cuts 4 `PathBuf` allocs to 2.
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();
-        let mut project = if is_workspace {
-            Project::Workspace(Box::new(
-                GradleWorkspace::new_with_project_path_and_publish_tasks(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path_key,
-                    Some(project_path),
-                    has_publish_task,
-                    has_publish_to_maven_local_task,
-                ),
-            ))
-        } else {
-            Project::Package(Box::new(
-                GradlePackage::new_with_project_path_and_publish_tasks(
-                    name,
-                    version,
-                    path_key.clone(),
-                    relative_path_key,
-                    Some(project_path),
-                    has_publish_task,
-                    has_publish_to_maven_local_task,
-                ),
-            ))
-        };
+        let mut project = changepacks_core::discovered_project!(
+            is_workspace,
+            GradleWorkspace::new_with_project_path_and_publish_tasks,
+            GradlePackage::new_with_project_path_and_publish_tasks,
+            name,
+            version,
+            path_key.clone(),
+            relative_path_key,
+            Some(project_path),
+            has_publish_task,
+            has_publish_to_maven_local_task,
+        );
 
         for dependency in dependency_names {
             project.add_dependency(dependency);

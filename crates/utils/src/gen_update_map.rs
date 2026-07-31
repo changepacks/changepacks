@@ -186,10 +186,10 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
     //            IO-bound systems.
     //   Phase 3: the existing sequential parse+merge loop is unchanged. Final
     //            output ordering was never derived from filesystem order — the
-    //            `ret.0 > *update_type` guard is driven by `UpdateType::Ord` and
-    //            already collapses duplicates across files — so parallelizing
-    //            the reads is deterministic and cannot change the observable
-    //            update_map for any input.
+    //            `ret.0 = ret.0.min(*update_type)` merge is driven by
+    //            `UpdateType::Ord` and already collapses duplicates across files
+    //            — so parallelizing the reads is deterministic and cannot change
+    //            the observable update_map for any input.
     let paths = collect_changepack_log_paths(changepacks_dir).await?;
     // Preallocate against `paths.len()` — a tight lower bound because each
     // changepack log's `changes` map usually names one or more distinct

@@ -20,8 +20,12 @@ pub(crate) fn get_finders() -> Vec<Box<dyn ProjectFinder>> {
 }
 
 /// Calculate total project count across all finders for capacity hints.
+///
+/// Private to this module: it is a capacity hint for [`collect_projects`] and
+/// [`collect_projects_mut`], never a standalone API. Callers outside the module
+/// go through those collectors instead.
 #[must_use]
-pub(crate) fn total_project_count(finders: &[Box<dyn ProjectFinder>]) -> usize {
+fn total_project_count(finders: &[Box<dyn ProjectFinder>]) -> usize {
     finders.iter().map(|f| f.project_count()).sum()
 }
 

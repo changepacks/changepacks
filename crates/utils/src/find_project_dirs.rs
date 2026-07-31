@@ -1681,6 +1681,58 @@ mod tests {
         assert_eq!(projects[0].name(), Some("my-cool-repo"));
     }
 
+    // The origin-derived fallback strips a trailing `.git` from the last URL
+    // path segment and maps an EMPTY result back to `None` so the
+    // `git_root_path.file_name()` fallback wins. Every other origin test uses a
+    // URL with a real repository segment, so that empty-name arm never runs:
+    // deleting it (returning `Some(name)` unconditionally) leaves the whole
+    // suite green while every no-name project silently gets `Some("")`.
+    //
+    // An origin URL whose path is just `/` produces exactly that empty tail, so
+    // this test pins the fallback to the repository directory name instead.
+    #[tokio::test]
+    async fn test_find_project_dirs_empty_remote_name_falls_back_to_dir_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        init_git_repo(temp_path);
+
+        // Origin URL with no repository segment: the path is `/`, so the last
+        // segment is empty even before the `.git` strip.
+        run_git(
+            temp_path,
+            &["remote", "add", "origin", "https://example.com/"],
+        );
+
+        // Create a package.json WITHOUT a name field.
+        fs::write(temp_path.join("package.json"), r#"{"version": "1.0.0"}"#)
+            .await
+            .unwrap();
+
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let repo = discover_repo(temp_path);
+        let config = Config::default();
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        find_project_dirs(&repo, &mut finders, &config, false)
+            .await
+            .unwrap();
+
+        let expected = temp_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("temp dir must have a UTF-8 file name");
+
+        let projects: Vec<_> = finders.iter().flat_map(|f| f.projects()).collect();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            projects[0].name(),
+            Some(expected),
+            "an empty origin-derived name must fall back to the repository directory name"
+        );
+    }
+
     #[tokio::test]
     async fn test_find_project_dirs_sets_name_from_ssh_remote() {
         let temp_dir = TempDir::new().unwrap();

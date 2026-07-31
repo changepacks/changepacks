@@ -54,8 +54,8 @@ mod tests {
     }
 
     /// `gen_update_map` merges several changepack logs that name the same project with
-    /// `if ret.0 > *update_type { ret.0 = *update_type; }`, which keeps the most severe
-    /// bump only because the derived `Ord` puts `Major` before `Minor` before `Patch`.
+    /// `ret.0 = ret.0.min(*update_type);`, which keeps the most severe bump only because
+    /// the derived `Ord` puts `Major` before `Minor` before `Patch`.
     /// Changing the explicit discriminants must fail here rather than silently downgrade
     /// a merge.
     #[test]

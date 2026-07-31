@@ -125,6 +125,22 @@ impl std::error::Error for DependencySortError {
     }
 }
 
+/// Restore the canonical start-offset array with a single reverse shift:
+/// every entry moves one slot to the right and `offsets[0]` returns to 0.
+///
+/// Both CSR builds in this module (the forward adjacency in
+/// `sort_by_dependencies` and the residual transpose in
+/// `cycle_members_in_residual`) fill their buckets with the offset array
+/// itself acting as the write cursor, which leaves every entry holding the
+/// END of its bucket. Sharing one helper keeps that final rewind identical
+/// for both, so a change can never be applied to only one of them.
+fn restore_start_offsets(offsets: &mut [usize]) {
+    for index in (1..offsets.len()).rev() {
+        offsets[index] = offsets[index - 1];
+    }
+    offsets[0] = 0;
+}
+
 /// Find cycle members with one iterative Kosaraju pass over the residual graph.
 ///
 /// A node is cyclic when it belongs to an SCC with multiple nodes, or when its
@@ -216,13 +232,7 @@ fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], in_degree: &[usiz
         }
     }
 
-    // Restore the canonical start-offset array with a single reverse shift:
-    // every entry moves one slot to the right and `reverse_offsets[0]`
-    // returns to 0.
-    for index in (1..reverse_offsets.len()).rev() {
-        reverse_offsets[index] = reverse_offsets[index - 1];
-    }
-    reverse_offsets[0] = 0;
+    restore_start_offsets(&mut reverse_offsets);
 
     let mut cycle_members = vec![false; node_count];
     let mut component = Vec::new();
@@ -349,12 +359,7 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
         offsets[dep_idx] += 1;
     }
 
-    // Restore the canonical start-offset array with a single reverse shift:
-    // every entry moves one slot to the right and `offsets[0]` returns to 0.
-    for idx in (1..offsets.len()).rev() {
-        offsets[idx] = offsets[idx - 1];
-    }
-    offsets[0] = 0;
+    restore_start_offsets(&mut offsets);
 
     // Kahn's algorithm for topological sort.
     //

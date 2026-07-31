@@ -29,8 +29,7 @@ const PACKAGE_JSON_DEPENDENCY_SECTIONS: &[&str] = &[
 /// `doc.get(field).and_then(|v| v.as_str()).map(ToString::to_string)` chain that
 /// used to be open-coded twice inside `visit` (once for `version`, once for `name`).
 /// Extracted so a future manifest shape change only needs to be adapted in one place —
-/// matches the `project_str` idiom in [`crate::finder`]'s sibling Python finder
-/// ([`crates/python/src/finder.rs`](../../../python/src/finder.rs)).
+/// mirrors `project_str` in the `changepacks-python` finder.
 fn package_json_str(doc: &serde_json::Value, field: &str) -> Option<String> {
     doc.get(field)
         .and_then(|v| v.as_str())
@@ -133,25 +132,17 @@ impl ProjectFinder for NodeProjectFinder {
             "pnpm-workspace.yaml",
         )
         .await?;
-        let mut project = if is_workspace {
-            Project::Workspace(Box::new(NodeWorkspace::new_discovered(
-                name,
-                version,
-                path_key.clone(),
-                relative_path_key,
-                package_manager,
-                publishable_by_default,
-            )))
-        } else {
-            Project::Package(Box::new(NodePackage::new_discovered(
-                name,
-                version,
-                path_key.clone(),
-                relative_path_key,
-                package_manager,
-                publishable_by_default,
-            )))
-        };
+        let mut project = changepacks_core::discovered_project!(
+            is_workspace,
+            NodeWorkspace::new_discovered,
+            NodePackage::new_discovered,
+            name,
+            version,
+            path_key.clone(),
+            relative_path_key,
+            package_manager,
+            publishable_by_default,
+        );
 
         add_workspace_dependencies(&mut project, &package_json);
 
