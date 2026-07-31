@@ -46,7 +46,7 @@ gradle.projectsEvaluated { evaluatedGradle ->
 );
 
 /// Project info obtained from batched Gradle metadata.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct GradleProperties {
     pub(crate) name: Option<String>,
     pub(crate) version: Option<String>,
@@ -55,9 +55,8 @@ pub(crate) struct GradleProperties {
     pub(crate) has_publish_to_maven_local_task: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) struct GradleMetadataRecord {
-    pub(crate) project_dir: PathBuf,
     pub(crate) project_path: String,
     pub(crate) properties: GradleProperties,
 }
@@ -140,7 +139,12 @@ fn normalized_gradle_property(value: Option<String>) -> Option<String> {
     })
 }
 
-fn parse_gradle_metadata_record(json: &str) -> Result<GradleMetadataRecord> {
+/// Parses one metadata record, returning its raw emitted directory alongside it.
+///
+/// The directory is only needed until [`get_gradle_metadata`] canonicalizes it
+/// into the `by_project_dir` key, so it travels beside the record instead of
+/// inside it and is dropped once the record is stored.
+fn parse_gradle_metadata_record(json: &str) -> Result<(PathBuf, GradleMetadataRecord)> {
     let mut fields: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(json).context("invalid Gradle metadata JSON object")?;
     let project_dir = required_metadata_string(&mut fields, "projectDir")?;
@@ -160,20 +164,22 @@ fn parse_gradle_metadata_record(json: &str) -> Result<GradleMetadataRecord> {
     let has_publish_to_maven_local_task =
         required_metadata_bool(&mut fields, "hasPublishToMavenLocalTask")?;
 
-    Ok(GradleMetadataRecord {
-        project_dir: PathBuf::from(project_dir),
-        project_path,
-        properties: GradleProperties {
-            name: normalized_gradle_property(Some(name)),
-            version: normalized_gradle_property(version),
-            has_subprojects,
-            has_publish_task,
-            has_publish_to_maven_local_task,
+    Ok((
+        PathBuf::from(project_dir),
+        GradleMetadataRecord {
+            project_path,
+            properties: GradleProperties {
+                name: normalized_gradle_property(Some(name)),
+                version: normalized_gradle_property(version),
+                has_subprojects,
+                has_publish_task,
+                has_publish_to_maven_local_task,
+            },
         },
-    })
+    ))
 }
 
-fn parse_gradle_metadata_records(output: &str) -> Result<Vec<GradleMetadataRecord>> {
+fn parse_gradle_metadata_records(output: &str) -> Result<Vec<(PathBuf, GradleMetadataRecord)>> {
     output
         .lines()
         .enumerate()
@@ -294,15 +300,15 @@ pub(crate) async fn get_gradle_metadata(
     let canonicalized = futures::future::join_all(
         records
             .iter()
-            .map(|record| tokio::fs::canonicalize(&record.project_dir)),
+            .map(|(raw_dir, _)| tokio::fs::canonicalize(raw_dir)),
     )
     .await;
     let mut normalized_dirs = Vec::with_capacity(canonicalized.len());
-    for (record, normalized_dir) in records.iter().zip(canonicalized) {
+    for ((raw_dir, record), normalized_dir) in records.iter().zip(canonicalized) {
         normalized_dirs.push(normalized_dir.with_context(|| {
             format!(
                 "Failed to normalize Gradle metadata directory '{}' for project '{}' emitted by '{}'",
-                record.project_dir.display(),
+                raw_dir.display(),
                 record.project_path,
                 gradlew.display()
             )
@@ -312,7 +318,7 @@ pub(crate) async fn get_gradle_metadata(
     let mut by_project_dir: HashMap<PathBuf, GradleMetadataRecord> =
         HashMap::with_capacity(records.len());
     let mut project_names_by_path = HashMap::with_capacity(records.len());
-    for (record, normalized_dir) in records.into_iter().zip(normalized_dirs) {
+    for ((_raw_dir, record), normalized_dir) in records.into_iter().zip(normalized_dirs) {
         let project_path = record.project_path.clone();
         let project_name = record
             .properties
@@ -398,11 +404,8 @@ mod tests {
         let records = parse_gradle_metadata_records(output).unwrap();
 
         assert_eq!(records.len(), 1);
-        let record = &records[0];
-        assert_eq!(
-            record.project_dir,
-            PathBuf::from(r"C:\repo with spaces\모듈")
-        );
+        let (raw_dir, record) = &records[0];
+        assert_eq!(*raw_dir, PathBuf::from(r"C:\repo with spaces\모듈"));
         assert_eq!(record.project_path, ":module one:유니코드");
         assert_eq!(record.properties.name.as_deref(), Some("이름 with spaces"));
         assert_eq!(record.properties.version.as_deref(), Some("1.2.3-β"));
