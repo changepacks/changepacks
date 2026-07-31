@@ -174,6 +174,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_changepacks_config_whitespace_only_file_returns_default() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        crate::test_support::init_git_repo(temp_path);
+
+        let changepacks_dir = temp_path.join(".changepacks");
+        fs::create_dir_all(&changepacks_dir).unwrap();
+        let config_file = changepacks_dir.join("config.json");
+
+        // Non-empty but blank content: pins the `.trim()` half of the guard, which a
+        // plain `content.is_empty()` check would miss.
+        write(&config_file, "  \t\n \r\n\t  ").await.unwrap();
+
+        let config = get_changepacks_config(temp_path).await.unwrap();
+        assert_eq!(config, Config::default());
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
     async fn test_get_changepacks_config_malformed_json_includes_path() {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();

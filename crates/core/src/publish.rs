@@ -1006,6 +1006,43 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_run_publish_command_with_path_dirs_propagates_invalid_path_entry() {
+        // `prepend_path_dirs` returning `Err` only matters if the runner
+        // actually surfaces it. Were that `?` dropped, the child would spawn
+        // anyway with an un-injected `PATH` — publishing without
+        // `node_modules/.bin`, which is precisely the `prepare: husky` failure
+        // the injection exists to fix — and the suite would stay green. Pin
+        // both halves here: the error propagates, and the child provably never
+        // runs.
+        #[cfg(target_os = "windows")]
+        let invalid_dir = PathBuf::from("C:\\changepacks\"invalid");
+        #[cfg(not(target_os = "windows"))]
+        let invalid_dir = PathBuf::from("/changepacks:invalid");
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let marker = temp_dir.path().join("marker.txt");
+
+        let result = run_publish_command_with_path_dirs(
+            "echo spawned > marker.txt",
+            temp_dir.path(),
+            std::slice::from_ref(&invalid_dir),
+        )
+        .await;
+
+        let error = result.expect_err("invalid PATH entry must fail the publish run");
+        assert!(
+            format!("{error:#}").contains("failed to construct PATH"),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            !marker.exists(),
+            "child process must not spawn when PATH construction fails"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     #[test]
     fn test_build_shell_command() {
         let cmd = build_shell_command("echo hello");

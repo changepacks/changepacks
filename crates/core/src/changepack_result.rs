@@ -68,7 +68,8 @@ impl ChangePackResult {
 mod tests {
     use std::path::PathBuf;
 
-    use serde_json::Value;
+    use rstest::rstest;
+    use serde_json::{Value, json};
 
     use super::*;
 
@@ -82,17 +83,43 @@ mod tests {
         assert!(debug_str.contains("Add new API endpoint"));
     }
 
-    #[test]
-    fn test_changepack_result_log_serialize() {
-        let log = ChangePackResultLog::new(UpdateType::Patch, "Fix serialization bug".to_string());
+    /// The `r#type` field is a raw identifier, so serde must emit the plain key `type`
+    /// for every variant. `check` and `update --format json` publish that key, so a
+    /// rename would silently break the documented JSON output contract.
+    #[rstest]
+    #[case(UpdateType::Major, "Major")]
+    #[case(UpdateType::Minor, "Minor")]
+    #[case(UpdateType::Patch, "Patch")]
+    fn test_changepack_result_log_serialize(
+        #[case] update_type: UpdateType,
+        #[case] expected_type: &str,
+    ) {
+        let note = format!("Note for {expected_type}");
+        let log = ChangePackResultLog::new(update_type, note.clone());
         let json: Value = serde_json::to_value(&log).unwrap();
 
-        assert_eq!(json.get("type"), Some(&Value::String("Patch".to_string())));
+        let object = json.as_object().unwrap();
         assert_eq!(
-            json.get("note"),
-            Some(&Value::String("Fix serialization bug".to_string()))
+            object.get("type"),
+            Some(&Value::String(expected_type.to_string()))
         );
-        assert!(json.get("r#type").is_none());
+        assert_eq!(object.get("note"), Some(&Value::String(note)));
+        assert!(object.get("r#type").is_none());
+        assert_eq!(object.len(), 2);
+    }
+
+    #[test]
+    fn test_changepack_result_log_deserialize_from_json() {
+        let source = json!({
+            "type": "Major",
+            "note": "Breaking API change",
+        });
+
+        let log: ChangePackResultLog = serde_json::from_value(source.clone()).unwrap();
+
+        // The fields are private, so the round-trip through `to_value` is the only way
+        // to assert that both keys were read back into the right places.
+        assert_eq!(serde_json::to_value(&log).unwrap(), source);
     }
 
     #[test]

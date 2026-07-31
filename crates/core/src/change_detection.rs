@@ -15,6 +15,25 @@ pub fn contains_changepacks_component(path: &Path) -> bool {
         .any(|c| matches!(c, Component::Normal(name) if name == OsStr::new(".changepacks")))
 }
 
+/// Resolve the directory that contains `manifest_path`.
+///
+/// This is the single owner of the `"Parent not found - {}"` context message.
+/// That exact text is a **pinned contract**: both
+/// [`should_mark_changed`] and `changepacks_utils::is_workspace_by_sibling`
+/// route their `Path::parent` resolution through here, and both crates have
+/// tests asserting the message byte-for-byte. Change the wording here and
+/// those tests must change with it — do not re-open-code the format string at
+/// a call site.
+///
+/// # Errors
+/// Returns an error when `manifest_path` has no parent directory (a filesystem
+/// root or the empty path).
+pub fn manifest_parent_dir(manifest_path: &Path) -> Result<&Path> {
+    manifest_path
+        .parent()
+        .with_context(|| format!("Parent not found - {}", manifest_path.display()))
+}
+
 /// Whether a filesystem event on `candidate` should mark the project rooted at
 /// `project_manifest` (its `package.json` / `Cargo.toml` / etc.) as changed.
 ///
@@ -33,9 +52,7 @@ pub(crate) fn should_mark_changed(candidate: &Path, project_manifest: &Path) -> 
     if contains_changepacks_component(candidate) {
         return Ok(false);
     }
-    let project_dir = project_manifest
-        .parent()
-        .with_context(|| format!("Parent not found - {}", project_manifest.display()))?;
+    let project_dir = manifest_parent_dir(project_manifest)?;
     Ok(candidate.starts_with(project_dir))
 }
 
@@ -86,6 +103,22 @@ mod tests {
             should_mark_changed(Path::new(candidate), Path::new(manifest)).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn test_manifest_parent_dir_returns_containing_dir() {
+        assert_eq!(
+            manifest_parent_dir(Path::new("/project/package.json")).unwrap(),
+            Path::new("/project")
+        );
+    }
+
+    // The message is a pinned contract shared with
+    // `changepacks_utils::is_workspace_by_sibling`; assert it byte-for-byte.
+    #[test]
+    fn test_manifest_parent_dir_errors_without_parent() {
+        let err = manifest_parent_dir(Path::new("")).unwrap_err();
+        assert_eq!(err.to_string(), "Parent not found - ");
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+use changepacks_core::manifest_parent_dir;
 
 /// Decide whether a manifest roots a workspace via the shared
 /// "declared field OR fixed sibling file" policy the Node and Dart finders
@@ -20,8 +21,10 @@ use anyhow::{Context, Result};
 ///
 /// # Errors
 /// Returns an error when `manifest_path` has no parent directory (a root or
-/// empty path), or when sibling metadata cannot be read for a reason other
-/// than the sibling not existing.
+/// empty path) — the `"Parent not found - {}"` context comes from the shared
+/// `changepacks_core::manifest_parent_dir`, which owns that message — or when
+/// sibling metadata cannot be read for a reason other than the sibling not
+/// existing.
 pub async fn is_workspace_by_sibling(
     field_present: bool,
     manifest_path: &Path,
@@ -30,10 +33,7 @@ pub async fn is_workspace_by_sibling(
     if field_present {
         return Ok(true);
     }
-    let sibling = manifest_path
-        .parent()
-        .with_context(|| format!("Parent not found - {}", manifest_path.display()))?
-        .join(sibling_file);
+    let sibling = manifest_parent_dir(manifest_path)?.join(sibling_file);
     changepacks_core::is_regular_file(&sibling).await
 }
 
