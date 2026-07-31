@@ -1311,29 +1311,6 @@ mod tests {
         );
     }
 
-    /// Regression: a malformed version must fail the bump and name the
-    /// manifest in the error chain — completing the path-in-error-context
-    /// pattern the read/parse/write helpers in this file already use. The bump
-    /// errors BEFORE any file I/O, so no on-disk fixture is needed.
-    #[tokio::test]
-    async fn test_bump_version_with_bump_error_includes_path() {
-        let manifest = PathBuf::from("/nonexistent/node-bump/package.json");
-        let mut version = Some("abc".to_string());
-        let err = changepacks_utils::bump_version_with(
-            &mut version,
-            &manifest,
-            UpdateType::Patch,
-            async |_| Ok(()),
-        )
-        .await
-        .expect_err("a malformed version must fail the bump");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains(&manifest.display().to_string()),
-            "error chain should name the manifest path, got: {chain}"
-        );
-    }
-
     // ── publish_command_for_path / dry_run_publish_command_for_path precedence ──
     //
     // The resolution ladder (highest → lowest priority):

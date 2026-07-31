@@ -629,6 +629,60 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    // A well-formed changepack log whose `changes` map is EMPTY is valid JSON
+    // that deserializes cleanly, so it reaches the merge loop in
+    // `gen_update_map` — unlike a missing directory, a malformed body, a
+    // non-matching filename, or a JSON-named directory, all of which are
+    // rejected earlier and are already covered by the sibling tests. The
+    // `for (project_path, update_type) in file_json.changes()` loop then runs
+    // zero iterations, so such a log must contribute nothing to ANY of the
+    // three `UpdatePlan` containers: no update, no provenance, and no
+    // expansion seed. That last one is load-bearing — an empty
+    // `expansion_seeds` is exactly what keeps the
+    // `expansion_seeds.is_empty()` early return in
+    // `apply_update_on_rules_from` reachable, so a regression that seeded
+    // expansion from an empty log would silently start expanding `updateOn`
+    // rules from nothing.
+    #[tokio::test]
+    async fn test_gen_update_map_ignores_log_with_empty_changes() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+
+        // Same on-disk format as every other changepack log in this suite
+        // (`ChangePackLog::new` + `serde_json::to_vec`), so the only thing that
+        // differs from a populated fixture is the empty `changes` map. `note`
+        // and `date` are populated exactly as `ChangePackLog::new` writes them.
+        let empty_log = ChangePackLog::new(BTreeMap::new(), "no packages touched".to_string());
+        fs::write(
+            changepacks_dir.join("changepack_log_empty.json"),
+            serde_json::to_vec(&empty_log).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let plan = gen_update_map(&changepacks_dir, &Config::default())
+            .await
+            .expect("a well-formed log with empty changes must parse cleanly");
+
+        assert!(
+            plan.is_empty(),
+            "an empty changes map must schedule no update, got {:?}",
+            plan.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            plan.provenance.is_empty(),
+            "an empty changes map must record no provenance, got {:?}",
+            plan.provenance
+        );
+        assert!(
+            plan.expansion_seeds.is_empty(),
+            "an empty changes map must seed no expansion, got {:?}",
+            plan.expansion_seeds
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     // Regression: a malformed `changepack_log_*.json` must surface WHICH
     // file failed to parse rather than a bare `serde_json` error, so users
     // can jump straight to the offender instead of grepping every

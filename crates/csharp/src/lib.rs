@@ -72,7 +72,6 @@ pub(crate) async fn write_csproj_version(path: &Path, new_version: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use changepacks_core::UpdateType;
     use tempfile::TempDir;
 
     /// A realistic `.csproj` shared by the two round-trip tests below: CRLF
@@ -217,29 +216,5 @@ mod tests {
             "error chain should carry the update context naming the manifest path, got: {chain}"
         );
         temp_dir.close().unwrap();
-    }
-
-    /// A malformed `<Version>` must fail the bump with the manifest path named
-    /// in the error chain — matching the Node/Python/Dart/Rust siblings whose
-    /// version-bump already carries `.with_context(... path ...)`. The bump
-    /// errors BEFORE any file I/O, so no on-disk fixture is needed and the
-    /// dummy path is never touched.
-    #[tokio::test]
-    async fn test_bump_version_with_bump_error_includes_path() {
-        let manifest = Path::new("/nonexistent/csharp-bump/Example.csproj");
-        let mut version = Some("abc".to_string());
-        let err = changepacks_utils::bump_version_with(
-            &mut version,
-            manifest,
-            UpdateType::Patch,
-            async |_| Ok(()),
-        )
-        .await
-        .expect_err("a malformed version must fail the bump");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains(&manifest.display().to_string()),
-            "error chain should name the manifest path, got: {chain}"
-        );
     }
 }

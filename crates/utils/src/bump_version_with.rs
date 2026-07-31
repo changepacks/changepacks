@@ -70,6 +70,9 @@ mod tests {
         );
     }
 
+    /// Single owner of the "bump error names the manifest path" assertion: the
+    /// context is added by `bump_version_with` itself, so every language crate
+    /// inherits it and must not re-test it locally.
     #[tokio::test]
     async fn test_bump_version_with_bump_error_includes_path() {
         let path = Path::new("/nonexistent/utils-bump/package.json");

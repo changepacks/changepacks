@@ -609,6 +609,27 @@ mod tests {
     }
 
     #[test]
+    fn test_sort_transitive_missing_dependency_preserves_downstream_order() {
+        // `a` names a dependency no project in the set provides, so the
+        // `ProjectNameResolution::Missing` arm drops that edge. Dropping it
+        // must not disturb the real `a -> b` edge: `b` still depends on `a`
+        // and must still be published after it. Pins that the drop is edge
+        // local, not project local.
+        let a = create_project("a", vec!["not-in-this-set"]);
+        let b = create_project("b", vec!["a"]);
+        let c = create_project("c", vec![]);
+
+        let sorted = sort_by_dependencies(vec![&b, &a, &c]).unwrap();
+        let names: Vec<Option<&str>> = sorted.iter().map(|project| project.name()).collect();
+
+        assert_eq!(names.len(), 3);
+        let a_idx = names.iter().position(|&n| n == Some("a")).unwrap();
+        let b_idx = names.iter().position(|&n| n == Some("b")).unwrap();
+        assert!(a_idx < b_idx, "expected a before b, got {names:?}");
+        assert!(names.contains(&Some("c")));
+    }
+
+    #[test]
     fn test_sort_rejects_referenced_ambiguous_dependency() {
         let core_a = create_project_at(Some("core"), "packages/core/package.json");
         let core_b = create_project_at(Some("core"), "crates/core/Cargo.toml");

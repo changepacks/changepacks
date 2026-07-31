@@ -469,6 +469,47 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    // `visit` gates on `has_extension_ignore_ascii_case(path, "csproj")`, so a
+    // mixed-case `.CSPROJ` manifest MUST be discovered exactly like the
+    // canonical lowercase form. Every other `visit` test in this module uses a
+    // lowercase fixture, leaving the case-insensitive branch — the one that
+    // actually fires on Windows-native and hand-written solutions — unexercised.
+    // This is the discovery-side counterpart to the
+    // `extract_project_name_from_path` `.CSPROJ` cases below.
+    #[tokio::test]
+    async fn test_visit_mixed_case_csproj_extension() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("App.CSPROJ");
+        fs::write(
+            &csproj_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&csproj_path, &PathBuf::from("App.CSPROJ"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.project_count(), 1);
+        assert_eq!(finder.projects().len(), 1);
+        match finder.projects()[0] {
+            Project::Package(pkg) => {
+                assert_eq!(pkg.name(), Some("App"));
+                assert_eq!(pkg.version(), Some("1.0.0"));
+            }
+            _ => panic!("Expected Package"),
+        }
+
+        temp_dir.close().unwrap();
+    }
+
     #[tokio::test]
     async fn test_root_solution_csproj_manifests_are_packages() {
         let temp_dir = TempDir::new().unwrap();

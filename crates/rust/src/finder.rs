@@ -397,11 +397,16 @@ impl RustProjectFinder {
             mut dependencies,
             publishable_by_default,
         } = package;
+        // One lookup for both users below: the alias-collection pass and the
+        // dependency rewrite pass previously probed
+        // `workspace_dependency_aliases` with the same `PathBuf` key twice, so
+        // the second probe (and its path hashing) is elided here.
+        let root_aliases = workspace_root_path
+            .as_ref()
+            .and_then(|root| self.workspace_dependency_aliases.get(root));
         if let (Some(root_path), Some(package_name)) = (workspace_root_path.as_ref(), name.as_ref())
         {
-            let aliases = self
-                .workspace_dependency_aliases
-                .get(root_path)
+            let aliases = root_aliases
                 .into_iter()
                 .flat_map(|aliases| aliases.iter())
                 .filter(|(_, aliased_package_name)| *aliased_package_name == package_name)
@@ -422,9 +427,7 @@ impl RustProjectFinder {
             let mut inherited_members = crate::workspace::lock_recovering(inherited_members);
             inherited_members.record(package_name, aliases);
         }
-        if let Some(root_path) = workspace_root_path.as_ref()
-            && let Some(aliases) = self.workspace_dependency_aliases.get(root_path)
-        {
+        if let Some(aliases) = root_aliases {
             for dependency in &mut dependencies {
                 if let Some(package_name) = aliases.get(dependency) {
                     dependency.clone_from(package_name);
