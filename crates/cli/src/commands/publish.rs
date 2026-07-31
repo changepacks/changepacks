@@ -661,19 +661,28 @@ impl PublishLoopState {
 /// Loop-invariant, so `execute_dry_run_publish_loop` calls this once before
 /// its per-project loop rather than inlining the two passes into the loop
 /// function's prologue.
+///
+/// The two passes share a single definition of the Rust-language predicate
+/// ([`is_rust_project`]), so the count that sizes the table and the filter
+/// that fills it can never drift apart.
 fn rust_batch_names<'a>(projects: &[&'a Project]) -> HashSet<&'a str> {
-    let rust_project_count = projects
-        .iter()
-        .filter(|p| p.language() == changepacks_core::Language::Rust)
-        .count();
+    let rust_project_count = projects.iter().filter(|p| is_rust_project(p)).count();
     let mut rust_batch_names: HashSet<&str> = HashSet::with_capacity(rust_project_count);
     rust_batch_names.extend(
         projects
             .iter()
-            .filter(|p| p.language() == changepacks_core::Language::Rust)
+            .filter(|p| is_rust_project(p))
             .filter_map(|p| p.name()),
     );
     rust_batch_names
+}
+
+/// The Rust-language predicate shared by both passes of [`rust_batch_names`]:
+/// the counting pass that sizes the `HashSet` and the `extend` that fills it.
+/// Defined once so the reserved capacity always describes exactly the set of
+/// projects that will be inserted.
+fn is_rust_project(project: &Project) -> bool {
+    project.language() == changepacks_core::Language::Rust
 }
 
 /// Records the `rust-lang/cargo#1169` workspace-internal-dependency dry-run

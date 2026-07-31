@@ -1,7 +1,7 @@
 use changepacks_core::Project;
 use clap::ValueEnum;
 
-use super::language_options::{CliLanguage, retain_by_language};
+use super::language_options::{CliLanguage, language_slice_contains};
 
 /// CLI filter for workspace-only or package-only listing.
 ///
@@ -29,18 +29,22 @@ impl FilterOptions {
 /// The two commands that expose both flags — `check` and the default
 /// `changepack` flow — previously open-coded the identical pair of statements:
 /// an `args.filter` retain guarded by `if let Some(..)`, immediately followed by
-/// [`retain_by_language`]. The language half was already extracted; this is the
-/// missing `FilterOptions` half, so the combined selection rule now lives in one
-/// place.
+/// [`retain_by_language`](super::language_options::retain_by_language). The
+/// language half was already extracted; this is the missing `FilterOptions`
+/// half, so the combined selection rule now lives in one place.
 ///
-/// Behavior is byte-identical to the inlined version: `filter` is applied first
-/// and only when present, then the language filter runs (itself a no-op for an
-/// empty `langs`). `Vec::retain` is order-stable and both predicates still run
-/// in the same sequence, so the surviving projects and their relative order are
-/// unchanged.
+/// The combined rule runs in a single order-stable, filter-first pass: one
+/// `Vec::retain` whose predicate checks `filter` (vacuously true when absent)
+/// and only then the language selection (vacuously true for an empty `langs`),
+/// instead of two full traversals. `&&` still short-circuits, so a project
+/// rejected by `filter` never reaches the language scan — the surviving set,
+/// its relative order, and the number of predicate evaluations are all
+/// identical to the previous two-pass form. When neither flag is set the whole
+/// call is an early return.
 ///
 /// `publish` deliberately does not use this helper — it has no `--filter` flag
-/// and correctly applies only [`retain_by_language`].
+/// and correctly applies only
+/// [`retain_by_language`](super::language_options::retain_by_language).
 ///
 /// `filter` is taken by value: [`FilterOptions`] is a fieldless two-variant
 /// `Copy` enum, so a `&FilterOptions` is strictly larger than the value it
@@ -50,10 +54,13 @@ pub fn retain_by_filters(
     filter: Option<FilterOptions>,
     langs: &[CliLanguage],
 ) {
-    if let Some(filter) = filter {
-        projects.retain(|project| filter.matches(project));
+    if filter.is_none() && langs.is_empty() {
+        return;
     }
-    retain_by_language(langs, projects);
+    projects.retain(|project| {
+        filter.is_none_or(|filter| filter.matches(project))
+            && (langs.is_empty() || language_slice_contains(langs, project.language()))
+    });
 }
 
 #[cfg(test)]
