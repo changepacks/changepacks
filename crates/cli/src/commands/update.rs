@@ -113,15 +113,14 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // Capture filtered workspace paths before taking the mutable project borrow
     // so the transaction snapshots every in-scope manifest before the first write.
     //
-    // Filters the `projects` slice collected above instead of calling
-    // `collect_workspace_projects(&project_finders)`, which re-ran
-    // `collect_projects` over all six finders to rebuild a second full
-    // `Vec<&Project>` plus a `Vec<WorkspaceRef>` just to reach the workspace
-    // subset already present here. Order is byte-identical:
-    // `collect_workspace_projects` walks the same `collect_projects` output in
-    // the same finder-then-`projects()` order and keeps only the `Workspace`
-    // arm. This is also the last use of `projects`, so its immutable borrow of
-    // `project_finders` ends here, before the mutable borrow taken below.
+    // Filters the `projects` slice collected above instead of building a
+    // second `Vec<WorkspaceRef>` through `collect_workspace_projects`, whose
+    // workspace subset is already reachable from the projects in hand. Order
+    // is byte-identical: that helper walks the same `collect_projects` output
+    // in the same finder-then-`projects()` order and keeps only the
+    // `Workspace` arm. This is also the last use of `projects`, so its
+    // immutable borrow of `project_finders` ends here, before the mutable
+    // borrow taken below.
     let workspace_manifest_paths = projects
         .iter()
         .filter_map(|project| match project {
@@ -154,11 +153,21 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     let transaction_result: Result<()> = async {
         project_result?;
 
-        // Collect filtered workspace projects after the mutable borrow is released.
-        let workspace_projects = collect_workspace_projects(&project_finders);
+        // Re-collect the projects once the mutable borrow is released, then
+        // share that one slice with both workspace helpers. Each of them used
+        // to take the finder slice and run its own `collect_projects` merge
+        // over all six language finders, so every `changepacks update` with at
+        // least one workspace paid for two full six-finder merges (two
+        // `total_project_count` sums plus two pre-sized `Vec<&Project>`
+        // allocations) to read the same discovery result twice. Order is
+        // byte-identical: both helpers already walked `collect_projects`
+        // output in finder-then-`projects()` order and merely selected
+        // different `Project` arms.
+        let transaction_projects = collect_projects(&project_finders);
+        let workspace_projects = collect_workspace_projects(&transaction_projects);
         if !workspace_projects.is_empty() {
             let packages =
-                collect_update_packages(&project_finders, &update_map, &ctx.repo_root_path)?;
+                collect_update_packages(&transaction_projects, &update_map, &ctx.repo_root_path)?;
             apply_workspace_dependency_updates(&workspace_projects, &packages).await?;
         }
 
@@ -440,25 +449,28 @@ fn collect_update_project_muts<'a>(
 /// keep every project whose repo-relative manifest path is a key of
 /// `update_map`, paired with its [`UpdateType`].
 ///
-/// Generic over `P: Borrow<Project>` so the loop is independent of how the
-/// caller borrows its projects. Ordering is inherited from the caller's input
-/// order; neither the filter nor the pairing reorders, so the mutable
-/// wrapper's `sort()` stays exactly where it was.
+/// Takes and returns the mutable borrows its only caller threads through:
+/// `Vec<&mut Project>` in, `Vec<UpdateProjectMut>` out. It used to be generic
+/// over `P: Borrow<Project>` to also serve a shared-borrow caller, but that
+/// caller — the pair-collecting predecessor of [`collect_update_packages`] —
+/// was folded into a single pass, so the bound had one monomorphization left.
+/// Ordering is inherited from the caller's input order; neither the filter nor
+/// the pairing reorders, so the mutable wrapper's `sort()` stays exactly where
+/// it was.
 ///
 /// The result buffer is reserved against `update_map.len()` rather than the
 /// merged project count: the filter keeps at most one project per changepack
 /// entry, and a repo typically logs updates for a small subset of its packages.
-fn filter_projects_by_update_map<P: std::borrow::Borrow<Project>>(
-    projects: Vec<P>,
+fn filter_projects_by_update_map<'a>(
+    projects: Vec<&'a mut Project>,
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
-) -> Result<Vec<(P, UpdateType)>> {
+) -> Result<Vec<UpdateProjectMut<'a>>> {
     let mut update_projects = Vec::with_capacity(update_map.len());
     for project in projects {
-        if let Some((update_type, _)) = update_map.get(get_relative_path_ref(
-            repo_root_path,
-            project.borrow().path(),
-        )?) {
+        if let Some((update_type, _)) =
+            update_map.get(get_relative_path_ref(repo_root_path, project.path())?)
+        {
             update_projects.push((project, *update_type));
         }
     }
@@ -510,17 +522,22 @@ fn validate_update_project_paths(
 /// further.
 ///
 /// The result is intentionally left unsorted, exactly as the pair-producing
-/// predecessor was: [`collect_projects`] walks finders in `get_finders()`
-/// order and each finder appends in its own `projects()` order, and
+/// predecessor was: `projects` arrives in [`collect_projects`] order — finders
+/// in `get_finders()` order, each finder in its own `projects()` order — and
 /// [`Workspace::update_workspace_dependencies`] treats this slice as an
 /// unordered lookup set.
+///
+/// Takes the already-collected projects rather than the finder slice. Running
+/// its own [`collect_projects`] merge made the caller pay for a second full
+/// six-finder walk right beside [`collect_workspace_projects`]; the caller now
+/// collects once and lends the same slice to both.
 fn collect_update_packages<'a>(
-    project_finders: &'a [Box<dyn ProjectFinder>],
+    projects: &[&'a Project],
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
     repo_root_path: &Path,
 ) -> Result<Vec<&'a dyn Package>> {
     let mut packages: Vec<&'a dyn Package> = Vec::with_capacity(update_map.len());
-    for project in collect_projects(project_finders) {
+    for &project in projects {
         if !update_map.contains_key(get_relative_path_ref(repo_root_path, project.path())?) {
             continue;
         }
@@ -531,38 +548,36 @@ fn collect_update_packages<'a>(
     Ok(packages)
 }
 
-/// Collect every workspace root held by `finders`, in finder order and, within
-/// a finder, in `projects()` order.
+/// Narrow `projects` to its workspace roots, preserving the incoming
+/// [`collect_projects`] order: finders in `get_finders()` order and, within a
+/// finder, `projects()` order.
 ///
-/// Merges through [`collect_projects`] — which drives
-/// [`ProjectFinder::extend_projects`] into one pre-sized buffer — instead of
-/// looping `finder.projects()` per finder. The per-finder shape allocated and
-/// immediately dropped one intermediate `Vec<&Project>` for each of the six
-/// language finders. The merged buffer is still presized to
-/// `total_project_count(finders)` inside `collect_projects`.
+/// Takes the already-collected projects rather than the finder slice. Merging
+/// through [`collect_projects`] in here meant `handle_update_with_prompter`
+/// ran that six-finder merge twice per invocation, once for this call and
+/// once inside [`collect_update_packages`] on the very next line; the caller
+/// now collects once and lends the same slice to both.
 ///
-/// The result buffer, however, is reserved against the number of
-/// [`Project::Workspace`] entries rather than the merged project count: a
-/// monorepo holds O(1) workspace roots among O(N) packages, so inheriting the
-/// project-count hint over-reserved one never-written slot per package on
-/// every `changepacks update`. Counting the workspaces first costs one cheap
-/// pass over borrows already in cache and reserves exactly what the loop
-/// writes.
+/// The result buffer is reserved against the number of [`Project::Workspace`]
+/// entries rather than the project count: a monorepo holds O(1) workspace
+/// roots among O(N) packages, so inheriting the project-count hint
+/// over-reserved one never-written slot per package on every `changepacks
+/// update`. Counting the workspaces first costs one cheap pass over borrows
+/// already in cache and reserves exactly what the loop writes.
 ///
 /// `handle_update_with_prompter` calls this once per invocation, after the
-/// mutable project borrow is released, where a fresh borrow of the finders is
-/// genuinely required. The earlier `workspace_manifest_paths` capture filters
-/// the already-collected `projects` vector directly instead of calling in
+/// mutable project borrow is released, where a fresh shared borrow of the
+/// finders is genuinely required. The earlier `workspace_manifest_paths`
+/// capture filters its own `projects` vector directly instead of calling in
 /// here.
-fn collect_workspace_projects<'a>(finders: &'a [Box<dyn ProjectFinder>]) -> Vec<WorkspaceRef<'a>> {
-    let projects = collect_projects(finders);
+fn collect_workspace_projects<'a>(projects: &[&'a Project]) -> Vec<WorkspaceRef<'a>> {
     let workspace_count = projects
         .iter()
         .filter(|project| matches!(project, Project::Workspace(_)))
         .count();
     let mut workspace_projects = Vec::with_capacity(workspace_count);
 
-    for project in projects {
+    for &project in projects {
         if let Project::Workspace(workspace) = project {
             workspace_projects.push(workspace.as_ref());
         }
@@ -1467,7 +1482,8 @@ path = "../visible"
             ))),
         ]))];
 
-        let workspaces = collect_workspace_projects(&finders);
+        let projects = collect_projects(&finders);
+        let workspaces = collect_workspace_projects(&projects);
 
         assert_eq!(workspaces.len(), 1);
         assert_eq!(workspaces[0].path(), workspace_path);
@@ -1840,7 +1856,8 @@ path = "../visible"
             ),
         ]);
 
-        let packages = collect_update_packages(&project_finders, &update_map, repo_root)?;
+        let projects = collect_projects(&project_finders);
+        let packages = collect_update_packages(&projects, &update_map, repo_root)?;
         let actual = packages
             .iter()
             .map(|package| package.relative_path())
