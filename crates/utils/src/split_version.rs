@@ -5,7 +5,8 @@
 /// (e.g. `"^"`, `"~"`, `">="`, `"helloworld-"`) and `None` when the input
 /// starts with a digit or contains no digits at all (e.g. `"latest"`, `"*"`).
 /// Both parts borrow from `version`, so the split is allocation-free — callers
-/// that need owned data rebuild `"<prefix><new_version>"` via `format!`. The
+/// that need owned data rebuild `"<prefix><new_version>"` via
+/// [`replace_version_keep_prefix`]. The
 /// function is total — every input yields a valid pair — so it does NOT return
 /// a `Result`.
 #[must_use]
@@ -29,10 +30,20 @@ pub fn split_version(version: &str) -> (Option<&str>, &str) {
 /// prefix, replace the numeric tail" rebuild [`split_version`]'s own doc
 /// names as the intended caller pattern. Centralizing it here keeps that
 /// policy in ONE place instead of drifting between hand-rolled `format!`s.
+///
+/// The result is built at exact capacity rather than through `format!`: both
+/// halves are already-measured `&str`s, so the final byte length is known
+/// before the first `push_str` and the buffer never reallocates. This is the
+/// same preallocation policy `next_version` applies to its own result buffer,
+/// and it saves one reallocation per workspace-dependency rewrite.
 #[must_use]
 pub fn replace_version_keep_prefix(spec: &str, new_version: &str) -> String {
     let (prefix, _) = split_version(spec);
-    format!("{}{new_version}", prefix.unwrap_or_default())
+    let prefix = prefix.unwrap_or_default();
+    let mut result = String::with_capacity(prefix.len() + new_version.len());
+    result.push_str(prefix);
+    result.push_str(new_version);
+    result
 }
 
 #[cfg(test)]

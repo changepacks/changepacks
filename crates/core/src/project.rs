@@ -11,7 +11,20 @@ use colored::{ColoredString, Colorize};
 
 use crate::{config::Config, package::Package, update_type::UpdateType, workspace::Workspace};
 
+/// Map one path byte to its separator-normalized form: backslash becomes
+/// forward slash, every other byte is returned unchanged.
+///
+/// Single source of truth for the normalization applied by
+/// [`cmp_normalized_paths`], which must map BOTH sides through this helper --
+/// normalizing only one side would make the comparison non-total.
+const fn normalized_separator_byte(byte: u8) -> u8 {
+    if byte == b'\\' { b'/' } else { byte }
+}
+
 /// Compare paths after normalizing backslashes to forward slashes.
+///
+/// Both sides are mapped through [`normalized_separator_byte`]; they must stay
+/// in lockstep, so the shared helper is the only place the rule is written.
 ///
 /// UTF-8 byte-lexicographic order matches Unicode scalar-value order. The
 /// backslash byte cannot occur inside a multibyte sequence, and ASCII byte
@@ -24,12 +37,8 @@ pub fn cmp_normalized_paths(left: &Path, right: &Path) -> Ordering {
 
     left_lossy
         .bytes()
-        .map(|byte| if byte == b'\\' { b'/' } else { byte })
-        .cmp(
-            right_lossy
-                .bytes()
-                .map(|byte| if byte == b'\\' { b'/' } else { byte }),
-        )
+        .map(normalized_separator_byte)
+        .cmp(right_lossy.bytes().map(normalized_separator_byte))
 }
 
 /// Discriminated union of Package (single project) or Workspace (monorepo root).

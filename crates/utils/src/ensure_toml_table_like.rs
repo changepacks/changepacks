@@ -141,4 +141,50 @@ mod tests {
             )
         );
     }
+
+    /// An ARRAY value (`package = [...]`) is a non-scalar that is still not
+    /// table-like, so it must take the reject path instead of being indexed
+    /// into and silently overwritten by the version writer.
+    #[test]
+    fn test_ensure_toml_table_like_rejects_array_value() {
+        let manifest = Path::new("some").join("Cargo.toml");
+        let err = ensure_toml_table_like(
+            &doc("package = [\"a\", \"b\"]\n"),
+            &manifest,
+            "package",
+            "Cargo.toml",
+        )
+        .expect_err("an array `package` must be rejected");
+
+        assert_eq!(
+            format!("{err}"),
+            format!(
+                "Cargo.toml {} has a non-table [package] item",
+                manifest.display()
+            )
+        );
+    }
+
+    /// An ARRAY OF TABLES (a doubled `[[package]]` header) parses to
+    /// `Item::ArrayOfTables`, which `toml_edit` does NOT report as table-like
+    /// even though each element is a table — so this typo is rejected too.
+    #[test]
+    fn test_ensure_toml_table_like_rejects_array_of_tables() {
+        let manifest = Path::new("some").join("pyproject.toml");
+        let err = ensure_toml_table_like(
+            &doc("[[project]]\nversion = \"1.0.0\"\n"),
+            &manifest,
+            "project",
+            "pyproject.toml",
+        )
+        .expect_err("an array-of-tables `project` must be rejected");
+
+        assert_eq!(
+            format!("{err}"),
+            format!(
+                "pyproject.toml {} has a non-table [project] item",
+                manifest.display()
+            )
+        );
+    }
 }
