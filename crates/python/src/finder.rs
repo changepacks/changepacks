@@ -613,6 +613,84 @@ version = "1.0.0"
     }
 
     #[tokio::test]
+    async fn test_python_project_finder_skips_non_table_uv_sources() {
+        // Pins the outer shape guard in `add_uv_source_dependencies`:
+        // `[tool.uv].sources` that is NOT table-like (here a bare string)
+        // is skipped leniently instead of panicking or being iterated, so
+        // `visit` still succeeds and simply registers no dependencies.
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv]
+sources = "packages/pkg-a"
+
+[project]
+name = "test-package"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        let deps = projects[0].dependencies();
+        assert!(
+            deps.is_empty(),
+            "scalar tool.uv.sources must register no dependencies, got {deps:?}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_project_finder_skips_non_table_uv_source_entry() {
+        // Pins the per-entry shape guard in `add_uv_source_dependencies`:
+        // inside a valid `[tool.uv.sources]` table, an entry whose value is
+        // not table-like (`pkg-f`) is skipped while well-formed sibling
+        // entries (`pkg-a`) are still registered.
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[project]
+name = "test-package"
+version = "1.0.0"
+
+[tool.uv.sources]
+pkg-a = { path = "packages/pkg-a" }
+pkg-f = "packages/pkg-f"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        let deps = projects[0].dependencies();
+        assert_eq!(
+            deps.len(),
+            1,
+            "expected only the table-like source entry, got {deps:?}"
+        );
+        assert!(deps.contains("pkg-a"), "missing pkg-a in {deps:?}");
+        assert!(!deps.contains("pkg-f"), "unexpected pkg-f in {deps:?}");
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
     async fn test_python_project_finder_visit_malformed_manifest() {
         // Regression: malformed pyproject.toml must fail with path-aware
         // error context. The error message must include both the manifest

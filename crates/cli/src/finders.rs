@@ -71,6 +71,99 @@ pub(crate) fn collect_projects_mut(finders: &mut [Box<dyn ProjectFinder>]) -> Ve
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    /// Seed `root` with one Node manifest and one Rust manifest, drive the two
+    /// matching finders over them, and hand back both finders in the relative
+    /// order [`get_finders`] uses (Node before Rust).
+    ///
+    /// Every other test in this module builds finders straight from
+    /// [`get_finders`], which have discovered nothing, so the `extend_projects`
+    /// loop bodies in [`collect_projects`] / [`collect_projects_mut`] never run
+    /// with a non-empty finder and the documented merge ORDER is untested. This
+    /// fixture is what makes those loop bodies observable.
+    ///
+    /// The directory names are deliberately reverse-alphabetical to the finder
+    /// order (`z_node` sorts AFTER `a_rust`), so an assertion on the emitted
+    /// order can only hold by honouring the finder walk order — it can never be
+    /// satisfied by an accidental sort on path.
+    async fn discovered_node_then_rust(root: &Path) -> Vec<Box<dyn ProjectFinder>> {
+        let node_dir = root.join("z_node");
+        let rust_dir = root.join("a_rust");
+        fs::create_dir(&node_dir).unwrap();
+        fs::create_dir(&rust_dir).unwrap();
+
+        let package_json = node_dir.join("package.json");
+        fs::write(&package_json, r#"{"name":"node-pkg","version":"1.0.0"}"#).unwrap();
+        let cargo_toml = rust_dir.join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            "[package]\nname = \"rust-pkg\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
+        let mut node_finder = NodeProjectFinder::new();
+        node_finder
+            .visit(&package_json, Path::new("z_node/package.json"))
+            .await
+            .unwrap();
+        let mut rust_finder = RustProjectFinder::new();
+        rust_finder
+            .visit(&cargo_toml, Path::new("a_rust/Cargo.toml"))
+            .await
+            .unwrap();
+
+        assert_eq!(node_finder.project_count(), 1);
+        assert_eq!(rust_finder.project_count(), 1);
+
+        vec![Box::new(node_finder), Box::new(rust_finder)]
+    }
+
+    /// With finders that actually hold projects, `collect_projects` must emit
+    /// every project exactly once, size the buffer from `total_project_count`,
+    /// and preserve `get_finders()` order across finder boundaries.
+    #[tokio::test]
+    async fn test_collect_projects_preserves_finder_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let finders = discovered_node_then_rust(temp_dir.path()).await;
+
+        let projects = collect_projects(&finders);
+
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects.len(), total_project_count(&finders));
+        assert_eq!(
+            projects[0].relative_path(),
+            Path::new("z_node/package.json"),
+            "the Node finder comes first in get_finders(), so its project must be emitted first"
+        );
+        assert_eq!(projects[1].relative_path(), Path::new("a_rust/Cargo.toml"));
+
+        temp_dir.close().unwrap();
+    }
+
+    /// `collect_projects_mut` must agree with `collect_projects` on the merged
+    /// order and on the count, not just on the empty-finder degenerate case.
+    #[tokio::test]
+    async fn test_collect_projects_mut_preserves_finder_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut finders = discovered_node_then_rust(temp_dir.path()).await;
+        let expected = total_project_count(&finders);
+
+        let projects = collect_projects_mut(&mut finders);
+
+        assert_eq!(projects.len(), 2);
+        assert_eq!(projects.len(), expected);
+        assert_eq!(
+            projects[0].relative_path(),
+            Path::new("z_node/package.json"),
+            "the mutable collector must merge in the same order as collect_projects"
+        );
+        assert_eq!(projects[1].relative_path(), Path::new("a_rust/Cargo.toml"));
+
+        temp_dir.close().unwrap();
+    }
 
     #[test]
     fn test_get_finders() {

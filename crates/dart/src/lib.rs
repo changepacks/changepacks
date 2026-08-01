@@ -271,6 +271,38 @@ mod tests {
         );
     }
 
+    /// The read + parse head of `write_pubspec_version` is
+    /// `read_and_parse(path, "pubspec.yaml", ..)`. A manifest that `yamlpath`
+    /// cannot parse must therefore surface the
+    /// `Failed to parse pubspec.yaml <path>` context — pinning the label this
+    /// crate passes — and, because the failure happens strictly before any
+    /// write, must leave the file byte-identical.
+    #[tokio::test]
+    async fn test_write_pubspec_version_parse_error_includes_path_and_leaves_file_intact() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_yaml = temp_dir.path().join("pubspec.yaml");
+        // An unclosed flow sequence: valid-looking YAML that never terminates.
+        let original = "name: test\nversion: [1.0.0\n";
+        fs::write(&pubspec_yaml, original).unwrap();
+
+        let result = write_pubspec_version(&pubspec_yaml, "2.0.0", true).await;
+
+        let err = result.expect_err("malformed YAML must fail the parse");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to parse pubspec.yaml {}",
+                pubspec_yaml.display()
+            )),
+            "error chain should carry the parse label and path context, got: {chain}"
+        );
+        assert_eq!(
+            fs::read_to_string(&pubspec_yaml).unwrap(),
+            original,
+            "a failed parse must not write the manifest at all"
+        );
+    }
+
     #[tokio::test]
     async fn test_write_pubspec_version_error_includes_path() {
         let temp_dir = TempDir::new().unwrap();
