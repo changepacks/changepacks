@@ -10,6 +10,7 @@ use changepacks_core::{ChangePackResultLog, Project, UpdateType, normalize_path_
 use changepacks_utils::{
     ProjectNameAnalysis, ProjectNameResolution, display_update, get_relative_path_ref,
 };
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -311,9 +312,13 @@ fn display_tree_node<'a>(
 ///
 /// Single source of truth for "resolve the repo-relative key, render
 /// `display_update` when the map carries a pending bump, else fall back to
-/// `version_display`" — shared by the `check` stdout flat-list arm and
-/// `format_project_line` (tree / orphan path). Byte-identical to the two
-/// previously open-coded copies.
+/// `changepacks_core::format_version_display`" — shared by the `check` stdout
+/// flat-list arm and `format_project_line` (tree / orphan path).
+/// Byte-identical to the two previously open-coded copies.
+///
+/// Returns a [`Cow`] so the no-pending-bump arm for a versionless project
+/// hands back the borrowed `"unknown"` literal instead of allocating a
+/// `String` for a constant; both consumers only ever read it as a `&str`.
 ///
 /// # Errors
 /// Returns error if the repo-relative path or the update display cannot be computed.
@@ -321,14 +326,14 @@ pub(super) fn version_display_with_update(
     project: &Project,
     repo_root_path: &Path,
     update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-) -> Result<String> {
+) -> Result<Cow<'static, str>> {
     if update_map.is_empty() {
-        return Ok(project.version_display());
+        return Ok(changepacks_core::format_version_display(project.version()));
     }
     let key = get_relative_path_ref(repo_root_path, project.path())?;
     Ok(match update_map.get(key) {
-        Some(update_entry) => display_update(project.version(), update_entry.0)?,
-        None => project.version_display(),
+        Some(update_entry) => Cow::Owned(display_update(project.version(), update_entry.0)?),
+        None => changepacks_core::format_version_display(project.version()),
     })
 }
 

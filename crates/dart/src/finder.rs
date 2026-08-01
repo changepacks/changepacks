@@ -23,9 +23,10 @@ const PUBSPEC_DEPENDENCY_SECTIONS: &[&str] =
 /// `pubspec.get(field).and_then(|v| v.as_str()).map(String::from)` chain
 /// that used to be open-coded twice inside `visit`. Extracted so the
 /// manifest-shape assumption ("top-level key, string value") lives in one
-/// place — mirrors `project_str` in the `changepacks-python` finder and
-/// `package_str` in the `changepacks-rust` finder, closing the last
-/// workspace-wide gap.
+/// place — the YAML counterpart of `changepacks_utils::toml_item_str`, the
+/// shared manifest-field read the `changepacks-python` finder uses for
+/// `[project]` and the `changepacks-rust` finder wraps in `package_str`
+/// (`crates/rust/src/finder.rs:68`), closing the last workspace-wide gap.
 fn pubspec_str(pubspec: &yaml_serde::Value, field: &str) -> Option<String> {
     pubspec
         .get(field)
@@ -138,11 +139,12 @@ impl ProjectFinder for DartProjectFinder {
         // finder at once.
         //
         // Delegate the `.get(...).and_then(as_str).map(...)` chain to
-        // the module-private `pubspec_str` helper — mirrors the
-        // `project_str` / `package_str` sibling helpers in
-        // `crates/python/src/finder.rs` and `crates/rust/src/finder.rs`
-        // so the manifest-shape assumption lives in exactly one place
-        // per finder. Semantically identical to the inline chain:
+        // the module-private `pubspec_str` helper — mirrors the shared
+        // `changepacks_utils::toml_item_str` read used directly by
+        // `crates/python/src/finder.rs` and wrapped as `package_str` in
+        // `crates/rust/src/finder.rs:68`, so the manifest-shape
+        // assumption lives in exactly one place per finder.
+        // Semantically identical to the inline chain:
         // `yaml_serde::Value`'s `Index` impl returns `Value::Null` for
         // missing keys, and `Value::Null.as_str()` is `None`, so both
         // present-string and missing-field shapes round-trip

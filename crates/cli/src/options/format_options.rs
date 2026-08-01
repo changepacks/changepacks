@@ -20,8 +20,7 @@ impl FormatOptions {
     ///
     /// `Self::Stdout` forwards the human-readable message unchanged, while
     /// `Self::Json` always yields the empty JSON object, ignoring `stdout_msg`.
-    #[must_use]
-    pub fn message(self, stdout_msg: &str) -> &str {
+    fn message(self, stdout_msg: &str) -> &str {
         match self {
             Self::Stdout => stdout_msg,
             Self::Json => "{}",

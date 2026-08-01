@@ -52,7 +52,14 @@ pub fn language_slice_contains(langs: &[CliLanguage], lang: Language) -> bool {
 /// "does this language match the `--language` selection". Behavior is
 /// byte-identical: the predicate short-circuits on the first match and
 /// iterates `langs` in insertion order.
-pub fn retain_by_language(langs: &[CliLanguage], projects: &mut Vec<&Project>) {
+///
+/// The parameter order deliberately mirrors its superset sibling
+/// [`retain_by_filters`](super::filter_options::retain_by_filters): the
+/// `&mut Vec<&Project>` being retained comes first, the selection criteria
+/// after. The two are chosen between per command (`publish` has no `--filter`
+/// flag and uses this one), so a transposed order would be a standing
+/// argument-swap trap.
+pub fn retain_by_language(projects: &mut Vec<&Project>, langs: &[CliLanguage]) {
     if langs.is_empty() {
         return;
     }
@@ -105,7 +112,7 @@ mod tests {
             pkg(Language::Dart),
         ];
         let mut refs: Vec<&Project> = projects.iter().collect();
-        retain_by_language(&[CliLanguage::Node, CliLanguage::Rust], &mut refs);
+        retain_by_language(&mut refs, &[CliLanguage::Node, CliLanguage::Rust]);
         assert_eq!(refs.len(), 2);
         assert_eq!(refs[0].language(), Language::Node);
         assert_eq!(refs[1].language(), Language::Rust);
@@ -117,7 +124,7 @@ mod tests {
     fn test_retain_by_language_empty_langs_is_no_op() {
         let projects = [pkg(Language::Python), pkg(Language::Node)];
         let mut refs: Vec<&Project> = projects.iter().collect();
-        retain_by_language(&[], &mut refs);
+        retain_by_language(&mut refs, &[]);
         assert_eq!(refs.len(), 2);
     }
 }

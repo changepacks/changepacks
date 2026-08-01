@@ -29,7 +29,8 @@ const PACKAGE_JSON_DEPENDENCY_SECTIONS: &[&str] = &[
 /// `doc.get(field).and_then(|v| v.as_str()).map(ToString::to_string)` chain that
 /// used to be open-coded twice inside `visit` (once for `version`, once for `name`).
 /// Extracted so a future manifest shape change only needs to be adapted in one place —
-/// mirrors `project_str` in the `changepacks-python` finder.
+/// the JSON counterpart of `changepacks_utils::toml_item_str`, the shared
+/// manifest-field read the `changepacks-python` finder now uses for `[project]`.
 fn package_json_str(doc: &serde_json::Value, field: &str) -> Option<String> {
     doc.get(field)
         .and_then(|v| v.as_str())

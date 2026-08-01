@@ -64,7 +64,7 @@ pub async fn handle_publish_with_prompter(
     let mut projects = collect_projects(&ctx.project_finders);
 
     // Filter by language if specified
-    retain_by_language(&args.language, &mut projects);
+    retain_by_language(&mut projects, &args.language);
 
     // Filter by project relative path if specified.
     // `HashSet<Cow<str>>` gives O(1) lookup vs `Vec::contains` O(A) per project,

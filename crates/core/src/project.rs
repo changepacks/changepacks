@@ -48,7 +48,7 @@ pub enum Project {
 /// Format an optional version string as `v{version}`, or `"unknown"` when absent.
 ///
 /// Single source of truth for the "unknown"/`v{v}` version-display policy shared
-/// by [`Project::version_display`] and `changepacks_utils::display_update`'s
+/// by [`Project::format_line`] and `changepacks_utils::display_update`'s
 /// current-version rendering. A future rewording (e.g. "no version" instead of
 /// "unknown", or a different prefix) now lands in exactly one place across both
 /// crates. Byte-identical to the previously open-coded `map_or_else` copies.
@@ -73,12 +73,13 @@ impl Project {
     /// Return the project's name, or the shared `"noname"` sentinel when
     /// the manifest supplies no `name` field.
     ///
-    /// Centralizes the `project.name().unwrap_or("noname")` sentinel used
-    /// throughout `commands/tree.rs::display_tree` and matched inside
-    /// `Project::format_line` for its own `noname` fallback. A future
-    /// rename of the sentinel (e.g. `"anonymous"`, `"unknown"`) lands in
-    /// one place instead of every open-coded call site. Byte-identical
-    /// output to the previous open-coded pattern.
+    /// Centralizes the `project.name().unwrap_or("noname")` sentinel. The
+    /// only callers are `commands/tree.rs::tree_roots`, which orders tree
+    /// roots by name, and `Project::format_line`, through which the rest of
+    /// the tree output reaches the sentinel indirectly. A future rename of
+    /// the sentinel (e.g. `"anonymous"`, `"unknown"`) lands in one place
+    /// instead of every open-coded call site. Byte-identical output to the
+    /// previous open-coded pattern.
     #[must_use]
     pub fn name_or_noname(&self) -> &str {
         self.name().unwrap_or("noname")
@@ -207,29 +208,13 @@ impl Project {
         }
     }
 
-    /// Format the project's version as `v{version}` or `"unknown"` when absent.
-    ///
-    /// Single source of truth for the "unknown"/"v{v}" version-formatting
-    /// pattern shared by `Project::format_line` (when no `version_override`
-    /// is supplied) and `commands/tree.rs::format_project_line` (the CLI's tree /
-    /// stdout display). A future rewording (e.g. "no version" instead of
-    /// "unknown", or a different prefix) now lands in exactly one place.
-    ///
-    /// Kept returning an owned `String` so callers outside this crate are
-    /// unaffected by [`format_version_display`]'s `Cow` return type; callers
-    /// that can accept a borrow should call `format_version_display` directly.
-    #[must_use]
-    pub fn version_display(&self) -> String {
-        format_version_display(self.version()).into_owned()
-    }
-
     /// Render the project's canonical one-line label (`[Workspace - Node] name
     /// (v1.0.0) - path`) with optional version override.
     ///
     /// `version_override` is used verbatim when supplied (typically a
     /// pre-formatted "v1.0.0 -> v1.1.0 (minor)" upgrade string from
     /// `changepacks_utils::display_update`); when `None`, the current version
-    /// is rendered via `self.version_display()`. Extracted from `Display` so
+    /// is rendered via [`format_version_display`]. Extracted from `Display` so
     /// `commands/tree.rs::format_project_line` reuses the exact same base
     /// formatting.
     #[must_use]
@@ -1011,9 +996,10 @@ mod tests {
     /// Direct coverage for the public `format_version_display` contract.
     ///
     /// Every other assertion in this module reaches the function through
-    /// `Display for Project`, which routes via `Project::version_display` and
-    /// immediately calls `into_owned` on the result, so the borrowed-vs-owned
-    /// `Cow` variant the doc comment promises is never observed.
+    /// `Display for Project`, which routes via `Project::format_line` and
+    /// immediately interpolates the result into a `String`, so the
+    /// borrowed-vs-owned `Cow` variant the doc comment promises is never
+    /// observed.
     /// `format_version_display` is public, re-exported from `lib.rs`, and
     /// consumed cross-crate by `changepacks_utils::display_update`, so its
     /// allocation contract is pinned here on its own terms.
