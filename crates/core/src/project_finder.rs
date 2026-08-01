@@ -998,17 +998,13 @@ mod tests {
         }
     }
 
-    fn project_names(projects: &[&Project]) -> Vec<String> {
+    // Accepts both `&[&Project]` and `&[&mut Project]` buffers: std provides
+    // `Borrow<T>` for `&T` and `&mut T` alike, so the shared/mutable
+    // `extend_projects` twins can assert against one helper.
+    fn project_names<P: std::borrow::Borrow<Project>>(projects: &[P]) -> Vec<String> {
         projects
             .iter()
-            .map(|project| project.name().unwrap_or_default().to_string())
-            .collect()
-    }
-
-    fn project_names_mut(projects: &[&mut Project]) -> Vec<String> {
-        projects
-            .iter()
-            .map(|project| project.name().unwrap_or_default().to_string())
+            .map(|project| project.borrow().name().unwrap_or_default().to_string())
             .collect()
     }
 
@@ -1057,7 +1053,7 @@ mod tests {
             .with_package(MockPackage::same_path("seed", "/seed/package.json"));
         let mut out = seed.projects_mut();
         finder.extend_projects_mut(&mut out);
-        let names = project_names_mut(&out);
+        let names = project_names(&out);
         drop(out);
 
         let mut expected = vec!["seed".to_string()];
@@ -1105,11 +1101,11 @@ mod tests {
         let mut out: Vec<&mut Project> = Vec::new();
         finder.extend_projects_mut(&mut out);
         let out_len = out.len();
-        let names = project_names_mut(&out);
+        let names = project_names(&out);
         drop(out);
 
         assert_eq!(out_len, finder.project_count());
-        assert_eq!(names, project_names_mut(&finder.projects_mut()));
+        assert_eq!(names, project_names(&finder.projects_mut()));
     }
 
     // The borrows handed out must alias the finder's own storage: mutating a
@@ -1280,7 +1276,7 @@ mod tests {
         first.extend_projects_mut(&mut out);
         second.extend_projects_mut(&mut out);
 
-        assert_eq!(project_names_mut(&out), vec!["pkg1", "pkg2"]);
+        assert_eq!(project_names(&out), vec!["pkg1", "pkg2"]);
     }
 
     #[test]

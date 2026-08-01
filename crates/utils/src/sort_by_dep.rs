@@ -6,11 +6,36 @@ use crate::project_names::{
     ProjectNameAnalysis, ProjectNameResolution, ReferencedDependencyAmbiguity, compare_paths,
 };
 
+/// Write `items` separated by `", "` straight into `formatter`.
+///
+/// Both dependency error `Display` impls render a comma-separated list, so the
+/// index-guarded separator lives here once instead of being open-coded twice.
+/// Nothing is allocated: every element is streamed into the formatter, so there
+/// is no intermediate `String`, `join`, or `collect`.
+fn write_comma_separated<T: fmt::Display>(
+    formatter: &mut fmt::Formatter<'_>,
+    items: impl IntoIterator<Item = T>,
+) -> fmt::Result {
+    for (index, item) in items.into_iter().enumerate() {
+        if index > 0 {
+            write!(formatter, ", ")?;
+        }
+        write!(formatter, "{item}")?;
+    }
+    Ok(())
+}
+
 /// A project participating in a dependency cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DependencyCycleMember {
     pub name: String,
     pub path: PathBuf,
+}
+
+impl fmt::Display for DependencyCycleMember {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} ({})", self.name, self.path.display())
+    }
 }
 
 /// Deterministic details for every project that participates in a dependency cycle.
@@ -29,13 +54,7 @@ impl DependencyCycleError {
 impl fmt::Display for DependencyCycleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "dependency cycle detected: ")?;
-        for (index, member) in self.members.iter().enumerate() {
-            if index > 0 {
-                write!(formatter, ", ")?;
-            }
-            write!(formatter, "{} ({})", member.name, member.path.display())?;
-        }
-        Ok(())
+        write_comma_separated(formatter, self.members.iter())
     }
 }
 
@@ -88,13 +107,10 @@ impl fmt::Display for DependencyAmbiguityError {
             "ambiguous dependency `{}`: candidates: ",
             self.dependency
         )?;
-        for (index, candidate) in self.candidates.iter().enumerate() {
-            if index > 0 {
-                write!(formatter, ", ")?;
-            }
-            write!(formatter, "{}", candidate.display())?;
-        }
-        Ok(())
+        write_comma_separated(
+            formatter,
+            self.candidates.iter().map(|candidate| candidate.display()),
+        )
     }
 }
 

@@ -52,6 +52,8 @@ mod tests {
     #[case("{\r  \"key\": \"value\"\r}\r", "  ")] // bare CR, 2-space
     #[case("{\r\t\"key\": \"value\"\r}\r", "\t")] // bare CR, tab
     #[case("{\r\r    \"key\": \"value\"\r}\r", "    ")] // bare CR, skip blank
+    #[case("{\n \t\"key\": \"value\"\n}", " \t")] // Mixed space-then-tab returned verbatim, not normalised
+    #[case("{\n\t \"key\": \"value\"\n}", "\t ")] // Mixed tab-then-space returned verbatim, not normalised
     fn test_detect_indent_str(#[case] content: &str, #[case] expected: &str) {
         let indent = detect_indent_str(content);
         assert_eq!(indent, expected);

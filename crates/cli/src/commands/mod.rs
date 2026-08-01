@@ -88,7 +88,7 @@ pub(crate) fn writeln_stderr(args: std::fmt::Arguments<'_>) -> std::io::Result<(
 /// element plus the `Vec` spine plus the joined `String`), and the one
 /// "`fmt::Write for String` is infallible" justification now lives here instead
 /// of being restated per call site.
-pub(super) fn join_display<T: std::fmt::Display>(
+pub(crate) fn join_display<T: std::fmt::Display>(
     items: impl IntoIterator<Item = T>,
     separator: &str,
 ) -> String {

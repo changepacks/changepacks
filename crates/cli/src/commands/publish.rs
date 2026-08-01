@@ -192,7 +192,7 @@ fn sort_publishable_projects<'a>(
 /// # Errors
 /// Returns an error if writing to stdout fails.
 fn print_projects_to_publish(projects: &[&Project], format: FormatOptions) -> Result<()> {
-    if let FormatOptions::Stdout = format {
+    if matches!(format, FormatOptions::Stdout) {
         let mut out = std::io::stdout().lock();
         writeln!(out, "Projects to publish:")?;
         for project in projects {
