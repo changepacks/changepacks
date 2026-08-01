@@ -5,8 +5,8 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use changepacks_core::{
-    ChangePackLog, ChangePackResultLog, Language, Package, Project, ProjectFinder, UpdateType,
-    Workspace,
+    ChangePackLog, ChangePackResultLog, Config, Language, Package, Project, ProjectFinder,
+    UpdateType, Workspace,
 };
 use changepacks_utils::{
     CARRY_FORWARD_LOG_PREFIX, UpdatePlan, clear_applied_update_logs, clear_update_logs,
@@ -58,49 +58,35 @@ pub async fn handle_update(args: &UpdateArgs) -> Result<()> {
 /// Returns error if reading changepack logs, updating versions, or writing results fails.
 pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Prompter) -> Result<()> {
     let ctx = CommandContext::new(args.remote).await?;
-    let mut update_map = gen_update_map(&ctx.changepacks_dir, &ctx.config).await?;
-
-    // Early return if no updates: `apply_update_on_rules` already ran inside
-    // `gen_update_map`; `apply_reverse_dependencies` has an `is_empty()` fast-path;
-    // `merge_workspace_inherited_updates` only mutates on `contains_key` hits —
-    // an empty map cannot become non-empty downstream. Skip project collection
-    // and dependency-graph processing.
-    if update_map.is_empty() {
-        args.format.print("No updates found")?;
-        return Ok(());
-    }
-
+    // Moved out of `ctx` before the plan is prepared so `prepare_update` can
+    // borrow the finders it hands back `projects` from, while this function
+    // keeps the `&mut` access it needs further down. The move itself is a
+    // compile-time transfer of the `Vec` header only — no discovery, I/O, or
+    // allocation runs here — so it is observationally inert at this point.
     let mut project_finders = ctx.project_finders;
 
-    // Ignore boundaries apply to graph expansion as well as direct mutation:
-    // dependents excluded during CommandContext discovery must not be scheduled.
-    let projects = collect_projects(&project_finders);
-    update_map.apply_reverse_dependencies(&projects, &ctx.repo_root_path)?;
-
-    // Merge workspace-inherited package updates into workspace entries. The
-    // returned (member, workspace-root) pairs let the language-filtered
-    // `applied_paths` snapshot below clear a folded member's changepack log in
-    // lock-step with its workspace root.
-    let merged_pairs =
-        merge_workspace_inherited_updates(&mut update_map, &projects, &ctx.repo_root_path);
-    update_map.merge_provenance(&merged_pairs);
-
-    // Filter update_map by language if specified.
-    let language_filter_active = !args.language.is_empty();
-    let carry_forward_logs = if language_filter_active {
-        filter_update_map_by_language(
-            &mut update_map,
-            &projects,
-            &ctx.repo_root_path,
-            &args.language,
-        )
-    } else {
-        Vec::new()
+    let Some(PreparedUpdate {
+        projects,
+        update_map,
+        merged_pairs,
+        carry_forward_logs,
+        language_filter_active,
+    }) = prepare_update(
+        args,
+        &ctx.changepacks_dir,
+        &ctx.config,
+        &ctx.repo_root_path,
+        &project_finders,
+    )
+    .await?
+    else {
+        return Ok(());
     };
 
     // The --language filter can empty the map (e.g. `update -l dart` with only
-    // Rust logs pending); mirror the unfiltered empty case above instead of
-    // printing an "Updates found:" banner over nothing and prompting.
+    // Rust logs pending); mirror the unfiltered empty case inside
+    // `prepare_update` instead of printing an "Updates found:" banner over
+    // nothing and prompting.
     if update_map.is_empty() {
         args.format.print("No updates found")?;
         return Ok(());
@@ -194,6 +180,97 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     }
 
     Ok(())
+}
+
+/// Everything [`prepare_update`] hands back to the update transaction: the
+/// discovered projects, the fully expanded plan, the workspace-inheritance
+/// folds that produced it, and the carry-forward logs the `--language` filter
+/// set aside.
+///
+/// `projects` borrows the caller's finders, which is why the whole struct
+/// carries `'a`. The caller destructures it immediately so that borrow ends at
+/// the last use of `projects` and the `&mut` finder access taken later in
+/// `handle_update_with_prompter` is still legal.
+struct PreparedUpdate<'a> {
+    /// Every discovered project, in `collect_projects` (finder-then-`projects()`) order.
+    projects: Vec<&'a Project>,
+    /// The expanded plan: changepack logs, reverse dependencies, `updateOn`
+    /// rules, workspace folds, and the `--language` filter already applied.
+    update_map: UpdatePlan,
+    /// `(member, workspace-root)` pairs folded by
+    /// [`merge_workspace_inherited_updates`].
+    merged_pairs: Vec<(PathBuf, PathBuf)>,
+    /// Changepack logs the `--language` filter deferred to a later run.
+    carry_forward_logs: Vec<ChangePackLog>,
+    /// Whether `--language` was passed, which decides between the
+    /// filtered (`clear_applied_update_logs`) and unfiltered
+    /// (`clear_update_logs`) cleanup path.
+    language_filter_active: bool,
+}
+
+/// Build the update plan: read the changepack logs, expand them across the
+/// dependency graph, fold workspace-inherited members into their workspace
+/// roots, and apply the `--language` filter.
+///
+/// Split out of `handle_update_with_prompter` so the transaction tail
+/// (snapshot -> version writes -> log cleanup -> rollback) is not interleaved
+/// with plan construction and the transaction boundary is visible at a glance.
+/// This is a pure extraction: statement order, the emitted messages, and the
+/// early-return behaviour are unchanged.
+///
+/// Returns `Ok(None)` when there is nothing to update, after printing the
+/// user-facing message — the caller then simply returns `Ok(())`.
+///
+/// # Errors
+/// Returns an error if reading the changepack logs or resolving reverse
+/// dependencies fails.
+async fn prepare_update<'a>(
+    args: &UpdateArgs,
+    changepacks_dir: &Path,
+    config: &Config,
+    repo_root_path: &Path,
+    project_finders: &'a [Box<dyn ProjectFinder>],
+) -> Result<Option<PreparedUpdate<'a>>> {
+    let mut update_map = gen_update_map(changepacks_dir, config).await?;
+
+    // Early return if no updates: `apply_update_on_rules` already ran inside
+    // `gen_update_map`; `apply_reverse_dependencies` has an `is_empty()` fast-path;
+    // `merge_workspace_inherited_updates` only mutates on `contains_key` hits —
+    // an empty map cannot become non-empty downstream. Skip project collection
+    // and dependency-graph processing.
+    if update_map.is_empty() {
+        args.format.print("No updates found")?;
+        return Ok(None);
+    }
+
+    // Ignore boundaries apply to graph expansion as well as direct mutation:
+    // dependents excluded during CommandContext discovery must not be scheduled.
+    let projects = collect_projects(project_finders);
+    update_map.apply_reverse_dependencies(&projects, repo_root_path)?;
+
+    // Merge workspace-inherited package updates into workspace entries. The
+    // returned (member, workspace-root) pairs let the language-filtered
+    // `applied_paths` snapshot in the caller clear a folded member's changepack
+    // log in lock-step with its workspace root.
+    let merged_pairs =
+        merge_workspace_inherited_updates(&mut update_map, &projects, repo_root_path);
+    update_map.merge_provenance(&merged_pairs);
+
+    // Filter update_map by language if specified.
+    let language_filter_active = !args.language.is_empty();
+    let carry_forward_logs = if language_filter_active {
+        filter_update_map_by_language(&mut update_map, &projects, repo_root_path, &args.language)
+    } else {
+        Vec::new()
+    };
+
+    Ok(Some(PreparedUpdate {
+        projects,
+        update_map,
+        merged_pairs,
+        carry_forward_logs,
+        language_filter_active,
+    }))
 }
 
 /// Drop every planned update whose project language is outside `languages`,

@@ -1,6 +1,6 @@
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, HashMap, HashSet, hash_map::Entry},
+    collections::{BTreeMap, HashMap, HashSet},
     ops::{Deref, DerefMut},
     path::{Path, PathBuf},
 };
@@ -92,11 +92,15 @@ impl UpdatePlan {
             let Some(source) = self.provenance.remove(source_path) else {
                 continue;
             };
-            match self.provenance.entry(target_path.clone()) {
-                Entry::Vacant(entry) => {
-                    entry.insert(source);
-                }
-                Entry::Occupied(mut entry) => match (entry.get_mut(), source) {
+            // Probe by borrow before allocating: `HashMap::entry` takes the key
+            // BY VALUE, so `entry(target_path.clone())` allocates a `PathBuf`
+            // that is dropped whenever the target is already present — the
+            // common case here, because `merge_provenance` folds many member
+            // paths onto the same workspace-root target. The same probe-before-
+            // allocate policy is already applied to `provenance`, `update_map`,
+            // and `expansion_seeds` in `gen_update_map` below.
+            if let Some(slot) = self.provenance.get_mut(target_path) {
+                match (slot, source) {
                     (
                         UpdateProvenance::Explicit,
                         UpdateProvenance::Explicit | UpdateProvenance::Generated { .. },
@@ -119,7 +123,9 @@ impl UpdatePlan {
                             *target_state = GeneratedState::Persisted;
                         }
                     }
-                },
+                }
+            } else {
+                self.provenance.insert(target_path.clone(), source);
             }
         }
     }
@@ -222,20 +228,27 @@ pub async fn gen_update_map(changepacks_dir: &Path, config: &Config) -> Result<U
         });
         for (project_path, update_type) in file_json.changes() {
             if is_carry_forward {
-                match provenance.entry(project_path.clone()) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(UpdateProvenance::Generated {
-                            notes: vec![file_json.note().to_string()],
-                            state: GeneratedState::Persisted,
-                        });
-                    }
-                    Entry::Occupied(mut entry) => match entry.get_mut() {
+                // Probe by borrow before allocating, exactly as the explicit
+                // branch and the `update_map` fast-path below already do. The
+                // carry-forward loop revisits the same project path across
+                // logs, so `entry(project_path.clone())` would allocate a
+                // `PathBuf` the occupied arm immediately drops.
+                if let Some(slot) = provenance.get_mut(project_path) {
+                    match slot {
                         UpdateProvenance::Explicit => {}
                         UpdateProvenance::Generated { notes, state } => {
                             notes.push(file_json.note().to_string());
                             *state = GeneratedState::Persisted;
                         }
-                    },
+                    }
+                } else {
+                    provenance.insert(
+                        project_path.clone(),
+                        UpdateProvenance::Generated {
+                            notes: vec![file_json.note().to_string()],
+                            state: GeneratedState::Persisted,
+                        },
+                    );
                 }
             } else {
                 // Probe by borrow before allocating, exactly as the `update_map`

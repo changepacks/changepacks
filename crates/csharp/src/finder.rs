@@ -4,7 +4,7 @@ use changepacks_core::{Project, ProjectFinder, has_extension_ignore_ascii_case, 
 use quick_xml::Reader;
 use quick_xml::XmlVersion;
 use quick_xml::escape::resolve_predefined_entity;
-use quick_xml::events::{BytesRef, Event};
+use quick_xml::events::{BytesEnd, BytesRef, BytesStart, Event};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -57,107 +57,31 @@ impl CSharpProjectFinder {
         // `<Version>` and `<ProjectReference>` shapes) without over-
         // reserving on tiny `.csproj` files.
         let mut buf = Vec::with_capacity(256);
-        let mut eligible_property_group_depth = None;
-        let mut in_version = false;
-        let mut in_is_packable = false;
-        let mut element_depth = 0usize;
-        let mut project_depth = None;
-        let mut version: Option<String> = None;
-        // Fragment accumulator for the `<Version>` element currently being
-        // read. quick-xml splits element content at every `&...;` reference:
-        // `<Version>1.2&#46;3</Version>` arrives as `Text("1.2")`,
-        // `GeneralRef("#46")`, `Text("3")`. Recording only the first fragment
-        // therefore truncated such a version to `1.2`. Fragments are appended
-        // here while `in_version` holds and folded into `version` on the
-        // matching `</Version>`, so the "first non-empty `<Version>` wins"
-        // rule is unchanged for every manifest without a reference.
-        let mut version_text = String::new();
-        let mut publishable_by_default = true;
-        // Preallocate against the typical `<ProjectReference>` fan-out
-        // observed in test fixtures (2 refs in
-        // `test_visit_package_with_project_references`,
-        // `test_extract_project_references`, and
-        // `test_parse_csproj_metadata_returns_version_and_refs_in_one_pass`).
-        // 4 comfortably covers the common 1-4 range without over-reserving
-        // on `.csproj` files with zero project references. Closes the last
-        // preallocation gap in this function and matches the
-        // `Vec::with_capacity(256)` policy applied to `buf` right above —
-        // the sibling preallocation policy shared with `sort_by_dep.rs`,
-        // `gen_update_map.rs`, and `find_project_dirs.rs`.
-        let mut projects: Vec<String> = Vec::with_capacity(4);
+        // Every piece of mutable scan state lives in `CsprojScan`, so this
+        // function is left with only the reader plumbing and the event
+        // dispatch. See `CsprojScan` for the per-field rationale.
+        let mut scan = CsprojScan::new();
 
         loop {
             match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) => {
-                    element_depth += 1;
-                    let name = e.local_name();
-                    if name.as_ref() == b"Project" && project_depth.is_none() {
-                        project_depth = Some(element_depth);
-                    } else if name.as_ref() == b"PropertyGroup"
-                        && is_unconditional_project_property_group(
-                            &e,
-                            element_depth,
-                            project_depth,
-                        )?
-                    {
-                        eligible_property_group_depth = Some(element_depth);
-                    } else if name.as_ref() == b"Version" {
-                        in_version = is_eligible_property_child(
-                            eligible_property_group_depth,
-                            element_depth,
-                        );
-                    } else if name.as_ref() == b"IsPackable" {
-                        in_is_packable = is_eligible_property_child(
-                            eligible_property_group_depth,
-                            element_depth,
-                        );
-                    } else if name.as_ref() == b"ProjectReference" {
-                        collect_project_reference(&e, &mut projects)?;
-                    }
-                }
+                Ok(Event::Start(e)) => scan.on_start(&e)?,
                 Ok(Event::Empty(e)) if e.local_name().as_ref() == b"ProjectReference" => {
-                    collect_project_reference(&e, &mut projects)?;
+                    collect_project_reference(&e, &mut scan.projects)?;
                 }
-                Ok(Event::End(e)) => {
-                    let name = e.local_name();
-                    if name.as_ref() == b"PropertyGroup"
-                        && eligible_property_group_depth == Some(element_depth)
-                    {
-                        eligible_property_group_depth = None;
-                    } else if name.as_ref() == b"Version" {
-                        in_version = false;
-                        // Fold the accumulated fragments in. `version.is_none()`
-                        // keeps the original first-non-empty-wins rule: a
-                        // whitespace-only `<Version>` still leaves `None` (so a
-                        // later element may still win) and a second populated
-                        // `<Version>` is still ignored.
-                        if version.is_none() {
-                            let candidate = version_text.trim();
-                            if !candidate.is_empty() {
-                                version = Some(candidate.to_string());
-                            }
-                        }
-                        version_text.clear();
-                    } else if name.as_ref() == b"IsPackable" {
-                        in_is_packable = false;
-                    }
-                    element_depth = element_depth
-                        .checked_sub(1)
-                        .context("unexpected XML end tag")?;
-                }
+                Ok(Event::End(e)) => scan.on_end(&e)?,
                 Ok(Event::Text(e)) => record_decoded_csproj_text(
                     e.decode(),
-                    in_version,
-                    in_is_packable,
-                    &mut version_text,
-                    &mut publishable_by_default,
+                    scan.in_version,
+                    scan.in_is_packable,
+                    &mut scan.version_text,
+                    &mut scan.publishable_by_default,
                 )?,
                 Ok(Event::CData(e)) => record_decoded_csproj_text(
                     e.decode(),
-                    in_version,
-                    in_is_packable,
-                    &mut version_text,
-                    &mut publishable_by_default,
+                    scan.in_version,
+                    scan.in_is_packable,
+                    &mut scan.version_text,
+                    &mut scan.publishable_by_default,
                 )?,
                 // A character or general entity reference inside the eligible
                 // `<Version>` is its own event, never part of the surrounding
@@ -167,11 +91,11 @@ impl CSharpProjectFinder {
                 // class explicitly (`xml_utils::update_version_in_xml`), so
                 // reader and writer now agree about the same document.
                 // References outside `<Version>` keep passing through untouched.
-                Ok(Event::GeneralRef(e)) if in_version => {
-                    append_resolved_reference(&e, &mut version_text)?;
+                Ok(Event::GeneralRef(e)) if scan.in_version => {
+                    append_resolved_reference(&e, &mut scan.version_text)?;
                 }
                 Ok(Event::Eof) => {
-                    anyhow::ensure!(element_depth == 0, "unexpected end of XML document");
+                    anyhow::ensure!(scan.element_depth == 0, "unexpected end of XML document");
                     break;
                 }
                 Err(error) => return Err(error.into()),
@@ -179,7 +103,126 @@ impl CSharpProjectFinder {
             }
             buf.clear();
         }
-        Ok((version, projects, publishable_by_default))
+        Ok(scan.finish())
+    }
+}
+
+/// Mutable state carried across the single `.csproj` event walk driven by
+/// [`CSharpProjectFinder::parse_csproj_metadata`].
+///
+/// The nine fields used to be nine `let mut` bindings threaded through one
+/// 137-line function, which made the element-open and element-close rules hard
+/// to read in isolation. Grouping them here lets `on_start` / `on_end` own the
+/// two non-trivial transition rules while `parse_csproj_metadata` keeps only
+/// the reader setup and the event dispatch. Behaviour, error messages, and the
+/// preallocation policy are unchanged.
+struct CsprojScan {
+    /// Depth of the currently open unconditional `<PropertyGroup>`, if any.
+    eligible_property_group_depth: Option<usize>,
+    in_version: bool,
+    in_is_packable: bool,
+    element_depth: usize,
+    /// Depth of the outermost `<Project>` element, set on first sight.
+    project_depth: Option<usize>,
+    version: Option<String>,
+    /// Fragment accumulator for the `<Version>` element currently being
+    /// read. quick-xml splits element content at every `&...;` reference:
+    /// `<Version>1.2&#46;3</Version>` arrives as `Text("1.2")`,
+    /// `GeneralRef("#46")`, `Text("3")`. Recording only the first fragment
+    /// therefore truncated such a version to `1.2`. Fragments are appended
+    /// here while `in_version` holds and folded into `version` on the
+    /// matching `</Version>`, so the "first non-empty `<Version>` wins"
+    /// rule is unchanged for every manifest without a reference.
+    version_text: String,
+    publishable_by_default: bool,
+    projects: Vec<String>,
+}
+
+impl CsprojScan {
+    fn new() -> Self {
+        Self {
+            eligible_property_group_depth: None,
+            in_version: false,
+            in_is_packable: false,
+            element_depth: 0,
+            project_depth: None,
+            version: None,
+            version_text: String::new(),
+            publishable_by_default: true,
+            // Preallocate against the typical `<ProjectReference>` fan-out
+            // observed in test fixtures (2 refs in
+            // `test_visit_package_with_project_references`,
+            // `test_extract_project_references`, and
+            // `test_parse_csproj_metadata_returns_version_and_refs_in_one_pass`).
+            // 4 comfortably covers the common 1-4 range without over-reserving
+            // on `.csproj` files with zero project references. Matches the
+            // `Vec::with_capacity(256)` policy applied to the event buffer in
+            // `parse_csproj_metadata` — the sibling preallocation policy shared
+            // with `sort_by_dep.rs`, `gen_update_map.rs`, and
+            // `find_project_dirs.rs`.
+            projects: Vec::with_capacity(4),
+        }
+    }
+
+    /// Apply one `Event::Start`: descend a level, then update whichever piece
+    /// of state this element name governs.
+    fn on_start(&mut self, e: &BytesStart<'_>) -> Result<()> {
+        self.element_depth += 1;
+        let name = e.local_name();
+        if name.as_ref() == b"Project" && self.project_depth.is_none() {
+            self.project_depth = Some(self.element_depth);
+        } else if name.as_ref() == b"PropertyGroup"
+            && is_unconditional_project_property_group(e, self.element_depth, self.project_depth)?
+        {
+            self.eligible_property_group_depth = Some(self.element_depth);
+        } else if name.as_ref() == b"Version" {
+            self.in_version =
+                is_eligible_property_child(self.eligible_property_group_depth, self.element_depth);
+        } else if name.as_ref() == b"IsPackable" {
+            self.in_is_packable =
+                is_eligible_property_child(self.eligible_property_group_depth, self.element_depth);
+        } else if name.as_ref() == b"ProjectReference" {
+            collect_project_reference(e, &mut self.projects)?;
+        }
+        Ok(())
+    }
+
+    /// Apply one `Event::End`: close whichever accumulator this element name
+    /// governs, then ascend a level.
+    fn on_end(&mut self, e: &BytesEnd<'_>) -> Result<()> {
+        let name = e.local_name();
+        if name.as_ref() == b"PropertyGroup"
+            && self.eligible_property_group_depth == Some(self.element_depth)
+        {
+            self.eligible_property_group_depth = None;
+        } else if name.as_ref() == b"Version" {
+            self.in_version = false;
+            // Fold the accumulated fragments in. `version.is_none()`
+            // keeps the original first-non-empty-wins rule: a
+            // whitespace-only `<Version>` still leaves `None` (so a
+            // later element may still win) and a second populated
+            // `<Version>` is still ignored.
+            if self.version.is_none() {
+                let candidate = self.version_text.trim();
+                if !candidate.is_empty() {
+                    self.version = Some(candidate.to_string());
+                }
+            }
+            self.version_text.clear();
+        } else if name.as_ref() == b"IsPackable" {
+            self.in_is_packable = false;
+        }
+        self.element_depth = self
+            .element_depth
+            .checked_sub(1)
+            .context("unexpected XML end tag")?;
+        Ok(())
+    }
+
+    /// Consume the finished scan into the tuple `parse_csproj_metadata`
+    /// returns: `(version, project_references, publishable_by_default)`.
+    fn finish(self) -> (Option<String>, Vec<String>, bool) {
+        (self.version, self.projects, self.publishable_by_default)
     }
 }
 
@@ -1262,6 +1305,57 @@ mod tests {
     fn test_extract_version_malformed_xml() {
         let content = "<Project><PropertyGroup><Version>1.0.0";
         assert!(CSharpProjectFinder::parse_csproj_metadata(content).is_err());
+    }
+
+    // The mirror image of `test_extract_version_malformed_xml`: that one
+    // pins truncation (a start tag that never closes), this one pins the
+    // opposite imbalance — a document that opens with a CLOSING tag and so
+    // has no matching start. The two failure shapes take different exits
+    // out of `parse_csproj_metadata` (EOF-with-open-depth vs. the
+    // `Event::End` arm / the reader's own end-tag check), so truncation
+    // coverage alone does not guard this one. Asserted as `is_err()` only,
+    // deliberately: which of the two exits fires is a quick-xml
+    // configuration detail, and pinning its wording here would make the
+    // test fail on a dependency bump that changes nothing we care about.
+    #[test]
+    fn test_parse_csproj_metadata_unmatched_end_tag_is_err() {
+        assert!(CSharpProjectFinder::parse_csproj_metadata("</Project>").is_err());
+    }
+
+    // Same input at the `visit` level, mirroring
+    // `test_visit_malformed_xml_returns_path_context`: whichever exit the
+    // unmatched end tag takes, `visit` must still wrap it with the
+    // manifest path so the discovery caller can tell WHICH `.csproj` in a
+    // monorepo is broken. Asserts the context message and the path, not the
+    // root-cause wording, for the reason given on the unit test above.
+    #[tokio::test]
+    async fn test_visit_unmatched_end_tag_returns_path_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("StrayEnd.csproj");
+        fs::write(&csproj_path, "</Project>").unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        let error = finder
+            .visit(&csproj_path, &PathBuf::from("StrayEnd.csproj"))
+            .await
+            .unwrap_err();
+
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains("Failed to parse C# project XML"),
+            "context missing from chain: {chain}"
+        );
+        assert!(
+            chain.contains(&csproj_path.display().to_string()),
+            "offending manifest path missing from chain: {chain}"
+        );
+        assert_eq!(
+            finder.projects().len(),
+            0,
+            "a manifest that failed to parse must not be registered"
+        );
+
+        temp_dir.close().unwrap();
     }
 
     // Pins the `with_context` wrapper `visit` puts around

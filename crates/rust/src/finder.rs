@@ -385,15 +385,8 @@ impl RustProjectFinder {
         relative_path: &Path,
     ) -> Result<()> {
         let repository_root = repository_root(member_path, relative_path);
-        let Some(mut ancestor) = member_path
-            .parent()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
-        else {
-            return Ok(());
-        };
 
-        loop {
+        for ancestor in member_path.ancestors().skip(2) {
             if !ancestor.starts_with(&repository_root) {
                 return Ok(());
             }
@@ -409,11 +402,8 @@ impl RustProjectFinder {
                 }
                 self.non_workspace_manifest_candidates.insert(candidate);
             }
-            let Some(parent) = ancestor.parent() else {
-                return Ok(());
-            };
-            ancestor = parent.to_path_buf();
         }
+        Ok(())
     }
 
     /// Find the nearest ancestor `Cargo.toml` above `abs_path` that declares a

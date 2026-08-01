@@ -719,6 +719,40 @@ fn record_workspace_internal_dep_skip(
     Ok(())
 }
 
+/// Records the "this language/project has no dry-run command" skip for
+/// `project`, once `dry_run_publish` has answered `Ok(None)`.
+///
+/// Sibling of [`record_workspace_internal_dep_skip`]: the two skip shapes the
+/// dry-run loop can take now share one recording shape, differing only in the
+/// diagnostic and the recorded note. Both user-visible strings are reproduced
+/// byte-for-byte from the inline branch this replaces: the stderr diagnostic on
+/// the stdout path and the `dry-run not supported; skipped` note recorded as a
+/// JSON success entry (`record_json_skip` is a no-op on the stdout path, which
+/// is why the stderr write above it is guarded separately).
+///
+/// # Errors
+/// Returns the underlying `io::Error` if writing the stderr diagnostic fails.
+fn record_dry_run_unsupported(
+    state: &mut PublishLoopState,
+    project: &Project,
+    format: FormatOptions,
+) -> std::io::Result<()> {
+    if let FormatOptions::Stdout = format {
+        writeln_stderr(format_args!(
+            "Dry-run not supported for {project}; skipping. \
+             Configure `publishDryRun` in .changepacks/config.json \
+             to provide a custom dry-run command."
+        ))?;
+    }
+    record_json_skip(
+        &mut state.result_map,
+        project,
+        "dry-run not supported; skipped",
+        format,
+    );
+    Ok(())
+}
+
 /// # Errors
 /// Returns the underlying `io::Error` if writing the stdout report fails.
 async fn execute_dry_run_publish_loop(
@@ -746,28 +780,17 @@ async fn execute_dry_run_publish_loop(
         if let FormatOptions::Stdout = format {
             writeln_stdout(format_args!("Dry-run publishing {project}..."))?;
         }
-        // `Ok(None)` stays inline: dry-run unsupported is a warning, not a
-        // failure (`failed_projects` is NOT bumped), so it does not fit
-        // `record_publish_failure`'s contract. The JSON side also records
-        // `success = true` with an explanatory error field, not the
-        // `success = false` shape `record_publish_failure` produces. The
-        // other two arms share one `record_outcome_track_failure` tail call.
+        // `Ok(None)` means the project simply has no dry-run command, which is
+        // a warning rather than a failure: `failed_projects` is NOT bumped, so
+        // dependents keep going instead of being skipped, and the JSON side
+        // records `success = true` with an explanatory error field rather than
+        // the `success = false` shape a real failure produces. That is why it
+        // routes to [`record_dry_run_unsupported`] and `continue`s instead of
+        // joining the other two arms' `record_outcome_track_failure` tail call.
         let outcome = match project.dry_run_publish(config).await {
             Ok(Some(output)) => ProjectPublishOutcome::from_output(output),
             Ok(None) => {
-                if let FormatOptions::Stdout = format {
-                    writeln_stderr(format_args!(
-                        "Dry-run not supported for {project}; skipping. \
-                         Configure `publishDryRun` in .changepacks/config.json \
-                         to provide a custom dry-run command."
-                    ))?;
-                }
-                record_json_skip(
-                    &mut state.result_map,
-                    project,
-                    "dry-run not supported; skipped",
-                    format,
-                );
+                record_dry_run_unsupported(&mut state, project, format)?;
                 continue;
             }
             Err(e) => ProjectPublishOutcome::Error(e),
