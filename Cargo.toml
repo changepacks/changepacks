@@ -35,3 +35,5 @@ toml_edit = "0.25"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+# Enforces the documented project constraint: no `unsafe` code in this workspace.
+unsafe_code = "deny"

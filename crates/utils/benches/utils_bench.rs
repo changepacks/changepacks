@@ -1,7 +1,8 @@
 //! Criterion benchmarks for the pure hot-path utilities: semver bumping
 //! (`next_version`), version-prefix splitting (`split_version`), project
-//! ordering, the Kahn's-algorithm dependency sort (`sort_by_dependencies`), and
-//! the reverse-dependency expansion (`apply_reverse_dependencies`).
+//! ordering, the Kahn's-algorithm dependency sort (`sort_by_dependencies`), the
+//! reverse-dependency expansion (`apply_reverse_dependencies`), and the shared
+//! name index (`ProjectNameAnalysis::new`).
 //!
 //! These functions are deterministic and allocation-light, so they provide a
 //! stable regression signal for the retry-now improvement loop.
@@ -14,7 +15,8 @@ use std::time::Duration;
 use changepacks_core::{ChangePackResultLog, Package, Project, UpdateType};
 use changepacks_node::package::NodePackage;
 use changepacks_utils::{
-    apply_reverse_dependencies, next_version, sort_by_dependencies, split_version,
+    ProjectNameAnalysis, apply_reverse_dependencies, next_version, sort_by_dependencies,
+    split_version,
 };
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 
@@ -85,6 +87,37 @@ fn build_same_identity_projects(n: usize) -> Vec<Project> {
                 PathBuf::from(format!("/bench/packages/{path_index:04}/package.json")),
                 PathBuf::from(relative_path),
             );
+            Project::Package(Box::new(package))
+        })
+        .collect()
+}
+
+/// Build `n` projects where every other project carries the shared name
+/// `"shared"` at a distinct manifest path, and every remaining project depends
+/// on that duplicated name.
+///
+/// This is the input shape that forces [`ProjectNameAnalysis::new`] down its
+/// duplicate-name branch: `has_duplicate_names` flips, the guarded
+/// O(projects x dependencies) dependency scan runs, and the referenced
+/// ambiguity makes it collect and sort every carrier of `"shared"`.
+fn build_duplicate_name_projects(n: usize) -> Vec<Project> {
+    (0..n)
+        .map(|index| {
+            let duplicated = index.is_multiple_of(2);
+            let name = if duplicated {
+                "shared".to_string()
+            } else {
+                format!("dup{index}")
+            };
+            let mut package = NodePackage::new(
+                Some(name),
+                Some("1.0.0".to_string()),
+                PathBuf::from(format!("/bench/dup{index:04}/package.json")),
+                PathBuf::from(format!("dup{index:04}/package.json")),
+            );
+            if !duplicated {
+                package.add_dependency("shared");
+            }
             Project::Package(Box::new(package))
         })
         .collect()
@@ -221,6 +254,31 @@ fn bench_apply_reverse_dependencies(c: &mut Criterion) {
     group.finish();
 }
 
+/// Cover both halves of [`ProjectNameAnalysis::new`]: the `unique` case takes
+/// the fast path that skips the duplicate-name scan entirely, while the
+/// `duplicate` case pays for the guarded scan plus the sorted candidate list.
+fn bench_project_name_analysis(c: &mut Criterion) {
+    let mut group = c.benchmark_group("project_name_analysis");
+    for size in [64_usize, 256] {
+        let unique = build_graph(size);
+        group.bench_with_input(BenchmarkId::new("unique", size), &unique, |b, projects| {
+            let refs: Vec<&Project> = projects.iter().collect();
+            b.iter(|| black_box(ProjectNameAnalysis::new(black_box(&refs))));
+        });
+
+        let duplicate = build_duplicate_name_projects(size);
+        group.bench_with_input(
+            BenchmarkId::new("duplicate", size),
+            &duplicate,
+            |b, projects| {
+                let refs: Vec<&Project> = projects.iter().collect();
+                b.iter(|| black_box(ProjectNameAnalysis::new(black_box(&refs))));
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default()
@@ -229,6 +287,7 @@ criterion_group! {
         .sample_size(60);
     targets = bench_next_version, bench_split_version,
         bench_project_sort_same_language_same_name_paths, bench_sort_by_dependencies,
-        bench_sort_by_dependencies_cyclic, bench_apply_reverse_dependencies
+        bench_sort_by_dependencies_cyclic, bench_apply_reverse_dependencies,
+        bench_project_name_analysis
 }
 criterion_main!(benches);
