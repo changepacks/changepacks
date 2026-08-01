@@ -107,6 +107,14 @@ fn scan_json_value_end(bytes: &[u8], start: usize) -> Result<usize> {
     }
 }
 
+/// Parse the members of the JSON object opening at byte `open`.
+///
+/// Postcondition: only the LAST returned member can carry `comma: None`, since
+/// the loop returns as soon as a member is not followed by a comma. That is what
+/// makes the two defensive `.context(...)` arms in
+/// [`remove_applied_change_spans`] - both of which index a strictly non-final
+/// member - unreachable; it is pinned by
+/// `parse_json_object_members_only_final_member_lacks_a_comma`.
 fn parse_json_object_members(content: &str, open: usize) -> Result<Vec<JsonObjectMember<'_>>> {
     let bytes = content.as_bytes();
     if bytes.get(open) != Some(&b'{') {
@@ -497,6 +505,50 @@ mod tests {
   "date": "2026-01-01T00:00:00.000Z"
 }
 "#
+        );
+    }
+
+    /// Parse `content` as an object starting at its first non-whitespace byte
+    /// and assert the trailing-comma postcondition: exactly `expected_len`
+    /// members come back, every one of them except the last carries a comma,
+    /// and the last one carries none.
+    fn assert_only_final_member_lacks_a_comma(content: &str, expected_len: usize) {
+        let open = skip_json_whitespace(content.as_bytes(), 0);
+        let members =
+            parse_json_object_members(content, open).expect("a well-formed object must parse");
+        assert_eq!(members.len(), expected_len, "member count for {content}");
+        let (last, leading) = members
+            .split_last()
+            .expect("a non-empty object must yield at least one member");
+        for (index, member) in leading.iter().enumerate() {
+            assert!(
+                member.comma.is_some(),
+                "non-final member {index} must keep its comma in {content}"
+            );
+        }
+        assert!(
+            last.comma.is_none(),
+            "final member must carry no comma in {content}"
+        );
+    }
+
+    #[test]
+    fn parse_json_object_members_only_final_member_lacks_a_comma() {
+        // The postcondition the two defensive `.context(...)` arms in
+        // `remove_applied_change_spans` rely on: the member loop returns the
+        // moment a member is not followed by a comma, so a comma-less member
+        // can only ever be the last one. Three members are the smallest case
+        // that has a non-final member which is itself not the first.
+        assert_only_final_member_lacks_a_comma(r#"{"a": "Minor", "b": "Patch", "c": "Major"}"#, 3);
+        // A single member is both the first and the last, so it must come back
+        // comma-less rather than being treated as a non-final member.
+        assert_only_final_member_lacks_a_comma(r#"{"a": "Minor"}"#, 1);
+        // Trailing spaces and a newline separate the final value from the
+        // closing brace, so the comma decision is only reached after
+        // `skip_json_whitespace` walks past them.
+        assert_only_final_member_lacks_a_comma(
+            "{\n  \"a\": \"Minor\",\n  \"b\": \"Patch\"  \n}\n",
+            2,
         );
     }
 

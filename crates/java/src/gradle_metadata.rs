@@ -504,6 +504,46 @@ mod tests {
         );
     }
 
+    /// Every semantic guard in `parse_gradle_metadata_record` is pinned by the
+    /// tests above, but the syntactic guard that turns a `serde_json` failure
+    /// into `invalid Gradle metadata JSON object` was not. Gradle stdout is the
+    /// least controllable input this crate parses, so a prefixed line that is
+    /// valid JSON but not an object, or is truncated mid-object, is a realistic
+    /// failure whose wording callers see.
+    #[rstest]
+    #[case::json_array("[1,2]")]
+    #[case::truncated_object(r#"{"projectDir":"/repo""#)]
+    #[case::json_null("null")]
+    fn test_parse_gradle_metadata_record_rejects_non_object_json(#[case] json: &str) {
+        let error = parse_gradle_metadata_record(json).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("invalid Gradle metadata JSON object"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn test_parse_gradle_metadata_records_reports_non_object_json_with_line_index() {
+        let output = concat!(
+            "ordinary output\n",
+            "__CHANGEPACKS_GRADLE_METADATA_V1__[1,2]\n",
+        );
+
+        let error = parse_gradle_metadata_records(output).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("malformed Gradle metadata record at line 2"),
+            "{message}"
+        );
+        assert!(
+            message.contains("invalid Gradle metadata JSON object"),
+            "{message}"
+        );
+    }
+
     #[rstest]
     #[case(None, None)]
     #[case(Some("1.0"), Some("1.0"))]

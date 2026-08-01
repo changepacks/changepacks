@@ -1662,6 +1662,45 @@ path = "../visible"
         Ok(())
     }
 
+    /// Pins the non-`NotFound` manifest arm of `snapshot_update_state`, which is
+    /// the only place that distinguishes "manifest does not exist yet" (recorded
+    /// as `None` so rollback deletes it) from "manifest could not be read".
+    /// A manifest path that resolves to a directory makes `tokio::fs::read` fail
+    /// with a kind other than `NotFound` on both Windows and Unix, so the
+    /// snapshot must abort and name the offending path.
+    ///
+    /// The sibling `failed to snapshot changepack log` context is deliberately
+    /// left without a unit test: `collect_changepack_log_paths` only yields
+    /// entries whose `file_type().is_file()` holds, so the same directory trick
+    /// never reaches that read, and the remaining ways to make it fail
+    /// (permission bits, deletion racing the listing) are platform-specific or
+    /// non-deterministic.
+    #[tokio::test]
+    async fn test_snapshot_update_state_reports_manifest_read_failure() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let manifest_path = temp_dir.path().join("as_dir");
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        tokio::fs::create_dir(&manifest_path).await?;
+        tokio::fs::create_dir(&changepacks_dir).await?;
+
+        // `UpdateStateSnapshot` is intentionally not `Debug`, so `expect_err`
+        // is unavailable here and the error is destructured instead.
+        let Err(error) = snapshot_update_state(vec![manifest_path.clone()], &changepacks_dir).await
+        else {
+            panic!("reading a directory as a manifest must fail the snapshot");
+        };
+
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains(&format!(
+                "failed to snapshot manifest {}",
+                manifest_path.display()
+            )),
+            "unexpected error: {rendered}"
+        );
+        Ok(())
+    }
+
     #[tokio::test]
     async fn test_cleanup_failure_transaction_restores_multiple_original_logs_and_removes_new_log()
     -> Result<()> {

@@ -523,6 +523,145 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_reverse_dependencies_terminates_on_a_dependency_cycle() {
+        // Given: a two-node dependency cycle, a depends on b and b depends on a.
+        // Termination of the breadth-first worklist rests entirely on
+        // `reached_paths.insert` reporting an already-visited path, so a
+        // regressed guard makes this test hang rather than fail.
+        let a = create_project("a", vec!["b"]);
+        let b = create_project("b", vec!["a"]);
+        let projects: Vec<&Project> = vec![&a, &b];
+        let mut update_map = HashMap::from([(
+            PathBuf::from("a/package.json"),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "seed".to_string(),
+                )],
+            ),
+        )]);
+
+        // When: the cycle is expanded from the single seeded node.
+        let result = apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test"));
+
+        // Then: expansion completes and revisits the seed exactly once, without
+        // re-scheduling it or looping.
+        assert!(result.is_ok());
+        assert_eq!(update_map.len(), 2);
+        assert_eq!(
+            update_map[&PathBuf::from("a/package.json")].0,
+            UpdateType::Minor
+        );
+        assert_eq!(
+            update_map[&PathBuf::from("b/package.json")].0,
+            UpdateType::Patch
+        );
+        let log_json =
+            serde_json::to_value(&update_map[&PathBuf::from("b/package.json")].1[0]).unwrap();
+        assert_eq!(
+            log_json["note"],
+            "Auto-update: depends on 'a' via a local workspace dependency"
+        );
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_terminates_on_a_fully_scheduled_dependency_cycle() {
+        // Given: a two-node cycle whose BOTH nodes are already scheduled. This is
+        // the only shape in which `reached_paths` is the sole termination guard:
+        // the `packages_to_add` occupied-entry branch never fires because nothing
+        // is ever added, so an unguarded worklist ping-pongs between `a` and `b`
+        // forever. Completing at all is therefore the assertion that matters here.
+        let a = create_project("a", vec!["b"]);
+        let b = create_project("b", vec!["a"]);
+        let projects: Vec<&Project> = vec![&a, &b];
+        let mut update_map = HashMap::from([
+            (
+                PathBuf::from("a/package.json"),
+                (
+                    UpdateType::Minor,
+                    vec![ChangePackResultLog::new(
+                        UpdateType::Minor,
+                        "seed a".to_string(),
+                    )],
+                ),
+            ),
+            (
+                PathBuf::from("b/package.json"),
+                (
+                    UpdateType::Major,
+                    vec![ChangePackResultLog::new(
+                        UpdateType::Major,
+                        "seed b".to_string(),
+                    )],
+                ),
+            ),
+        ]);
+
+        // When: every node of the cycle seeds the expansion.
+        let result = apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test"));
+
+        // Then: expansion terminates and leaves both explicit bumps untouched.
+        assert!(result.is_ok());
+        assert_eq!(update_map.len(), 2);
+        assert_eq!(
+            update_map[&PathBuf::from("a/package.json")].0,
+            UpdateType::Minor
+        );
+        assert_eq!(
+            update_map[&PathBuf::from("b/package.json")].0,
+            UpdateType::Major
+        );
+        assert_eq!(update_map[&PathBuf::from("a/package.json")].1.len(), 1);
+        assert_eq!(update_map[&PathBuf::from("b/package.json")].1.len(), 1);
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_terminates_on_a_three_node_dependency_cycle() {
+        // Given: a three-node cycle whose propagation order is a -> b -> c -> a
+        // (b depends on a, c depends on b, and a depends back on c).
+        let a = create_project("a", vec!["c"]);
+        let b = create_project("b", vec!["a"]);
+        let c = create_project("c", vec!["b"]);
+        let projects: Vec<&Project> = vec![&a, &b, &c];
+        let mut update_map = HashMap::from([(
+            PathBuf::from("a/package.json"),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "seed".to_string(),
+                )],
+            ),
+        )]);
+
+        // When: the cycle is expanded from the single seeded node.
+        let result = apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test"));
+
+        // Then: the traversal walks the whole ring once and stops when it comes
+        // back around to the seed.
+        assert!(result.is_ok());
+        assert_eq!(update_map.len(), 3);
+        assert_eq!(
+            update_map[&PathBuf::from("a/package.json")].0,
+            UpdateType::Minor
+        );
+        for (path, trigger) in [("b/package.json", "a"), ("c/package.json", "b")] {
+            assert_eq!(
+                update_map[&PathBuf::from(path)].0,
+                UpdateType::Patch,
+                "path {path}"
+            );
+            let log_json = serde_json::to_value(&update_map[&PathBuf::from(path)].1[0]).unwrap();
+            assert_eq!(
+                log_json["note"],
+                format!("Auto-update: depends on '{trigger}' via a local workspace dependency"),
+                "path {path}"
+            );
+        }
+    }
+
+    #[test]
     fn test_apply_reverse_dependencies_no_deps() {
         // Setup: two independent packages
         let core = create_project("core", vec![]);
