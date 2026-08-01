@@ -560,28 +560,16 @@ version = project.findProperty("releaseVersion") ?: "1.0.11"
 
     #[test]
     fn test_gradle_package_dependencies() {
-        let mut package = GradlePackage::new(
-            Some("test-package".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/build.gradle.kts"),
-            PathBuf::from("test/build.gradle.kts"),
+        changepacks_core::assert_dependencies_roundtrip!(
+            GradlePackage::new(
+                Some("test-package".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/build.gradle.kts"),
+                PathBuf::from("test/build.gradle.kts"),
+            ),
+            "core",
+            "utils"
         );
-
-        // Initially empty
-        assert!(package.dependencies().is_empty());
-
-        // Add dependencies
-        package.add_dependency("core");
-        package.add_dependency("utils");
-
-        let deps = package.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("core"));
-        assert!(deps.contains("utils"));
-
-        // Adding duplicate should not increase count
-        package.add_dependency("core");
-        assert_eq!(package.dependencies().len(), 2);
     }
 
     #[test]

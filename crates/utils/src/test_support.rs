@@ -170,10 +170,11 @@ pub fn discover_repo(path: &Path) -> gix::ThreadSafeRepository {
 /// Asserts that a rejected `update_version` bump surfaced the manifest parse
 /// failure and left the manifest byte-identical on disk.
 ///
-/// Six `update_version` tests — `NodePackage`, `NodeWorkspace`,
-/// `PythonPackage`, `PythonWorkspace`, `DartPackage` and `DartWorkspace` —
-/// ended with the same assertion tail, differing only in the manifest label
-/// (`package.json` / `pyproject.toml` / `pubspec.yaml`). The tail pins the
+/// Seven `update_version` tests — `NodePackage`, `NodeWorkspace`,
+/// `PythonPackage`, `PythonWorkspace`, `DartPackage`, `DartWorkspace` and
+/// `RustPackage` — ended with the same assertion tail, differing only in the
+/// manifest label (`package.json` / `pyproject.toml` / `pubspec.yaml` /
+/// `Cargo.toml`). The tail pins the
 /// `Failed to <verb> <label> <path>` context template owned by
 /// [`crate::read_and_parse`], so the assertion about that template belongs in
 /// one place too, next to the helper that produces it.

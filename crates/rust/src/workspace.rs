@@ -629,25 +629,11 @@ version = "1.0.0"
             PathBuf::from("Cargo.toml"),
         );
 
-        let err = workspace
-            .update_version(UpdateType::Patch)
-            .await
-            .expect_err("a malformed Cargo.toml must fail the bump");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains("Failed to parse Cargo.toml"),
-            "error chain should name the parse failure, got: {chain}"
-        );
-        assert!(
-            chain.contains(&cargo_toml.display().to_string()),
-            "error chain should name the manifest path, got: {chain}"
-        );
-
-        // Byte-for-byte: an unparseable manifest must never be rewritten.
-        assert_eq!(
-            fs::read(&cargo_toml).unwrap(),
-            original.as_bytes(),
-            "a rejected bump must leave the manifest byte-identical"
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            workspace.update_version(UpdateType::Patch).await,
+            &cargo_toml,
+            "Cargo.toml",
+            original
         );
         assert_eq!(
             workspace.version(),
@@ -734,28 +720,16 @@ version = "1.0.0"
 
     #[test]
     fn test_rust_workspace_dependencies() {
-        let mut workspace = RustWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/Cargo.toml"),
-            PathBuf::from("test/Cargo.toml"),
+        changepacks_core::assert_dependencies_roundtrip!(
+            RustWorkspace::new(
+                Some("test-workspace".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/Cargo.toml"),
+                PathBuf::from("test/Cargo.toml"),
+            ),
+            "core",
+            "utils"
         );
-
-        // Initially empty
-        assert!(workspace.dependencies().is_empty());
-
-        // Add dependencies
-        workspace.add_dependency("core");
-        workspace.add_dependency("utils");
-
-        let deps = workspace.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("core"));
-        assert!(deps.contains("utils"));
-
-        // Adding duplicate should not increase count
-        workspace.add_dependency("core");
-        assert_eq!(workspace.dependencies().len(), 2);
     }
 
     #[tokio::test]

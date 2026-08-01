@@ -262,28 +262,16 @@ tokio = "1.0"
 
     #[test]
     fn test_rust_package_dependencies() {
-        let mut package = RustPackage::new(
-            Some("test-package".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/Cargo.toml"),
-            PathBuf::from("test/Cargo.toml"),
+        changepacks_core::assert_dependencies_roundtrip!(
+            RustPackage::new(
+                Some("test-package".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/Cargo.toml"),
+                PathBuf::from("test/Cargo.toml"),
+            ),
+            "core",
+            "utils"
         );
-
-        // Initially empty
-        assert!(package.dependencies().is_empty());
-
-        // Add dependencies
-        package.add_dependency("core");
-        package.add_dependency("utils");
-
-        let deps = package.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("core"));
-        assert!(deps.contains("utils"));
-
-        // Adding duplicate should not increase count
-        package.add_dependency("core");
-        assert_eq!(package.dependencies().len(), 2);
     }
 
     #[test]
@@ -417,25 +405,11 @@ edition = "2024"
             PathBuf::from("Cargo.toml"),
         );
 
-        let err = package
-            .update_version(UpdateType::Patch)
-            .await
-            .expect_err("a malformed Cargo.toml must fail the bump");
-        let chain = format!("{err:#}");
-        assert!(
-            chain.contains("Failed to parse Cargo.toml"),
-            "error chain should name the parse failure, got: {chain}"
-        );
-        assert!(
-            chain.contains(&cargo_toml.display().to_string()),
-            "error chain should name the manifest path, got: {chain}"
-        );
-
-        // Byte-for-byte: an unparseable manifest must never be rewritten.
-        assert_eq!(
-            fs::read(&cargo_toml).unwrap(),
-            original.as_bytes(),
-            "a rejected bump must leave the manifest byte-identical"
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            package.update_version(UpdateType::Patch).await,
+            &cargo_toml,
+            "Cargo.toml",
+            original
         );
         assert_eq!(
             package.version(),

@@ -146,6 +146,7 @@ mod tests {
         assert_eq!(config.base_branch, "release");
         assert!(config.latest_package.is_none());
         assert!(config.publish.is_empty());
+        assert!(config.publish_dry_run.is_empty());
         assert!(config.update_on.is_empty());
     }
 
@@ -157,6 +158,7 @@ mod tests {
         assert!(config.ignore.is_empty());
         assert!(config.latest_package.is_none());
         assert!(config.publish.is_empty());
+        assert!(config.publish_dry_run.is_empty());
         assert!(config.update_on.is_empty());
     }
 

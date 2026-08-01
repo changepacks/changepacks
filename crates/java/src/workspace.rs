@@ -446,28 +446,16 @@ version = "0.0.0"
 
     #[test]
     fn test_gradle_workspace_dependencies() {
-        let mut workspace = GradleWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/build.gradle.kts"),
-            PathBuf::from("test/build.gradle.kts"),
+        changepacks_core::assert_dependencies_roundtrip!(
+            GradleWorkspace::new(
+                Some("test-workspace".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/build.gradle.kts"),
+                PathBuf::from("test/build.gradle.kts"),
+            ),
+            "core",
+            "utils"
         );
-
-        // Initially empty
-        assert!(workspace.dependencies().is_empty());
-
-        // Add dependencies
-        workspace.add_dependency("core");
-        workspace.add_dependency("utils");
-
-        let deps = workspace.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("core"));
-        assert!(deps.contains("utils"));
-
-        // Adding duplicate should not increase count
-        workspace.add_dependency("core");
-        assert_eq!(workspace.dependencies().len(), 2);
     }
 
     #[test]

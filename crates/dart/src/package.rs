@@ -258,28 +258,16 @@ dependencies:
 
     #[test]
     fn test_dependencies() {
-        let mut package = DartPackage::new(
-            Some("test_package".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/pubspec.yaml"),
-            PathBuf::from("test/pubspec.yaml"),
+        changepacks_core::assert_dependencies_roundtrip!(
+            DartPackage::new(
+                Some("test_package".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/pubspec.yaml"),
+                PathBuf::from("test/pubspec.yaml"),
+            ),
+            "http",
+            "core"
         );
-
-        // Initially empty
-        assert!(package.dependencies().is_empty());
-
-        // Add dependencies
-        package.add_dependency("http");
-        package.add_dependency("core");
-
-        let deps = package.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("http"));
-        assert!(deps.contains("core"));
-
-        // Adding duplicate should not increase count
-        package.add_dependency("http");
-        assert_eq!(package.dependencies().len(), 2);
     }
 
     #[test]

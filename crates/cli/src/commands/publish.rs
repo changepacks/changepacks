@@ -650,44 +650,43 @@ impl PublishLoopState {
 /// `cargo publish --dry-run` failing to resolve a not-yet-published *Rust*
 /// workspace crate, so a non-Rust project that merely shares a name with a
 /// Rust crate's dependency must not land in this set. Names are borrowed
-/// from the projects, which outlive the loop. The capacity is the number of
-/// *named* Rust projects and NOT `projects.len()`: since the `extend` below
-/// is filtered to Rust, the batch length is an upper bound the set can never
-/// reach on a mixed batch, and on a batch with no Rust project at all
-/// (Node, Python, Dart, Java or C#) it would allocate a whole table that
-/// then receives zero inserts. Counting first still lets a Rust workspace
-/// reserve enough buckets up front to avoid growth reallocations.
+/// from the projects, which outlive the loop.
 ///
 /// Loop-invariant, so `execute_dry_run_publish_loop` calls this once before
 /// its per-project loop rather than inlining the two passes into the loop
 /// function's prologue.
 ///
-/// The two passes run the identical chain — the shared [`is_rust_project`]
-/// predicate followed by the same `Project::name` `filter_map` — so the count
-/// that sizes the table is exactly the number of elements the filling pass
-/// offers it. A nameless Rust project, such as a virtual `Cargo.toml`
-/// workspace root, is therefore dropped by both passes alike and no longer
-/// reserves a bucket the set never receives. (Only two Rust projects sharing
-/// one name can still leave a bucket spare; the count stays an upper bound.)
+/// Both passes are the one [`rust_batch_name_iter`] chain, so the count that
+/// sizes the table is exactly what the filling pass offers it — an agreement
+/// enforced by construction, not by keeping two copies of the chain in step.
 fn rust_batch_names<'a>(projects: &[&'a Project]) -> HashSet<&'a str> {
-    let rust_batch_name_count = projects
-        .iter()
-        .filter(|p| is_rust_project(p))
-        .filter_map(|p| p.name())
-        .count();
-    let mut rust_batch_names: HashSet<&str> = HashSet::with_capacity(rust_batch_name_count);
-    rust_batch_names.extend(
-        projects
-            .iter()
-            .filter(|p| is_rust_project(p))
-            .filter_map(|p| p.name()),
-    );
+    let mut rust_batch_names: HashSet<&str> =
+        HashSet::with_capacity(rust_batch_name_iter(projects).count());
+    rust_batch_names.extend(rust_batch_name_iter(projects));
     rust_batch_names
 }
 
-/// The Rust-language predicate shared by both passes of [`rust_batch_names`]:
-/// the counting pass that sizes the `HashSet` and the `extend` that fills it.
-/// Defined once so both passes select the same projects.
+/// The single selection chain behind both passes of [`rust_batch_names`]: the
+/// pass that counts to size the `HashSet` and the `extend` that fills it.
+///
+/// Written once so the two passes cannot drift apart. It yields the *named*
+/// Rust projects, which is why the reserved capacity is that count and NOT
+/// `projects.len()`: the chain is filtered to Rust, so the batch length is an
+/// upper bound the set can never reach on a mixed batch, and on a batch with
+/// no Rust project at all it would size a table that receives zero inserts.
+/// Counting first still lets a Rust workspace reserve its buckets up front so
+/// the set never grows. A nameless Rust project — a virtual `Cargo.toml`
+/// workspace root — is dropped by both passes alike and reserves nothing; the
+/// count stays an upper bound only because two Rust projects can share a name.
+fn rust_batch_name_iter<'a>(projects: &[&'a Project]) -> impl Iterator<Item = &'a str> {
+    projects
+        .iter()
+        .filter(|p| is_rust_project(p))
+        .filter_map(|p| p.name())
+}
+
+/// The Rust-language predicate consumed by [`rust_batch_name_iter`], and so by
+/// both passes of [`rust_batch_names`]. The single language test for the set.
 fn is_rust_project(project: &Project) -> bool {
     project.language() == changepacks_core::Language::Rust
 }

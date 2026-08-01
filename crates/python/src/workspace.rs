@@ -186,28 +186,16 @@ members = ["packages/*"]
 
     #[test]
     fn test_python_workspace_dependencies() {
-        let mut workspace = PythonWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/pyproject.toml"),
-            PathBuf::from("test/pyproject.toml"),
+        changepacks_core::assert_dependencies_roundtrip!(
+            PythonWorkspace::new(
+                Some("test-workspace".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/pyproject.toml"),
+                PathBuf::from("test/pyproject.toml"),
+            ),
+            "requests",
+            "core"
         );
-
-        // Initially empty
-        assert!(workspace.dependencies().is_empty());
-
-        // Add dependencies
-        workspace.add_dependency("requests");
-        workspace.add_dependency("core");
-
-        let deps = workspace.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("requests"));
-        assert!(deps.contains("core"));
-
-        // Adding duplicate should not increase count
-        workspace.add_dependency("requests");
-        assert_eq!(workspace.dependencies().len(), 2);
     }
 
     /// Workspace-side twin of the `PythonPackage` malformed-manifest test: the

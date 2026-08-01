@@ -437,6 +437,15 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    /// The `Package` trait entry point — not just the `write_csproj_version`
+    /// helper — must reject a malformed `.csproj` without partially writing it,
+    /// matching the Node/Python/Dart siblings. C# cannot use the shared
+    /// `changepacks_utils::assert_malformed_manifest_rejected!` macro because
+    /// its context is `Failed to update version in C# project {path}` rather
+    /// than the `Failed to parse {label}` template, so the assertions are
+    /// written out here. Pinning that exact context (rather than just the path)
+    /// also proves the failure comes from the XML update leg and not the read
+    /// leg, which would name the same path under a different message.
     #[tokio::test]
     async fn test_csharp_package_update_version_malformed_manifest_leaves_file_untouched() {
         let temp_dir = TempDir::new().unwrap();
@@ -462,13 +471,21 @@ mod tests {
         let chain = format!("{error:#}");
 
         assert!(
-            chain.contains(&csproj_path.display().to_string()),
-            "error chain should name the manifest path, got: {chain}"
+            chain.contains(&format!(
+                "Failed to update version in C# project {}",
+                csproj_path.display()
+            )),
+            "error chain should carry the update context naming the manifest path, got: {chain}"
         );
         assert_eq!(
             fs::read(&csproj_path).unwrap(),
             original_bytes,
             "a failed bump must leave the manifest bytes untouched"
+        );
+        assert_eq!(
+            package.version(),
+            Some("1.0.0"),
+            "a failed bump must leave the in-memory version untouched"
         );
 
         temp_dir.close().unwrap();
@@ -522,28 +539,16 @@ mod tests {
 
     #[test]
     fn test_dependencies() {
-        let mut package = CSharpPackage::new(
-            Some("Test".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/Test.csproj"),
-            PathBuf::from("test/Test.csproj"),
+        changepacks_core::assert_dependencies_roundtrip!(
+            CSharpPackage::new(
+                Some("Test".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/Test.csproj"),
+                PathBuf::from("test/Test.csproj"),
+            ),
+            "Newtonsoft.Json",
+            "CoreLib"
         );
-
-        // Initially empty
-        assert!(package.dependencies().is_empty());
-
-        // Add dependencies
-        package.add_dependency("Newtonsoft.Json");
-        package.add_dependency("CoreLib");
-
-        let deps = package.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("Newtonsoft.Json"));
-        assert!(deps.contains("CoreLib"));
-
-        // Adding duplicate should not increase count
-        package.add_dependency("Newtonsoft.Json");
-        assert_eq!(package.dependencies().len(), 2);
     }
 
     #[test]
