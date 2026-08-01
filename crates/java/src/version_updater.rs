@@ -5,7 +5,7 @@ use changepacks_core::has_extension_ignore_ascii_case;
 #[cfg(test)]
 use std::borrow::Cow;
 use std::io::ErrorKind;
-use std::ops::Range;
+use std::ops::{Index, Range, RangeFrom, RangeTo};
 use std::path::Path;
 use tokio::fs::{read, read_to_string, write};
 
@@ -19,17 +19,79 @@ pub enum GradleVersionScope {
     ScriptAndAllProjects,
 }
 
-/// Replace the byte range `candidate` of `content` with `new_version`.
-fn splice_version(content: &str, candidate: &Range<usize>, new_version: &str) -> String {
-    let mut updated = String::with_capacity(content.len() - candidate.len() + new_version.len());
-    updated.push_str(&content[..candidate.start]);
-    updated.push_str(new_version);
-    updated.push_str(&content[candidate.end..]);
-    updated
+/// A buffer whose byte ranges can be spliced.
+///
+/// The two Gradle version sources disagree only on their buffer flavour: a
+/// build script is decoded UTF-8 text (`str` spliced into a `String`) while
+/// `gradle.properties` stays raw bytes (`[u8]` spliced into a `Vec<u8>`) so
+/// that a non-UTF-8 properties file survives byte-for-byte. This trait names
+/// exactly that difference, letting [`splice_range`] hold the one copy of the
+/// prefix/replacement/suffix concatenation.
+trait Spliceable:
+    Index<RangeTo<usize>, Output = Self> + Index<RangeFrom<usize>, Output = Self>
+{
+    /// The owned buffer a splice produces.
+    type Spliced;
+
+    /// Length in bytes, matching the units of the spliced range.
+    fn byte_len(&self) -> usize;
+
+    /// Allocate an empty spliced buffer able to hold `capacity` bytes.
+    fn spliced_with_capacity(capacity: usize) -> Self::Spliced;
+
+    /// Append `self` to an in-progress spliced buffer.
+    fn append_to(&self, spliced: &mut Self::Spliced);
+}
+
+impl Spliceable for str {
+    type Spliced = String;
+
+    fn byte_len(&self) -> usize {
+        self.len()
+    }
+
+    fn spliced_with_capacity(capacity: usize) -> String {
+        String::with_capacity(capacity)
+    }
+
+    fn append_to(&self, spliced: &mut String) {
+        spliced.push_str(self);
+    }
+}
+
+impl Spliceable for [u8] {
+    type Spliced = Vec<u8>;
+
+    fn byte_len(&self) -> usize {
+        self.len()
+    }
+
+    fn spliced_with_capacity(capacity: usize) -> Vec<u8> {
+        Vec::with_capacity(capacity)
+    }
+
+    fn append_to(&self, spliced: &mut Vec<u8>) {
+        spliced.extend_from_slice(self);
+    }
+}
+
+/// Replace the byte range `range` of `content` with `replacement`, leaving
+/// every byte outside the range untouched.
+fn splice_range<S: Spliceable + ?Sized>(
+    content: &S,
+    range: &Range<usize>,
+    replacement: &S,
+) -> S::Spliced {
+    let mut spliced =
+        S::spliced_with_capacity(content.byte_len() - range.len() + replacement.byte_len());
+    content[..range.start].append_to(&mut spliced);
+    replacement.append_to(&mut spliced);
+    content[range.end..].append_to(&mut spliced);
+    spliced
 }
 
 /// Test-only: the production path splices the single candidate directly via
-/// [`splice_version`]; this wrapper adds the empty/ambiguous arbitration that
+/// [`splice_range`]; this wrapper adds the empty/ambiguous arbitration that
 /// only the isolated build-script helpers below need.
 #[cfg(test)]
 fn replace_candidate<'a>(
@@ -39,7 +101,7 @@ fn replace_candidate<'a>(
 ) -> Result<Cow<'a, str>> {
     match candidates.as_slice() {
         [] => bail!("No supported editable version declaration found"),
-        [candidate] => Ok(Cow::Owned(splice_version(content, candidate, new_version))),
+        [candidate] => Ok(Cow::Owned(splice_range(content, candidate, new_version))),
         candidates => bail!(
             "Ambiguous supported editable version declarations found ({} candidates)",
             candidates.len()
@@ -160,7 +222,7 @@ pub async fn write_gradle_version(
     }
 
     if let [candidate] = script_candidates.editable.as_slice() {
-        let updated_content = splice_version(&content, candidate, new_version);
+        let updated_content = splice_range(content.as_str(), candidate, new_version);
 
         write(path, &updated_content)
             .await
@@ -177,11 +239,7 @@ pub async fn write_gradle_version(
         properties_content.as_deref(),
         property_assignments.as_slice(),
     ) {
-        let mut updated =
-            Vec::with_capacity(properties_content.len() - candidate.len() + new_version.len());
-        updated.extend_from_slice(&properties_content[..candidate.start]);
-        updated.extend_from_slice(new_version.as_bytes());
-        updated.extend_from_slice(&properties_content[candidate.end..]);
+        let updated = splice_range(properties_content, candidate, new_version.as_bytes());
 
         write(&properties_path, updated).await.with_context(|| {
             format!(

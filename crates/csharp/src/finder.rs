@@ -997,6 +997,38 @@ mod tests {
     // candidate version and must be ignored, not accumulated.
     const XML_CONDITIONAL_VERSION_WITH_CHAR_REF: &str = r#"<Project><PropertyGroup Condition="'$(Configuration)' == 'Release'"><Version>9.9&#46;9</Version></PropertyGroup><PropertyGroup><Version>1.2.3</Version></PropertyGroup></Project>"#;
 
+    // A `<PropertyGroup>` nested inside a `<Target>` sits one level too deep to
+    // be an unconditional project property group, so its `<Version>` is a
+    // build-time local and must never become the package version — the
+    // top-level group's value wins. The WRITE path already pins this shape
+    // (the `target-local` fixture in `test_update_version_in_xml_cases`), but
+    // no read-path case placed a `<Version>` outside an eligible group's direct
+    // children, so nothing failed if the eligibility guard on `in_version` were
+    // dropped.
+    const XML_TARGET_LOCAL_VERSION: &str = r#"<Project>
+  <Target Name="Build">
+    <PropertyGroup>
+      <Version>7.0.0</Version>
+    </PropertyGroup>
+  </Target>
+  <PropertyGroup>
+    <Version>1.2.3</Version>
+  </PropertyGroup>
+</Project>"#;
+
+    // The other half of the same rule, this time with an eligible group OPEN:
+    // MSBuild property values may themselves contain XML, so `<Version>` two
+    // levels below the group is part of the `<PackageMetadata>` property's
+    // literal value, not a property of its own. Only the DIRECT child counts.
+    // This is the case that pins the depth comparison in
+    // `is_eligible_property_child` rather than just its `None` arm.
+    const XML_VERSION_NESTED_BELOW_PROPERTY: &str = r#"<Project>
+  <PropertyGroup>
+    <PackageMetadata><Version>9.9.9</Version></PackageMetadata>
+    <Version>1.2.3</Version>
+  </PropertyGroup>
+</Project>"#;
+
     #[rstest]
     // Standard `<Version>` inside `<PropertyGroup>`.
     #[case(XML_STANDARD_VERSION, Some("1.2.3"))]
@@ -1026,6 +1058,12 @@ mod tests {
     #[case(XML_CDATA_VERSION, Some("1.2.3"))]
     // Unchanged: a conditional group's `<Version>` is ignored, references included.
     #[case(XML_CONDITIONAL_VERSION_WITH_CHAR_REF, Some("1.2.3"))]
+    // A `<Target>`-local `<Version>` is a build-time property, not the package
+    // version: the top-level group still wins.
+    #[case(XML_TARGET_LOCAL_VERSION, Some("1.2.3"))]
+    // A `<Version>` nested inside another property's value is not a direct
+    // child of the eligible group, so it loses to the real one.
+    #[case(XML_VERSION_NESTED_BELOW_PROPERTY, Some("1.2.3"))]
     fn test_extract_version(#[case] content: &str, #[case] expected: Option<&str>) {
         assert_eq!(
             CSharpProjectFinder::parse_csproj_metadata(content)
