@@ -166,12 +166,13 @@ impl GradleProjectFinder {
         project_path: &str,
         manifest_path: &Path,
         gradlew: &Path,
-    ) -> Result<Vec<&'a String>> {
+    ) -> Result<Vec<&'a str>> {
         dependencies
             .iter()
             .map(|dependency_path| {
                 project_names_by_path
                     .get(*dependency_path)
+                    .map(String::as_str)
                     .with_context(|| {
                         format!(
                             "Gradle dependency project path '{}' declared by project '{}' (Gradle path '{}', manifest '{}') is missing from metadata emitted by wrapper '{}'",

@@ -1612,6 +1612,17 @@ mod tests {
     // No extension at all → None (rsplit_once('.') fails, function returns
     // early via `?`). Locks in the "no dot means no extension" contract.
     #[case("MyProject", None)]
+    // Multi-dot stem — the split is on the LAST `.`, so the dots inside the
+    // stem are preserved. `Foo.Tests.csproj` is the standard .NET test-project
+    // naming convention, so a `split_once` regression here would silently
+    // rename every test project to `Foo` and break its dependency edges.
+    #[case("Foo.Tests.csproj", Some("Foo.Tests"))]
+    // Bare extension — the stem is empty but the extension gate still passes,
+    // so the current contract yields `Some("")` rather than `None`.
+    #[case(".csproj", Some(""))]
+    // Trailing separator — the separator split yields an empty filename, which
+    // has no `.`, so the `?` on `rsplit_once('.')` returns `None`.
+    #[case(r"..\CoreLib\", None)]
     fn test_extract_project_name_from_path(#[case] input: &str, #[case] expected: Option<&str>) {
         assert_eq!(
             super::extract_project_name_from_path(input),
