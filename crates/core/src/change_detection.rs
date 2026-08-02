@@ -3,6 +3,10 @@ use std::path::{Component, Path};
 
 use anyhow::{Context, Result};
 
+/// The directory name that holds changepack logs, matched as a full path
+/// component by [`contains_changepacks_component`].
+const CHANGEPACKS_DIR: &str = ".changepacks";
+
 /// Check if a path contains `.changepacks` as a full path component.
 ///
 /// Returns `true` if the path traverses a `.changepacks` directory component.
@@ -11,8 +15,27 @@ use anyhow::{Context, Result};
 /// This is used to filter out changepack logs which are not user changes.
 #[must_use]
 pub fn contains_changepacks_component(path: &Path) -> bool {
+    // Fast reject before the component walk. A path that traverses a
+    // `.changepacks` component necessarily contains the literal
+    // `.changepacks` somewhere in its bytes, so a UTF-8 path that lacks that
+    // substring cannot possibly match and never needs decoding component by
+    // component. `str::contains` on a literal needle is memchr-accelerated,
+    // which matters because this is the hottest predicate in the tool: it runs
+    // once per (project, changed path) pair plus once per diff and worktree
+    // status entry.
+    //
+    // This branch can only ever answer `false`, never `true`, so it cannot
+    // widen the match: substring decoys such as `.changepacks-backup/file.json`
+    // and `notes-about-.changepacks.md` still fall through to the exact
+    // component comparison below and are still rejected there. A non-UTF-8
+    // path makes `to_str` return `None` and likewise falls through unchanged.
+    if let Some(text) = path.to_str()
+        && !text.contains(CHANGEPACKS_DIR)
+    {
+        return false;
+    }
     path.components()
-        .any(|c| matches!(c, Component::Normal(name) if name == OsStr::new(".changepacks")))
+        .any(|c| matches!(c, Component::Normal(name) if name == OsStr::new(CHANGEPACKS_DIR)))
 }
 
 /// Resolve the directory that contains `manifest_path`.
@@ -69,11 +92,45 @@ mod tests {
     // Path with similar name but different component returns false
     #[case(".changepacks-backup/file.json", false)]
     #[case("notes-about-.changepacks.md", false)]
+    // The substring fast reject cannot decide these: the literal
+    // `.changepacks` IS present in the path text, so they fall through to the
+    // component walk, which must still reject them because the only
+    // occurrence sits inside a longer component.
+    #[case("pkg/.changepacks.bak/file.json", false)]
+    #[case("pkg/src/my.changepacks.rs", false)]
     // Regular paths return false
     #[case("src/index.js", false)]
     #[case("packages/core/package.json", false)]
     fn test_contains_changepacks_component(#[case] path: &str, #[case] expected: bool) {
         assert_eq!(contains_changepacks_component(Path::new(path)), expected);
+    }
+
+    /// One component that is deliberately not valid UTF-8, so `Path::to_str`
+    /// on any path containing it returns `None`.
+    #[cfg(any(unix, windows))]
+    fn non_utf8_component() -> std::path::PathBuf {
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            std::path::PathBuf::from(OsStr::from_bytes(&[0xff]))
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStringExt;
+            // 0xD800 is an unpaired high surrogate: a legal Windows path unit
+            // that has no UTF-8 encoding.
+            std::path::PathBuf::from(std::ffi::OsString::from_wide(&[0xD800]))
+        }
+    }
+
+    // A non-UTF-8 path makes the substring fast reject inapplicable, so it
+    // must fall through to the component walk rather than answering `false`.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn test_contains_changepacks_component_non_utf8_path_falls_through() {
+        let path = non_utf8_component().join(".changepacks").join("log.json");
+        assert!(path.to_str().is_none());
+        assert!(contains_changepacks_component(&path));
     }
 
     #[rstest]

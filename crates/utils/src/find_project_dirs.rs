@@ -1594,6 +1594,63 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    // Exact-wording gate for the same arm the substring test above guards.
+    // That test only asserts the fragment "remote base branch" plus the base
+    // branch name, so the remediation hint ("Did you fetch first?") and the
+    // `origin/<base>` interpolation could both be dropped without failing it.
+    // Pinning the whole sentence — against a NON-default `base_branch` so a
+    // hardcoded "main" cannot satisfy it — makes the message the assertion,
+    // matching how the sibling messages on this same ladder ("base branch
+    // '<b>' not found in local refs", "Git remote 'origin' is not
+    // configured; ...") are already pinned verbatim.
+    #[tokio::test]
+    async fn test_find_project_dirs_remote_missing_ref_pins_fetch_hint_message() {
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        init_git_repo(temp_path);
+
+        // `origin` exists, so `find_remote("origin")` succeeds and the failure
+        // surface is the `refs/remotes/origin/release` lookup: the ref is never
+        // created because nothing is ever fetched.
+        run_git(
+            temp_path,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/no-such-repo.git",
+            ],
+        );
+
+        fs::write(
+            temp_path.join("package.json"),
+            r#"{"name": "test", "version": "1.0.0"}"#,
+        )
+        .await
+        .unwrap();
+
+        git_add_and_commit(temp_path, "Initial commit");
+
+        let config = Config {
+            base_branch: "release".to_string(),
+            ..Config::default()
+        };
+        let mut finders: Vec<Box<dyn ProjectFinder>> = vec![Box::new(NodeProjectFinder::new())];
+
+        let err = find_project_dirs(&discover_repo(temp_path), &mut finders, &config, true)
+            .await
+            .expect_err("a missing remote base-branch ref must abort discovery");
+        let msg = format!("{err:#}");
+
+        assert!(
+            msg.contains("remote base branch 'origin/release' not found. Did you fetch first?"),
+            "expected the verbatim remote base-branch context sentence, got: {msg}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     // Sibling gate to the missing-ref test above. When `--remote` is used in a
     // repo that has NO `origin` remote configured at all, the `find_remote`
     // call itself is the failure surface (not `find_reference`). Historically

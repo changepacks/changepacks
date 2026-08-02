@@ -134,21 +134,32 @@ impl ProjectFinder for NodeProjectFinder {
         let name = package_json_str(&package_json, "name");
         let path_key = path.to_path_buf();
         let relative_path_key = relative_path.to_path_buf();
-        let package_manager = match path.parent() {
-            Some(parent) => {
-                detect_package_manager_in_ancestors_cached(
-                    parent,
-                    relative_path.components().count(),
-                    &mut self.package_manager_probe_cache,
-                )
-                .await?
-            }
-            None => PackageManager::Npm,
-        };
+        // The package-manager probe (lockfile stats up the ancestor chain) and the
+        // workspace-shape probe (declared `workspaces` field, else a sibling
+        // `pnpm-workspace.yaml` stat) share no data, so their filesystem round-trips
+        // are overlapped instead of awaited one after the other. Only the first
+        // branch touches `self`, and it borrows a single field, so the concurrent
+        // borrow is disjoint from the `self.projects` insert below.
+        //
         // Check if this is a workspace (npm / yarn / bun / pnpm monorepo); the
         // declared-shape triage and the sibling `pnpm-workspace.yaml` fallback
         // live in the module-private `detect_node_workspace` helper.
-        let is_workspace = detect_node_workspace(&package_json, path).await?;
+        let (package_manager, is_workspace) = tokio::try_join!(
+            async {
+                match path.parent() {
+                    Some(parent) => {
+                        detect_package_manager_in_ancestors_cached(
+                            parent,
+                            relative_path.components().count(),
+                            &mut self.package_manager_probe_cache,
+                        )
+                        .await
+                    }
+                    None => Ok(PackageManager::Npm),
+                }
+            },
+            detect_node_workspace(&package_json, path),
+        )?;
         let mut project = changepacks_core::discovered_project!(
             is_workspace,
             NodeWorkspace::new_discovered,

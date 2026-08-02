@@ -707,16 +707,27 @@ async fn publish_path_dirs_for_path(path: &Path, relative_path: &Path) -> Result
 
 /// Shared tail for publish and dry-run publish flows.
 ///
-/// Collects `node_modules/.bin` PATH dirs via `publish_path_dirs_for_path`,
-/// then calls `run_publish_flow` with the resolved command.
-async fn run_flow_with_path_dirs(
-    command: &str,
+/// Resolving the publish command (an ancestor lockfile-stat walk via
+/// `detect_package_manager_recursive_async`) and collecting the
+/// `node_modules/.bin` PATH dirs (a second, independent ancestor walk via
+/// `node_modules_bin_dirs_async`) share no data, so `command` is taken as an
+/// unawaited future and both walks are driven concurrently under
+/// `tokio::try_join!` instead of back to back. The publish command itself is
+/// still only spawned once BOTH succeed: `try_join!` short-circuits on the
+/// first error, so a failing PATH probe keeps aborting the flow before any
+/// child process starts.
+async fn run_flow_with_path_dirs<F>(
+    command: F,
     path: &Path,
     relative_path: &Path,
     missing_dir_message: &'static str,
-) -> Result<changepacks_core::publish::PublishOutput> {
-    let path_dirs = publish_path_dirs_for_path(path, relative_path).await?;
-    changepacks_core::publish::run_publish_flow(command, path, &path_dirs, missing_dir_message)
+) -> Result<changepacks_core::publish::PublishOutput>
+where
+    F: Future<Output = Result<Cow<'static, str>>>,
+{
+    let (command, path_dirs) =
+        tokio::try_join!(command, publish_path_dirs_for_path(path, relative_path))?;
+    changepacks_core::publish::run_publish_flow(&command, path, &path_dirs, missing_dir_message)
         .await
 }
 
@@ -726,8 +737,13 @@ pub(crate) async fn run_publish_for_path(
     config: &Config,
     missing_dir_message: &'static str,
 ) -> Result<changepacks_core::publish::PublishOutput> {
-    let command = publish_command_for_path(path, relative_path, config).await?;
-    run_flow_with_path_dirs(&command, path, relative_path, missing_dir_message).await
+    run_flow_with_path_dirs(
+        publish_command_for_path(path, relative_path, config),
+        path,
+        relative_path,
+        missing_dir_message,
+    )
+    .await
 }
 
 /// Run the dry-run publish command for a Node package.
@@ -740,10 +756,14 @@ pub(crate) async fn run_dry_run_publish_for_path(
     config: &Config,
     missing_dir_message: &'static str,
 ) -> Result<Option<changepacks_core::publish::PublishOutput>> {
-    let command = dry_run_publish_command_for_path(path, relative_path, config).await?;
-    run_flow_with_path_dirs(&command, path, relative_path, missing_dir_message)
-        .await
-        .map(Some)
+    run_flow_with_path_dirs(
+        dry_run_publish_command_for_path(path, relative_path, config),
+        path,
+        relative_path,
+        missing_dir_message,
+    )
+    .await
+    .map(Some)
 }
 
 #[cfg(test)]
