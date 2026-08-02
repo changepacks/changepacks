@@ -10,6 +10,15 @@ const fn is_property_whitespace(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | 0x0c)
 }
 
+/// Advances `cursor` past every property whitespace byte before `end`.
+const fn skip_property_whitespace(content: &[u8], cursor: usize, end: usize) -> usize {
+    let mut cursor = cursor;
+    while cursor < end && is_property_whitespace(content[cursor]) {
+        cursor += 1;
+    }
+    cursor
+}
+
 fn is_escaped(bytes: &[u8], index: usize) -> bool {
     let preceding_backslashes = bytes[..index]
         .iter()
@@ -52,25 +61,18 @@ pub(crate) fn property_assignments(content: &[u8]) -> Vec<PropertyAssignment> {
         } else {
             line_end
         };
-        let mut cursor = line_start;
-        while cursor < logical_end && is_property_whitespace(content[cursor]) {
-            cursor += 1;
-        }
+        let mut cursor = skip_property_whitespace(content, line_start, logical_end);
 
         if !matches!(content.get(cursor), Some(b'#' | b'!'))
             && content.get(cursor..cursor + b"version".len()) == Some(b"version")
         {
             cursor += b"version".len();
             let separator_start = cursor;
-            while cursor < logical_end && is_property_whitespace(content[cursor]) {
-                cursor += 1;
-            }
+            cursor = skip_property_whitespace(content, cursor, logical_end);
             let had_whitespace_separator = cursor > separator_start;
             let value_start = if matches!(content.get(cursor), Some(b'=' | b':')) {
                 cursor += 1;
-                while cursor < logical_end && is_property_whitespace(content[cursor]) {
-                    cursor += 1;
-                }
+                cursor = skip_property_whitespace(content, cursor, logical_end);
                 Some(cursor)
             } else if had_whitespace_separator && cursor < logical_end {
                 Some(cursor)

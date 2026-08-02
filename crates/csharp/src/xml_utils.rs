@@ -48,12 +48,7 @@ fn begin_top_level_scope(
         None
     };
     if is_top_level && fallback_group_indent.is_none() {
-        *fallback_group_indent = Some(
-            preceding_project_ws
-                .as_deref()
-                .map_or("", trailing_indentation)
-                .to_owned(),
-        );
+        *fallback_group_indent = Some(project_group_indent(preceding_project_ws.as_deref()));
     }
     if let Some(property_group) = property_groups.last_mut() {
         property_group.close_ws = None;
@@ -235,6 +230,20 @@ fn trailing_indentation(whitespace: &str) -> &str {
     &whitespace[start..]
 }
 
+/// Derive the indent a synthesized top-level `<PropertyGroup>` must be written
+/// at, from the whitespace run that preceded the enclosing element.
+///
+/// This is the single owner of the `.csproj` group-indent derivation: the
+/// `Event::Start` and `Event::Empty` `PropertyGroup` branches and the
+/// `fallback_group_indent` seed in [`begin_top_level_scope`] all route through
+/// here, so a change to how the indent is derived cannot land on only some of
+/// them. Absent whitespace (`None`) means "no indent", i.e. an empty string.
+fn project_group_indent(preceding_project_ws: Option<&str>) -> String {
+    preceding_project_ws
+        .map_or("", trailing_indentation)
+        .to_owned()
+}
+
 fn contains_line_break(whitespace: &str) -> bool {
     whitespace
         .as_bytes()
@@ -325,10 +334,7 @@ fn rewrite_version(content: &str, new_version: &str, has_version: bool) -> Resul
                     &mut fallback_group_indent,
                 );
                 if name.as_ref() == b"PropertyGroup" {
-                    let group_indent = preceding_project_ws
-                        .as_deref()
-                        .map_or("", trailing_indentation)
-                        .to_owned();
+                    let group_indent = project_group_indent(preceding_project_ws.as_deref());
                     let eligible =
                         is_unconditional_project_property_group(&e, element_depth, project_depth)?;
                     if is_top_level && fallback_group_indent.is_none() {
@@ -491,10 +497,7 @@ fn rewrite_version(content: &str, new_version: &str, has_version: bool) -> Resul
                         .context("Failed to decode PropertyGroup qualified name")?
                         .to_owned();
                     let version_qname = qname_with_local_name(&qname, "Version");
-                    let group_indent = preceding_project_ws
-                        .as_deref()
-                        .map_or("", trailing_indentation)
-                        .to_owned();
+                    let group_indent = project_group_indent(preceding_project_ws.as_deref());
                     let is_unconditional_top_level = is_unconditional_project_property_group(
                         &e,
                         element_depth + 1,

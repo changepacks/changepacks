@@ -16,7 +16,7 @@ use std::{
 
 use anyhow::Result;
 use changepacks_core::{ChangePackResultLog, Project, UpdateType};
-use changepacks_utils::gen_changepack_result_map;
+use changepacks_utils::{gen_changepack_result_map, write_separated};
 
 /// Render the `--format json` changepack-result payload shared by `check` and `update`.
 ///
@@ -79,31 +79,27 @@ pub(crate) fn writeln_stderr(args: std::fmt::Arguments<'_>) -> std::io::Result<(
 
 /// Join `items` into one `String`, inserting `separator` between elements.
 ///
-/// Several error messages render a list as `a, b, c`. Each site used to
-/// hand-roll the same loop — `String::new()`, `enumerate()`, push the separator
-/// when the index is non-zero, append the element — with only the per-element
-/// rendering differing, which a `Display` bound covers. Accumulating into a
-/// single running `String` keeps the allocation profile of those loops
+/// Several error messages render a list as `a, b, c`. The index-gated separator
+/// loop itself lives in [`changepacks_utils::write_separated`], which the utils
+/// dependency-error `Display` impls stream into a `fmt::Formatter` with; this
+/// wrapper only supplies the owned-`String` sink, so the two sites can no
+/// longer drift apart. Accumulating into a single running `String` keeps the
+/// allocation profile of the old loop
 /// (`.map(..).collect::<Vec<String>>().join(..)` allocated one `String` per
 /// element plus the `Vec` spine plus the joined `String`), and the one
-/// "`fmt::Write for String` is infallible" justification now lives here instead
-/// of being restated per call site.
+/// "`fmt::Write for String` is infallible" justification stays here instead of
+/// being restated per call site.
 pub(crate) fn join_display<T: std::fmt::Display>(
     items: impl IntoIterator<Item = T>,
     separator: &str,
 ) -> String {
-    use std::fmt::Write as _;
-
     let mut joined = String::new();
-    for (index, item) in items.into_iter().enumerate() {
-        if index > 0 {
-            joined.push_str(separator);
-        }
-        // `fmt::Write for String` is infallible: its `write_str` only calls
-        // `String::push_str` and always returns `Ok(())`. The `expect` documents
-        // that invariant instead of silently discarding the `Result`.
-        write!(&mut joined, "{item}").expect("writing into a String via fmt::Write is infallible");
-    }
+    // `fmt::Write for String` is infallible: its `write_str` only calls
+    // `String::push_str` and always returns `Ok(())`, and `write_separated`
+    // forwards nothing but the sink's own errors. The `expect` documents that
+    // invariant instead of silently discarding the `Result`.
+    write_separated(&mut joined, items, separator)
+        .expect("writing into a String via fmt::Write is infallible");
     joined
 }
 

@@ -87,6 +87,22 @@ fn scope_is_supported(scopes: &[BraceScope], policy: GradleVersionScope) -> bool
             && scopes == [BraceScope::AllProjects])
 }
 
+/// Advances past a run of `byte` starting at `index` and returns the index one
+/// past the run.
+///
+/// Equivalent to the `while bytes.get(index) == Some(&byte) { index += 1; }`
+/// step the lexer repeats for Kotlin interpolation dollars and for triple-quote
+/// terminators; the bounds check is spelled out so the helper stays `const`.
+/// Returns `index` unchanged when `bytes[index]` is not `byte` or `index` is
+/// past the end.
+const fn scan_byte_run(bytes: &[u8], index: usize, byte: u8) -> usize {
+    let mut index = index;
+    while index < bytes.len() && bytes[index] == byte {
+        index += 1;
+    }
+    index
+}
+
 /// Cheap first-byte gate run before the per-line version regexes.
 ///
 /// Every pattern this module applies to a line (`KTS_SIMPLE_PATTERN`,
@@ -265,9 +281,7 @@ pub(crate) fn candidate_ranges(
                 }
                 b'$' if dialect == GradleDialect::Kotlin => {
                     let dollar_start = index;
-                    while bytes.get(index) == Some(&b'$') {
-                        index += 1;
-                    }
+                    index = scan_byte_run(bytes, index, b'$');
                     let quoted = bytes.get(index) == Some(&b'"');
                     let triple = quoted
                         && bytes.get(index + 1) == Some(&b'"')
@@ -539,9 +553,7 @@ pub(crate) fn candidate_ranges(
                     let supports_escape = !triple || dialect == GradleDialect::Groovy;
                     if interpolates && bytes[index] == b'$' {
                         let dollar_start = index;
-                        while bytes.get(index) == Some(&b'$') {
-                            index += 1;
-                        }
+                        index = scan_byte_run(bytes, index, b'$');
                         if index - dollar_start >= interpolation_dollars
                             && bytes.get(index) == Some(&b'{')
                         {
@@ -559,9 +571,7 @@ pub(crate) fn candidate_ranges(
                         index += usize::from(index + 1 < bytes.len()) + 1;
                     } else if triple && bytes[index] == quote {
                         let quote_start = index;
-                        while bytes.get(index) == Some(&quote) {
-                            index += 1;
-                        }
+                        index = scan_byte_run(bytes, index, quote);
                         if index - quote_start >= 3 {
                             contexts.pop();
                         }

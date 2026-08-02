@@ -91,6 +91,10 @@
 //!   rebuild the body so it matches the original file's trailing-whitespace
 //!   shape byte-for-byte, write it, and attach a `Failed to write <label>
 //!   <path>` context — used by every language crate's manifest rewriter.
+//! - **Separated list rendering** — [`write_separated`] streams a list of
+//!   `Display` values into any `fmt::Write` sink with a separator between
+//!   elements, so the index-gated separator loop lives once instead of being
+//!   open-coded by each `Display` impl and each owned-join call site.
 //! - **Result / progress display** — [`display_update`] renders the
 //!   per-project update summary emitted by `changepacks update` / `check`.
 //! - **Config + directory management** — [`get_changepacks_config`] and
@@ -129,6 +133,7 @@ pub mod test_support;
 #[cfg(feature = "toml")]
 mod toml_item_str;
 mod trailing_newline;
+mod write_separated;
 #[cfg(feature = "toml")]
 mod write_toml_table_version;
 
@@ -172,5 +177,6 @@ pub use split_version::{replace_version_keep_prefix, split_version};
 #[cfg(feature = "toml")]
 pub use toml_item_str::toml_item_str;
 pub use trailing_newline::write_finalized;
+pub use write_separated::write_separated;
 #[cfg(feature = "toml")]
 pub use write_toml_table_version::write_toml_table_version;

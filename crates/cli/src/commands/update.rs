@@ -884,9 +884,12 @@ fn merge_workspace_inherited_updates(
             && let Ok(rel_path) = get_relative_path_ref(repo_root_path, pkg.path())
             && let Some(ws_root) = pkg.workspace_root_path()
             && let Ok(ws_path) = get_relative_path(repo_root_path, ws_root)
-            // `remove` doubles as the presence check: it takes ownership of the
-            // member entry, avoiding a `Clone` requirement on the logs.
-            && let Some((update_type, logs)) = update_map.remove(rel_path)
+            // `remove_entry` doubles as the presence check AND yields the map's
+            // own owned key: it takes ownership of the member entry (avoiding a
+            // `Clone` requirement on the logs) and hands back the `PathBuf` that
+            // was already allocated for the key, so no second `PathBuf` is
+            // allocated per folded member.
+            && let Some((owned_rel_path, (update_type, logs))) = update_map.remove_entry(rel_path)
         {
             // Fast-path: `HashMap::get_mut` on an existing key is zero-alloc,
             // whereas `entry(ws_path.clone()).or_insert(...)` unconditionally
@@ -908,7 +911,7 @@ fn merge_workspace_inherited_updates(
                 ws_entry.0 = update_type;
             }
             ws_entry.1.extend(logs);
-            merged_pairs.push((rel_path.to_path_buf(), ws_path));
+            merged_pairs.push((owned_rel_path, ws_path));
         }
     }
     merged_pairs

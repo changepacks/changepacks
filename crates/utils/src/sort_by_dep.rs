@@ -5,25 +5,10 @@ use std::path::PathBuf;
 use crate::project_names::{
     ProjectNameAnalysis, ProjectNameResolution, ReferencedDependencyAmbiguity, compare_paths,
 };
+use crate::write_separated::write_separated;
 
-/// Write `items` separated by `", "` straight into `formatter`.
-///
-/// Both dependency error `Display` impls render a comma-separated list, so the
-/// index-guarded separator lives here once instead of being open-coded twice.
-/// Nothing is allocated: every element is streamed into the formatter, so there
-/// is no intermediate `String`, `join`, or `collect`.
-fn write_comma_separated<T: fmt::Display>(
-    formatter: &mut fmt::Formatter<'_>,
-    items: impl IntoIterator<Item = T>,
-) -> fmt::Result {
-    for (index, item) in items.into_iter().enumerate() {
-        if index > 0 {
-            write!(formatter, ", ")?;
-        }
-        write!(formatter, "{item}")?;
-    }
-    Ok(())
-}
+/// The separator both dependency-error `Display` impls render their list with.
+const LIST_SEPARATOR: &str = ", ";
 
 /// A project participating in a dependency cycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -54,7 +39,7 @@ impl DependencyCycleError {
 impl fmt::Display for DependencyCycleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "dependency cycle detected: ")?;
-        write_comma_separated(formatter, self.members.iter())
+        write_separated(formatter, self.members.iter(), LIST_SEPARATOR)
     }
 }
 
@@ -107,9 +92,10 @@ impl fmt::Display for DependencyAmbiguityError {
             "ambiguous dependency `{}`: candidates: ",
             self.dependency
         )?;
-        write_comma_separated(
+        write_separated(
             formatter,
             self.candidates.iter().map(|candidate| candidate.display()),
+            LIST_SEPARATOR,
         )
     }
 }
