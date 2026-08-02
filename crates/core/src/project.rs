@@ -26,19 +26,31 @@ const fn normalized_separator_byte(byte: u8) -> u8 {
 /// Both sides are mapped through [`normalized_separator_byte`]; they must stay
 /// in lockstep, so the shared helper is the only place the rule is written.
 ///
-/// UTF-8 byte-lexicographic order matches Unicode scalar-value order. The
-/// backslash byte cannot occur inside a multibyte sequence, and ASCII byte
-/// values equal their scalar values, so byte-wise normalization preserves the
-/// previous character-wise ordering without decoding each character.
+/// The comparison reads the OS-encoded bytes directly via
+/// [`std::ffi::OsStr::as_encoded_bytes`] instead of going through a lossy
+/// `&str` view. That encoding is stable and cross-platform, and it is an
+/// ASCII-compatible self-synchronizing superset of UTF-8: a backslash byte can
+/// never occur inside a multi-byte sequence, and byte-lexicographic order
+/// matches Unicode scalar-value order. Every valid-Unicode path therefore
+/// compares byte-identically to the previous `to_string_lossy` view.
+///
+/// The difference is the paths that are NOT valid Unicode, which `read_dir`
+/// can hand us on any filesystem that does not validate encoding:
+/// `to_string_lossy` rewrites every invalid unit to the same `U+FFFD`, so two
+/// distinct such paths could compare `Equal` here and make this comparison a
+/// non-total pre-order over paths. Reading the encoded bytes keeps them
+/// distinct, which is what the raw-path tie-breaker in `cmp_paths` previously
+/// had to rescue.
 #[must_use]
 pub fn cmp_normalized_paths(left: &Path, right: &Path) -> Ordering {
-    let left_lossy = left.to_string_lossy();
-    let right_lossy = right.to_string_lossy();
+    let left_bytes = left.as_os_str().as_encoded_bytes();
+    let right_bytes = right.as_os_str().as_encoded_bytes();
 
-    left_lossy
-        .bytes()
+    left_bytes
+        .iter()
+        .copied()
         .map(normalized_separator_byte)
-        .cmp(right_lossy.bytes().map(normalized_separator_byte))
+        .cmp(right_bytes.iter().copied().map(normalized_separator_byte))
 }
 
 /// Discriminated union of Package (single project) or Workspace (monorepo root).
@@ -822,6 +834,67 @@ mod tests {
         assert_eq!(
             cmp_normalized_paths(Path::new(left), Path::new(right)),
             expected,
+        );
+    }
+
+    /// Build two paths that share pure-ASCII halves and differ ONLY in one
+    /// INVALID encoding unit, so no lossless `&str` view can represent either.
+    /// Same construction as `changepacks_utils::is_changepack_log`'s non-Unicode
+    /// tests: raw bytes via `OsStringExt::from_vec` on Unix.
+    #[cfg(unix)]
+    fn distinct_non_unicode_paths() -> (std::ffi::OsString, std::ffi::OsString) {
+        use std::os::unix::ffi::OsStringExt;
+
+        let build = |invalid: u8| {
+            let mut bytes = b"packages/alpha".to_vec();
+            bytes.push(invalid);
+            bytes.extend_from_slice(b"/package.json");
+            std::ffi::OsString::from_vec(bytes)
+        };
+        (build(0xFF), build(0xFE))
+    }
+
+    /// Windows counterpart of the Unix `distinct_non_unicode_paths` above: two
+    /// different unpaired high surrogates via `OsStringExt::from_wide` (WTF-8).
+    #[cfg(windows)]
+    fn distinct_non_unicode_paths() -> (std::ffi::OsString, std::ffi::OsString) {
+        use std::os::windows::ffi::OsStringExt;
+
+        let build = |invalid: u16| {
+            let mut units: Vec<u16> = "packages/alpha".encode_utf16().collect();
+            units.push(invalid);
+            units.extend("/package.json".encode_utf16());
+            std::ffi::OsString::from_wide(&units)
+        };
+        (build(0xD800), build(0xD801))
+    }
+
+    // Pins what the switch from `to_string_lossy` to `OsStr::as_encoded_bytes`
+    // buys: the lossy view rewrites EVERY invalid encoding unit to the same
+    // `U+FFFD`, so two genuinely different paths used to compare Equal. Callers
+    // inside this workspace survived that false tie only because they append a
+    // raw-path tie-breaker (`cmp_paths` here, `compare_paths` in
+    // `changepacks-utils`); this exported comparator is now a total order on
+    // its own. `read_dir` can hand such names to the finders on any filesystem
+    // that does not validate Unicode.
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn cmp_normalized_paths_distinguishes_non_unicode_paths() {
+        let (left, right) = distinct_non_unicode_paths();
+
+        assert!(
+            left.to_str().is_none() && right.to_str().is_none(),
+            "test precondition: {left:?} and {right:?} must not be valid Unicode"
+        );
+        assert_eq!(
+            left.to_string_lossy(),
+            right.to_string_lossy(),
+            "test precondition: the lossy views must collide on U+FFFD"
+        );
+        assert_ne!(
+            cmp_normalized_paths(Path::new(&left), Path::new(&right)),
+            Ordering::Equal,
+            "distinct non-Unicode paths must not compare Equal"
         );
     }
 

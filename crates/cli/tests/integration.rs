@@ -2664,7 +2664,7 @@ mod interactive_tests {
     }
 }
 
-// --- Node, Python, Dart and Rust end-to-end integration tests ---
+// --- Node, Python, Dart, Rust and C# end-to-end integration tests ---
 
 #[tokio::test]
 #[serial]
@@ -3010,6 +3010,191 @@ path = "src/lib.rs"
         .await
         .unwrap();
     assert_eq!(content, AFTER);
+}
+
+/// A deliberately hostile `.csproj` fixture, shared by the C# end-to-end
+/// update test below.
+///
+/// Every construct here is one the writer must reproduce byte for byte: an XML
+/// declaration, CRLF line endings, TAB indentation, an XML comment, an
+/// attribute on a `<Version>` sibling, a self-closing element, and NO trailing
+/// newline. The escapes are spelled out via `concat!` rather than embedded
+/// literally so the tabs and the carriage returns stay visible in the source
+/// and survive any editor or formatter that trims trailing whitespace — the
+/// same technique the Node fixture at the top of this section uses.
+const CSHARP_E2E_CSPROJ: &str = concat!(
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n",
+    "<Project Sdk=\"Microsoft.NET.Sdk\">\r\n",
+    "\t<!-- Keep this package comment. -->\r\n",
+    "\t<PropertyGroup>\r\n",
+    "\t\t<TargetFramework Condition=\"'$(OS)' == 'Windows_NT'\">net8.0</TargetFramework>\r\n",
+    "\t\t<Version>1.2.3</Version>\r\n",
+    "\t\t<Nullable>enable</Nullable>\r\n",
+    "\t</PropertyGroup>\r\n",
+    "\t<ItemGroup>\r\n",
+    "\t\t<None Include=\"README.md\" Pack=\"true\" />\r\n",
+    "\t</ItemGroup>\r\n",
+    "</Project>"
+);
+
+#[tokio::test]
+#[serial]
+async fn test_cli_language_e2e_csharp_check_discovers_changed_project() {
+    // Given: a committed C# project with an edited source file.
+    let temp_dir = setup_repo_canonical(&[
+        (
+            "Sample.csproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version>1.2.3</Version>\n  </PropertyGroup>\n</Project>\n",
+        ),
+        ("Program.cs", "public static class Program { }\n"),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    tokio::fs::write(
+        temp_path.join("Program.cs"),
+        "public static class Program { public const int Value = 2; }\n",
+    )
+    .await
+    .unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: the real CLI check command emits its JSON result.
+    let output = run_check_json(&temp_path, &[]);
+
+    // Then: the C# manifest is discovered and marked changed. The name comes
+    // from the file stem (`CSharpProjectFinder::extract_name_from_path`), which
+    // no other language finder does, so this also pins that naming rule through
+    // the binary rather than only in the crate's unit tests.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "C# check exited non-zero ({}):\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        output.status
+    );
+    let projects: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("check output should be valid JSON");
+    let project = projects
+        .get("Sample.csproj")
+        .expect("check output should contain Sample.csproj");
+    assert_eq!(
+        project.get("name").and_then(serde_json::Value::as_str),
+        Some("Sample")
+    );
+    assert_eq!(
+        project.get("version").and_then(serde_json::Value::as_str),
+        Some("1.2.3")
+    );
+    assert_eq!(
+        project.get("changed").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+}
+
+/// C# is the only language whose manifest writer does NOT route through the
+/// shared `finalize_content` newline/indent restoration: `write_csproj_version`
+/// hands the raw text straight to `xml_utils::update_version_in_xml`, whose
+/// whole job is to splice the new version in and leave every other byte alone.
+///
+/// The crate-level unit test pins that at the helper boundary; this pins it
+/// through the real `changepacks update` command, and compares the WHOLE file
+/// against the input with ONLY the `<Version>` text substituted. Any
+/// re-serialization of the XML — normalizing CRLF to LF, re-indenting tabs to
+/// spaces, dropping the comment or the sibling attribute, or appending a
+/// trailing newline — fails here.
+#[tokio::test]
+#[serial]
+async fn test_cli_language_e2e_csharp_update_preserves_manifest_formatting() {
+    // The expectation is derived from the input by substituting exactly the
+    // version text, so the assertion literally reads "byte-identical except the
+    // <Version> element". Spelling a second literal out by hand would let a
+    // typo in the copy weaken that claim silently.
+    let after = CSHARP_E2E_CSPROJ.replace("<Version>1.2.3</Version>", "<Version>1.2.4</Version>");
+    assert_ne!(
+        after, CSHARP_E2E_CSPROJ,
+        "the fixture must actually contain the version element being substituted"
+    );
+
+    // Given: a C# manifest and a patch changepack targeting it.
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/changepack_log_csharp.json",
+            r#"{"changes":{"Sample.csproj":"Patch"},"note":"C# patch","date":"2026-07-16T00:00:00Z"}"#,
+        ),
+        ("Sample.csproj", CSHARP_E2E_CSPROJ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: update runs non-interactively for C#. Note the flag value is
+    // `c-sharp`: clap kebab-cases the `CliLanguage::CSharp` variant name, which
+    // is NOT the `csharp` spelling used for config publish keys.
+    let result = run_language_update("c-sharp").await;
+
+    // Then: only the version text changes; the XML declaration, CRLF endings,
+    // tab indentation, comment, sibling attribute and missing trailing newline
+    // are all reproduced exactly. Compared as bytes so a stray line-ending
+    // rewrite cannot hide behind a string display.
+    assert!(result.is_ok(), "C# update failed: {:?}", result.err());
+    let content = tokio::fs::read_to_string(temp_path.join("Sample.csproj"))
+        .await
+        .unwrap();
+    // Compared through `escape_debug` so a mismatch names the offending bytes
+    // (`\r`, `\t`) in the panic message instead of printing two visually
+    // identical blocks. Equality is unaffected: the escaping is injective, and
+    // two UTF-8 `String`s are equal exactly when their bytes are.
+    assert_eq!(
+        content.escape_debug().to_string(),
+        after.escape_debug().to_string(),
+        "the .csproj must be byte-identical to the input except the <Version> text"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn test_cli_language_e2e_csharp_publish_uses_override() {
+    // Given: a nested C# project whose configured publish command is hermetic.
+    // The override is keyed by the project's RELATIVE PATH (forward slashes, as
+    // documented), not by the `csharp` language key, so this also exercises the
+    // backslash normalization `lookup_by_path_or_language` applies to the
+    // Windows-native relative path the finder produces.
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{"publish":{"src/Sample/Sample.csproj":"echo publishing-csharp > published.marker"}}"#,
+        ),
+        (
+            "src/Sample/Sample.csproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <Version>1.2.3</Version>\n  </PropertyGroup>\n</Project>\n",
+        ),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+    let _dir_guard = DirGuard::change_to(&temp_path);
+
+    // When: publish runs non-interactively with the C# language filter.
+    let result = changepacks_cli::main(&[
+        "changepacks".to_string(),
+        "publish".to_string(),
+        "--yes".to_string(),
+        "--language".to_string(),
+        "c-sharp".to_string(),
+    ])
+    .await;
+
+    // Then: the path-keyed override executes successfully. Success alone is
+    // already meaningful — without the override, `CSharpPackage::publish` falls
+    // through to the managed `dotnet pack` + `dotnet nuget push` flow, and
+    // `handle_publish` bails on any failed project. The marker file is the
+    // positive half of the proof: it can only exist if the configured command
+    // ran, and it lands in the project directory, pinning that the command's
+    // working directory is the `.csproj`'s parent rather than the repo root.
+    assert!(result.is_ok(), "C# publish failed: {:?}", result.err());
+    assert!(
+        temp_path.join("src/Sample/published.marker").is_file(),
+        "the configured publish command should have run in the project directory"
+    );
 }
 
 // --- Language filter integration tests ---

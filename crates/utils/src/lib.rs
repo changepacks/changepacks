@@ -49,6 +49,13 @@
 //!   `changepack_log_*.json` files after a successful `update`;
 //!   [`gen_changepack_result_map`] aggregates per-project `(UpdateType,
 //!   ChangePackResultLog)` for display / JSON output.
+//! - **Applied-change span surgery** — `remove_applied_change_spans` locates
+//!   the byte spans of the already-applied `changes` members in the ORIGINAL
+//!   `changepack_log_*.json` text and splices them out instead of
+//!   re-serializing, so a partially-consumed log keeps its key order,
+//!   indentation, spacing and trailing newline byte-for-byte; it exists solely
+//!   for [`clear_applied_update_logs`], which uses it to rewrite a log whose
+//!   `changes` map straddles the applied / unapplied boundary.
 //! - **Manifest read + parse head** — [`read_and_parse`] is the shared head of
 //!   every language crate's manifest pipeline and the exact mirror of
 //!   [`write_finalized`] below: read the file, hand its text to a
