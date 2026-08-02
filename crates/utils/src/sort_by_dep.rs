@@ -165,7 +165,14 @@ fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], in_degree: &[usiz
     let node_count = in_degree.len();
     let mut visited = vec![false; node_count];
     let mut finish_order = Vec::with_capacity(node_count);
-    let mut dfs_stack: Vec<(usize, usize)> = Vec::new();
+    // Pass one pushes a node only under `!visited[target]` and the push sets
+    // `visited[target] = true` (and the root push is guarded the same way), so
+    // each node enters `dfs_stack` at most once per call and the live depth is
+    // bounded by `node_count` — an exact upper bound, and exact for a graph
+    // whose residual is one pure cycle. Preallocating to it removes the
+    // ~log2(N) geometric-doubling reallocations `Vec::new()` would otherwise
+    // incur on every cycle report.
+    let mut dfs_stack: Vec<(usize, usize)> = Vec::with_capacity(node_count);
 
     for root in 0..node_count {
         if in_degree[root] == 0 || visited[root] {
@@ -237,8 +244,16 @@ fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], in_degree: &[usiz
     restore_start_offsets(&mut reverse_offsets);
 
     let mut cycle_members = vec![false; node_count];
-    let mut component = Vec::new();
-    let mut stack = Vec::new();
+    // `component` is filled from `stack` pops and cleared after every SCC, so
+    // its peak length is the size of the largest SCC, which is bounded by
+    // `node_count`. `stack` pushes a node only under `visited[source]` and the
+    // push clears that flag (the root push is guarded the same way), so each
+    // node enters it at most once across the whole pass — the same bound. Both
+    // bounds are exact for a graph whose residual is one pure cycle, so
+    // preallocating to `node_count` removes the ~log2(N) geometric-doubling
+    // reallocations `Vec::new()` would otherwise incur on every cycle report.
+    let mut component = Vec::with_capacity(node_count);
+    let mut stack = Vec::with_capacity(node_count);
 
     // `visited` is recycled here: `true` now means "residual and unassigned".
     for root in finish_order.into_iter().rev() {

@@ -40,7 +40,12 @@ impl Package for GradlePackage {
         crate::DRY_RUN_PUBLISH_COMMAND
     );
 
-    // These four methods are byte-identical to `GradleWorkspace`'s apart
+    // Publish-task flag accessors shared verbatim with `GradleWorkspace`.
+    // Both are plain sync methods, so a crate-local macro works here (see
+    // `impl_gradle_publish_task_flags!` in `lib.rs`).
+    crate::impl_gradle_publish_task_flags!();
+
+    // The two methods below are byte-identical to `GradleWorkspace`'s apart
     // from the directory-not-found message, but they are deliberately NOT
     // folded into a crate-local macro: `publish` / `dry_run_publish` are
     // `#[async_trait]` methods, and `async_trait` rewrites the `impl`
@@ -50,14 +55,6 @@ impl Package for GradlePackage {
     // `Pin<Box<dyn Future>>` form from a macro instead compiles, but costs
     // more lines than it saves and hides two trivial delegations behind
     // hand-written `async_trait` boilerplate.
-    fn is_publishable_by_default(&self) -> bool {
-        self.has_publish_task
-    }
-
-    fn is_dry_run_publishable_by_default(&self) -> bool {
-        self.has_publish_to_maven_local_task
-    }
-
     async fn publish(&self, config: &Config) -> Result<changepacks_core::publish::PublishOutput> {
         crate::run_publish_for_path(
             self.path(),

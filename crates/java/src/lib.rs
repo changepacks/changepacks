@@ -124,6 +124,42 @@ macro_rules! impl_gradle_constructors {
 
 pub(crate) use impl_gradle_constructors;
 
+/// Expand to the two publish-task flag accessors shared verbatim by the
+/// `Package` impl for `GradlePackage` and the `Workspace` impl for
+/// `GradleWorkspace`.
+///
+/// Both traits declare `is_publishable_by_default` and
+/// `is_dry_run_publishable_by_default` with the same signature, and Java
+/// answers both from the task flags the finder probed off the Gradle wrapper
+/// rather than from a single `publishable_by_default` field — so
+/// [`changepacks_core::impl_publishable_by_default!`], which reads that field,
+/// cannot be reused here.
+///
+/// These are plain sync methods, so unlike `update_version` / `publish` /
+/// `dry_run_publish` they are unaffected by `#[async_trait]`'s rewrite of the
+/// `impl` block (the E0195 signature mismatch only bites methods that
+/// `async_trait` desugars). Fully-qualified `::std::primitive::bool` keeps the
+/// macro hygienic.
+///
+/// Consumer requirement: the struct must own `has_publish_task` and
+/// `has_publish_to_maven_local_task` `bool` fields, both supplied by
+/// [`declare_gradle_project!`]. Invoked from inside the `#[async_trait]`
+/// `impl Package for GradlePackage` / `impl Workspace for GradleWorkspace`
+/// blocks, the only two intended callers.
+macro_rules! impl_gradle_publish_task_flags {
+    () => {
+        fn is_publishable_by_default(&self) -> ::std::primitive::bool {
+            self.has_publish_task
+        }
+
+        fn is_dry_run_publishable_by_default(&self) -> ::std::primitive::bool {
+            self.has_publish_to_maven_local_task
+        }
+    };
+}
+
+pub(crate) use impl_gradle_publish_task_flags;
+
 /// Declare a Gradle project struct plus its shared inherent constructors.
 ///
 /// `GradlePackage` and `GradleWorkspace` carry exactly the same nine fields

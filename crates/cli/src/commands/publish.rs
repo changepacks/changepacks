@@ -316,7 +316,7 @@ fn skip_dry_run_due_to_workspace_internal_dep(
     project: &Project,
     rust_batch_names: &HashSet<&str>,
 ) -> bool {
-    if project.language() != changepacks_core::Language::Rust {
+    if !is_rust_project(project) {
         return false;
     }
     project
@@ -685,8 +685,13 @@ fn rust_batch_name_iter<'a>(projects: &[&'a Project]) -> impl Iterator<Item = &'
         .filter_map(|p| p.name())
 }
 
-/// The Rust-language predicate consumed by [`rust_batch_name_iter`], and so by
-/// both passes of [`rust_batch_names`]. The single language test for the set.
+/// The Rust-language predicate consumed by [`rust_batch_name_iter`] — and so by
+/// both passes of [`rust_batch_names`] — and by
+/// [`skip_dry_run_due_to_workspace_internal_dep`], the set's sole consumer.
+///
+/// The single language test for both which projects enter the batch-name set
+/// and which projects the `rust-lang/cargo#1169` dry-run skip is considered
+/// for. Both sides must agree, so neither open-codes the equality.
 fn is_rust_project(project: &Project) -> bool {
     project.language() == changepacks_core::Language::Rust
 }

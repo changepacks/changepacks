@@ -156,9 +156,11 @@ where
 /// directory, honour an already-resolved config override, and otherwise hand
 /// the directory to the managed `NuGet` flow.
 ///
-/// The two callers differ only in which override map they consult and in the
-/// `Option` wrapper on the result, so the override lookup is resolved by the
-/// caller and passed in as `override_command`.
+/// The two callers — [`resolve_and_run_publish_with_command_runner`] and
+/// [`resolve_and_run_dry_run_with_command_runner`] — differ only in which
+/// override map they consult and in the `Option` wrapper on the result, so the
+/// override lookup is resolved by the caller and passed in as
+/// `override_command`.
 async fn resolve_and_run_with<F, Fut>(
     path: &Path,
     missing_dir_msg: &'static str,
@@ -178,26 +180,6 @@ where
     managed_runner(dir.to_path_buf()).await
 }
 
-async fn resolve_and_run_publish_with<F, Fut>(
-    path: &Path,
-    relative_path: &Path,
-    config: &Config,
-    missing_dir_msg: &'static str,
-    managed_runner: F,
-) -> Result<PublishOutput>
-where
-    F: FnOnce(PathBuf) -> Fut,
-    Fut: Future<Output = Result<PublishOutput>>,
-{
-    resolve_and_run_with(
-        path,
-        missing_dir_msg,
-        lookup_by_path_or_language(&config.publish, relative_path, Language::CSharp).cloned(),
-        managed_runner,
-    )
-    .await
-}
-
 /// Resolve a configured real-publish override or run the managed `NuGet` flow
 /// with the supplied command boundary.
 pub(crate) async fn resolve_and_run_publish_with_command_runner<F, Fut>(
@@ -212,39 +194,16 @@ where
     Fut: Future<Output = Result<PublishOutput>>,
 {
     let manifest = path.to_path_buf();
-    resolve_and_run_publish_with(
+    resolve_and_run_with(
         path,
-        relative_path,
-        config,
         missing_dir_msg,
+        lookup_by_path_or_language(&config.publish, relative_path, Language::CSharp).cloned(),
         move |dir| async move {
             run_managed_publish_with(&dir, &manifest, ManagedPublishTarget::UserConfig, runner)
                 .await
         },
     )
     .await
-}
-
-async fn resolve_and_run_dry_run_with<F, Fut>(
-    path: &Path,
-    relative_path: &Path,
-    config: &Config,
-    missing_dir_msg: &'static str,
-    managed_runner: F,
-) -> Result<Option<PublishOutput>>
-where
-    F: FnOnce(PathBuf) -> Fut,
-    Fut: Future<Output = Result<PublishOutput>>,
-{
-    Ok(Some(
-        resolve_and_run_with(
-            path,
-            missing_dir_msg,
-            resolve_dry_run_publish_command(relative_path, Language::CSharp, || None, config),
-            managed_runner,
-        )
-        .await?,
-    ))
 }
 
 /// Resolve a configured dry-run override or run the managed temporary-feed
@@ -261,17 +220,23 @@ where
     Fut: Future<Output = Result<PublishOutput>>,
 {
     let manifest = path.to_path_buf();
-    resolve_and_run_dry_run_with(
-        path,
-        relative_path,
-        config,
-        missing_dir_msg,
-        move |dir| async move {
-            run_managed_publish_with(&dir, &manifest, ManagedPublishTarget::TemporaryFeed, runner)
+    Ok(Some(
+        resolve_and_run_with(
+            path,
+            missing_dir_msg,
+            resolve_dry_run_publish_command(relative_path, Language::CSharp, || None, config),
+            move |dir| async move {
+                run_managed_publish_with(
+                    &dir,
+                    &manifest,
+                    ManagedPublishTarget::TemporaryFeed,
+                    runner,
+                )
                 .await
-        },
-    )
-    .await
+            },
+        )
+        .await?,
+    ))
 }
 
 /// External process boundary for the otherwise deterministic managed flow.
@@ -389,10 +354,6 @@ mod tests {
         PathBuf::from(output_dir)
     }
 
-    async fn run_harmless_managed(dir: PathBuf) -> Result<PublishOutput> {
-        run_publish_command(&harmless_command("managed-fallback"), &dir).await
-    }
-
     #[tokio::test]
     async fn test_resolve_dry_run_prefers_path_override() {
         let dir = TempDir::new().unwrap();
@@ -406,13 +367,25 @@ mod tests {
             relative.to_string_lossy().into_owned(),
             harmless_command("path-override"),
         );
+        let invoked = Arc::new(Mutex::new(false));
+        let runner_invoked = Arc::clone(&invoked);
 
-        let output = resolve_and_run_dry_run_with(
+        let output = resolve_and_run_dry_run_with_command_runner(
             &manifest,
             relative,
             &config,
             "missing parent",
-            run_harmless_managed,
+            move |_program, _args, _working_dir| {
+                let runner_invoked = Arc::clone(&runner_invoked);
+                async move {
+                    *runner_invoked.lock().unwrap() = true;
+                    Ok(PublishOutput {
+                        success: true,
+                        stdout: "managed-fallback".to_string(),
+                        stderr: String::new(),
+                    })
+                }
+            },
         )
         .await
         .unwrap()
@@ -421,7 +394,10 @@ mod tests {
         assert!(output.success, "stderr: {}", output.stderr);
         assert!(output.stdout.contains("path-override"));
         assert!(!output.stdout.contains("language-override"));
-        assert!(!output.stdout.contains("managed-fallback"));
+        assert!(
+            !*invoked.lock().unwrap(),
+            "a matching dry-run override must bypass the managed dotnet flow"
+        );
     }
 
     #[tokio::test]
@@ -437,13 +413,25 @@ mod tests {
             relative.to_string_lossy().into_owned(),
             harmless_command("path-override"),
         );
+        let invoked = Arc::new(Mutex::new(false));
+        let runner_invoked = Arc::clone(&invoked);
 
-        let output = resolve_and_run_publish_with(
+        let output = resolve_and_run_publish_with_command_runner(
             &manifest,
             relative,
             &config,
             "missing parent",
-            run_harmless_managed,
+            move |_program, _args, _working_dir| {
+                let runner_invoked = Arc::clone(&runner_invoked);
+                async move {
+                    *runner_invoked.lock().unwrap() = true;
+                    Ok(PublishOutput {
+                        success: true,
+                        stdout: "managed-fallback".to_string(),
+                        stderr: String::new(),
+                    })
+                }
+            },
         )
         .await
         .unwrap();
@@ -451,7 +439,10 @@ mod tests {
         assert!(output.success, "stderr: {}", output.stderr);
         assert!(output.stdout.contains("path-override"));
         assert!(!output.stdout.contains("language-override"));
-        assert!(!output.stdout.contains("managed-fallback"));
+        assert!(
+            !*invoked.lock().unwrap(),
+            "a matching publish override must bypass the managed dotnet flow"
+        );
     }
 
     #[tokio::test]
@@ -462,13 +453,25 @@ mod tests {
         config
             .publish_dry_run
             .insert("csharp".to_string(), harmless_command("language-override"));
+        let invoked = Arc::new(Mutex::new(false));
+        let runner_invoked = Arc::clone(&invoked);
 
-        let output = resolve_and_run_dry_run_with(
+        let output = resolve_and_run_dry_run_with_command_runner(
             &manifest,
             Path::new("packages/Project.csproj"),
             &config,
             "missing parent",
-            run_harmless_managed,
+            move |_program, _args, _working_dir| {
+                let runner_invoked = Arc::clone(&runner_invoked);
+                async move {
+                    *runner_invoked.lock().unwrap() = true;
+                    Ok(PublishOutput {
+                        success: true,
+                        stdout: "managed-fallback".to_string(),
+                        stderr: String::new(),
+                    })
+                }
+            },
         )
         .await
         .unwrap()
@@ -476,20 +479,39 @@ mod tests {
 
         assert!(output.success, "stderr: {}", output.stderr);
         assert!(output.stdout.contains("language-override"));
-        assert!(!output.stdout.contains("managed-fallback"));
+        assert!(
+            !*invoked.lock().unwrap(),
+            "a language dry-run override must bypass the managed dotnet flow"
+        );
     }
 
     #[tokio::test]
-    async fn test_resolve_dry_run_uses_injected_managed_fallback() {
+    async fn test_resolve_dry_run_uses_managed_temporary_feed_flow_without_override() {
         let dir = TempDir::new().unwrap();
         let manifest = dir.path().join("Project.csproj");
+        let calls = Arc::new(Mutex::new(Vec::<Vec<OsString>>::new()));
+        let recorded_calls = Arc::clone(&calls);
 
-        let output = resolve_and_run_dry_run_with(
+        let output = resolve_and_run_dry_run_with_command_runner(
             &manifest,
             Path::new("Project.csproj"),
             &Config::default(),
             "missing parent",
-            run_harmless_managed,
+            move |_program, args, _working_dir| {
+                let recorded_calls = Arc::clone(&recorded_calls);
+                async move {
+                    if args.first().and_then(|arg| arg.to_str()) == Some("pack") {
+                        let pack_dir = pack_output_dir(&args);
+                        fs::write(pack_dir.join("only.nupkg"), b"").unwrap();
+                    }
+                    recorded_calls.lock().unwrap().push(args);
+                    Ok(PublishOutput {
+                        success: true,
+                        stdout: "managed-fallback".to_string(),
+                        stderr: String::new(),
+                    })
+                }
+            },
         )
         .await
         .unwrap()
@@ -497,6 +519,14 @@ mod tests {
 
         assert!(output.success, "stderr: {}", output.stderr);
         assert!(output.stdout.contains("managed-fallback"));
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2, "calls: {calls:?}");
+        assert_eq!(calls[0][0], OsString::from("pack"));
+        assert!(
+            calls[1].contains(&OsString::from("-s")),
+            "the dry-run flow must push into a temporary local feed: {:?}",
+            calls[1]
+        );
     }
 
     #[tokio::test]
@@ -506,18 +536,34 @@ mod tests {
         } else {
             Path::new("/")
         };
+        let invoked = Arc::new(Mutex::new(false));
+        let runner_invoked = Arc::clone(&invoked);
 
-        let error = resolve_and_run_dry_run_with(
+        let error = resolve_and_run_dry_run_with_command_runner(
             manifest,
             Path::new("Project.csproj"),
             &Config::default(),
             "test missing parent",
-            run_harmless_managed,
+            move |_program, _args, _working_dir| {
+                let runner_invoked = Arc::clone(&runner_invoked);
+                async move {
+                    *runner_invoked.lock().unwrap() = true;
+                    Ok(PublishOutput {
+                        success: true,
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
+                }
+            },
         )
         .await
         .unwrap_err();
 
         assert_eq!(error.to_string(), "test missing parent");
+        assert!(
+            !*invoked.lock().unwrap(),
+            "the missing-parent guard must run before any dotnet command"
+        );
     }
 
     #[test]

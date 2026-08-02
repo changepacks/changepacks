@@ -38,13 +38,20 @@ fn contains_marker(value: &[u8], marker: &[u8]) -> bool {
     marker.len() <= value.len() && value.windows(marker.len()).any(|window| window == marker)
 }
 
+/// A value is literal when it holds no computed marker and does not end in a
+/// line continuation.
+///
+/// `is_escaped(value, value.len())` already answers the continuation question on
+/// its own: it counts the trailing backslash run and is only true for an odd
+/// run, which implies the run is non-empty and therefore that the final byte is
+/// a backslash. Testing `value.last() == Some(b'\\')` alongside it could never
+/// change the outcome, and for an empty value the count is `0`, so the dropped
+/// `last().is_some_and(..)` wrapper was redundant as well.
 fn property_value_is_literal(value: &[u8]) -> bool {
     !NON_LITERAL_MARKERS
         .iter()
         .any(|marker| contains_marker(value, marker))
-        && !value
-            .last()
-            .is_some_and(|byte| *byte == b'\\' && is_escaped(value, value.len()))
+        && !is_escaped(value, value.len())
 }
 
 pub(crate) fn property_assignments(content: &[u8]) -> Vec<PropertyAssignment> {
@@ -212,6 +219,23 @@ mod tests {
         let assignments = property_assignments(content);
 
         assert_eq!(assignments, expected);
+    }
+
+    #[rstest]
+    #[case(b"", true)]
+    #[case(b"1.2.3", true)]
+    #[case(b"1.2.3\\", false)]
+    #[case(b"1.2.3\\\\", true)]
+    #[case(b"1.2.3\\\\\\", false)]
+    #[case(b"1.2.3\\\\\\\\", true)]
+    #[case(b"1.2\\.3\\\\", true)]
+    #[case(b"\\", false)]
+    #[case(b"\\\\", true)]
+    fn property_value_literality_only_depends_on_trailing_backslash_parity(
+        #[case] value: &[u8],
+        #[case] expected: bool,
+    ) {
+        assert_eq!(property_value_is_literal(value), expected);
     }
 
     #[test]

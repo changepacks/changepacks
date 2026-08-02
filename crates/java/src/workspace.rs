@@ -50,18 +50,15 @@ impl Workspace for GradleWorkspace {
         crate::DRY_RUN_PUBLISH_COMMAND
     );
 
-    // See the matching note on the Java package impl: these four methods
+    // Publish-task flag accessors shared verbatim with `GradlePackage`.
+    // Both are plain sync methods, so a crate-local macro works here (see
+    // `impl_gradle_publish_task_flags!` in `lib.rs`).
+    crate::impl_gradle_publish_task_flags!();
+
+    // See the matching note on the Java package impl: the two methods below
     // stay hand-written because `#[async_trait]` rewrites the `impl` block
     // before `macro_rules!` bodies expand, so a macro-emitted `async fn`
     // no longer matches the desugared trait signature (E0195).
-    fn is_publishable_by_default(&self) -> bool {
-        self.has_publish_task
-    }
-
-    fn is_dry_run_publishable_by_default(&self) -> bool {
-        self.has_publish_to_maven_local_task
-    }
-
     async fn publish(&self, config: &Config) -> Result<changepacks_core::publish::PublishOutput> {
         crate::run_publish_for_path(
             self.path(),
