@@ -54,9 +54,11 @@ fn resolved_monorepo_deps<'a>(
                 resolved.push((dep, projects[index]));
             }
             ProjectNameResolution::Ambiguous => {
+                // `candidates_for` borrows the analysis' cached candidates when
+                // it can, so bind the `Cow` before iterating it.
+                let candidates = analysis.candidates_for(projects, dep);
                 let rendered_candidates = join_display(
-                    analysis
-                        .candidates_for(projects, dep)
+                    candidates
                         .iter()
                         .map(PathBuf::as_path)
                         .map(normalize_path_separators_of),

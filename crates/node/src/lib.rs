@@ -183,8 +183,12 @@ pub(crate) async fn write_package_json_version(path: &Path, new_version: &str) -
     };
     write_finalized(
         path,
-        String::from_utf8(serialized)
-            .with_context(|| format!("Failed to serialize package.json {}", path.display()))?,
+        String::from_utf8(serialized).with_context(|| {
+            format!(
+                "Serialized package.json {} is not valid UTF-8",
+                path.display()
+            )
+        })?,
         &package_json_raw,
         "package.json",
     )

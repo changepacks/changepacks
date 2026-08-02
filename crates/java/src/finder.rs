@@ -8,13 +8,13 @@ use std::{
     ffi::{OsStr, OsString},
     path::{Path, PathBuf},
 };
-use tokio::fs::read_to_string;
 use tokio::process::Command;
 
 use crate::{
     gradle_dependency_lexer::{extract_gradle_project_dependencies, gradle_dependency_dialect},
     gradle_metadata::{GradleProperties, GradleWrapperMetadata, get_gradle_metadata},
     package::GradlePackage,
+    read_gradle_build_file,
     workspace::GradleWorkspace,
 };
 
@@ -472,9 +472,7 @@ impl ProjectFinder for GradleProjectFinder {
         };
 
         // Read Gradle build file first (fail fast if unreadable)
-        let content = read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read Gradle build file {}", path.display()))?;
+        let content = read_gradle_build_file(path).await?;
         let dependencies =
             extract_gradle_project_dependencies(&content, gradle_dependency_dialect(path));
 

@@ -314,19 +314,37 @@ struct DiscoveredWorkspaceRoot {
     workspace_version: String,
 }
 
+/// Everything a member may inherit from one discovered workspace root.
+///
+/// These two answers are decoded from the same root manifest bytes at the same
+/// moment ([`RustProjectFinder::record_workspace_root`]) and are always looked
+/// up for the same member path, so they live in one value under one root key.
+/// Keeping them in two parallel maps meant every visited member manifest paid
+/// two independent O(roots) [`nearest_workspace_entry`] scans — each of which
+/// re-walks every candidate root's path components — to learn two halves of a
+/// single answer.
+#[derive(Debug)]
+struct WorkspaceRootInfo {
+    /// `[workspace.package].publish`, so a member writing
+    /// `publish.workspace = true` can inherit it. An entry is recorded for
+    /// EVERY discovered root — including roots that declare no `publish`
+    /// (value `true`) — because the nearest root has to win over a shallower
+    /// one that does declare it.
+    publishable: bool,
+    /// `[workspace.dependencies]` entries whose key is an alias for a
+    /// differently named local-path package (`alias = { package = "real" }`),
+    /// mapping alias key to real package name.
+    aliases: HashMap<String, String>,
+}
+
 #[derive(Debug, Default)]
 pub struct RustProjectFinder {
     projects: HashMap<PathBuf, Project>,
     workspace_package_versions: HashMap<PathBuf, String>,
-    workspace_dependency_aliases: HashMap<PathBuf, HashMap<String, String>>,
-    /// `[workspace.package].publish`, decoded per discovered workspace root, so
-    /// a member writing `publish.workspace = true` can inherit it. An entry is
-    /// recorded for EVERY discovered root — including roots that declare no
-    /// `publish` (value `true`) — because the nearest root has to win over a
-    /// shallower one that does declare it. Written in lockstep with
-    /// `workspace_dependency_aliases`, whose presence check is what lets
-    /// `discover_workspace_dependency_aliases_for_member` stop walking early.
-    workspace_package_publishable: HashMap<PathBuf, bool>,
+    /// Per-discovered-workspace-root inheritance data. Its presence check is
+    /// also what lets `discover_workspace_dependency_aliases_for_member` stop
+    /// walking early.
+    workspace_roots: HashMap<PathBuf, WorkspaceRootInfo>,
     non_workspace_manifest_candidates: HashSet<PathBuf>,
     inherited_workspace_members: HashMap<PathBuf, InheritedWorkspaceMembers>,
     pending_workspace_packages: Vec<PendingWorkspacePackage>,
@@ -353,30 +371,23 @@ impl RustProjectFinder {
             .map(|(root_path, version)| (version.clone(), root_path.clone()))
     }
 
-    fn nearest_workspace_dependency_aliases(
-        &self,
-        member_path: &Path,
-    ) -> Option<&HashMap<String, String>> {
-        nearest_workspace_entry(&self.workspace_dependency_aliases, member_path)
-            .map(|(_, aliases)| aliases)
+    /// Everything the nearest discovered workspace root above `member_path`
+    /// lets that member inherit, or `None` when no root was found. One scan
+    /// answers both the inherited-`publish` and the dependency-alias question.
+    fn nearest_workspace_root_info(&self, member_path: &Path) -> Option<&WorkspaceRootInfo> {
+        nearest_workspace_entry(&self.workspace_roots, member_path).map(|(_, info)| info)
     }
 
-    /// The `[workspace.package].publish` answer of the nearest discovered
-    /// workspace root above `member_path`, or `None` when no root was found.
-    fn nearest_workspace_publishable(&self, member_path: &Path) -> Option<bool> {
-        nearest_workspace_entry(&self.workspace_package_publishable, member_path)
-            .map(|(_, publishable)| *publishable)
-    }
-
-    /// Record everything a member may later inherit from `root_path`, keeping
-    /// the two root-keyed maps written together at every discovery site.
+    /// Record everything a member may later inherit from `root_path` as the
+    /// single root-keyed entry every discovery site writes.
     fn record_workspace_root(&mut self, root_path: PathBuf, doc: &toml_edit::DocumentMut) {
-        self.workspace_package_publishable.insert(
-            root_path.clone(),
-            workspace_package_publishable_by_default(doc),
+        self.workspace_roots.insert(
+            root_path,
+            WorkspaceRootInfo {
+                publishable: workspace_package_publishable_by_default(doc),
+                aliases: workspace_dependency_aliases(doc),
+            },
         );
-        self.workspace_dependency_aliases
-            .insert(root_path, workspace_dependency_aliases(doc));
     }
 
     async fn discover_workspace_dependency_aliases_for_member(
@@ -391,7 +402,7 @@ impl RustProjectFinder {
                 return Ok(());
             }
             let candidate = ancestor.join("Cargo.toml");
-            if self.workspace_dependency_aliases.contains_key(&candidate) {
+            if self.workspace_roots.contains_key(&candidate) {
                 return Ok(());
             }
             if !self.non_workspace_manifest_candidates.contains(&candidate) {
@@ -486,12 +497,13 @@ impl RustProjectFinder {
             publishable_by_default,
         } = package;
         // One lookup for both users below: the alias-collection pass and the
-        // dependency rewrite pass previously probed
-        // `workspace_dependency_aliases` with the same `PathBuf` key twice, so
-        // the second probe (and its path hashing) is elided here.
+        // dependency rewrite pass previously probed the alias map with the same
+        // `PathBuf` key twice, so the second probe (and its path hashing) is
+        // elided here.
         let root_aliases = workspace_root_path
             .as_ref()
-            .and_then(|root| self.workspace_dependency_aliases.get(root));
+            .and_then(|root| self.workspace_roots.get(root))
+            .map(|info| &info.aliases);
         if let (Some(root_path), Some(package_name)) = (workspace_root_path.as_ref(), name.as_ref())
         {
             let aliases = root_aliases
@@ -584,6 +596,12 @@ impl ProjectFinder for RustProjectFinder {
                 .await?;
         }
 
+        // ONE nearest-root scan feeds both inherited answers below. Nothing
+        // between here and the `dep_names` collection mutates `workspace_roots`,
+        // so a single borrow is equivalent to the two independent scans this
+        // replaces — at half the linear walks over the recorded roots.
+        let nearest_root = self.nearest_workspace_root_info(path);
+
         // A manifest carrying `[workspace]` IS its own workspace root, so an
         // inherited `publish` resolves against its own `[workspace.package]`.
         // Every other manifest resolves against the nearest root, which the
@@ -593,18 +611,17 @@ impl ProjectFinder for RustProjectFinder {
         let publishable_by_default = if is_workspace {
             publish_default.resolve(|| Some(workspace_package_publishable_by_default(&cargo_toml)))
         } else {
-            publish_default.resolve(|| self.nearest_workspace_publishable(path))
+            publish_default.resolve(|| nearest_root.map(|root| root.publishable))
         };
 
         // Collect workspace dependencies for this file — the same
         // `dep_names` list feeds every branch below (workspace /
         // inherits-workspace-version / plain-package).
-        let workspace_aliases = self.nearest_workspace_dependency_aliases(path);
         let dep_names: Vec<String> = workspace_dep_names(&cargo_toml)
             .into_iter()
             .map(|dependency_name| {
-                workspace_aliases
-                    .and_then(|aliases| aliases.get(dependency_name))
+                nearest_root
+                    .and_then(|root| root.aliases.get(dependency_name))
                     .map_or_else(|| dependency_name.to_string(), Clone::clone)
             })
             .collect();

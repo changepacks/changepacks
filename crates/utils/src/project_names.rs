@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::{HashMap, hash_map::Entry},
     path::{Path, PathBuf},
@@ -110,8 +111,13 @@ impl<'a> ProjectNameAnalysis<'a> {
     /// the scan entirely. The one name already reported by
     /// [`Self::referenced_ambiguity`] reuses the candidates computed in
     /// [`Self::new`] instead of recomputing them.
+    ///
+    /// Returns a [`Cow`] so the two cases that already have their answer — the
+    /// cached ambiguity and a name with no carrier — hand back a borrowed
+    /// slice instead of allocating a `Vec` plus one `PathBuf` per carrier that
+    /// every caller only reads.
     #[must_use]
-    pub fn candidates_for(&self, projects: &[&Project], name: &str) -> Vec<PathBuf> {
+    pub fn candidates_for(&self, projects: &[&Project], name: &str) -> Cow<'_, [PathBuf]> {
         // `new` stored `sorted_candidates(projects, dependency)` for the
         // reported ambiguity, and the doc contract above requires callers to
         // pass the same slice, so for that single name the stored vector is
@@ -121,12 +127,12 @@ impl<'a> ProjectNameAnalysis<'a> {
         if let Some(ambiguity) = &self.referenced_ambiguity
             && ambiguity.dependency() == name
         {
-            return ambiguity.candidates().to_vec();
+            return Cow::Borrowed(ambiguity.candidates());
         }
         if self.resolve(name) == ProjectNameResolution::Missing {
-            return Vec::new();
+            return Cow::Borrowed(&[]);
         }
-        sorted_candidates(projects, name)
+        Cow::Owned(sorted_candidates(projects, name))
     }
 
     pub(crate) const fn referenced_ambiguity(&self) -> Option<&ReferencedDependencyAmbiguity<'a>> {
@@ -283,15 +289,16 @@ mod tests {
 
         // Then
         assert_eq!(
-            analysis.candidates_for(&projects, "shared"),
+            analysis.candidates_for(&projects, "shared").as_ref(),
             [
                 PathBuf::from("alpha/package.json"),
                 PathBuf::from("zeta/package.json"),
             ]
+            .as_slice()
         );
         assert_eq!(
-            analysis.candidates_for(&projects, "app"),
-            [PathBuf::from("app/package.json")]
+            analysis.candidates_for(&projects, "app").as_ref(),
+            [PathBuf::from("app/package.json")].as_slice()
         );
         assert!(analysis.candidates_for(&projects, "external").is_empty());
     }
@@ -314,13 +321,14 @@ mod tests {
         let candidates = analysis.candidates_for(&projects, reported.dependency());
 
         // Then
-        assert_eq!(candidates, reported.candidates());
+        assert_eq!(candidates.as_ref(), reported.candidates());
         assert_eq!(
-            candidates,
+            candidates.as_ref(),
             [
                 PathBuf::from("alpha/package.json"),
                 PathBuf::from("zeta/package.json"),
             ]
+            .as_slice()
         );
     }
 
@@ -343,10 +351,11 @@ mod tests {
         let projects = [&right, &left];
 
         // When
-        let candidates = ProjectNameAnalysis::new(&projects).candidates_for(&projects, "shared");
+        let analysis = ProjectNameAnalysis::new(&projects);
+        let candidates = analysis.candidates_for(&projects, "shared");
 
         // Then
-        assert_eq!(candidates, [left_path, right_path]);
+        assert_eq!(candidates.as_ref(), [left_path, right_path].as_slice());
     }
 
     #[test]

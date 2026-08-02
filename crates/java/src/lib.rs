@@ -162,6 +162,25 @@ macro_rules! declare_gradle_project {
 
 pub(crate) use declare_gradle_project;
 
+/// Read a Gradle build script (`build.gradle` or `build.gradle.kts`) and
+/// attach the build-file read context to any I/O failure.
+///
+/// [`finder::GradleProjectFinder::visit`] and [`write_gradle_version`] both
+/// open with this exact read, and both must attribute a failure to the build
+/// script's own path instead of surfacing a bare `os error`. Owning the read
+/// and its `Failed to read Gradle build file <path>` context here keeps the
+/// two messages from drifting apart; every other language crate already
+/// funnels its manifest read through a single head.
+///
+/// # Errors
+/// Returns the underlying [`std::io::Error`] as the cause, wrapped with the
+/// build file path, when the script cannot be read.
+pub(crate) async fn read_gradle_build_file(path: &Path) -> Result<String> {
+    tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("Failed to read Gradle build file {}", path.display()))
+}
+
 /// Compute the next semver version and write it into the Gradle build file.
 ///
 /// `GradlePackage::update_version` and `GradleWorkspace::update_version` had

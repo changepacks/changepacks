@@ -126,6 +126,26 @@ fn write_line_break_and_indent<W: std::io::Write>(
     Ok(())
 }
 
+/// Break the line and indent one level deeper than `group_indent`.
+///
+/// The callers that open a `PropertyGroup` all need the same
+/// `group_indent + indent` column for the `<Version>` they are about to write.
+/// The empty-`line_ending` check is repeated here rather than left to
+/// [`write_line_break_and_indent`] so the concatenation is skipped entirely for
+/// a document that must stay on one line.
+fn write_nested_line_break_and_indent<W: std::io::Write>(
+    writer: &mut Writer<W>,
+    line_ending: &str,
+    group_indent: &str,
+    indent: &str,
+) -> Result<()> {
+    if line_ending.is_empty() {
+        return Ok(());
+    }
+    let inner_indent = format!("{group_indent}{indent}");
+    write_line_break_and_indent(writer, line_ending, &inner_indent)
+}
+
 /// Insert a synthesized `<Version>` immediately before the `</PropertyGroup>`
 /// that is closing now.
 ///
@@ -149,9 +169,8 @@ fn write_version_before_property_group_end<W: std::io::Write>(
         if contains_line_break(trailing) {
             writer.write_event(Event::Text(BytesText::new(indent)))?;
         }
-    } else if !line_ending.is_empty() {
-        let inner_indent = format!("{group_indent}{indent}");
-        write_line_break_and_indent(writer, line_ending, &inner_indent)?;
+    } else {
+        write_nested_line_break_and_indent(writer, line_ending, group_indent, indent)?;
     }
     write_version_element(writer, version_qname, new_version)?;
     if let Some(trailing) = close_ws {
@@ -192,10 +211,7 @@ fn write_property_group_before_project_end<W: std::io::Write>(
     }
 
     writer.write_event(Event::Start(BytesStart::new(&property_group_qname)))?;
-    if !line_ending.is_empty() {
-        let inner_indent = format!("{group_indent}{indent}");
-        write_line_break_and_indent(writer, line_ending, &inner_indent)?;
-    }
+    write_nested_line_break_and_indent(writer, line_ending, group_indent, indent)?;
     write_version_element(writer, &version_qname, new_version)?;
     write_line_break_and_indent(writer, line_ending, group_indent)?;
     writer.write_event(Event::End(BytesEnd::new(&property_group_qname)))?;
@@ -487,9 +503,13 @@ fn rewrite_version(content: &str, new_version: &str, has_version: bool) -> Resul
                     if is_unconditional_top_level {
                         let start = e.into_owned();
                         let end = BytesEnd::from(start.name()).into_owned();
-                        let inner_indent = format!("{group_indent}{indent}");
                         writer.write_event(Event::Start(start))?;
-                        write_line_break_and_indent(&mut writer, line_ending, &inner_indent)?;
+                        write_nested_line_break_and_indent(
+                            &mut writer,
+                            line_ending,
+                            &group_indent,
+                            indent,
+                        )?;
                         write_version_element(&mut writer, &version_qname, new_version)?;
                         write_line_break_and_indent(&mut writer, line_ending, &group_indent)?;
                         writer.write_event(Event::End(end))?;

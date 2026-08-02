@@ -1,4 +1,5 @@
 use crate::properties_version::{PropertyAssignment, property_assignments};
+use crate::read_gradle_build_file;
 use crate::version_lexer::{GradleDialect, candidate_ranges};
 use anyhow::{Context, Result, bail};
 use changepacks_core::has_extension_ignore_ascii_case;
@@ -7,7 +8,7 @@ use std::borrow::Cow;
 use std::io::ErrorKind;
 use std::ops::{Index, Range, RangeFrom, RangeTo};
 use std::path::Path;
-use tokio::fs::{read, read_to_string, write};
+use tokio::fs::{read, write};
 
 /// Select which Gradle scopes may own the project version declaration.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -162,9 +163,7 @@ pub async fn write_gradle_version(
     new_version: &str,
     policy: GradleVersionScope,
 ) -> Result<()> {
-    let content = read_to_string(path)
-        .await
-        .with_context(|| format!("Failed to read Gradle build file {}", path.display()))?;
+    let content = read_gradle_build_file(path).await?;
 
     let is_kts = has_extension_ignore_ascii_case(path, "kts");
     let script_candidates = if is_kts {
@@ -262,10 +261,12 @@ mod tests {
     use super::{GradleVersionScope, write_gradle_version};
     use changepacks_utils::test_support;
 
-    /// The build-script READ is the first I/O in the function and the only
-    /// place that attaches the `Failed to read Gradle build file <path>`
-    /// context. Pin it so a missing or unreadable build script stays
-    /// attributable to that file rather than surfacing as a bare `os error`.
+    /// The build-script READ is the first I/O in the function, and it is
+    /// delegated to [`crate::read_gradle_build_file`] — the single helper that
+    /// attaches the `Failed to read Gradle build file <path>` context, shared
+    /// with the finder's manifest read. Pin it so a missing or unreadable
+    /// build script stays attributable to that file rather than surfacing as
+    /// a bare `os error`.
     ///
     /// The fixture points at a build script inside a subdirectory that is
     /// never created, so the read fails on every supported platform without

@@ -124,8 +124,19 @@ pub async fn clear_applied_update_logs(
         } else if remaining == before {
             continue;
         } else {
-            let next_content = remove_applied_change_spans(&content, applied_paths)
-                .with_context(|| format!("Failed to rewrite update log {}", path.display()))?;
+            // Distinct wording from the `write` context below on purpose: this
+            // is the in-memory span-removal transform, so a failure here means
+            // the log's bytes could not be shrunk, not that the disk write
+            // failed. `"Failed to rewrite update log"` belongs to the write
+            // site alone, so the two arms are told apart by message rather
+            // than by downcasting the chain.
+            let next_content =
+                remove_applied_change_spans(&content, applied_paths).with_context(|| {
+                    format!(
+                        "Failed to strip applied changes from update log {}",
+                        path.display()
+                    )
+                })?;
             rewrites.push((path, next_content));
         }
     }
@@ -658,8 +669,11 @@ mod tests {
     /// because a log that silently failed to shrink re-applies the same version
     /// bumps on the next run. Pins that the failure surfaces as an `Err` whose
     /// chain carries the rewrite context, the offending path, and the
-    /// underlying `io::Error` — the `io::Error` link is what distinguishes this
-    /// arm from the same-worded context on the span-removal step above it.
+    /// underlying `io::Error`. The `"Failed to rewrite update log"` wording is
+    /// now the WRITE site's alone — the span-removal step above it reports
+    /// `"Failed to strip applied changes from update log"` — so this test also
+    /// pins that the strip wording is absent, keeping the two arms
+    /// distinguishable by message and not only by the `io::Error` link.
     #[tokio::test]
     async fn clear_applied_update_logs_reports_rewrite_write_failure_with_path() {
         let temp_dir = TempDir::new().unwrap();
@@ -685,6 +699,10 @@ mod tests {
         assert!(
             rendered.contains("Failed to rewrite update log"),
             "error chain must carry the rewrite context message, got {rendered}"
+        );
+        assert!(
+            !rendered.contains("Failed to strip applied changes from update log"),
+            "the write failure must not be worded like the span-removal failure, got {rendered}"
         );
         assert!(
             rendered.contains(&log_file.display().to_string()),
