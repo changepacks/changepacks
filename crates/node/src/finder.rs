@@ -61,6 +61,45 @@ fn add_workspace_dependencies(project: &mut Project, package_json: &serde_json::
     }
 }
 
+/// Decide whether the manifest at `path` describes a Node workspace.
+///
+/// Workspace detection is short-circuited: a valid `workspaces`
+/// array or object in `package.json` (npm / yarn / bun monorepos —
+/// the common case) is enough on its own, so only fall back to a
+/// `pnpm-workspace.yaml` stat when that field is absent. Shared with the Dart finder via
+/// `changepacks_utils::is_workspace_by_sibling` — the one source of
+/// truth for the "declared field OR fixed sibling file" policy
+/// (missing/directory marker → not-a-workspace; other metadata errors
+/// propagate; all file ops via `tokio::fs`).
+///
+/// The absent/valid/invalid triage itself is
+/// `changepacks_utils::ensure_declared_shape`, shared verbatim with the
+/// Dart and Python finders; only the shape predicate stays here because
+/// it is the one part that speaks `serde_json::Value`.
+///
+/// Extracted from `visit` to mirror `detect_dart_workspace` in
+/// `crates/dart/src/finder.rs`, so the workspace triage is a named call site
+/// beside `add_workspace_dependencies` in every `HashMap`-backed finder.
+/// Pure extraction: the `ensure_declared_shape` arguments, the resulting
+/// error message template, and the `is_workspace_by_sibling` call and its
+/// error propagation are unchanged.
+async fn detect_node_workspace(package_json: &serde_json::Value, path: &Path) -> Result<bool> {
+    let has_workspace_declaration = changepacks_utils::ensure_declared_shape(
+        package_json
+            .get("workspaces")
+            .map(|workspaces| workspaces.is_array() || workspaces.is_object()),
+        path,
+        "workspaces",
+        "an array or object",
+    )?;
+    changepacks_utils::is_workspace_by_sibling(
+        has_workspace_declaration,
+        path,
+        "pnpm-workspace.yaml",
+    )
+    .await
+}
+
 #[async_trait]
 impl ProjectFinder for NodeProjectFinder {
     // `projects()` / `projects_mut()` share their byte-identical body with
@@ -106,33 +145,10 @@ impl ProjectFinder for NodeProjectFinder {
             }
             None => PackageManager::Npm,
         };
-        // Workspace detection is short-circuited: a valid `workspaces`
-        // array or object in `package.json` (npm / yarn / bun monorepos —
-        // the common case) is enough on its own, so only fall back to a
-        // `pnpm-workspace.yaml` stat when that field is absent. Shared with the Dart finder via
-        // `changepacks_utils::is_workspace_by_sibling` — the one source of
-        // truth for the "declared field OR fixed sibling file" policy
-        // (missing/directory marker → not-a-workspace; other metadata errors
-        // propagate; all file ops via `tokio::fs`).
-        //
-        // The absent/valid/invalid triage itself is
-        // `changepacks_utils::ensure_declared_shape`, shared verbatim with the
-        // Dart and Python finders; only the shape predicate stays here because
-        // it is the one part that speaks `serde_json::Value`.
-        let has_workspace_declaration = changepacks_utils::ensure_declared_shape(
-            package_json
-                .get("workspaces")
-                .map(|workspaces| workspaces.is_array() || workspaces.is_object()),
-            path,
-            "workspaces",
-            "an array or object",
-        )?;
-        let is_workspace = changepacks_utils::is_workspace_by_sibling(
-            has_workspace_declaration,
-            path,
-            "pnpm-workspace.yaml",
-        )
-        .await?;
+        // Check if this is a workspace (npm / yarn / bun / pnpm monorepo); the
+        // declared-shape triage and the sibling `pnpm-workspace.yaml` fallback
+        // live in the module-private `detect_node_workspace` helper.
+        let is_workspace = detect_node_workspace(&package_json, path).await?;
         let mut project = changepacks_core::discovered_project!(
             is_workspace,
             NodeWorkspace::new_discovered,

@@ -110,6 +110,33 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
+    // A sibling stat that fails for a reason *other* than "not found" must be
+    // propagated, not swallowed back into `Ok(false)` — that is exactly the
+    // `try_exists` shape this function moved away from. Rooting the manifest
+    // *inside* a regular file makes the sibling stat traverse a non-directory,
+    // which Unix reports as `ENOTDIR`. Gated on unix because Windows maps the
+    // same shape to `NotFound`, which `regular_file_metadata` legitimately
+    // normalizes to `Ok(false)`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_sibling_metadata_error_is_propagated() {
+        let temp_dir = TempDir::new().unwrap();
+        let blocker = temp_dir.path().join("blocker");
+        tokio::fs::write(&blocker, "not a directory").await.unwrap();
+        let manifest = blocker.join("package.json");
+
+        let err = is_workspace_by_sibling(false, &manifest, "pnpm-workspace.yaml")
+            .await
+            .expect_err("a non-NotFound sibling stat failure must be propagated");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Failed to read metadata for"),
+            "expected metadata-read context in error, got: {msg}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     // A manifest path with no parent (the empty path) surfaces the
     // "Parent not found" error instead of silently reporting not-a-workspace.
     // Pin the documented message so the branch cannot silently lose its

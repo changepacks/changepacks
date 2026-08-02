@@ -1,14 +1,29 @@
 use changepacks_core::{Language, Project};
 use clap::ValueEnum;
 
+/// The `--language` flag's accepted values, one per [`Language`].
+///
+/// # Declaration order mirrors [`Language`]
+///
+/// clap renders `ValueEnum` values in declaration order, so these variants are
+/// what `--help` lists. [`Language`] documents its own declaration order as a
+/// user-visible sort contract (it is the primary key of `check` grouping and
+/// `publish` listing order), so the two orders are kept identical: `--help`
+/// must not advertise a different language order than the commands print.
+/// `test_cli_language_value_variants_follow_language_order` pins this.
+///
+/// The variant *names* are the source of the accepted flag value strings: clap
+/// kebab-cases them, so `CSharp` is spelled `--language c-sharp` (NOT `csharp`,
+/// which is the unrelated `Language::publish_key` config key). Renaming a
+/// variant is therefore a breaking CLI change.
 #[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CliLanguage {
     Python,
     Node,
     Rust,
     Dart,
-    Java,
     CSharp,
+    Java,
 }
 
 impl From<CliLanguage> for Language {
@@ -18,8 +33,8 @@ impl From<CliLanguage> for Language {
             CliLanguage::Node => Self::Node,
             CliLanguage::Rust => Self::Rust,
             CliLanguage::Dart => Self::Dart,
-            CliLanguage::Java => Self::Java,
             CliLanguage::CSharp => Self::CSharp,
+            CliLanguage::Java => Self::Java,
         }
     }
 }
@@ -78,11 +93,80 @@ mod tests {
     #[case(CliLanguage::Node, Language::Node)]
     #[case(CliLanguage::Rust, Language::Rust)]
     #[case(CliLanguage::Dart, Language::Dart)]
-    #[case(CliLanguage::Java, Language::Java)]
     #[case(CliLanguage::CSharp, Language::CSharp)]
+    #[case(CliLanguage::Java, Language::Java)]
     fn test_cli_language_to_language(#[case] cli_lang: CliLanguage, #[case] expected: Language) {
         let result: Language = cli_lang.into();
         assert_eq!(result, expected);
+    }
+
+    /// Pins the *other* direction of the mapping: every [`Language`] must be
+    /// reachable from some [`CliLanguage`].
+    ///
+    /// `From<CliLanguage> for Language` matches on `CliLanguage`, so adding a
+    /// seventh `Language` variant compiles cleanly while `--language` silently
+    /// cannot select it — and both [`retain_by_language`] and
+    /// `filter_update_map_by_language` would then drop every project of that
+    /// language instead of filtering it. The local exhaustive match below turns
+    /// that silent gap into a compile error (E0004), and the round trip through
+    /// `Language::from` proves the two directions agree rather than merely that
+    /// some arm exists.
+    #[test]
+    fn test_every_language_has_a_cli_language() {
+        const fn cli_language_for(language: Language) -> CliLanguage {
+            // Exhaustive on purpose: do NOT add a `_ =>` arm. A new `Language`
+            // variant must fail to compile here until `CliLanguage` gains a
+            // matching variant.
+            match language {
+                Language::Python => CliLanguage::Python,
+                Language::Node => CliLanguage::Node,
+                Language::Rust => CliLanguage::Rust,
+                Language::Dart => CliLanguage::Dart,
+                Language::CSharp => CliLanguage::CSharp,
+                Language::Java => CliLanguage::Java,
+            }
+        }
+
+        for language in [
+            Language::Python,
+            Language::Node,
+            Language::Rust,
+            Language::Dart,
+            Language::CSharp,
+            Language::Java,
+        ] {
+            assert_eq!(
+                Language::from(cli_language_for(language)),
+                language,
+                "CliLanguage round trip disagrees for {language:?}"
+            );
+        }
+    }
+
+    /// clap lists `ValueEnum` values in declaration order, and [`Language`]'s
+    /// declaration order is the documented sort contract behind `check`
+    /// grouping and `publish` listing. So `--help` must advertise the languages
+    /// in exactly that order: mapping `value_variants` through `Language::from`
+    /// has to come out already sorted (derived `Ord` = declaration order).
+    /// Reordering `CliLanguage` away from `Language` fails here.
+    #[test]
+    fn test_cli_language_value_variants_follow_language_order() {
+        let ordered: Vec<Language> = CliLanguage::value_variants()
+            .iter()
+            .map(|&cli_lang| Language::from(cli_lang))
+            .collect();
+
+        assert_eq!(
+            ordered.len(),
+            6,
+            "a CliLanguage variant was added or removed without updating this test"
+        );
+        assert!(
+            ordered.is_sorted(),
+            "CliLanguage declaration order diverged from Language declaration order, so \
+             --help would list languages in a different order than check/publish print \
+             them: {ordered:?}"
+        );
     }
 
     fn pkg(language: Language) -> Project {
