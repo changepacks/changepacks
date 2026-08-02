@@ -1,8 +1,9 @@
 use crate::properties_version::{PropertyAssignment, property_assignments};
 use crate::read_gradle_build_file;
-use crate::version_lexer::{GradleDialect, candidate_ranges};
+#[cfg(test)]
+use crate::version_lexer::GradleDialect;
+use crate::version_lexer::{candidate_ranges, gradle_dialect_for};
 use anyhow::{Context, Result, bail};
-use changepacks_core::has_extension_ignore_ascii_case;
 #[cfg(test)]
 use std::borrow::Cow;
 use std::io::ErrorKind;
@@ -165,12 +166,7 @@ pub async fn write_gradle_version(
 ) -> Result<()> {
     let content = read_gradle_build_file(path).await?;
 
-    let is_kts = has_extension_ignore_ascii_case(path, "kts");
-    let script_candidates = if is_kts {
-        candidate_ranges(&content, policy, GradleDialect::Kotlin)
-    } else {
-        candidate_ranges(&content, policy, GradleDialect::Groovy)
-    };
+    let script_candidates = candidate_ranges(&content, policy, gradle_dialect_for(path));
     let properties_path = path.with_file_name("gradle.properties");
     let properties_content = match read(&properties_path).await {
         Ok(content) => Some(content),

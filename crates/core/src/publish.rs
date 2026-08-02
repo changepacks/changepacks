@@ -210,27 +210,40 @@ fn build_shell_command(command: &str) -> tokio::process::Command {
 /// itself. Kept generic here; the list of directories is language-specific
 /// and supplied by the caller.
 fn prepend_path_dirs(extra_path_dirs: &[PathBuf]) -> Result<Option<OsString>> {
+    join_path_dirs(extra_path_dirs, std::env::var_os("PATH").as_deref())
+}
+
+/// Pure half of [`prepend_path_dirs`]: join `extra_path_dirs` ahead of the
+/// entries of `existing`, without touching the process environment.
+///
+/// Taking `existing` as a parameter is what makes the `existing == None` case
+/// (a process started with no `PATH` at all) reachable from a test: reading
+/// `std::env::var_os("PATH")` inline made that branch untestable, because every
+/// test runs under an ambient populated `PATH` and clearing it would need
+/// process-global env mutation.
+fn join_path_dirs(
+    extra_path_dirs: &[PathBuf],
+    existing: Option<&OsStr>,
+) -> Result<Option<OsString>> {
     if extra_path_dirs.is_empty() {
         return Ok(None);
     }
     // Stream both sides lazily instead of materializing the process `PATH`
     // into a throwaway `Vec<PathBuf>` spine (commonly 30-60 entries) whose
     // only job was to own the `split_paths` output for the duration of the
-    // borrow. Only `path_var` is bound so the `OsString` outlives the
-    // `split_paths` iterator borrowing it; the entries themselves are
-    // consumed one at a time. The caller-supplied `extra_path_dirs` are
-    // borrowed (`Cow::Borrowed`) so no per-entry `PathBuf::clone` is paid,
-    // while `split_paths` yields owned `PathBuf`s that become `Cow::Owned`
-    // without a copy. `std::env::join_paths` still performs the separator
-    // validation and the joined output stays byte-identical.
-    let path_var = std::env::var_os("PATH");
-    let existing = path_var.as_deref().map(std::env::split_paths);
+    // borrow. The entries are consumed one at a time. The caller-supplied
+    // `extra_path_dirs` are borrowed (`Cow::Borrowed`) so no per-entry
+    // `PathBuf::clone` is paid, while `split_paths` yields owned `PathBuf`s
+    // that become `Cow::Owned` without a copy. `std::env::join_paths` still
+    // performs the separator validation and the joined output stays
+    // byte-identical.
     let path = std::env::join_paths(
         extra_path_dirs
             .iter()
             .map(|dir| Cow::Borrowed(dir.as_os_str()))
             .chain(
                 existing
+                    .map(std::env::split_paths)
                     .into_iter()
                     .flatten()
                     .map(|dir| Cow::<OsStr>::Owned(dir.into_os_string())),
@@ -988,6 +1001,55 @@ mod tests {
             existing.as_slice(),
             "pre-existing PATH entries must follow the injected directories unchanged"
         );
+    }
+
+    #[test]
+    fn test_join_path_dirs_without_existing_path_yields_only_injected_dirs() {
+        // Reachable only because `join_path_dirs` takes `existing` as a
+        // parameter: a process launched with no `PATH` at all must still get a
+        // child `PATH` holding exactly the injected directories, in order, with
+        // no stray empty entry standing in for the absent variable. Every test
+        // runs under a populated ambient `PATH`, so the old
+        // `std::env::var_os("PATH")`-reading body could never take this branch.
+        let (first, second) = if cfg!(target_os = "windows") {
+            (
+                PathBuf::from("C:\\changepacks-path-test-none-a"),
+                PathBuf::from("C:\\changepacks-path-test-none-b"),
+            )
+        } else {
+            (
+                PathBuf::from("/changepacks-path-test-none-a"),
+                PathBuf::from("/changepacks-path-test-none-b"),
+            )
+        };
+
+        let joined = join_path_dirs(&[first.clone(), second.clone()], None)
+            .expect("valid PATH construction")
+            .expect("some PATH");
+        let parsed: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+
+        assert_eq!(parsed, vec![first, second]);
+    }
+
+    #[test]
+    fn test_join_path_dirs_with_empty_existing_path_keeps_its_single_entry() {
+        // An inherited but empty `PATH` is a different input from an absent one:
+        // `split_paths("")` yields one (empty) entry, so the joined value keeps
+        // a trailing empty slot after the injected directories. Pinning this
+        // separately from the `None` case stops a future refactor from
+        // collapsing "unset" and "set but empty" into the same behaviour.
+        let dir = PathBuf::from(if cfg!(target_os = "windows") {
+            "C:\\changepacks-path-test-empty"
+        } else {
+            "/changepacks-path-test-empty"
+        });
+
+        let joined = join_path_dirs(std::slice::from_ref(&dir), Some(OsStr::new("")))
+            .expect("valid PATH construction")
+            .expect("some PATH");
+        let parsed: Vec<PathBuf> = std::env::split_paths(&joined).collect();
+
+        assert_eq!(parsed, vec![dir, PathBuf::new()]);
     }
 
     #[test]

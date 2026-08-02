@@ -11,10 +11,11 @@ use std::{
 use tokio::process::Command;
 
 use crate::{
-    gradle_dependency_lexer::{extract_gradle_project_dependencies, gradle_dependency_dialect},
+    gradle_dependency_lexer::extract_gradle_project_dependencies,
     gradle_metadata::{GradleProperties, GradleWrapperMetadata, get_gradle_metadata},
     package::GradlePackage,
     read_gradle_build_file,
+    version_lexer::gradle_dialect_for,
     workspace::GradleWorkspace,
 };
 
@@ -472,8 +473,7 @@ impl ProjectFinder for GradleProjectFinder {
 
         // Read Gradle build file first (fail fast if unreadable)
         let content = read_gradle_build_file(path).await?;
-        let dependencies =
-            extract_gradle_project_dependencies(&content, gradle_dependency_dialect(path));
+        let dependencies = extract_gradle_project_dependencies(&content, gradle_dialect_for(path));
 
         let (normalized_wrapper_dir, gradlew) = self
             .resolve_wrapper_metadata(path, project_dir, relative_path, java_available)
@@ -578,10 +578,8 @@ mod tests {
         tokio::fs::create_dir_all(&project_dir).await.unwrap();
         let manifest = project_dir.join(manifest_name);
         tokio::fs::write(&manifest, content).await.unwrap();
-        let dependency_paths = super::extract_gradle_project_dependencies(
-            content,
-            gradle_dependency_dialect(&manifest),
-        );
+        let dependency_paths =
+            super::extract_gradle_project_dependencies(content, gradle_dialect_for(&manifest));
         let mut records = vec![metadata_record(&project_dir, ":", "project", false)];
         for (index, dependency_path) in dependency_paths.iter().enumerate() {
             let dependency_dir = project_dir.join(format!("dependency-{index}"));

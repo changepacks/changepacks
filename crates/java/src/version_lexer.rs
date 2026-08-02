@@ -1,6 +1,8 @@
 use crate::version_updater::GradleVersionScope;
+use changepacks_core::has_extension_ignore_ascii_case;
 use regex::Regex;
 use std::ops::Range;
+use std::path::Path;
 use std::sync::LazyLock;
 
 static KTS_SIMPLE_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
@@ -38,6 +40,28 @@ enum BraceScope {
 pub(crate) enum GradleDialect {
     Kotlin,
     Groovy,
+}
+
+/// The Gradle DSL a manifest at `manifest_path` is written in.
+///
+/// Single source of truth for that policy: both Gradle scanners — the
+/// dependency lexer driven from `GradleProjectFinder` and the version writer in
+/// [`crate::version_updater::write_gradle_version`] — resolve their dialect
+/// here, so a manifest can never be read as Kotlin by one and Groovy by the
+/// other.
+///
+/// The rule is the `.kts` extension compared case-insensitively, matching how
+/// every other manifest extension check in the workspace is spelled. It is a
+/// strict superset of the byte-exact `build.gradle.kts` file-name test it
+/// replaces, and `GradleProjectFinder::project_files` only ever admits the exact
+/// names `build.gradle.kts` and `build.gradle`, so no discovered manifest
+/// changes dialect.
+pub(crate) fn gradle_dialect_for(manifest_path: &Path) -> GradleDialect {
+    if has_extension_ignore_ascii_case(manifest_path, "kts") {
+        GradleDialect::Kotlin
+    } else {
+        GradleDialect::Groovy
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -640,12 +664,86 @@ pub(crate) fn candidate_ranges(
 #[cfg(test)]
 mod tests {
     use super::{
-        GROOVY_ASSIGN_PATTERN, GROOVY_SPACE_PATTERN, KTS_FALLBACK_PATTERN, KTS_SIMPLE_PATTERN,
-        SCRIPT_VERSION_DECLARATION_PATTERN, may_declare_version,
+        GROOVY_ASSIGN_PATTERN, GROOVY_SPACE_PATTERN, GradleDialect, KTS_FALLBACK_PATTERN,
+        KTS_SIMPLE_PATTERN, SCRIPT_VERSION_DECLARATION_PATTERN, candidate_ranges,
+        gradle_dialect_for, may_declare_version,
     };
+    use crate::gradle_dependency_lexer::extract_gradle_project_dependencies;
     use crate::version_updater::{
         GradleVersionScope, update_version_in_groovy, update_version_in_kts, write_gradle_version,
     };
+    use std::path::Path;
+
+    /// Nested block comments are Kotlin-only: Groovy closes at the first `*/`,
+    /// so the `project(...)` call is live Groovy code and dead Kotlin comment.
+    const DIALECT_SENSITIVE_DEPENDENCIES: &str = concat!(
+        "dependencies {\n",
+        "    /* outer /* inner */\n",
+        "    implementation(project(\":groovy-only\"))\n",
+        "    */\n",
+        "}\n",
+    );
+
+    /// The `version '...'` space form is Groovy-only; no Kotlin pattern accepts it.
+    const DIALECT_SENSITIVE_VERSION: &str = "version '1.0.0'\n";
+
+    #[test]
+    fn gradle_dialect_for_selects_kotlin_only_for_a_kts_extension() {
+        for name in [
+            "build.gradle.kts",
+            "Build.gradle.KTS",
+            "nested/dir/BUILD.GRADLE.Kts",
+        ] {
+            assert_eq!(
+                gradle_dialect_for(Path::new(name)),
+                GradleDialect::Kotlin,
+                "expected Kotlin for {name:?}"
+            );
+        }
+
+        for name in ["build.gradle", "Build.Gradle", "nested/dir/build.gradle"] {
+            assert_eq!(
+                gradle_dialect_for(Path::new(name)),
+                GradleDialect::Groovy,
+                "expected Groovy for {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dependency_lexer_and_version_writer_agree_on_the_dialect_of_a_manifest_name() {
+        for (name, expected) in [
+            ("build.gradle.kts", GradleDialect::Kotlin),
+            ("Build.gradle.KTS", GradleDialect::Kotlin),
+            ("build.gradle", GradleDialect::Groovy),
+        ] {
+            // Both consumers now read the dialect from the same helper, so the
+            // two scanners cannot disagree about how to read one manifest.
+            let dialect = gradle_dialect_for(Path::new(name));
+            assert_eq!(dialect, expected, "unexpected dialect for {name:?}");
+
+            let is_kotlin = dialect == GradleDialect::Kotlin;
+            let dependencies =
+                extract_gradle_project_dependencies(DIALECT_SENSITIVE_DEPENDENCIES, dialect);
+            let versions = candidate_ranges(
+                DIALECT_SENSITIVE_VERSION,
+                GradleVersionScope::ScriptOnly,
+                dialect,
+            )
+            .editable;
+
+            assert_eq!(
+                dependencies.is_empty(),
+                is_kotlin,
+                "dependency lexer read {name:?} with the wrong dialect"
+            );
+            assert_eq!(
+                versions.is_empty(),
+                is_kotlin,
+                "version writer read {name:?} with the wrong dialect"
+            );
+        }
+    }
 
     /// Lines exercising every declaration form the per-line patterns accept.
     const DECLARATION_LINES: [&str; 10] = [

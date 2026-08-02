@@ -10,8 +10,6 @@
 //! Extracted verbatim from `finder.rs`; the only external type it needs is
 //! [`GradleDialect`].
 
-use std::path::Path;
-
 use crate::version_lexer::GradleDialect;
 
 fn is_gradle_identifier_byte(byte: u8) -> bool {
@@ -473,17 +471,6 @@ enum GradleLiteralScan {
     NotLiteral,
     Complete(usize),
     Unterminated,
-}
-
-pub(crate) fn gradle_dependency_dialect(manifest_path: &Path) -> GradleDialect {
-    if manifest_path
-        .file_name()
-        .is_some_and(|name| name == "build.gradle.kts")
-    {
-        GradleDialect::Kotlin
-    } else {
-        GradleDialect::Groovy
-    }
 }
 
 fn scan_gradle_literal(

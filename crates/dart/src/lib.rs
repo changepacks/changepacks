@@ -126,6 +126,38 @@ mod tests {
         );
     }
 
+    /// The `existing_version == false` branch (`yamlpatch::Op::Add` at the
+    /// document root) runs through the same `write_finalized` tail as the
+    /// replace branch, but only ever had coverage over plain single-newline
+    /// files. Pin the tail here too: a manifest with no `version` key whose
+    /// bytes end in a mixed carriage-return / space suffix must come back with
+    /// that suffix byte-identical, not normalized to `\n`.
+    #[tokio::test]
+    async fn test_write_pubspec_version_add_branch_preserves_complete_trailing_whitespace() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_yaml = temp_dir.path().join("pubspec.yaml");
+        let suffix = " \r\n  \n";
+        fs::write(
+            &pubspec_yaml,
+            format!("name: my_workspace\ndescription: A workspace root.{suffix}"),
+        )
+        .unwrap();
+
+        write_pubspec_version(&pubspec_yaml, "0.1.0", false)
+            .await
+            .unwrap();
+
+        // `yamlpatch` keeps the last content line's own ` \r\n` ending and
+        // appends the new key after it; `write_finalized` then restores the
+        // manifest's complete ` \r\n  \n` suffix at the very end.
+        assert_eq!(
+            fs::read_to_string(&pubspec_yaml).unwrap(),
+            format!(
+                "name: my_workspace\ndescription: A workspace root. \r\nversion: 0.1.0{suffix}"
+            )
+        );
+    }
+
     /// A realistic `pubspec.yaml` exercising every formatting feature the
     /// `yamlpatch` round-trip has to survive: a leading comment, an
     /// interleaved comment, blank lines, a quoted scalar, a nested
