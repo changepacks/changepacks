@@ -1000,8 +1000,15 @@ mod tests {
 
         let error = prepend_path_dirs(&[invalid_dir]).unwrap_err();
 
+        // Match the whole context, not just a `failed to construct PATH`
+        // prefix: the prefix alone still passes if the rest of the message is
+        // reworded or dropped, so it pins that *an* error surfaced rather than
+        // which one. The full literal is what a user actually reads when a
+        // publish run aborts before spawning.
         assert!(
-            error.to_string().contains("failed to construct PATH"),
+            error
+                .to_string()
+                .contains("failed to construct PATH from injected and existing directories"),
             "unexpected error: {error:#}"
         );
     }
@@ -1031,8 +1038,12 @@ mod tests {
         .await;
 
         let error = result.expect_err("invalid PATH entry must fail the publish run");
+        // Assert the full context on the flattened (`{:#}`) chain, so this
+        // pins the exact message `prepend_path_dirs` attaches and not merely
+        // the fact that some error travelled up through the runner.
         assert!(
-            format!("{error:#}").contains("failed to construct PATH"),
+            format!("{error:#}")
+                .contains("failed to construct PATH from injected and existing directories"),
             "unexpected error: {error:#}"
         );
         assert!(

@@ -1132,6 +1132,26 @@ mod tests {
         );
     }
 
+    // The other failing branch of `append_resolved_reference`: the reference IS
+    // numeric, so `resolve_char_ref` owns it, but `D800` is a UTF-16 surrogate
+    // and therefore not a Unicode scalar value, so quick-xml cannot turn it
+    // into a `char`. Without the `.context(...)` on `resolve_char_ref` the
+    // failure would surface as quick-xml's bare escape error with no hint that
+    // a `.csproj` `<Version>` produced it, so the literal context string is the
+    // assertion.
+    #[test]
+    fn test_out_of_range_version_char_ref_returns_contextual_error() {
+        let content =
+            r#"<Project><PropertyGroup><Version>1.0&#xD800;0</Version></PropertyGroup></Project>"#;
+
+        let error = CSharpProjectFinder::parse_csproj_metadata(content).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Failed to resolve .csproj character reference"),
+            "unexpected error: {error:#}"
+        );
+    }
+
     // The GeneralRef arm is scoped to `<Version>`: an unresolvable entity
     // anywhere else in the manifest stays a pass-through, exactly as before,
     // and must neither fail the parse nor leak into the version.

@@ -552,6 +552,56 @@ mod tests {
         );
     }
 
+    /// A two-member object whose FIRST key is plain and whose SECOND key
+    /// spells its separators as `\u002f` escapes.
+    ///
+    /// One fixture covering both encodings is what lets a single parse observe
+    /// each side of the `decode_json_object_key` branch.
+    const MIXED_KEY_ENCODING_OBJECT: &str =
+        r#"{"packages/a/package.json": "Minor", "packages\u002fb\u002fpackage.json": "Patch"}"#;
+
+    #[test]
+    fn parse_json_object_members_borrows_a_plain_key_and_owns_an_escaped_one() {
+        // `decode_json_object_key` documents a zero-allocation contract: a key
+        // body carrying neither a backslash nor a raw control byte is returned
+        // as a slice of the ORIGINAL text, and only a key with an escape to
+        // expand pays for a `serde_json` decode. Behaviour alone cannot see
+        // that difference - a refactor that always allocated would decode both
+        // keys to the same strings and pass every other test - so the `Cow`
+        // variant itself is pinned here, the way `normalize_path_separators`
+        // is pinned in `crates/core/src/publish.rs`.
+        let open = skip_json_whitespace(MIXED_KEY_ENCODING_OBJECT.as_bytes(), 0);
+        let members = parse_json_object_members(MIXED_KEY_ENCODING_OBJECT, open)
+            .expect("a well-formed object must parse");
+        let [plain, escaped] = members.as_slice() else {
+            panic!("expected exactly two members, got {}", members.len());
+        };
+
+        assert!(
+            matches!(plain.key, Cow::Borrowed(_)),
+            "an escape-free key must be borrowed instead of allocated"
+        );
+        assert_eq!(plain.key, "packages/a/package.json");
+        // Borrowed is not enough on its own: the slice has to point at the key
+        // body inside the input, which is the byte range right after the
+        // opening `{"`.
+        assert!(
+            std::ptr::eq(
+                plain.key.as_ref(),
+                &MIXED_KEY_ENCODING_OBJECT[2..2 + plain.key.len()]
+            ),
+            "the borrowed key must alias the original text"
+        );
+
+        assert!(
+            matches!(escaped.key, Cow::Owned(_)),
+            "a key holding an escape must be decoded through serde_json"
+        );
+        // The owned value is the DECODED key, not the raw quoted span, which
+        // is what makes it comparable against a plain filesystem path.
+        assert_eq!(escaped.key, "packages/b/package.json");
+    }
+
     #[test]
     fn remove_applied_change_spans_rejects_non_object_root() {
         assert_eq!(

@@ -173,4 +173,24 @@ mod tests {
                 .contains("Failed to discover git repository")
         );
     }
+
+    // A bare repository IS discovered successfully by `gix::discover`, so it is
+    // the only way to reach the `work_dir()` -> None arm of `new_at`. Every CLI
+    // command routes through this guard, so pin the user-facing message here;
+    // the sibling test above only covers the missing-repository case.
+    #[tokio::test]
+    async fn new_at_rejects_bare_repository() {
+        let directory = TempDir::new().unwrap();
+        run_git(directory.path(), &["init", "--bare", "-b", "main"]);
+
+        let error = CommandContext::new_at(directory.path(), false)
+            .await
+            .err()
+            .expect("a bare repository has no work dir and must fail");
+
+        assert!(
+            error.to_string().contains("Not a git working directory"),
+            "unexpected error context: {error:#}"
+        );
+    }
 }

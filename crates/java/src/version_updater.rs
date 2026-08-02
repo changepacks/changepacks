@@ -262,6 +262,39 @@ mod tests {
     use super::{GradleVersionScope, write_gradle_version};
     use changepacks_utils::test_support;
 
+    /// The build-script READ is the first I/O in the function and the only
+    /// place that attaches the `Failed to read Gradle build file <path>`
+    /// context. Pin it so a missing or unreadable build script stays
+    /// attributable to that file rather than surfacing as a bare `os error`.
+    ///
+    /// The fixture points at a build script inside a subdirectory that is
+    /// never created, so the read fails on every supported platform without
+    /// depending on permission bits.
+    #[tokio::test]
+    async fn test_write_gradle_version_build_file_read_error_names_context_and_path() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let build_path = temp_dir.path().join("missing").join("build.gradle.kts");
+
+        let error = write_gradle_version(&build_path, "2.0.0", GradleVersionScope::ScriptOnly)
+            .await
+            .expect_err("an unreadable Gradle build file must fail the update");
+
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to read Gradle build file {}",
+                build_path.display()
+            )),
+            "error chain should carry the build file read context and path, got: {chain}"
+        );
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.downcast_ref::<std::io::Error>().is_some()),
+            "failure must originate from the read itself, got: {chain}"
+        );
+    }
+
     /// The build-script write-back is the only place that attaches the
     /// `Failed to write Gradle build file <path>` context. Pin it so a
     /// permission failure stays attributable to the build script rather than

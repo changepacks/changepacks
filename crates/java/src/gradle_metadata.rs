@@ -504,6 +504,40 @@ mod tests {
         );
     }
 
+    /// The two guards below reject records that are structurally well formed -
+    /// every field present with the right JSON type - but semantically unusable:
+    /// an empty `projectDir` would canonicalize against the process working
+    /// directory instead of the emitting project, and an unqualified
+    /// `projectPath` would never match the `:`-rooted paths the rest of the
+    /// crate keys on. Each case keeps every other field valid so only the guard
+    /// under test can fire.
+    #[rstest]
+    #[case::empty_project_dir(
+        concat!(
+            r#"{"projectDir":"","projectPath":":module","name":"module","#,
+            r#""version":"1.0.0","aggregate":false,"hasPublishTask":true,"#,
+            r#""hasPublishToMavenLocalTask":true}"#
+        ),
+        "Gradle metadata field 'projectDir' must not be empty"
+    )]
+    #[case::unqualified_project_path(
+        concat!(
+            r#"{"projectDir":"/repo","projectPath":"module","name":"module","#,
+            r#""version":"1.0.0","aggregate":false,"hasPublishTask":true,"#,
+            r#""hasPublishToMavenLocalTask":true}"#
+        ),
+        "Gradle metadata field 'projectPath' must be a qualified Gradle path"
+    )]
+    fn test_parse_gradle_metadata_record_rejects_semantically_invalid_fields(
+        #[case] json: &str,
+        #[case] expected: &str,
+    ) {
+        let error = parse_gradle_metadata_record(json).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains(expected), "{message}");
+    }
+
     /// Every semantic guard in `parse_gradle_metadata_record` is pinned by the
     /// tests above, but the syntactic guard that turns a `serde_json` failure
     /// into `invalid Gradle metadata JSON object` was not. Gradle stdout is the

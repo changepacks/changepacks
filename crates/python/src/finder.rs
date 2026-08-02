@@ -691,6 +691,80 @@ pkg-f = "packages/pkg-f"
     }
 
     #[tokio::test]
+    async fn test_uv_sources_feed_local_graphs_and_ignore_registry_only_names() {
+        // End-to-end counterpart to the Node and Dart finder graph tests: the
+        // per-manifest assertions above only prove which names
+        // `add_uv_source_dependencies` registers, not that the registered set
+        // actually drives publish ordering. Discover two real manifests where
+        // `app` declares one local `[tool.uv.sources]` entry (`core`, a
+        // relative `path`) plus one registry-only entry (`registry-only`,
+        // pinned to a named index), then push both projects through
+        // `sort_by_dependencies`. Inverting the local-source predicate in
+        // `add_uv_source_dependencies` flips the registered set and drops the
+        // `core -> app` edge, so the graph keeps the `[app, core]` input order
+        // and both assertions below fail.
+        use changepacks_utils::sort_by_dependencies;
+
+        let temp_dir = TempDir::new().unwrap();
+        let manifests = [
+            (
+                "core",
+                r#"[project]
+name = "core"
+version = "1.0.0"
+"#,
+            ),
+            (
+                "app",
+                r#"[project]
+name = "app"
+version = "1.0.0"
+dependencies = ["core", "registry-only"]
+
+[tool.uv.sources]
+core = { path = "../core" }
+registry-only = { index = "internal-index" }
+"#,
+            ),
+        ];
+
+        let mut finder = PythonProjectFinder::new();
+        for (directory, contents) in manifests {
+            let path = temp_dir.path().join(directory).join("pyproject.toml");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, contents).unwrap();
+            finder
+                .visit(&path, &PathBuf::from(directory).join("pyproject.toml"))
+                .await
+                .unwrap();
+        }
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 2);
+        let by_name = |name: &str| {
+            *projects
+                .iter()
+                .find(|project| project.name() == Some(name))
+                .unwrap()
+        };
+        let app = by_name("app");
+        let app_deps = app.dependencies();
+        assert_eq!(
+            app_deps.len(),
+            1,
+            "only the local path source must register, got {app_deps:?}"
+        );
+        assert!(app_deps.contains("core"), "missing core in {app_deps:?}");
+
+        let sorted =
+            sort_by_dependencies(vec![app, by_name("core")]).expect("fixture graph is a DAG");
+        assert_eq!(sorted[0].name(), Some("core"));
+        assert_eq!(sorted[1].name(), Some("app"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
     async fn test_python_project_finder_visit_malformed_manifest() {
         // Regression: malformed pyproject.toml must fail with path-aware
         // error context. The error message must include both the manifest
