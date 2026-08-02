@@ -220,17 +220,14 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
     to_process.extend(initial_paths.into_iter().map(|(_, name)| name));
     // `None` seeds every already-scheduled path, so borrow the keys straight out of `update_map`
     // instead of walking a cloned copy of them.
-    let mut reached_paths: HashSet<&Path> = match context.expansion_seeds {
-        Some(seeds) => {
-            let mut reached = HashSet::with_capacity(seeds.len());
-            reached.extend(seeds.iter().map(PathBuf::as_path));
-            reached
-        }
-        None => {
-            let mut reached = HashSet::with_capacity(update_map.len());
-            reached.extend(update_map.keys().map(PathBuf::as_path));
-            reached
-        }
+    let mut reached_paths: HashSet<&Path> = if let Some(seeds) = context.expansion_seeds {
+        let mut reached = HashSet::with_capacity(seeds.len());
+        reached.extend(seeds.iter().map(PathBuf::as_path));
+        reached
+    } else {
+        let mut reached = HashSet::with_capacity(update_map.len());
+        reached.extend(update_map.keys().map(PathBuf::as_path));
+        reached
     };
     let mut head = 0;
     while head < to_process.len() {

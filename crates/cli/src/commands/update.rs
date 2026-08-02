@@ -287,9 +287,9 @@ async fn prepare_update<'a>(
 /// generated updates it removed.
 ///
 /// Prebuild `path_to_language` once so `retain` does O(1) lookups instead
-/// of the previous O(N×M) any() closure that re-computed a `PathBuf` per
+/// of the previous O(N×M) `any()` closure that re-computed a `PathBuf` per
 /// (map entry × project) pair — dropping allocations from `M × N` to
-/// `N` (one PathBuf per project) plus `M` HashMap lookups.
+/// `N` (one `PathBuf` per project) plus `M` `HashMap` lookups.
 ///
 /// Preallocate: `HashMap::from_iter` (via `collect`) does NOT use
 /// `size_hint` to reserve capacity (unlike `Vec`), so on a

@@ -2422,9 +2422,9 @@ version = "0.3.0"
         fs::create_dir_all(&intermediate_dir).unwrap();
         fs::write(
             intermediate_dir.join("Cargo.toml"),
-            r#"[workspace]
+            r"[workspace]
 members = []
-"#,
+",
         )
         .unwrap();
 

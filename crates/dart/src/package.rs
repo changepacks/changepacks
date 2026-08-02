@@ -45,9 +45,9 @@ mod tests {
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_package
+            r"name: test_package
 version: 1.0.0
-"#,
+",
         )
         .unwrap();
 
@@ -107,9 +107,9 @@ version: 1.0.0
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_package
+            r"name: test_package
 version: 1.0.0
-"#,
+",
         )
         .unwrap();
 
@@ -132,12 +132,12 @@ version: 1.0.0
     async fn test_update_version_preserves_formatting() {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        let original_content = r#"name: test_package
+        let original_content = r"name: test_package
 version: 1.0.0
 description: A test package
 dependencies:
   http: ^1.0.0
-"#;
+";
         fs::write(&pubspec_path, original_content).unwrap();
 
         let mut package = DartPackage::new(

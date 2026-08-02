@@ -623,6 +623,7 @@ macro_rules! impl_language {
 /// Public so cross-crate callers (e.g. `changepacks-csharp`,
 /// `changepacks-java`, `changepacks-utils`) can reuse it via the re-export
 /// from `changepacks_core::lib.rs`.
+#[must_use]
 pub fn has_extension_ignore_ascii_case(path: &Path, ext: &str) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
@@ -640,6 +641,10 @@ pub fn has_extension_ignore_ascii_case(path: &Path, ext: &str) -> bool {
 /// match) so the byte-identical stat + `is_file()` fallthrough lives in ONE
 /// place. Public so cross-crate callers (e.g. `changepacks-csharp`) can
 /// reuse it via the re-export from `changepacks_core::lib.rs`.
+///
+/// # Errors
+/// Propagates any [`regular_file_metadata`] error, i.e. a metadata read that
+/// fails for a reason other than the path being absent.
 pub async fn is_regular_file(path: &Path) -> Result<bool> {
     Ok(regular_file_metadata(path).await?.is_some())
 }
@@ -660,6 +665,11 @@ pub async fn is_regular_file(path: &Path) -> Result<bool> {
 /// second stat is both a wasted syscall and a TOCTOU window.
 ///
 /// AGENTS.md rule: never blocking I/O in async — uses `tokio::fs::metadata`.
+///
+/// # Errors
+/// Returns the underlying `io::Error`, annotated with the failing path, when
+/// the metadata read fails for any reason other than
+/// [`std::io::ErrorKind::NotFound`].
 pub async fn regular_file_metadata(path: &Path) -> Result<Option<std::fs::Metadata>> {
     match tokio::fs::metadata(path).await {
         Ok(metadata) if metadata.is_file() => Ok(Some(metadata)),
@@ -833,7 +843,7 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// finder invocation. Reversing the order collapses that to ~K stats
     /// total. Missing/non-UTF-8 file names cannot possibly match ASCII
     /// manifest names anyway, so returning `Ok(false)` early is
-    /// semantically identical to the previous with_context error paths
+    /// semantically identical to the previous `with_context` error paths
     /// — which were unreachable for git-index-derived paths.
     ///
     /// # Errors

@@ -596,7 +596,7 @@ async fn test_cli_changepacks_with_yes_and_message() {
     let changepacks_dir = temp_path.join(".changepacks");
     let entries: Vec<_> = std::fs::read_dir(&changepacks_dir)
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             e.file_name()
                 .to_string_lossy()
@@ -659,7 +659,7 @@ async fn test_cli_changepacks_creates_missing_changepacks_dir() {
     let changepacks_dir = temp_path.join(".changepacks");
     let entries: Vec<_> = std::fs::read_dir(&changepacks_dir)
         .unwrap()
-        .filter_map(|e| e.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|e| {
             e.file_name()
                 .to_string_lossy()
@@ -713,7 +713,7 @@ async fn test_cli_changepacks_empty_notes() {
         "changepacks".to_string(),
         "--yes".to_string(),
         "-m".to_string(),
-        "".to_string(),
+        String::new(),
         "--update-type".to_string(),
         "patch".to_string(),
     ];
@@ -1010,8 +1010,7 @@ async fn test_cli_update_language_filter_json_clears_logs() {
         .unwrap();
     assert!(
         cargo_content.contains("version = \"1.0.1\""),
-        "Cargo.toml version should be bumped to 1.0.1, got: {}",
-        cargo_content
+        "Cargo.toml version should be bumped to 1.0.1, got: {cargo_content}"
     );
 }
 
@@ -1091,8 +1090,7 @@ version.workspace = true
         .unwrap();
     assert!(
         cargo_content.contains("version = \"2.5.1\""),
-        "workspace root version should be bumped to 2.5.1, got: {}",
-        cargo_content
+        "workspace root version should be bumped to 2.5.1, got: {cargo_content}"
     );
 }
 
@@ -1164,8 +1162,7 @@ version.workspace = true
         .unwrap();
     assert!(
         cargo_content.contains("version = \"2.5.0\""),
-        "workspace root version must stay 2.5.0 when node filter excludes it, got: {}",
-        cargo_content
+        "workspace root version must stay 2.5.0 when node filter excludes it, got: {cargo_content}"
     );
 }
 
@@ -2966,7 +2963,7 @@ async fn test_cli_language_e2e_dart_publish_uses_override() {
 #[tokio::test]
 #[serial]
 async fn test_cli_language_e2e_rust_update_preserves_manifest_formatting() {
-    const BEFORE: &str = r##"# Keep this crate comment.
+    const BEFORE: &str = r#"# Keep this crate comment.
 [package]
 name = "rust-e2e"
 version   =    "1.2.3"  # pinned by release tooling
@@ -2975,8 +2972,8 @@ edition = "2024"
 
 [lib]
 path = "src/lib.rs"
-"##;
-    const AFTER: &str = r##"# Keep this crate comment.
+"#;
+    const AFTER: &str = r#"# Keep this crate comment.
 [package]
 name = "rust-e2e"
 version   =    "1.2.4"  # pinned by release tooling
@@ -2985,7 +2982,7 @@ edition = "2024"
 
 [lib]
 path = "src/lib.rs"
-"##;
+"#;
 
     // Given: a Rust manifest and a patch changepack targeting it.
     let temp_dir = setup_repo_canonical(&[

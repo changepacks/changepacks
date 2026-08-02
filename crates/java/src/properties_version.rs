@@ -243,7 +243,7 @@ mod tests {
                 .to_string()
                 .contains("Ambiguous active version assignments")
         );
-        assert!(error.to_string().contains("2"));
+        assert!(error.to_string().contains('2'));
         assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
         assert_eq!(
             tokio::fs::read(&properties_path).await.unwrap(),

@@ -564,7 +564,7 @@ mod tests {
         {
             let mut map = BTreeMap::new();
             map.insert(temp_path.join("package"), UpdateType::Patch);
-            let changepack_log = ChangePackLog::new(map, "".to_string());
+            let changepack_log = ChangePackLog::new(map, String::new());
 
             fs::write(
                 changepacks_dir.join("changepack_log_1.json"),
@@ -573,18 +573,18 @@ mod tests {
             .await
             .unwrap();
             let update_map = gen_update_map(&changepacks_dir, &config).await.unwrap();
-            assert!(update_map.len() == 1);
+            assert_eq!(update_map.len(), 1);
             assert!(update_map.contains_key(&temp_path.join("package")));
-            assert!(update_map[&temp_path.join("package")].0 == UpdateType::Patch);
+            assert_eq!(update_map[&temp_path.join("package")].0, UpdateType::Patch);
         }
 
         {
             let update_map = gen_update_map(&changepacks_dir, &config).await.unwrap();
-            assert!(update_map.len() == 1);
+            assert_eq!(update_map.len(), 1);
 
             let mut map = BTreeMap::new();
             map.insert(temp_path.join("package"), UpdateType::Minor);
-            let changepack_log = ChangePackLog::new(map, "".to_string());
+            let changepack_log = ChangePackLog::new(map, String::new());
 
             fs::write(
                 changepacks_dir.join("changepack_log_2.json"),
@@ -593,15 +593,15 @@ mod tests {
             .await
             .unwrap();
             let update_map = gen_update_map(&changepacks_dir, &config).await.unwrap();
-            assert!(update_map.len() == 1);
+            assert_eq!(update_map.len(), 1);
             assert!(update_map.contains_key(&temp_path.join("package")));
             // overwrite the previous update type
-            assert!(update_map[&temp_path.join("package")].0 == UpdateType::Minor);
+            assert_eq!(update_map[&temp_path.join("package")].0, UpdateType::Minor);
         }
         {
             let mut map = BTreeMap::new();
             map.insert(temp_path.join("package2"), UpdateType::Major);
-            let changepack_log = ChangePackLog::new(map, "".to_string());
+            let changepack_log = ChangePackLog::new(map, String::new());
 
             fs::write(
                 changepacks_dir.join("changepack_log_3.json"),
@@ -610,14 +610,14 @@ mod tests {
             .await
             .unwrap();
             let update_map = gen_update_map(&changepacks_dir, &config).await.unwrap();
-            assert!(update_map.len() == 2);
+            assert_eq!(update_map.len(), 2);
             assert!(update_map.contains_key(&temp_path.join("package2")));
-            assert!(update_map[&temp_path.join("package2")].0 == UpdateType::Major);
+            assert_eq!(update_map[&temp_path.join("package2")].0, UpdateType::Major);
         }
         {
             let mut map = BTreeMap::new();
             map.insert(temp_path.join("package2"), UpdateType::Patch);
-            let changepack_log = ChangePackLog::new(map, "".to_string());
+            let changepack_log = ChangePackLog::new(map, String::new());
 
             fs::write(
                 changepacks_dir.join("changepack_log_4.json"),
@@ -626,10 +626,10 @@ mod tests {
             .await
             .unwrap();
             let update_map = gen_update_map(&changepacks_dir, &config).await.unwrap();
-            assert!(update_map.len() == 2);
+            assert_eq!(update_map.len(), 2);
             assert!(update_map.contains_key(&temp_path.join("package2")));
             // remain
-            assert!(update_map[&temp_path.join("package2")].0 == UpdateType::Major);
+            assert_eq!(update_map[&temp_path.join("package2")].0, UpdateType::Major);
         }
         temp_dir.close().unwrap();
     }

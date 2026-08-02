@@ -205,7 +205,7 @@ pub(crate) fn sync_path_dependency_version(
 pub(crate) fn is_workspace_marker(item: &toml_edit::Item) -> bool {
     item.as_table_like()
         .and_then(|t| t.get("workspace"))
-        .and_then(|w| w.as_bool())
+        .and_then(toml_edit::Item::as_bool)
         .unwrap_or(false)
 }
 

@@ -146,7 +146,7 @@ macro_rules! impl_mock_project_accessors {
 /// - An inherent impl with four constructors: `new`, `with_paths`, `same_path`, `with_language`
 ///
 /// The only parameterization is the type name and the default manifest path literal
-/// (e.g., `/test/Cargo.toml` for MockPackage, `/test/package.json` for MockWorkspace).
+/// (e.g., `/test/Cargo.toml` for `MockPackage`, `/test/package.json` for `MockWorkspace`).
 macro_rules! define_mock {
     ($type_name:ident, $default_path:expr, $default_relative:expr) => {
         #[derive(Debug)]
@@ -222,6 +222,7 @@ macro_rules! define_mock {
             }
 
             /// Builder override for the mock's language.
+            #[must_use]
             pub fn with_language(mut self, language: Language) -> Self {
                 self.language = language;
                 self

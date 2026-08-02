@@ -143,9 +143,12 @@ mod tests {
             json.get("name").and_then(|v| v.as_str()),
             Some("test-package")
         );
-        assert_eq!(json.get("changed").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(
-            json.get("logs").and_then(|v| v.as_array()).map(|a| a.len()),
+            json.get("changed").and_then(serde_json::Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            json.get("logs").and_then(|v| v.as_array()).map(Vec::len),
             Some(1)
         );
 
@@ -189,9 +192,12 @@ mod tests {
             json.get("name").and_then(|v| v.as_str()),
             Some("test-package-2")
         );
-        assert_eq!(json.get("changed").and_then(|v| v.as_bool()), Some(false));
         assert_eq!(
-            json.get("logs").and_then(|v| v.as_array()).map(|a| a.len()),
+            json.get("changed").and_then(serde_json::Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            json.get("logs").and_then(|v| v.as_array()).map(Vec::len),
             Some(0)
         );
 
@@ -265,10 +271,7 @@ mod tests {
             Some("1.1.0")
         );
         assert_eq!(
-            json1
-                .get("logs")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
+            json1.get("logs").and_then(|v| v.as_array()).map(Vec::len),
             Some(1)
         );
 
@@ -277,10 +280,7 @@ mod tests {
         assert_eq!(json2.get("version").and_then(|v| v.as_str()), Some("2.0.0"));
         assert!(json2.get("nextVersion").is_none() || json2.get("nextVersion").unwrap().is_null());
         assert_eq!(
-            json2
-                .get("logs")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
+            json2.get("logs").and_then(|v| v.as_array()).map(Vec::len),
             Some(0)
         );
 
@@ -463,7 +463,7 @@ mod tests {
         let change_result = result.get(&PathBuf::from("project5/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
         assert_eq!(
-            json.get("logs").and_then(|v| v.as_array()).map(|a| a.len()),
+            json.get("logs").and_then(|v| v.as_array()).map(Vec::len),
             Some(3)
         );
 

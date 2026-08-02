@@ -287,6 +287,11 @@ fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], in_degree: &[usiz
 /// Sort projects by their dependencies using topological sort.
 /// Projects with no dependencies or whose dependencies are already published will come first.
 /// Returns project references in dependency order, or deterministic cycle/ambiguity details.
+///
+/// # Errors
+/// Returns [`DependencySortError`] when the dependency graph cannot be ordered:
+/// a dependency cycle, or a dependency name that resolves to more than one
+/// project in the workspace.
 pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, DependencySortError> {
     if projects.is_empty() {
         return Ok(projects);

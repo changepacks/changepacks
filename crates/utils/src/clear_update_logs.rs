@@ -119,11 +119,13 @@ pub async fn clear_applied_update_logs(
             .keys()
             .filter(|change_path| !applied_paths.contains(Path::new(change_path.as_str())))
             .count();
+        // `remaining == before` means none of this log's changes were applied,
+        // so it takes neither arm below and is left byte-for-byte untouched.
+        // `remaining <= before` always holds because `remaining` counts a subset
+        // of the same keys, so `remaining < before` is exactly the straddling case.
         if remaining == 0 {
             removals.push(path);
-        } else if remaining == before {
-            continue;
-        } else {
+        } else if remaining < before {
             // Distinct wording from the `write` context below on purpose: this
             // is the in-memory span-removal transform, so a failure here means
             // the log's bytes could not be shrunk, not that the disk write
@@ -961,9 +963,7 @@ mod tests {
         let date_pos = content.find("\"date\"").expect("\"date\" key should exist");
         assert!(
             note_pos < date_pos,
-            "key order not preserved: \"note\" at {} should come before \"date\" at {}",
-            note_pos,
-            date_pos
+            "key order not preserved: \"note\" at {note_pos} should come before \"date\" at {date_pos}"
         );
     }
 

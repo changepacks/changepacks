@@ -182,10 +182,7 @@ fn string_interpolates(dialect: GradleDialect, kind: StringKind) -> bool {
             StringKind::Quoted { quote: b'"', .. }
         ) | (
             GradleDialect::Groovy,
-            StringKind::Quoted { quote: b'"', .. }
-        ) | (
-            GradleDialect::Groovy,
-            StringKind::Slashy | StringKind::DollarSlashy
+            StringKind::Quoted { quote: b'"', .. } | StringKind::Slashy | StringKind::DollarSlashy
         )
     )
 }
@@ -424,11 +421,11 @@ pub(crate) fn candidate_ranges(
                     index += 1;
                 }
                 b'/' if dialect == GradleDialect::Groovy => {
-                    if previous_token(&contexts) != PreviousToken::ExpressionEnd {
+                    if previous_token(&contexts) == PreviousToken::ExpressionEnd {
+                        set_previous_token(&mut contexts, PreviousToken::ExpressionStart);
+                    } else {
                         set_previous_token(&mut contexts, PreviousToken::ExpressionEnd);
                         contexts.push(LexContext::String(StringKind::Slashy));
-                    } else {
-                        set_previous_token(&mut contexts, PreviousToken::ExpressionStart);
                     }
                     if kind == CodeKind::Script {
                         pending_allprojects = false;
@@ -824,10 +821,10 @@ version = project.findProperty("releaseVersion") ?: "1.0.11"
 
     #[test]
     fn test_update_version_in_groovy_assign() {
-        let content = r#"
+        let content = r"
 group = 'com.example'
 version = '2.0.0'
-"#;
+";
         let updated =
             update_version_in_groovy(content, "2.0.1", GradleVersionScope::ScriptOnly).unwrap();
         assert!(updated.contains("version = '2.0.1'"));
@@ -835,10 +832,10 @@ version = '2.0.0'
 
     #[test]
     fn test_update_version_in_groovy_space() {
-        let content = r#"
+        let content = r"
 group = 'com.example'
 version '3.0.0'
-"#;
+";
         let updated =
             update_version_in_groovy(content, "3.0.1", GradleVersionScope::ScriptOnly).unwrap();
         assert!(updated.contains("version '3.0.1'"));
@@ -868,9 +865,9 @@ version "3.0.0"
 
     #[test]
     fn test_update_version_in_groovy_assign_preserves_indentation() {
-        let content = r#"
+        let content = r"
     version = '1.0.0'
-"#;
+";
         let updated =
             update_version_in_groovy(content, "1.0.1", GradleVersionScope::ScriptOnly).unwrap();
         assert!(updated.contains("    version = '1.0.1'"));
@@ -1223,13 +1220,13 @@ group = "com.example"
 
     #[test]
     fn test_update_version_in_groovy_no_match() {
-        let content = r#"
+        let content = r"
 plugins {
     id 'java'
 }
 
 group = 'com.example'
-"#;
+";
         let error =
             update_version_in_groovy(content, "2.0.0", GradleVersionScope::ScriptOnly).unwrap_err();
         assert!(error.to_string().contains("No supported"));
@@ -1258,7 +1255,7 @@ group = 'com.example'
                 .unwrap_err();
 
         assert!(error.to_string().contains("Ambiguous"));
-        assert!(error.to_string().contains("2"));
+        assert!(error.to_string().contains('2'));
     }
 
     #[tokio::test]
@@ -1405,7 +1402,7 @@ group = "com.example"
             .unwrap_err();
 
         assert!(error.to_string().contains("Ambiguous"));
-        assert!(error.to_string().contains("2"));
+        assert!(error.to_string().contains('2'));
         assert_eq!(tokio::fs::read(&build_path).await.unwrap(), build_content);
         assert_eq!(
             tokio::fs::read(&properties_path).await.unwrap(),

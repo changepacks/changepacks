@@ -407,14 +407,14 @@ version = "1.0.0"
         let build_gradle = project_dir.join("build.gradle");
         fs::write(
             &build_gradle,
-            r#"
+            r"
 plugins {
     id 'java'
 }
 
 group = 'com.example'
 version = '1.0.0'
-"#,
+",
         )
         .unwrap();
 

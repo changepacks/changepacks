@@ -601,14 +601,15 @@ async fn resolve_from_ancestors(
 ) -> Result<PackageManager> {
     for dir in start.ancestors().take(max_depth) {
         let decisive = match cache.as_deref_mut() {
-            Some(cache) => match cache.get(dir).copied() {
-                Some(decisive) => decisive,
-                None => {
+            Some(cache) => {
+                if let Some(decisive) = cache.get(dir).copied() {
+                    decisive
+                } else {
                     let decisive = probe_decisive_package_manager(dir).await?;
                     cache.insert(dir.to_path_buf(), decisive);
                     decisive
                 }
-            },
+            }
             None => probe_decisive_package_manager(dir).await?,
         };
         if let Some(pm) = decisive {
@@ -1051,8 +1052,8 @@ mod tests {
     }
 
     /// Regression: a non-object root in `package.json` must fail with an error
-    /// that names the manifest path, rather than panicking via serde_json's
-    /// IndexMut. A `[]` root is valid JSON but degenerate — the error must
+    /// that names the manifest path, rather than panicking via `serde_json`'s
+    /// `IndexMut`. A `[]` root is valid JSON but degenerate — the error must
     /// clearly indicate the problem and include the file path.
     #[tokio::test]
     async fn test_write_package_json_version_errors_on_non_object_root() {

@@ -718,12 +718,11 @@ mod tests {
         let mut task = tokio::spawn(async move { run_publish_command(&command, &task_dir).await });
         tokio::task::yield_now().await;
         let started_written = wait_for_file(&started, Duration::from_secs(5)).await;
-        if !started_written && task.is_finished() {
-            panic!(
-                "shell command finished before readiness: {:?}",
-                (&mut task).await
-            );
-        }
+        assert!(
+            started_written || !task.is_finished(),
+            "shell command finished before readiness: {:?}",
+            (&mut task).await
+        );
         assert!(started_written, "shell child never wrote its start marker");
 
         task.abort();
@@ -1187,12 +1186,11 @@ mod tests {
         });
         tokio::task::yield_now().await;
         let started_written = wait_for_file(&started, Duration::from_secs(5)).await;
-        if !started_written && task.is_finished() {
-            panic!(
-                "argv command finished before readiness: {:?}",
-                (&mut task).await
-            );
-        }
+        assert!(
+            started_written || !task.is_finished(),
+            "argv command finished before readiness: {:?}",
+            (&mut task).await
+        );
         assert!(started_written, "argv child never wrote its start marker");
 
         task.abort();

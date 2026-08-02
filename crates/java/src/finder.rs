@@ -78,23 +78,23 @@ impl GradleProjectFinder {
             .with_context(|| gradlew_not_found(manifest_path))?;
         // Sibling subprojects all report the same `gradlew_dir`, so canonicalize
         // it once per wrapper root instead of once per manifest.
-        let normalized_wrapper_dir = match self.wrapper_dir_canonical.get(&gradlew_dir) {
-            Some(cached) => cached.clone(),
-            None => {
-                let normalized =
-                    tokio::fs::canonicalize(&gradlew_dir)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "Failed to normalize Gradle wrapper root '{}' for '{}'",
-                                gradlew_dir.display(),
-                                manifest_path.display()
-                            )
-                        })?;
-                self.wrapper_dir_canonical
-                    .insert(gradlew_dir.clone(), normalized.clone());
-                normalized
-            }
+        let normalized_wrapper_dir = if let Some(cached) =
+            self.wrapper_dir_canonical.get(&gradlew_dir)
+        {
+            cached.clone()
+        } else {
+            let normalized = tokio::fs::canonicalize(&gradlew_dir)
+                .await
+                .with_context(|| {
+                    format!(
+                        "Failed to normalize Gradle wrapper root '{}' for '{}'",
+                        gradlew_dir.display(),
+                        manifest_path.display()
+                    )
+                })?;
+            self.wrapper_dir_canonical
+                .insert(gradlew_dir.clone(), normalized.clone());
+            normalized
         };
 
         if !self
@@ -370,7 +370,7 @@ fn gradle_subproject_path(relative: &Path) -> Result<String> {
     Ok(path)
 }
 
-/// Returns true when a Java runtime is available via JAVA_HOME or PATH.
+/// Returns true when a Java runtime is available via `JAVA_HOME` or PATH.
 async fn java_is_available() -> Result<bool> {
     let java_home = std::env::var_os("JAVA_HOME");
     if java_home_has_java(java_home.as_deref()).await? {
@@ -462,13 +462,12 @@ impl ProjectFinder for GradleProjectFinder {
 
         let project_dir = manifest_parent_dir(path)?;
 
-        let java_available = match self.java_available {
-            Some(value) => value,
-            None => {
-                let value = java_is_available().await?;
-                self.java_available = Some(value);
-                value
-            }
+        let java_available = if let Some(value) = self.java_available {
+            value
+        } else {
+            let value = java_is_available().await?;
+            self.java_available = Some(value);
+            value
         };
 
         // Read Gradle build file first (fail fast if unreadable)
@@ -729,7 +728,7 @@ mod tests {
     /// Text the failing wrapper writes to its stderr. Asserting on this exact
     /// marker is what proves the `; stderr: ...` suffix of the metadata-failure
     /// message carries the WRAPPER's own diagnostics, rather than some
-    /// incidental text that would also satisfy a bare "is_err" check.
+    /// incidental text that would also satisfy a bare "`is_err`" check.
     const FAILING_GRADLEW_STDERR_MARKER: &str = "changepacks-gradle-failure-marker";
 
     /// Create a wrapper that runs successfully but exits non-zero after writing
@@ -847,10 +846,12 @@ mod tests {
 
     async fn create_metadata_gradlew(dir: &Path, records: &[String]) {
         if cfg!(windows) {
-            let output = records
-                .iter()
-                .map(|record| format!("echo {record}\r\n"))
-                .collect::<String>();
+            let mut output = String::new();
+            for record in records {
+                output.push_str("echo ");
+                output.push_str(record);
+                output.push_str("\r\n");
+            }
             tokio::fs::write(
                 dir.join("gradlew.bat"),
                 format!("@echo off\r\n{output}exit /b 0\r\n"),
@@ -858,10 +859,12 @@ mod tests {
             .await
             .unwrap();
         } else {
-            let output = records
-                .iter()
-                .map(|record| format!("printf '%s\\n' '{record}'\n"))
-                .collect::<String>();
+            let mut output = String::new();
+            for record in records {
+                output.push_str("printf '%s\\n' '");
+                output.push_str(record);
+                output.push_str("'\n");
+            }
             let gradlew = dir.join("gradlew");
             tokio::fs::write(&gradlew, format!("#!/bin/sh\n{output}"))
                 .await
@@ -1433,7 +1436,7 @@ version = "1.0.0"
                 assert_eq!(pkg.name(), Some("myproject"));
                 assert_eq!(pkg.version(), Some("1.0.0"));
             }
-            _ => panic!("Expected Package"),
+            Project::Workspace(_) => panic!("Expected Package"),
         }
 
         temp_dir.close().unwrap();
@@ -1448,14 +1451,14 @@ version = "1.0.0"
         let build_gradle = project_dir.join("build.gradle");
         fs::write(
             &build_gradle,
-            r#"
+            r"
 plugins {
     id 'java'
 }
 
 group = 'com.example'
 version = '2.0.0'
-"#,
+",
         )
         .unwrap();
 
@@ -1474,7 +1477,7 @@ version = '2.0.0'
                 assert_eq!(pkg.name(), Some("groovyproject"));
                 assert_eq!(pkg.version(), Some("2.0.0"));
             }
-            _ => panic!("Expected Package"),
+            Project::Workspace(_) => panic!("Expected Package"),
         }
 
         temp_dir.close().unwrap();
@@ -1526,7 +1529,7 @@ version = "1.0.0"
                 assert_eq!(ws.name(), Some("multiproject"));
                 assert_eq!(ws.version(), Some("1.0.0"));
             }
-            _ => panic!("Expected Workspace"),
+            Project::Package(_) => panic!("Expected Workspace"),
         }
 
         temp_dir.close().unwrap();
@@ -1562,7 +1565,7 @@ version = "1.0.0"
         assert_eq!(projects.len(), 1);
         match projects[0] {
             Project::Package(_) => {} // correct: subprojects: [] → Package
-            _ => panic!("Expected Package, not Workspace"),
+            Project::Workspace(_) => panic!("Expected Package, not Workspace"),
         }
 
         temp_dir.close().unwrap();
@@ -1592,7 +1595,7 @@ version = "1.0.0"
             Project::Package(pkg) => {
                 assert_eq!(pkg.name(), Some("standalone"));
             }
-            _ => panic!("Expected Package, not Workspace"),
+            Project::Workspace(_) => panic!("Expected Package, not Workspace"),
         }
 
         temp_dir.close().unwrap();
@@ -2355,7 +2358,7 @@ def second = 20 / 4
                 assert_eq!(pkg.name(), Some("my-fallback-project"));
                 assert_eq!(pkg.version(), Some("1.0.0"));
             }
-            _ => panic!("Expected Package"),
+            Project::Workspace(_) => panic!("Expected Package"),
         }
 
         temp_dir.close().unwrap();

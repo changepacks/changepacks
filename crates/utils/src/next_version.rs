@@ -10,26 +10,23 @@ fn invalid_version(v: &str) -> anyhow::Error {
 }
 
 fn push_incremented_decimal(result: &mut String, component: &str) {
-    match component
+    if let Some(index) = component
         .as_bytes()
         .iter()
         .rposition(|digit| *digit != b'9')
     {
-        Some(index) => {
-            result.push_str(&component[..index]);
-            result.push(char::from(component.as_bytes()[index] + 1));
-            result.extend(std::iter::repeat_n('0', component.len() - index - 1));
-        }
-        None => {
-            result.push('1');
-            result.extend(std::iter::repeat_n('0', component.len()));
-        }
+        result.push_str(&component[..index]);
+        result.push(char::from(component.as_bytes()[index] + 1));
+        result.extend(std::iter::repeat_n('0', component.len() - index - 1));
+    } else {
+        result.push('1');
+        result.extend(std::iter::repeat_n('0', component.len()));
     }
 }
 
 /// Compute the next version with the shared "reserve `0.0.0` when
 /// unversioned" fallback used by every language crate's
-/// `update_version_from_fields` helper (Node, Python, Dart, CSharp).
+/// `update_version_from_fields` helper (Node, Python, Dart, `CSharp`).
 ///
 /// Thin wrapper over [`next_version`] that folds the previously duplicated
 /// two-line prelude

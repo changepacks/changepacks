@@ -130,9 +130,11 @@ fn write_line_break_and_indent<W: std::io::Write>(
 ///
 /// The callers that open a `PropertyGroup` all need the same
 /// `group_indent + indent` column for the `<Version>` they are about to write.
-/// The empty-`line_ending` check is repeated here rather than left to
-/// [`write_line_break_and_indent`] so the concatenation is skipped entirely for
-/// a document that must stay on one line.
+/// The two indent segments are emitted as two consecutive text events, which is
+/// byte-identical to emitting their concatenation. The empty-`line_ending`
+/// check is repeated here rather than left to [`write_line_break_and_indent`]
+/// so the deeper `indent` is suppressed too for a document that must stay on
+/// one line.
 fn write_nested_line_break_and_indent<W: std::io::Write>(
     writer: &mut Writer<W>,
     line_ending: &str,
@@ -142,8 +144,9 @@ fn write_nested_line_break_and_indent<W: std::io::Write>(
     if line_ending.is_empty() {
         return Ok(());
     }
-    let inner_indent = format!("{group_indent}{indent}");
-    write_line_break_and_indent(writer, line_ending, &inner_indent)
+    write_line_break_and_indent(writer, line_ending, group_indent)?;
+    writer.write_event(Event::Text(BytesText::new(indent)))?;
+    Ok(())
 }
 
 /// Insert a synthesized `<Version>` immediately before the `</PropertyGroup>`
@@ -937,7 +940,7 @@ mod tests {
 
     #[test]
     fn test_update_version_malformed_xml() {
-        let content = r#"<Project><PropertyGroup><Version>1.0.0</Version></PropertyGroup"#;
+        let content = r"<Project><PropertyGroup><Version>1.0.0</Version></PropertyGroup";
         let result = update_version_in_xml(content, "2.0.0");
         assert!(result.is_err());
         assert!(
@@ -956,7 +959,7 @@ mod tests {
         // attribute` error rather than a bare `AttrError`, mirroring the
         // `ProjectReference` counterpart pinned in `finder.rs`.
         let content =
-            r#"<Project><PropertyGroup Broken><Version>1.0.0</Version></PropertyGroup></Project>"#;
+            r"<Project><PropertyGroup Broken><Version>1.0.0</Version></PropertyGroup></Project>";
 
         let error = update_version_in_xml(content, "2.0.0").unwrap_err();
 
@@ -970,7 +973,7 @@ mod tests {
     fn test_update_version_preserves_general_ref() {
         // XML with entity references like &custom; triggers Event::GeneralRef in quick-xml,
         // exercising the GeneralRef handler (lines 78-79)
-        let content = r#"<Project><PropertyGroup><Description>Hello &custom; World</Description><Version>1.0.0</Version></PropertyGroup></Project>"#;
+        let content = r"<Project><PropertyGroup><Description>Hello &custom; World</Description><Version>1.0.0</Version></PropertyGroup></Project>";
         let result = update_version_in_xml(content, "2.0.0");
         if let Ok(output) = result {
             assert!(output.contains("2.0.0"));

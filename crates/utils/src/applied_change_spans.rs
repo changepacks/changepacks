@@ -588,7 +588,7 @@ mod tests {
         assert!(
             std::ptr::eq(
                 plain.key.as_ref(),
-                &MIXED_KEY_ENCODING_OBJECT[2..2 + plain.key.len()]
+                &raw const MIXED_KEY_ENCODING_OBJECT[2..2 + plain.key.len()]
             ),
             "the borrowed key must alias the original text"
         );

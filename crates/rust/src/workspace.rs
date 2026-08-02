@@ -127,7 +127,7 @@ impl RustWorkspace {
     /// structural rather than a hand-maintained inner block: the guard cannot
     /// outlive this synchronous, non-`async` helper, so it is always dropped
     /// before the caller reaches its `.await` and the caller's future stays
-    /// `Send` for the N-API and PyO3 bridges.
+    /// `Send` for the N-API and `PyO3` bridges.
     ///
     /// `old_version` is passed in rather than re-derived so the "reserve
     /// 0.0.0 when unversioned" fallback stays expressed exactly ONCE, in
@@ -1332,7 +1332,7 @@ members = ["crates/*"]
             "virtual workspace should not get a [package] section: {content}"
         );
         assert!(
-            !content.contains("_"),
+            !content.contains('_'),
             "virtual workspace should not get a placeholder name: {content}"
         );
 

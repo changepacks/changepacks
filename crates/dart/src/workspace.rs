@@ -62,12 +62,12 @@ mod tests {
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_workspace
+            r"name: test_workspace
 version: 1.0.0
 workspace:
   packages:
     - packages/*
-"#,
+",
         )
         .unwrap();
 
@@ -113,10 +113,10 @@ workspace:
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"workspace:
+            r"workspace:
   packages:
     - packages/*
-"#,
+",
         )
         .unwrap();
 
@@ -158,12 +158,12 @@ workspace:
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_workspace
+            r"name: test_workspace
 version: 1.0.0
 workspace:
   packages:
     - packages/*
-"#,
+",
         )
         .unwrap();
 
@@ -188,11 +188,11 @@ workspace:
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_workspace
+            r"name: test_workspace
 workspace:
   packages:
     - packages/*
-"#,
+",
         )
         .unwrap();
 

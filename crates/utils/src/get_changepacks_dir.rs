@@ -139,7 +139,7 @@ mod tests {
 
         // The changepacks dir should still be at the git root, not in the subdirectory
         assert!(changepacks_dir.to_string_lossy().contains(".changepacks"));
-        assert!(changepacks_dir.parent().unwrap() == temp_path);
+        assert_eq!(changepacks_dir.parent().unwrap(), temp_path);
 
         temp_dir.close().unwrap();
     }

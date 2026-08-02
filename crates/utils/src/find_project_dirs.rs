@@ -194,7 +194,7 @@ async fn discover_project_dirs_with_gitignore(
     if !targets.is_empty() {
         let repo_name = repo
             .try_find_remote("origin")
-            .and_then(|r| r.ok())
+            .and_then(std::result::Result::ok)
             .and_then(|remote| {
                 let url = remote.url(gix::remote::Direction::Fetch)?;
                 let path = url.path.to_str_lossy();
@@ -1224,12 +1224,12 @@ mod tests {
 
         // Create multiple packages
         for name in ["core", "utils", "cli"] {
-            fs::create_dir_all(temp_path.join(format!("packages/{}", name)))
+            fs::create_dir_all(temp_path.join(format!("packages/{name}")))
                 .await
                 .unwrap();
             fs::write(
-                temp_path.join(format!("packages/{}/package.json", name)),
-                format!(r#"{{"name": "{}", "version": "1.0.0"}}"#, name),
+                temp_path.join(format!("packages/{name}/package.json")),
+                format!(r#"{{"name": "{name}", "version": "1.0.0"}}"#),
             )
             .await
             .unwrap();

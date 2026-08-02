@@ -1138,7 +1138,7 @@ dependencies {
 
     #[test]
     fn test_extract_gradle_project_dependencies_skips_gradle_literals_and_dynamic_paths() {
-        let content = r##"
+        let content = r#"
 val kotlinRaw = """quoted " text project(":triple-double-decoy") """
 def groovyTriple = '''quoted ' text project(':triple-single-decoy') '''
 def groovySlashy = /text project(":slashy-decoy") text/
@@ -1150,7 +1150,7 @@ dependencies {
     runtimeOnly(project(":$interpolated"))
     testImplementation(project(":${computed}"))
 }
-"##;
+"#;
 
         assert_eq!(
             extract_gradle_project_dependencies(content),
@@ -1198,11 +1198,11 @@ dependencies { implementation(project(":real-kotlin")) }
 
     #[test]
     fn test_extract_gradle_project_dependencies_uses_dialect_triple_quote_escapes() {
-        let kotlin = r####"
+        let kotlin = r#"
 val ordinary = "project(\":ordinary-string-decoy\")"
 val raw = """project(":kotlin-raw-decoy") \"""
 dependencies { implementation(project(":real-kotlin")) }
-"####;
+"#;
         let raw_start = kotlin.find("\"\"\"").unwrap();
         let raw_end =
             quoted_gradle_literal_end(kotlin.as_bytes(), raw_start, true, GradleDialect::Kotlin)
@@ -1213,10 +1213,10 @@ dependencies { implementation(project(":real-kotlin")) }
             vec![":real-kotlin"]
         );
 
-        let groovy = r####"
+        let groovy = r#"
 def triple = """before \""" project(":groovy-triple-decoy") after"""
 dependencies { implementation(project(":real-groovy")) }
-"####;
+"#;
         assert_eq!(
             super::extract_gradle_project_dependencies(groovy, GradleDialect::Groovy),
             vec![":real-groovy"]

@@ -46,7 +46,7 @@ use tokio::fs::read_dir;
 #[derive(Clone, Copy)]
 enum ManagedPublishTarget {
     /// Let `dotnet nuget push` resolve its source and credentials from the
-    /// user's normal NuGet configuration.
+    /// user's normal `NuGet` configuration.
     UserConfig,
     /// Redirect pushes to an ephemeral filesystem feed for dry-run safety.
     TemporaryFeed,
@@ -154,7 +154,7 @@ where
 
 /// Shared body of the real-publish and dry-run resolvers: locate the project
 /// directory, honour an already-resolved config override, and otherwise hand
-/// the directory to the managed NuGet flow.
+/// the directory to the managed `NuGet` flow.
 ///
 /// The two callers differ only in which override map they consult and in the
 /// `Option` wrapper on the result, so the override lookup is resolved by the
@@ -198,7 +198,7 @@ where
     .await
 }
 
-/// Resolve a configured real-publish override or run the managed NuGet flow
+/// Resolve a configured real-publish override or run the managed `NuGet` flow
 /// with the supplied command boundary.
 pub(crate) async fn resolve_and_run_publish_with_command_runner<F, Fut>(
     path: &Path,

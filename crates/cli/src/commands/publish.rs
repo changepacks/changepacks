@@ -766,13 +766,12 @@ async fn execute_dry_run_publish_loop(
     config: &Config,
     format: FormatOptions,
 ) -> std::io::Result<(BTreeMap<PathBuf, PublishResult>, Vec<String>)> {
-    let mut state = PublishLoopState::new();
-
     const DRY_RUN_LABELS: PublishOutcomeLabels = PublishOutcomeLabels {
         success: "Dry-run succeeded for",
         failure: "Dry-run failed for",
     };
 
+    let mut state = PublishLoopState::new();
     let rust_batch_names = rust_batch_names(projects);
 
     for project in projects {
@@ -814,12 +813,12 @@ async fn execute_publish_loop(
     config: &Config,
     format: FormatOptions,
 ) -> std::io::Result<(BTreeMap<PathBuf, PublishResult>, Vec<String>)> {
-    let mut state = PublishLoopState::new();
-
     const PUBLISH_LABELS: PublishOutcomeLabels = PublishOutcomeLabels {
         success: "Successfully published",
         failure: "Failed to publish",
     };
+
+    let mut state = PublishLoopState::new();
 
     for project in projects {
         if state.skip_if_dependency_failed(project, "Skipped publish for", format)? {

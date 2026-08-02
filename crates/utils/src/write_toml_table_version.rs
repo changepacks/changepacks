@@ -75,9 +75,11 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
 
-    fn ok(_doc: &DocumentMut) -> Result<()> {
-        Ok(())
-    }
+    /// `validate` hook that accepts every document, for the tests that
+    /// exercise something other than validation. A `const` function pointer
+    /// rather than a `fn` item because a `fn` that can only ever return `Ok`
+    /// is a wrapper the signature demands, not one the body earns.
+    const ACCEPT_ANY: fn(&DocumentMut) -> Result<()> = |_doc| Ok(());
 
     /// The happy path: only the version literal changes, and the surrounding
     /// comment/decor and the exact trailing-whitespace suffix survive.
@@ -88,7 +90,7 @@ mod tests {
         let original = "# head\n[package]\nname = \"x\"\nversion = \"1.0.0\" # pinned\n \t\r\n \n";
         fs::write(&manifest, original).unwrap();
 
-        write_toml_table_version(&manifest, "Cargo.toml", "package", "2.0.0", ok)
+        write_toml_table_version(&manifest, "Cargo.toml", "package", "2.0.0", ACCEPT_ANY)
             .await
             .unwrap();
 
@@ -106,7 +108,7 @@ mod tests {
         let manifest = temp_dir.path().join("pyproject.toml");
         fs::write(&manifest, "[build-system]\nrequires = []\n").unwrap();
 
-        write_toml_table_version(&manifest, "pyproject.toml", "project", "0.0.1", ok)
+        write_toml_table_version(&manifest, "pyproject.toml", "project", "0.0.1", ACCEPT_ANY)
             .await
             .unwrap();
 
@@ -130,7 +132,7 @@ mod tests {
         let original = "package = 3\n\n[dependencies]\nserde = \"1\"\n";
         fs::write(&manifest, original).unwrap();
 
-        let err = write_toml_table_version(&manifest, "Cargo.toml", "package", "1.0.1", ok)
+        let err = write_toml_table_version(&manifest, "Cargo.toml", "package", "1.0.1", ACCEPT_ANY)
             .await
             .expect_err("a scalar top-level key must be rejected");
 
@@ -201,7 +203,7 @@ mod tests {
         let manifest = temp_dir.path().join("Cargo.toml");
         fs::write(&manifest, "[package\n").unwrap();
 
-        let err = write_toml_table_version(&manifest, "Cargo.toml", "package", "1.0.1", ok)
+        let err = write_toml_table_version(&manifest, "Cargo.toml", "package", "1.0.1", ACCEPT_ANY)
             .await
             .expect_err("a malformed manifest must fail the parse");
 

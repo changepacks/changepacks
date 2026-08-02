@@ -63,7 +63,7 @@ mod tests {
     }
 
     /// `PublishResult` is the payload of `publish --format json`, a hard backward-compatible
-    /// surface. The key names must stay snake_case (no `rename_all`) and `error` must always
+    /// surface. The key names must stay `snake_case` (no `rename_all`) and `error` must always
     /// be emitted, serializing as JSON `null` on success rather than being skipped.
     #[test]
     fn test_publish_result_serialize_json_contract() {

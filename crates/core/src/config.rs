@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_config_deserialize_empty_object() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let config: Config = serde_json::from_str(json).unwrap();
         assert_eq!(config.base_branch, "main");
         assert!(config.ignore.is_empty());

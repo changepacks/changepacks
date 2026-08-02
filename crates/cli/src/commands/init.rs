@@ -391,7 +391,7 @@ mod tests {
         );
         let errors = results
             .into_iter()
-            .filter_map(|result| result.err())
+            .filter_map(Result::err)
             .collect::<Vec<_>>();
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].to_string(), ALREADY_INITIALIZED_ERROR);

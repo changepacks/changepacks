@@ -256,9 +256,9 @@ mod tests {
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_package
+            r"name: test_package
 version: 1.0.0
-"#,
+",
         )
         .unwrap();
 
@@ -305,9 +305,9 @@ version: 1.0.0
         fs::write(
             &pubspec_path,
             format!(
-                r#"name: test_workspace
+                r"name: test_workspace
 version: 1.0.0
-{workspace}"#
+{workspace}"
             ),
         )
         .unwrap();
@@ -337,9 +337,9 @@ version: 1.0.0
         fs::write(
             &pubspec_path,
             format!(
-                r#"name: test_package
+                r"name: test_package
 version: 1.0.0
-{workspace}"#
+{workspace}"
             ),
         )
         .unwrap();
@@ -372,12 +372,12 @@ version: 1.0.0
         let melos_path = temp_dir.path().join("melos.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_workspace
+            r"name: test_workspace
 version: 1.0.0
-"#,
+",
         )
         .unwrap();
-        fs::write(&melos_path, r#"name: test_workspace"#).unwrap();
+        fs::write(&melos_path, r"name: test_workspace").unwrap();
 
         let mut finder = DartProjectFinder::new();
         finder
@@ -399,10 +399,10 @@ version: 1.0.0
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_workspace
+            r"name: test_workspace
 workspace:
   - packages/*
-"#,
+",
         )
         .unwrap();
 
@@ -424,7 +424,7 @@ workspace:
     async fn test_visit_non_pubspec_file() {
         let temp_dir = TempDir::new().unwrap();
         let other_file = temp_dir.path().join("other.yaml");
-        fs::write(&other_file, r#"some: content"#).unwrap();
+        fs::write(&other_file, r"some: content").unwrap();
 
         let mut finder = DartProjectFinder::new();
         finder
@@ -460,9 +460,9 @@ workspace:
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_package
+            r"name: test_package
 version: 1.0.0
-"#,
+",
         )
         .unwrap();
 
@@ -490,16 +490,16 @@ version: 1.0.0
         fs::create_dir_all(pubspec2.parent().unwrap()).unwrap();
         fs::write(
             &pubspec1,
-            r#"name: package1
+            r"name: package1
 version: 1.0.0
-"#,
+",
         )
         .unwrap();
         fs::write(
             &pubspec2,
-            r#"name: package2
+            r"name: package2
 version: 2.0.0
-"#,
+",
         )
         .unwrap();
 
@@ -524,9 +524,9 @@ version: 2.0.0
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_package
+            r"name: test_package
 version: 1.0.0
-"#,
+",
         )
         .unwrap();
 
@@ -552,7 +552,7 @@ version: 1.0.0
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_package
+            r"name: test_package
 version: 1.0.0
 dependencies:
   http: ^1.0.0
@@ -560,7 +560,7 @@ dependencies:
     path: ../core
   utils:
     path: ../utils
-"#,
+",
         )
         .unwrap();
 
@@ -589,13 +589,13 @@ dependencies:
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_package
+            r"name: test_package
 version: 1.0.0
 dependencies:
   http: ^1.0.0
   path: ^1.9.0
   intl: ^0.20.0
-"#,
+",
         )
         .unwrap();
 
@@ -623,13 +623,13 @@ dependencies:
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_package
+            r"name: test_package
 version: 1.0.0
 dev_dependencies:
   test_utils:
     path: ../test_utils
   lints: ^3.0.0
-"#,
+",
         )
         .unwrap();
 
@@ -657,7 +657,7 @@ dev_dependencies:
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_package
+            r"name: test_package
 version: 1.0.0
 dependencies:
   core: ^1.0.0
@@ -666,7 +666,7 @@ dependency_overrides:
   core:
     path: ../core
   other: ^2.0.0
-"#,
+",
         )
         .unwrap();
 
@@ -702,7 +702,7 @@ dependency_overrides:
             ("override_dep", "name: override_dep\nversion: 1.0.0\n"),
             (
                 "app",
-                r#"name: app
+                r"name: app
 version: 1.0.0
 dependencies:
   foo: ^1.0.0
@@ -712,7 +712,7 @@ dependencies:
 dependency_overrides:
   override_dep:
     path: ../override_dep
-"#,
+",
             ),
         ];
 

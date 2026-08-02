@@ -791,7 +791,7 @@ mod tests {
     async fn test_visit_non_csproj_file() {
         let temp_dir = TempDir::new().unwrap();
         let other_file = temp_dir.path().join("other.xml");
-        fs::write(&other_file, r#"<root>content</root>"#).unwrap();
+        fs::write(&other_file, r"<root>content</root>").unwrap();
 
         let mut finder = CSharpProjectFinder::new();
         finder
@@ -982,12 +982,12 @@ mod tests {
   </PropertyGroup>
 </Project>"#;
 
-    const XML_VERSION_WITH_END_TAG_WHITESPACE: &str = r#"<Project><PropertyGroup><Version>
+    const XML_VERSION_WITH_END_TAG_WHITESPACE: &str = r"<Project><PropertyGroup><Version>
    1.2.3
-   </Version></PropertyGroup></Project>"#;
+   </Version></PropertyGroup></Project>";
 
     const XML_EMPTY_VERSION: &str =
-        r#"<Project><PropertyGroup><Version>  </Version></PropertyGroup></Project>"#;
+        r"<Project><PropertyGroup><Version>  </Version></PropertyGroup></Project>";
 
     // Self-closing tags like <IsPackable /> generate Event::Empty, which
     // exercises the wildcard `_ => {}` arm in extract_version.
@@ -999,42 +999,42 @@ mod tests {
 </Project>"#;
 
     // XML comments generate Event::Comment, exercising the wildcard arm.
-    const XML_VERSION_AFTER_COMMENT: &str = r#"<Project>
+    const XML_VERSION_AFTER_COMMENT: &str = r"<Project>
   <PropertyGroup>
     <!-- version follows -->
     <Version>4.0.0</Version>
   </PropertyGroup>
-</Project>"#;
+</Project>";
 
     // A decimal character reference splits the value into
     // Text("1.2") / GeneralRef("#46") / Text("3"). Before the GeneralRef arm
     // existed, only the first fragment was kept and the version read as `1.2`.
     const XML_VERSION_WITH_DECIMAL_CHAR_REF: &str =
-        r#"<Project><PropertyGroup><Version>1.2&#46;3</Version></PropertyGroup></Project>"#;
+        r"<Project><PropertyGroup><Version>1.2&#46;3</Version></PropertyGroup></Project>";
 
     // Same split, hexadecimal spelling of the same code point.
     const XML_VERSION_WITH_HEX_CHAR_REF: &str =
-        r#"<Project><PropertyGroup><Version>1.2&#x2E;3</Version></PropertyGroup></Project>"#;
+        r"<Project><PropertyGroup><Version>1.2&#x2E;3</Version></PropertyGroup></Project>";
 
     // A predefined XML entity is a GeneralRef too, and resolves to `&`.
     const XML_VERSION_WITH_PREDEFINED_ENTITY: &str =
-        r#"<Project><PropertyGroup><Version>1.0.0-a&amp;b</Version></PropertyGroup></Project>"#;
+        r"<Project><PropertyGroup><Version>1.0.0-a&amp;b</Version></PropertyGroup></Project>";
 
     // The reference is the WHOLE value, so the pre-fix parser saw no leading
     // text fragment at all and returned None.
     const XML_VERSION_IS_ONLY_A_CHAR_REF: &str =
-        r#"<Project><PropertyGroup><Version>&#49;&#46;&#48;</Version></PropertyGroup></Project>"#;
+        r"<Project><PropertyGroup><Version>&#49;&#46;&#48;</Version></PropertyGroup></Project>";
 
     // Two `<Version>` elements in the same eligible group: the first still wins.
-    const XML_DUPLICATE_VERSION: &str = r#"<Project><PropertyGroup><Version>1.0.0</Version><Version>2.0.0</Version></PropertyGroup></Project>"#;
+    const XML_DUPLICATE_VERSION: &str = r"<Project><PropertyGroup><Version>1.0.0</Version><Version>2.0.0</Version></PropertyGroup></Project>";
 
     // Whitespace-only first `<Version>` must still leave the value unset, so a
     // later populated element wins — the accumulator must not "claim" it.
-    const XML_EMPTY_THEN_POPULATED_VERSION: &str = r#"<Project><PropertyGroup><Version>  </Version><Version>2.0.0</Version></PropertyGroup></Project>"#;
+    const XML_EMPTY_THEN_POPULATED_VERSION: &str = r"<Project><PropertyGroup><Version>  </Version><Version>2.0.0</Version></PropertyGroup></Project>";
 
     // CDATA content is a separate event class and must accumulate the same way.
     const XML_CDATA_VERSION: &str =
-        r#"<Project><PropertyGroup><Version><![CDATA[1.2.3]]></Version></PropertyGroup></Project>"#;
+        r"<Project><PropertyGroup><Version><![CDATA[1.2.3]]></Version></PropertyGroup></Project>";
 
     // A reference inside a conditional (non-eligible) group is not part of any
     // candidate version and must be ignored, not accumulated.
@@ -1065,12 +1065,12 @@ mod tests {
     // literal value, not a property of its own. Only the DIRECT child counts.
     // This is the case that pins the depth comparison in
     // `is_eligible_property_child` rather than just its `None` arm.
-    const XML_VERSION_NESTED_BELOW_PROPERTY: &str = r#"<Project>
+    const XML_VERSION_NESTED_BELOW_PROPERTY: &str = r"<Project>
   <PropertyGroup>
     <PackageMetadata><Version>9.9.9</Version></PackageMetadata>
     <Version>1.2.3</Version>
   </PropertyGroup>
-</Project>"#;
+</Project>";
 
     #[rstest]
     // Standard `<Version>` inside `<PropertyGroup>`.
@@ -1122,7 +1122,7 @@ mod tests {
     #[test]
     fn test_unresolvable_version_entity_returns_contextual_error() {
         let content =
-            r#"<Project><PropertyGroup><Version>1.0&mystery;0</Version></PropertyGroup></Project>"#;
+            r"<Project><PropertyGroup><Version>1.0&mystery;0</Version></PropertyGroup></Project>";
 
         let error = CSharpProjectFinder::parse_csproj_metadata(content).unwrap_err();
 
@@ -1142,7 +1142,7 @@ mod tests {
     #[test]
     fn test_out_of_range_version_char_ref_returns_contextual_error() {
         let content =
-            r#"<Project><PropertyGroup><Version>1.0&#xD800;0</Version></PropertyGroup></Project>"#;
+            r"<Project><PropertyGroup><Version>1.0&#xD800;0</Version></PropertyGroup></Project>";
 
         let error = CSharpProjectFinder::parse_csproj_metadata(content).unwrap_err();
 
@@ -1157,7 +1157,7 @@ mod tests {
     // and must neither fail the parse nor leak into the version.
     #[test]
     fn test_entity_reference_outside_version_is_ignored() {
-        let content = r#"<Project><PropertyGroup><Description>Hello &custom; World</Description><Version>1.2.3</Version><IsPackable>fa&#108;se</IsPackable></PropertyGroup></Project>"#;
+        let content = r"<Project><PropertyGroup><Description>Hello &custom; World</Description><Version>1.2.3</Version><IsPackable>fa&#108;se</IsPackable></PropertyGroup></Project>";
 
         let (version, refs, publishable_by_default) =
             CSharpProjectFinder::parse_csproj_metadata(content).unwrap();

@@ -163,6 +163,7 @@ pub fn git_add_and_commit(path: &Path, message: &str) {
 /// # Panics
 ///
 /// Panics if no git repository can be discovered at `path`.
+#[must_use]
 pub fn discover_repo(path: &Path) -> gix::ThreadSafeRepository {
     gix::discover(path).expect("discover test repo").into_sync()
 }
