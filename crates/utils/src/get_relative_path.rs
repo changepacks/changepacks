@@ -46,10 +46,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        // Create a test file
+        // Create a test file path
         let outside_dir = TempDir::new().unwrap();
         let test_file = outside_dir.path().join("test_file.txt");
-        fs::write(&test_file, "test content").unwrap();
 
         // Test getting relative path (should fail)
         let result = get_relative_path(temp_path, &test_file);
@@ -64,8 +63,6 @@ mod tests {
         let temp_path = temp_dir.path();
 
         let inside_path = temp_path.join("inside_absolute_path.txt");
-        fs::write(&inside_path, "inside content").unwrap();
-
         let abs_path = inside_path;
         let result = get_relative_path(temp_path, &abs_path);
         assert!(result.is_ok());

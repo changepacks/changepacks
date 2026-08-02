@@ -61,6 +61,12 @@ where
     Ok(())
 }
 
+/// Refusal message emitted when `.changepacks/config.json` already exists.
+///
+/// Both the dry-run pre-check and the real `create_new` claim report the same
+/// condition, and two tests pin the exact bytes, so the literal lives here once.
+const ALREADY_INITIALIZED_ERROR: &str = "changepacks project already initialized";
+
 async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
     // create .changepacks directory
     let changepacks_dir = get_changepacks_dir(current_dir)?;
@@ -81,7 +87,7 @@ async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
                 config_file.display()
             )
         })? {
-            return Err(anyhow::anyhow!("changepacks project already initialized"));
+            return Err(anyhow::anyhow!(ALREADY_INITIALIZED_ERROR));
         }
 
         // Dry-run skipped both the `create_dir_all` (line above) and the
@@ -113,7 +119,7 @@ async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
     {
         Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-            return Err(anyhow::anyhow!("changepacks project already initialized"));
+            return Err(anyhow::anyhow!(ALREADY_INITIALIZED_ERROR));
         }
         Err(error) => {
             return Err(error).with_context(|| {
@@ -388,10 +394,7 @@ mod tests {
             .filter_map(|result| result.err())
             .collect::<Vec<_>>();
         assert_eq!(errors.len(), 1);
-        assert_eq!(
-            errors[0].to_string(),
-            "changepacks project already initialized"
-        );
+        assert_eq!(errors[0].to_string(), ALREADY_INITIALIZED_ERROR);
 
         let config = std::fs::read_to_string(repository.path().join(".changepacks/config.json"))
             .expect("read generated config");
@@ -424,7 +427,7 @@ mod tests {
             .await
             .expect_err("existing config must be refused");
 
-        assert_eq!(error.to_string(), "changepacks project already initialized");
+        assert_eq!(error.to_string(), ALREADY_INITIALIZED_ERROR);
         assert_eq!(
             std::fs::read_to_string(config_file).expect("read preserved config"),
             existing_config

@@ -2273,7 +2273,6 @@ dependencies = [
 name = "python-cli"
 version = "0.1.1"
 dependencies = [
- "anyhow",
  "cc",
  "changepacks-cli",
  "tokio",

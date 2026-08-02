@@ -12,7 +12,6 @@ publish = false
 [dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 changepacks-cli.workspace = true
-anyhow.workspace = true
 
 [build-dependencies]
 cc = "1"
