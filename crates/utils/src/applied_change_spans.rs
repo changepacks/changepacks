@@ -714,4 +714,45 @@ mod tests {
             "expected JSON object at byte 11"
         );
     }
+
+    /// The same hand-formatted shape whose `changes` object holds NO members —
+    /// exactly what a log looks like once an earlier pass has already spliced
+    /// every one of its bumps out (see
+    /// `remove_applied_change_spans_empties_the_changes_object`, which
+    /// produces this very text).
+    const EMPTY_CHANGES_LOG: &str = r#"{
+  "changes": {
+  },
+  "note": "hand formatted note",
+  "date": "2026-01-01T00:00:00.000Z"
+}
+"#;
+
+    #[test]
+    fn parse_json_object_members_returns_no_members_for_an_empty_object() {
+        // Pins the member loop's FIRST return: when the byte after the opening
+        // brace (past whitespace) is already the closing brace, the loop hands
+        // back an empty vector before it ever reads a key. Every other object
+        // in this suite has at least one member and therefore only ever leaves
+        // through the comma-less return at the bottom of the loop.
+        let open = skip_json_whitespace(EMPTY_CHANGES_LOG.as_bytes(), 0);
+        let root_members = parse_json_object_members(EMPTY_CHANGES_LOG, open)
+            .expect("a well-formed object must parse");
+        let changes = root_members
+            .iter()
+            .find(|member| member.key == "changes")
+            .expect("the fixture carries a changes member");
+        let members = parse_json_object_members(EMPTY_CHANGES_LOG, changes.value_start)
+            .expect("an empty object must parse rather than be rejected");
+        assert!(members.is_empty(), "an empty object must yield no members");
+
+        // And the rewriter built on top of it: with no members there is no
+        // selection and no removal range, so every byte — the blank `changes`
+        // body, the sibling keys and the trailing newline — survives even
+        // though a path WAS requested for removal.
+        assert_eq!(
+            rewrite(EMPTY_CHANGES_LOG, &["packages/a/package.json"]),
+            EMPTY_CHANGES_LOG
+        );
+    }
 }

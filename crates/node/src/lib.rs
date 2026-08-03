@@ -19,7 +19,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use changepacks_core::{Config, Language, UpdateType, is_regular_file};
+use changepacks_core::{Config, Language, UpdateType, is_regular_file, manifest_parent_dir};
 use changepacks_utils::{detect_indent_str, read_and_parse, write_finalized};
 use serde::Serialize;
 
@@ -576,13 +576,14 @@ pub(crate) async fn detect_package_manager_recursive_async(
     path: &Path,
     max_depth: usize,
 ) -> Result<PackageManager> {
+    // Only a filesystem root or the empty path lacks a parent component, and
+    // neither is a regular file, so a manifest always resolves to a containing
+    // directory. `manifest_parent_dir` keeps that total through the shared
+    // "Parent not found" context instead of a fallback arm no input can reach.
     let start = if is_regular_file(path).await? {
-        path.parent()
+        manifest_parent_dir(path)?
     } else {
-        Some(path)
-    };
-    let Some(start) = start else {
-        return Ok(PackageManager::Npm);
+        path
     };
 
     detect_package_manager_in_ancestors(start, max_depth).await
@@ -992,6 +993,31 @@ mod tests {
         // depth 3 covers `packages/app`, `packages` and the root.
         let dirs = node_modules_bin_dirs_async(&pkg_dir, 3).await.unwrap();
         assert_eq!(dirs, vec![pkg_bin, root_bin]);
+    }
+
+    /// The lifecycle PATH walk starts at the manifest's PARENT directory. A
+    /// manifest path that terminates in a filesystem root (or a Windows drive
+    /// prefix) has no parent, so there is nothing to walk: the flow must
+    /// contribute an empty PATH-dir list rather than erroring or falling back
+    /// to walking the manifest path itself, which would probe
+    /// `<root>/node_modules/.bin` outside any repository.
+    #[tokio::test]
+    async fn test_publish_path_dirs_for_path_without_parent_contributes_no_dirs() {
+        let rootless_manifest = if cfg!(target_os = "windows") {
+            Path::new(r"C:\")
+        } else {
+            Path::new("/")
+        };
+        assert!(
+            rootless_manifest.parent().is_none(),
+            "fixture must be a path with no parent"
+        );
+
+        let dirs = publish_path_dirs_for_path(rootless_manifest, Path::new("package.json"))
+            .await
+            .expect("a parentless manifest must not fail the publish flow");
+
+        assert!(dirs.is_empty(), "expected no PATH dirs, got: {dirs:?}");
     }
 
     #[tokio::test]

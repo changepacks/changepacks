@@ -371,14 +371,26 @@ fn gradle_subproject_path(relative: &Path) -> Result<String> {
     Ok(path)
 }
 
+/// Returns true when a Java runtime is reachable from the supplied `JAVA_HOME`
+/// and `PATH` values.
+///
+/// The environment read lives in [`java_is_available`] so that this decision —
+/// "`JAVA_HOME` wins, otherwise fall back to a `PATH` scan" — can be exercised
+/// for both outcomes without mutating process environment, which edition 2024
+/// makes `unsafe` and `[workspace.lints.rust] unsafe_code = "deny"` forbids.
+/// Same split as `run_publish_command`'s env shim in `changepacks-core`.
+async fn java_is_available_in(java_home: Option<&OsStr>, path: Option<&OsStr>) -> Result<bool> {
+    if java_home_has_java(java_home).await? {
+        return Ok(true);
+    }
+    Ok(which_java_in(path).await?.is_some())
+}
+
 /// Returns true when a Java runtime is available via `JAVA_HOME` or PATH.
 async fn java_is_available() -> Result<bool> {
     let java_home = std::env::var_os("JAVA_HOME");
-    if java_home_has_java(java_home.as_deref()).await? {
-        return Ok(true);
-    }
     let path = std::env::var_os("PATH");
-    Ok(which_java_in(path.as_deref()).await?.is_some())
+    java_is_available_in(java_home.as_deref(), path.as_deref()).await
 }
 
 fn gradle_task_arg_from_project_path(project_path: &str, task: &str) -> OsString {
@@ -418,8 +430,24 @@ pub(crate) struct GradleCommandSpec {
 
 impl GradleCommandSpec {
     pub(crate) fn new(gradlew: &Path, gradlew_dir: &Path, gradle_args: Vec<OsString>) -> Self {
-        let mut args = Vec::with_capacity(gradle_args.len() + usize::from(!cfg!(windows)));
-        let program = if cfg!(windows) {
+        Self::for_platform(gradlew, gradlew_dir, gradle_args, cfg!(windows))
+    }
+
+    /// Build the spec for an explicitly named platform.
+    ///
+    /// `windows` is a parameter rather than a `cfg!(windows)` read so both
+    /// layouts — the wrapper as the program on Windows, `sh <wrapper>`
+    /// elsewhere — stay reachable from a single host, mirroring
+    /// [`gradle_wrapper_name`]. A `cfg!` read here would leave whichever arm
+    /// does not match the build target permanently unexecuted.
+    fn for_platform(
+        gradlew: &Path,
+        gradlew_dir: &Path,
+        gradle_args: Vec<OsString>,
+        windows: bool,
+    ) -> Self {
+        let mut args = Vec::with_capacity(gradle_args.len() + usize::from(!windows));
+        let program = if windows {
             gradlew.as_os_str().to_owned()
         } else {
             args.push(gradlew.as_os_str().to_owned());
@@ -2230,11 +2258,12 @@ def second = 20 / 4
     #[cfg(unix)]
     #[tokio::test]
     async fn test_which_java_in_rejects_non_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
         let temp_dir = TempDir::new().unwrap();
         let java_path = temp_dir.path().join("java");
         fs::write(&java_path, "").unwrap();
 
-        use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&java_path, fs::Permissions::from_mode(0o644)).unwrap();
 
         let result = which_java_in(Some(temp_dir.path().as_os_str()))
@@ -2309,12 +2338,13 @@ def second = 20 / 4
     #[cfg(unix)]
     #[tokio::test]
     async fn test_java_home_has_java_rejects_non_executable_file() {
+        use std::os::unix::fs::PermissionsExt;
+
         let temp_dir = TempDir::new().unwrap();
         let java_path = temp_dir.path().join("bin").join("java");
         fs::create_dir_all(java_path.parent().unwrap()).unwrap();
         fs::write(&java_path, "").unwrap();
 
-        use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&java_path, fs::Permissions::from_mode(0o644)).unwrap();
 
         assert!(
@@ -2403,6 +2433,262 @@ def second = 20 / 4
         );
         // No projects should be added when gradlew fails
         assert_eq!(finder.project_count(), 0);
+
+        temp_dir.close().unwrap();
+    }
+
+    /// Write a wrapper that emits `record` and then deletes `victim_dir`
+    /// (relative to the wrapper root it is executed in), reproducing a project
+    /// directory that disappears while Gradle is still evaluating the build.
+    fn create_self_destructing_gradlew(dir: &Path, victim_dir: &str, record: &str) {
+        if cfg!(windows) {
+            fs::write(
+                dir.join("gradlew.bat"),
+                format!(
+                    "@echo off\r\necho {record}\r\nrmdir /s /q \"{victim_dir}\"\r\nexit /b 0\r\n"
+                ),
+            )
+            .unwrap();
+        } else {
+            let gradlew_path = dir.join("gradlew");
+            fs::write(
+                &gradlew_path,
+                format!("#!/bin/sh\nprintf '%s\\n' '{record}'\nrm -rf '{victim_dir}'\n"),
+            )
+            .unwrap();
+            #[cfg(unix)]
+            make_executable(&gradlew_path);
+        }
+    }
+
+    /// `java_is_available` is the only caller that reads the ambient
+    /// `JAVA_HOME` / `PATH`; everything below it takes those values as
+    /// parameters. Pin that it is exactly the disjunction of its two probes
+    /// over the very same ambient values, so swapping the operator, dropping
+    /// the `PATH` fallback, or reading the wrong variable is caught.
+    ///
+    /// Only the arm matching this machine's environment executes: reaching the
+    /// other one would require mutating the process environment, which is
+    /// `unsafe` under edition 2024 and denied by `[workspace.lints.rust]`.
+    #[tokio::test]
+    async fn test_java_is_available_matches_its_java_home_and_path_probes() {
+        let java_home = std::env::var_os("JAVA_HOME");
+        let path = std::env::var_os("PATH");
+        let via_java_home = java_home_has_java(java_home.as_deref()).await.unwrap();
+        let via_path = which_java_in(path.as_deref()).await.unwrap().is_some();
+
+        let available = java_is_available().await.unwrap();
+
+        assert_eq!(available, via_java_home || via_path);
+    }
+
+    /// The wrapper must reach the OS exactly once: Windows spawns
+    /// `gradlew.bat` as the program, every other platform spawns `sh` with the
+    /// wrapper as its leading argument. Dropping it would run bare `sh`, and
+    /// duplicating it would make Gradle treat the wrapper path as a task name,
+    /// so the count is the invariant rather than either platform's layout.
+    #[test]
+    fn test_gradle_command_spec_passes_wrapper_exactly_once() {
+        let gradlew_dir = Path::new("repo with spaces");
+        let gradlew = gradlew_dir.join(gradle_wrapper_name(cfg!(windows)));
+
+        let spec = GradleCommandSpec::new(&gradlew, gradlew_dir, vec![OsString::from("help")]);
+
+        let mentions = std::iter::once(&spec.program)
+            .chain(spec.args.iter())
+            .filter(|value| value.as_os_str() == gradlew.as_os_str())
+            .count();
+        assert_eq!(mentions, 1);
+        assert_eq!(spec.args.last(), Some(&OsString::from("help")));
+        if cfg!(windows) {
+            assert_eq!(spec.program, gradlew.as_os_str());
+        } else {
+            assert_eq!(spec.program, OsString::from("sh"));
+        }
+    }
+
+    /// Both wrapper layouts, from either host. `new` reads `cfg!(windows)`, so
+    /// on any single machine one of these arms would never run; taking the
+    /// platform as a parameter is what keeps the Windows layout exercised on
+    /// the Linux coverage runner and vice versa.
+    #[rstest]
+    #[case(true, "gradlew.bat")]
+    #[case(false, "gradlew")]
+    fn test_gradle_command_spec_for_platform_builds_both_layouts(
+        #[case] windows: bool,
+        #[case] expected_wrapper: &str,
+    ) {
+        let gradlew_dir = Path::new("repo");
+        let gradlew = gradlew_dir.join(gradle_wrapper_name(windows));
+        assert_eq!(gradlew.file_name().unwrap(), expected_wrapper);
+
+        let spec = GradleCommandSpec::for_platform(
+            &gradlew,
+            gradlew_dir,
+            vec![OsString::from("help")],
+            windows,
+        );
+
+        if windows {
+            assert_eq!(spec.program, gradlew.as_os_str());
+            assert_eq!(spec.args, vec![OsString::from("help")]);
+        } else {
+            assert_eq!(spec.program, OsString::from("sh"));
+            assert_eq!(
+                spec.args,
+                vec![gradlew.as_os_str().to_owned(), OsString::from("help")]
+            );
+        }
+        assert_eq!(spec.current_dir, gradlew_dir);
+    }
+
+    /// Create an executable `java` (`java.exe` on Windows) inside `dir`, the
+    /// shape both `java_home_has_java` (as `<home>/bin/java`) and
+    /// `which_java_in` (as `<path entry>/java`) accept.
+    fn create_java_executable(dir: &Path) {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::create_dir_all(dir).unwrap();
+        let java_path = dir.join(if cfg!(windows) { "java.exe" } else { "java" });
+        fs::write(&java_path, "").unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&java_path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// `JAVA_HOME` short-circuits the search: with a usable `bin/java` there,
+    /// an empty PATH must still report Java as available.
+    #[tokio::test]
+    async fn test_java_is_available_in_short_circuits_on_java_home() {
+        let temp_dir = TempDir::new().unwrap();
+        create_java_executable(&temp_dir.path().join("bin"));
+
+        assert!(
+            java_is_available_in(Some(temp_dir.path().as_os_str()), Some(OsStr::new("")))
+                .await
+                .unwrap()
+        );
+    }
+
+    /// A `JAVA_HOME` without `bin/java` must not end the search — the PATH
+    /// fallback still finds a runtime.
+    #[tokio::test]
+    async fn test_java_is_available_in_falls_back_to_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let java_home = temp_dir.path().join("home-without-java");
+        let path_entry = temp_dir.path().join("path-entry");
+        fs::create_dir_all(&java_home).unwrap();
+        create_java_executable(&path_entry);
+
+        assert!(
+            java_is_available_in(Some(java_home.as_os_str()), Some(path_entry.as_os_str()))
+                .await
+                .unwrap()
+        );
+    }
+
+    /// Neither probe finds a runtime, so the disjunction is false.
+    #[tokio::test]
+    async fn test_java_is_available_in_reports_absent_runtime() {
+        let temp_dir = TempDir::new().unwrap();
+        let java_home = temp_dir.path().join("home-without-java");
+        let path_entry = temp_dir.path().join("path-without-java");
+        fs::create_dir_all(&java_home).unwrap();
+        fs::create_dir_all(&path_entry).unwrap();
+
+        assert!(
+            !java_is_available_in(Some(java_home.as_os_str()), Some(path_entry.as_os_str()))
+                .await
+                .unwrap()
+        );
+    }
+
+    /// `visit` normalizes the project directory with its OWN context, separate
+    /// from the wrapper-root and metadata-directory normalizations that run
+    /// before it. The wrapper deletes the project directory as it runs — after
+    /// the manifest has been read and the wrapper located, and while still
+    /// emitting a valid record for the (surviving) repository root — so the
+    /// project-directory normalization is the only step left that can fail.
+    #[tokio::test]
+    async fn test_gradle_finder_errors_when_project_directory_disappears_before_normalization() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path().join("repo");
+        let module_dir = repo.join("module");
+        tokio::fs::create_dir_all(&module_dir).await.unwrap();
+        let manifest = module_dir.join("build.gradle.kts");
+        tokio::fs::write(&manifest, "plugins { java }\n")
+            .await
+            .unwrap();
+        create_self_destructing_gradlew(
+            &repo,
+            "module",
+            &metadata_record(&repo, ":", "root project", true),
+        );
+
+        let error = finder_with_java_available()
+            .visit(
+                &manifest,
+                Path::new("module").join("build.gradle.kts").as_path(),
+            )
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("Failed to normalize Gradle project directory"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&module_dir.display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains(&manifest.display().to_string()),
+            "{message}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    /// Two records that carry DIFFERENT Gradle paths but the SAME project
+    /// directory collide on the `by_project_dir` key. That is a distinct
+    /// failure from the duplicate-project-path collision pinned above — it
+    /// survives the `project_names_by_path` guard entirely — so it must report
+    /// the directory and both offending Gradle paths.
+    #[tokio::test]
+    async fn test_gradle_finder_errors_when_wrapper_metadata_duplicates_normalized_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo = temp_dir.path().join("repo");
+        let shared_dir = repo.join("shared");
+        tokio::fs::create_dir_all(&shared_dir).await.unwrap();
+        let manifest = repo.join("build.gradle.kts");
+        tokio::fs::write(&manifest, "plugins { java }\n")
+            .await
+            .unwrap();
+        create_metadata_gradlew(
+            &repo,
+            &[
+                metadata_record(&repo, ":", "root project", true),
+                metadata_record(&shared_dir, ":alpha", "alpha", false),
+                metadata_record(&shared_dir, ":beta", "beta", false),
+            ],
+        )
+        .await;
+
+        let error = finder_with_java_available()
+            .visit(&manifest, Path::new("build.gradle.kts"))
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("Duplicate Gradle metadata records for normalized directory"),
+            "{message}"
+        );
+        assert!(message.contains("shared"), "{message}");
+        assert!(message.contains(":alpha"), "{message}");
+        assert!(message.contains(":beta"), "{message}");
+        assert!(message.contains("gradlew"), "{message}");
 
         temp_dir.close().unwrap();
     }

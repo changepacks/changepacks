@@ -107,11 +107,29 @@ pub(crate) fn format_selected_projects<'a>(
     crate::commands::join_display(projects, "\n")
 }
 
-/// Real implementation using inquire crate
+/// Real implementation using inquire crate.
+///
+/// Each method is a thin adapter over one `inquire` widget. Every decision they
+/// carry lives elsewhere and is covered on its own: option ranking in
+/// [`score_project`], the selection summary in [`format_selected_projects`],
+/// and the cancellation mapping in [`handle_inquire_result`]. What remains is
+/// the terminal call itself.
+///
+/// Those calls are the one part of this file that no test can drive.
+/// `inquire` renders through crossterm against the real terminal: with an
+/// interactive stdin it blocks until a human answers, so any test invoking it
+/// would hang for anyone running `cargo test` from a shell, and with a
+/// redirected stdin the failure it raises is platform-dependent. Each method is
+/// therefore marked with the `cfg(not(tarpaulin_include))` attribute that
+/// `cargo tarpaulin` reads to drop an item from its line analysis — already
+/// used for the same reason by `changepacks_csharp::dry_run::run_dotnet_command`,
+/// `crates/changepacks/src/main.rs` and both FFI bridges. The cfg is never
+/// actually set, so production builds compile these methods unchanged.
 #[derive(Default)]
 pub struct InquirePrompter;
 
 impl Prompter for InquirePrompter {
+    #[cfg(not(tarpaulin_include))]
     fn multi_select<'a>(
         &self,
         message: &str,
@@ -127,10 +145,12 @@ impl Prompter for InquirePrompter {
         handle_inquire_result(selector.prompt())
     }
 
+    #[cfg(not(tarpaulin_include))]
     fn confirm(&self, message: &str) -> Result<bool> {
         handle_inquire_result(inquire::Confirm::new(message).prompt())
     }
 
+    #[cfg(not(tarpaulin_include))]
     fn text(&self, message: &str) -> Result<String> {
         handle_inquire_result(inquire::Text::new(message).prompt())
     }
@@ -423,5 +443,45 @@ mod tests {
         assert!(result.contains('\n'));
         let lines: Vec<&str> = result.lines().collect();
         assert_eq!(lines.len(), 2);
+    }
+
+    // The public cancellation predicate must recognize the dedicated marker.
+    #[test]
+    fn test_is_user_cancelled_recognizes_user_cancelled_error() {
+        let error = anyhow::Error::new(UserCancelled);
+        assert!(is_user_cancelled(&error));
+    }
+
+    // Unrelated failures must not be mistaken for an intentional cancellation.
+    #[test]
+    fn test_is_user_cancelled_rejects_unrelated_error() {
+        let error = anyhow::anyhow!("ordinary prompt failure");
+        assert!(!is_user_cancelled(&error));
+    }
+
+    /// `InquirePrompter` is excluded from coverage because its three methods
+    /// are unmockable terminal calls (see the type's doc comment). Pin the two
+    /// properties that keeps honest: the exclusion covers exactly those three
+    /// methods and nothing else in this file, and it is the only such exclusion
+    /// here — so a future body added under that marker cannot silently escape
+    /// measurement.
+    #[test]
+    fn inquire_prompter_is_the_only_coverage_exclusion_in_this_file() {
+        let marker = concat!("#[cfg(not(", "tarpaulin_include))]");
+        let lines: Vec<&str> = include_str!("prompter.rs").lines().collect();
+
+        assert_eq!(
+            lines.iter().filter(|line| line.trim() == marker).count(),
+            3,
+            "only InquirePrompter's three terminal adapters may be excluded"
+        );
+        for method in ["fn multi_select", "fn confirm", "fn text"] {
+            assert!(
+                lines.windows(2).any(|pair| {
+                    pair[0].trim() == marker && pair[1].trim_start().starts_with(method)
+                }),
+                "the exclusion must sit directly on `{method}`"
+            );
+        }
     }
 }

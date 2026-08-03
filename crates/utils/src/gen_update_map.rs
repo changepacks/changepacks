@@ -147,13 +147,17 @@ impl UpdatePlan {
 
         let mut carry_forward = Vec::new();
         for path in excluded_paths {
-            let Some((update_type, _)) = self.updates.remove(&path) else {
-                continue;
-            };
-            if let Some(UpdateProvenance::Generated {
-                notes,
-                state: GeneratedState::Fresh,
-            }) = self.provenance.remove(&path)
+            // `excluded_paths` was drawn from `self.updates`' own keys, which a
+            // `HashMap` guarantees are pairwise distinct, and nothing removes
+            // from the map in between — so every lookup here hits. Chaining the
+            // two `if let`s keeps both total without a skip branch no input can
+            // reach, and preserves the original ordering: the provenance entry
+            // is only consulted once the update itself has been taken.
+            if let Some((update_type, _)) = self.updates.remove(&path)
+                && let Some(UpdateProvenance::Generated {
+                    notes,
+                    state: GeneratedState::Fresh,
+                }) = self.provenance.remove(&path)
             {
                 carry_forward.extend(notes.into_iter().map(|note| {
                     ChangePackLog::new(BTreeMap::from([(path.clone(), update_type)]), note)
@@ -1854,5 +1858,109 @@ mod tests {
         assert_eq!(update_map.len(), 3);
         assert_eq!(update_map[Path::new("packages/b")].0, UpdateType::Major);
         assert_eq!(update_map[Path::new("packages/c")].0, UpdateType::Patch);
+    }
+
+    // Pins the carry-forward provenance MERGE arm: the `provenance.get_mut(..)`
+    // probe that runs when a `changepack_log_carry_forward_*.json` names a
+    // project path some EARLIER log already recorded. Every sibling test only
+    // ever reaches the vacant `insert`, because no two of their logs share a
+    // path.
+    //
+    // `collect_changepack_log_paths` sorts its result, so the four logs below
+    // are consumed in file-name order and each arm is reached deterministically:
+    //
+    // 1. `changepack_log_a_explicit.json` records `shared` as `Explicit`
+    //    ('a' sorts before the 'c' of the carry-forward prefix).
+    // 2. `changepack_log_carry_forward_1.json` names `shared` again and takes
+    //    the `Explicit => {}` arm — a carried note must never demote a bump the
+    //    user still owns back into a carry-forward candidate.
+    // 3. `changepack_log_carry_forward_2.json` inserts `carried` fresh.
+    // 4. `changepack_log_carry_forward_3.json` names `carried` again and takes
+    //    the `Generated { .. }` arm, appending its note to the existing entry.
+    #[tokio::test]
+    async fn carry_forward_log_merges_into_generated_and_yields_to_explicit() {
+        let temp_dir = TempDir::new().unwrap();
+        let changepacks_dir = provenance_fixture_dir(&temp_dir).await;
+        write_provenance_log(
+            &changepacks_dir,
+            "changepack_log_a_explicit.json",
+            "shared/package.json",
+            UpdateType::Minor,
+            "explicit shared",
+        )
+        .await;
+        write_provenance_log(
+            &changepacks_dir,
+            &format!("{CARRY_FORWARD_LOG_PREFIX}1.json"),
+            "shared/package.json",
+            UpdateType::Patch,
+            "carried shared",
+        )
+        .await;
+        write_provenance_log(
+            &changepacks_dir,
+            &format!("{CARRY_FORWARD_LOG_PREFIX}2.json"),
+            "carried/package.json",
+            UpdateType::Patch,
+            "first carried note",
+        )
+        .await;
+        write_provenance_log(
+            &changepacks_dir,
+            &format!("{CARRY_FORWARD_LOG_PREFIX}3.json"),
+            "carried/package.json",
+            UpdateType::Patch,
+            "second carried note",
+        )
+        .await;
+
+        let plan = gen_update_map(&changepacks_dir, &Config::default())
+            .await
+            .unwrap();
+
+        let shared = PathBuf::from("shared/package.json");
+        let carried = PathBuf::from("carried/package.json");
+
+        // The carry-forward log for `shared` WAS consumed — both notes reached
+        // the update map — yet the provenance stayed explicit and the path is
+        // still an expansion seed.
+        assert_eq!(plan[&shared].0, UpdateType::Minor);
+        assert_eq!(plan[&shared].1.len(), 2);
+        assert!(
+            matches!(
+                plan.provenance.get(&shared),
+                Some(UpdateProvenance::Explicit)
+            ),
+            "a carried note must not demote explicit provenance, got {:?}",
+            plan.provenance.get(&shared)
+        );
+        assert!(
+            plan.expansion_seeds.contains(&shared),
+            "the explicit bump must keep seeding expansion"
+        );
+
+        // The second carry-forward note for `carried` was APPENDED to the
+        // entry the first one created rather than replacing it, and the entry
+        // stays persisted so `retain_updates` will not re-emit either note.
+        let Some(UpdateProvenance::Generated { notes, state }) = plan.provenance.get(&carried)
+        else {
+            panic!(
+                "two carry-forward logs must merge into one generated entry, got {:?}",
+                plan.provenance.get(&carried)
+            );
+        };
+        assert_eq!(
+            notes.as_slice(),
+            ["first carried note", "second carried note"]
+        );
+        assert_eq!(*state, GeneratedState::Persisted);
+        assert_eq!(plan[&carried].0, UpdateType::Patch);
+        assert_eq!(plan[&carried].1.len(), 2);
+        assert!(
+            !plan.expansion_seeds.contains(&carried),
+            "a purely carried path must never seed expansion"
+        );
+
+        temp_dir.close().unwrap();
     }
 }

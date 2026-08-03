@@ -210,11 +210,16 @@ macro_rules! assert_malformed_manifest_rejected {
         );
 
         // Byte-for-byte: an unparseable manifest must never be rewritten.
+        //
+        // The re-read failure message is built eagerly and handed to `expect`
+        // rather than raised from an `unwrap_or_else` closure: the closure is
+        // codegen'd as its own never-called function in whichever downstream
+        // crate expands this macro, and llvm-cov then attributes that
+        // zero-count body back to this line, marking the assertion unexecuted.
+        let reread_failure = ::std::format!("failed to re-read {}", manifest_path.display());
+        let on_disk = ::std::fs::read(manifest_path).expect(&reread_failure);
         ::std::assert_eq!(
-            ::std::fs::read(manifest_path).unwrap_or_else(|err| ::std::panic!(
-                "failed to re-read {}: {err}",
-                manifest_path.display()
-            )),
+            on_disk,
             ::std::primitive::str::as_bytes($original),
             "a rejected bump must leave the manifest byte-identical"
         );
@@ -237,4 +242,48 @@ pub fn set_readonly(path: &Path, readonly: bool) {
     permissions.set_readonly(readonly);
     std::fs::set_permissions(path, permissions)
         .unwrap_or_else(|err| panic!("failed to set permissions for {}: {err}", path.display()));
+}
+
+#[cfg(test)]
+mod tests {
+    use changepacks_core::UpdateType;
+    use tempfile::TempDir;
+
+    use super::*;
+
+    // `assert_malformed_manifest_rejected!` is `#[macro_export]`ed for the
+    // language crates' `update_version` suites (`changepacks-node`,
+    // `-python`, `-dart`, `-rust`), so its body is never expanded inside the
+    // crate that DEFINES it and every line of the assertion tail reads as
+    // unexecuted here. Expand it once against a real fixture — a
+    // `package.json` that cannot parse, driven through the `Package` trait
+    // entry point with the `changepacks-node` dev-dependency — so the tail
+    // this crate owns is exercised where it lives.
+    //
+    // This is the whole macro, not a hand-copied excerpt: a drift between the
+    // `Failed to parse <label> <path>` template owned by `crate::read_and_parse`
+    // and what the macro asserts would fail right here.
+    #[tokio::test]
+    async fn assert_malformed_manifest_rejected_pins_parse_failure_and_untouched_bytes() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        let original = r#"{ "name": "malformed", invalid json }"#;
+        std::fs::write(&package_json, original).unwrap();
+
+        let mut package = NodePackage::new(
+            Some("malformed".to_string()),
+            Some("1.0.0".to_string()),
+            package_json.clone(),
+            PathBuf::from("package.json"),
+        );
+
+        crate::assert_malformed_manifest_rejected!(
+            package.update_version(UpdateType::Patch).await,
+            &package_json,
+            "package.json",
+            original
+        );
+
+        temp_dir.close().unwrap();
+    }
 }

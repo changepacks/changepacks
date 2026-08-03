@@ -3167,4 +3167,236 @@ version = "~2.3.4"
 
         temp_dir.close().unwrap();
     }
+
+    // A `[target]` entry whose value is NOT a table (Cargo itself would reject
+    // it, but a malformed or hand-edited manifest can still reach the finder)
+    // is skipped rather than treated as a dependency table. The real
+    // `[dependencies]` edge still lands, so the skip is scoped to that one
+    // entry.
+    #[tokio::test]
+    async fn test_rust_project_finder_skips_non_table_target_entry() {
+        let (_temp_dir, finder) = visit_single_manifest(
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+
+[dependencies]
+runtime-core = { workspace = true }
+
+[target]
+"cfg(unix)" = "not-a-table"
+"#,
+        )
+        .await;
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        let deps = projects[0].expect_package().dependencies();
+        assert_eq!(
+            deps.len(),
+            1,
+            "a scalar [target] entry must contribute no edges, got {deps:?}"
+        );
+        assert!(deps.contains("runtime-core"));
+    }
+
+    // The alias walk starts two ancestors above the manifest, so a manifest
+    // that HAS no such ancestor leaves the loop with nothing to inspect. It
+    // must fall through cleanly instead of recording a root or memoizing a
+    // candidate it never read.
+    #[tokio::test]
+    async fn test_discover_workspace_dependency_aliases_without_ancestors_records_nothing() {
+        let mut finder = RustProjectFinder::new();
+
+        finder
+            .discover_workspace_dependency_aliases_for_member(
+                Path::new("Cargo.toml"),
+                Path::new("Cargo.toml"),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            finder.workspace_roots.is_empty(),
+            "no ancestor was inspected, so no root may be recorded"
+        );
+        assert!(
+            finder.non_workspace_manifest_candidates.is_empty(),
+            "no ancestor was inspected, so no candidate may be memoized"
+        );
+    }
+
+    // Sibling of the alias walk above: `finalize`'s root search also starts two
+    // ancestors up, so a manifest without one reports "no workspace root"
+    // without reading — or memoizing — any candidate.
+    #[tokio::test]
+    async fn test_discover_workspace_root_for_member_without_ancestors_finds_nothing() {
+        let finder = RustProjectFinder::new();
+        let mut rejected_candidates = HashSet::new();
+
+        let discovered = finder
+            .discover_workspace_root_for_member(
+                Path::new("Cargo.toml"),
+                Path::new(""),
+                &mut rejected_candidates,
+            )
+            .await
+            .unwrap();
+
+        assert!(discovered.is_none());
+        assert!(
+            rejected_candidates.is_empty(),
+            "no candidate was read, so none may be memoized as rejected"
+        );
+    }
+
+    // The alias rewrite inside `insert_workspace_member` is the LAST chance to
+    // resolve a `[workspace.dependencies]` alias. Here the member's own visit
+    // walks up only as far as the NESTED `[workspace]` root, which declares no
+    // aliases; the outer root that owns both `[workspace.package].version` and
+    // the alias is discovered later, by `finalize`. The deferred member must
+    // still end up depending on the REAL package name.
+    #[tokio::test]
+    async fn test_rust_project_finder_renames_alias_dependency_resolved_during_finalize() {
+        let temp_dir = TempDir::new().unwrap();
+
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["nested/crates/*"]
+
+[workspace.package]
+version = "1.4.0"
+
+[workspace.dependencies]
+renamed-core = { package = "core", path = "nested/crates/core" }
+"#,
+        )
+        .unwrap();
+
+        // Nested root: a `[workspace]` table with NO `[workspace.package]`, so
+        // the member's visit-time walk stops here and learns no aliases, while
+        // `finalize` rejects it and keeps climbing.
+        let nested_dir = temp_dir.path().join("nested");
+        fs::create_dir_all(&nested_dir).unwrap();
+        fs::write(
+            nested_dir.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/*\"]\n",
+        )
+        .unwrap();
+
+        let member_dir = nested_dir.join("crates").join("app");
+        fs::create_dir_all(&member_dir).unwrap();
+        let member_toml = member_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            r#"[package]
+name = "app"
+version.workspace = true
+
+[dependencies]
+renamed-core = { workspace = true }
+"#,
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&member_toml, Path::new("nested/crates/app/Cargo.toml"))
+            .await
+            .unwrap();
+
+        // The visit-time rewrite could not help: the only root known so far is
+        // the alias-less nested one, so the deferred member still carries the
+        // raw alias key. This is what forces the rewrite into
+        // `insert_workspace_member` below.
+        assert_eq!(
+            finder.pending_workspace_packages[0].dependencies,
+            vec!["renamed-core".to_string()],
+            "visit must not have resolved the alias yet"
+        );
+
+        finder.finalize().await.unwrap();
+
+        let projects = finder.projects();
+        let app = projects
+            .iter()
+            .find(|project| project.name() == Some("app"))
+            .expect("member should be discovered");
+        assert_eq!(app.version(), Some("1.4.0"));
+        let dependencies = app.dependencies();
+        assert!(
+            dependencies.contains("core"),
+            "the alias must resolve to the real package name, got {dependencies:?}"
+        );
+        assert!(!dependencies.contains("renamed-core"));
+
+        temp_dir.close().unwrap();
+    }
+
+    // A workspace root discovered by `finalize` (never visited — e.g. excluded
+    // by an ignore pattern) may itself be a hybrid root whose `[package]`
+    // inherits `publish` from its own `[workspace.package]`. The synthetic
+    // workspace project must resolve that inheritance against the very bytes
+    // the walk decoded, not fall back to the permissive default.
+    #[tokio::test]
+    async fn test_rust_project_finder_finalize_root_resolves_own_inherited_publish() {
+        let temp_dir = TempDir::new().unwrap();
+
+        let workspace_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &workspace_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.5.0"
+publish = false
+
+[package]
+name = "root-crate"
+version.workspace = true
+publish.workspace = true
+"#,
+        )
+        .unwrap();
+
+        let member_dir = temp_dir.path().join("crates").join("app");
+        fs::create_dir_all(&member_dir).unwrap();
+        let member_toml = member_dir.join("Cargo.toml");
+        fs::write(
+            &member_toml,
+            "[package]\nname = \"app\"\nversion.workspace = true\n",
+        )
+        .unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&member_toml, Path::new("crates/app/Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        let projects = finder.projects();
+        let workspace = projects
+            .iter()
+            .find(|project| matches!(project, Project::Workspace(_)))
+            .expect("finalize should synthesize the discovered workspace root");
+        assert_eq!(workspace.path(), workspace_toml.as_path());
+        assert!(
+            !workspace.is_publishable_by_default(),
+            "publish.workspace = true must resolve to [workspace.package].publish = false"
+        );
+
+        let member = projects
+            .iter()
+            .find(|project| project.name() == Some("app"))
+            .expect("member should be discovered");
+        assert!(
+            member.is_publishable_by_default(),
+            "the member declares no publish key, so it stays publishable"
+        );
+
+        temp_dir.close().unwrap();
+    }
 }

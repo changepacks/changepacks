@@ -111,25 +111,31 @@ async fn handle_init_at(args: &InitArgs, current_dir: &Path) -> Result<()> {
     }
 
     let contents = serde_json::to_string_pretty(&Config::default())?;
-    let file = match OpenOptions::new()
+    // `create_new` is the claim: exactly one caller can create `config.json`,
+    // and losing that race is the "already initialized" refusal rather than a
+    // generic io failure. Every other kind keeps its path context and
+    // propagates. Testing the two apart on the same `match` would need an
+    // `open` failure that is neither `AlreadyExists` nor a `create_dir_all`
+    // failure first, which no portable fixture can produce — so the refusal is
+    // filtered ahead of one shared context site instead of living in a second
+    // match arm no test can reach.
+    let claimed = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&config_file)
-        .await
+        .await;
+    if claimed
+        .as_ref()
+        .is_err_and(|error| error.kind() == ErrorKind::AlreadyExists)
     {
-        Ok(file) => file,
-        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-            return Err(anyhow::anyhow!(ALREADY_INITIALIZED_ERROR));
-        }
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!(
-                    "Failed to write changepacks config {}",
-                    config_file.display()
-                )
-            });
-        }
-    };
+        return Err(anyhow::anyhow!(ALREADY_INITIALIZED_ERROR));
+    }
+    let file = claimed.with_context(|| {
+        format!(
+            "Failed to write changepacks config {}",
+            config_file.display()
+        )
+    })?;
     write_claimed_config(file, &config_file, contents.as_bytes()).await?;
     // Same locked-stdout policy as the dry-run branch above: taken after the
     // final `.await` so no suspension point holds the lock.
@@ -431,6 +437,63 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(config_file).expect("read preserved config"),
             existing_config
+        );
+    }
+
+    // A second sequential init must take the `AlreadyExists` claim branch and
+    // leave the config produced by the first init byte-for-byte intact.
+    #[tokio::test]
+    async fn test_init_twice_refuses_second_attempt_without_changing_config() {
+        let repository = temporary_repository();
+        let args = InitArgs { dry_run: false };
+
+        handle_init_at(&args, repository.path())
+            .await
+            .expect("first init succeeds");
+        let config_file = repository.path().join(".changepacks/config.json");
+        let original_config = tokio::fs::read(&config_file)
+            .await
+            .expect("read config produced by first init");
+
+        let error = handle_init_at(&args, repository.path())
+            .await
+            .expect_err("second init must be refused");
+
+        assert_eq!(error.to_string(), ALREADY_INITIALIZED_ERROR);
+        assert_eq!(
+            tokio::fs::read(config_file)
+                .await
+                .expect("read config after refused second init"),
+            original_config
+        );
+    }
+
+    // The dry-run pre-check refuses an already-initialized repository with the
+    // SAME message as the real `create_new` claim — it is a preview of that
+    // refusal, so it must not print "Would initialize" instead — and, being a
+    // dry run, it must still leave the existing config untouched.
+    #[tokio::test]
+    async fn test_init_dry_run_refuses_an_already_initialized_repository() {
+        let repository = temporary_repository();
+
+        handle_init_at(&InitArgs { dry_run: false }, repository.path())
+            .await
+            .expect("first init succeeds");
+        let config_file = repository.path().join(".changepacks/config.json");
+        let original_config = tokio::fs::read(&config_file)
+            .await
+            .expect("read config produced by first init");
+
+        let error = handle_init_at(&InitArgs { dry_run: true }, repository.path())
+            .await
+            .expect_err("a dry-run init must be refused once the config exists");
+
+        assert_eq!(error.to_string(), ALREADY_INITIALIZED_ERROR);
+        assert_eq!(
+            tokio::fs::read(config_file)
+                .await
+                .expect("read config after refused dry-run init"),
+            original_config
         );
     }
 }

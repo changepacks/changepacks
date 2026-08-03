@@ -622,4 +622,132 @@ mod tests {
         assert!(message.contains("Java is required"), "{message}");
         assert!(message.contains("JAVA_HOME"), "{message}");
     }
+
+    /// Gradle emits `null` for a project that never set a version, so the
+    /// `Null` arm is a legitimate wire value and must answer `Ok(None)` rather
+    /// than falling through to the wrong-type error the sibling arms produce.
+    /// The field is still consumed, exactly as the accepted-string arm does.
+    #[test]
+    fn test_optional_metadata_string_accepts_json_null() {
+        let mut fields: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(r#"{"version":null}"#).unwrap();
+
+        assert_eq!(
+            optional_metadata_string(&mut fields, "version").unwrap(),
+            None
+        );
+        assert!(fields.is_empty());
+    }
+
+    /// End-to-end companion to the accessor test above: a record whose
+    /// `version` is JSON `null` parses successfully and yields a versionless
+    /// project, instead of being rejected as malformed.
+    #[test]
+    fn test_parse_gradle_metadata_record_accepts_null_version() {
+        let (raw_dir, record) = parse_gradle_metadata_record(concat!(
+            r#"{"projectDir":"/repo","projectPath":":","name":"root","version":null,"#,
+            r#""aggregate":false,"hasPublishTask":true,"hasPublishToMavenLocalTask":true}"#
+        ))
+        .unwrap();
+
+        assert_eq!(raw_dir, PathBuf::from("/repo"));
+        assert_eq!(record.project_path, ":");
+        assert_eq!(record.properties.name.as_deref(), Some("root"));
+        assert_eq!(record.properties.version, None);
+    }
+
+    /// Write a wrapper that deletes the `--init-script` file it was handed and
+    /// then exits successfully, leaving nothing for changepacks' own temporary
+    /// file cleanup to remove. The script matches the init script by its
+    /// `.gradle` extension rather than by argument position, so it stays
+    /// correct if the surrounding argument list is reordered.
+    fn create_init_script_deleting_gradlew(dir: &Path) -> PathBuf {
+        if cfg!(windows) {
+            let gradlew = dir.join("gradlew.bat");
+            std::fs::write(
+                &gradlew,
+                "@echo off\r\nfor %%A in (%*) do if /i \"%%~xA\"==\".gradle\" del /q \"%%~A\"\r\nexit /b 0\r\n",
+            )
+            .unwrap();
+            gradlew
+        } else {
+            let gradlew = dir.join("gradlew");
+            std::fs::write(
+                &gradlew,
+                "#!/bin/sh\nfor arg in \"$@\"; do case $arg in *.gradle) rm -f \"$arg\" ;; esac; done\nexit 0\n",
+            )
+            .unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                std::fs::set_permissions(&gradlew, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            gradlew
+        }
+    }
+
+    /// A wrapper root that does not exist makes the spawn itself fail, which is
+    /// a different failure from a wrapper that runs and exits non-zero: only
+    /// this path produces the "Failed to execute" wording, and it must still
+    /// name both the wrapper root and the wrapper. Cleanup succeeds here, so
+    /// the message must carry no `additionally,` suffix.
+    #[tokio::test]
+    async fn test_get_gradle_metadata_reports_wrapper_spawn_failure() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let missing_root = temp_dir.path().join("never-created");
+        let gradlew = missing_root.join("gradlew");
+
+        let error = get_gradle_metadata(&gradlew, &missing_root, true)
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+
+        assert!(
+            message.contains("Failed to execute Gradle metadata discovery for wrapper root"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&missing_root.display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains(&gradlew.display().to_string()),
+            "{message}"
+        );
+        assert!(!message.contains("additionally,"), "{message}");
+
+        temp_dir.close().unwrap();
+    }
+
+    /// The init script is a temporary file changepacks owns for the duration of
+    /// one wrapper invocation. When it can no longer be removed the run is a
+    /// failure even though Gradle exited zero, because a leaked init script
+    /// would be re-applied to unrelated builds. The report names the cleanup
+    /// step and the file it could not remove.
+    #[tokio::test]
+    async fn test_get_gradle_metadata_reports_init_script_cleanup_failure() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let gradlew = create_init_script_deleting_gradlew(temp_dir.path());
+
+        let error = get_gradle_metadata(&gradlew, temp_dir.path(), true)
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+
+        assert!(
+            message.contains("Temporary Gradle metadata init-script cleanup failed"),
+            "{message}"
+        );
+        assert!(
+            message.contains("failed to remove temporary Gradle metadata init script"),
+            "{message}"
+        );
+        assert!(
+            message.contains("changepacks-gradle-metadata-"),
+            "{message}"
+        );
+
+        temp_dir.close().unwrap();
+    }
 }

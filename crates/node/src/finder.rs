@@ -1,6 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use changepacks_core::{Project, ProjectFinder};
+use changepacks_core::{Project, ProjectFinder, manifest_parent_dir};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -146,17 +146,17 @@ impl ProjectFinder for NodeProjectFinder {
         // live in the module-private `detect_node_workspace` helper.
         let (package_manager, is_workspace) = tokio::try_join!(
             async {
-                match path.parent() {
-                    Some(parent) => {
-                        detect_package_manager_in_ancestors_cached(
-                            parent,
-                            relative_path.components().count(),
-                            &mut self.package_manager_probe_cache,
-                        )
-                        .await
-                    }
-                    None => Ok(PackageManager::Npm),
-                }
+                // `visit` runs behind `should_visit_manifest`, which only
+                // accepts a path whose file name is `package.json`, so the
+                // manifest always has a parent directory. `manifest_parent_dir`
+                // keeps the lookup total through the shared "Parent not found"
+                // context instead of a fallback arm no input can reach.
+                detect_package_manager_in_ancestors_cached(
+                    manifest_parent_dir(path)?,
+                    relative_path.components().count(),
+                    &mut self.package_manager_probe_cache,
+                )
+                .await
             },
             detect_node_workspace(&package_json, path),
         )?;

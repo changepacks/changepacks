@@ -788,8 +788,31 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     ///
     /// # Errors
     /// Propagates whatever [`ProjectFinder::matches_project_file`] returns.
-    async fn should_visit_manifest(&self, path: &Path) -> Result<bool> {
-        Ok(self.matches_project_file(path).await? && !self.contains_project(path))
+    ///
+    /// Written in the boxed-future shape `#[async_trait]` would produce rather
+    /// than as a defaulted `async fn`, for the same reason
+    /// [`impl_publish_flows!`] is: the spans `#[async_trait]` puts on a
+    /// *defaulted* body are not attributed back to this file by `llvm-cov`, so
+    /// such a default reads as permanently unexecuted in coverage even while
+    /// tests drive every branch of it. This shape is object safe, stays
+    /// overridable by the `#[async_trait]` impls in the language crates, and is
+    /// measurable. The three defaults below follow the same rule.
+    fn should_visit_manifest<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        path: &'life1 Path,
+    ) -> ::core::pin::Pin<
+        ::std::boxed::Box<
+            dyn ::core::future::Future<Output = Result<bool>> + ::core::marker::Send + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: ::core::marker::Sync + 'async_trait,
+    {
+        ::std::boxed::Box::pin(async move {
+            Ok(self.matches_project_file(path).await? && !self.contains_project(path))
+        })
     }
     /// The manifest patterns this finder claims, in one of TWO forms.
     ///
@@ -849,17 +872,31 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// # Errors
     /// Returns an error when metadata for a recognized manifest path cannot be
     /// read for a reason other than the path not existing.
-    async fn matches_project_file(&self, path: &Path) -> Result<bool> {
-        let Some(name_os) = path.file_name() else {
-            return Ok(false);
-        };
-        let Some(name) = name_os.to_str() else {
-            return Ok(false);
-        };
-        if !self.project_files().contains(&name) {
-            return Ok(false);
-        }
-        is_regular_file(path).await
+    fn matches_project_file<'life0, 'life1, 'async_trait>(
+        &'life0 self,
+        path: &'life1 Path,
+    ) -> ::core::pin::Pin<
+        ::std::boxed::Box<
+            dyn ::core::future::Future<Output = Result<bool>> + ::core::marker::Send + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        Self: ::core::marker::Sync + 'async_trait,
+    {
+        ::std::boxed::Box::pin(async move {
+            let Some(name_os) = path.file_name() else {
+                return Ok(false);
+            };
+            let Some(name) = name_os.to_str() else {
+                return Ok(false);
+            };
+            if !self.project_files().contains(&name) {
+                return Ok(false);
+            }
+            is_regular_file(path).await
+        })
     }
     /// Mark every project against every path in `paths` from ONE
     /// `projects_mut()` call.
@@ -896,8 +933,18 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
     /// Called once after all `visit()` calls complete.
     /// # Errors
     /// Returns error if finalization fails.
-    async fn finalize(&mut self) -> Result<()> {
-        Ok(())
+    fn finalize<'life0, 'async_trait>(
+        &'life0 mut self,
+    ) -> ::core::pin::Pin<
+        ::std::boxed::Box<
+            dyn ::core::future::Future<Output = Result<()>> + ::core::marker::Send + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        Self: ::core::marker::Send + 'async_trait,
+    {
+        ::std::boxed::Box::pin(async move { Ok(()) })
     }
 }
 

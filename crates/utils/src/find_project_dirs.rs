@@ -151,9 +151,17 @@ async fn discover_project_dirs_with_gitignore(
         // Hoist file_name extraction before the finder loop: extract once per
         // git-index entry instead of once per finder per entry. With 6 finders,
         // this eliminates 5 redundant OsStr decodes per tracked file.
-        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
+        //
+        // `path` is built from `to_str_lossy` above, so every component is
+        // already valid UTF-8 and `to_str` cannot fail, and a git index entry
+        // is never empty, a filesystem root, or `..`, so `file_name` always
+        // yields one. `unwrap_or_default` keeps the extraction total without a
+        // skip branch no input can reach: an empty name matches no finder's
+        // manifest list, which is exactly what skipping the entry did.
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
 
         let mut abs_path: Option<PathBuf> = None;
         for finder in project_finders.iter_mut() {

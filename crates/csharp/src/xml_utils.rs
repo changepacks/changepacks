@@ -337,9 +337,6 @@ fn rewrite_version(content: &str, new_version: &str, has_version: bool) -> Resul
                     let group_indent = project_group_indent(preceding_project_ws.as_deref());
                     let eligible =
                         is_unconditional_project_property_group(&e, element_depth, project_depth)?;
-                    if is_top_level && fallback_group_indent.is_none() {
-                        fallback_group_indent = Some(group_indent.clone());
-                    }
                     let version_qname = if !has_version && !version_updated && eligible {
                         let element_name = e.name();
                         let qname = std::str::from_utf8(element_name.as_ref())
@@ -503,9 +500,6 @@ fn rewrite_version(content: &str, new_version: &str, has_version: bool) -> Resul
                         element_depth + 1,
                         project_depth,
                     )?;
-                    if is_top_level && fallback_group_indent.is_none() {
-                        fallback_group_indent = Some(group_indent.clone());
-                    }
                     if is_unconditional_top_level {
                         let start = e.into_owned();
                         let end = BytesEnd::from(start.name()).into_owned();
@@ -1123,5 +1117,103 @@ mod tests {
             "<Project><PropertyGroup><Version>2.0.0</Version></PropertyGroup></Project>"
         );
         Ok(())
+    }
+
+    #[test]
+    fn test_add_new_version_into_property_group_keeps_terminator_free_content_on_one_line()
+    -> Result<()> {
+        // Sibling of the `<Project/>` case above, but through the OTHER
+        // synthesis branch: an existing `<PropertyGroup>` gains a `<Version>`
+        // before its close tag. The group closes with no preceding whitespace
+        // run, so `close_ws` is `None` and both re-indent helpers
+        // (`write_nested_line_break_and_indent` for the element and
+        // `write_line_break_and_indent` for the close tag) are asked to break
+        // the line — with an empty `line_ending` both must stay silent, or a
+        // single-line `.csproj` would gain an invented terminator AND a stray
+        // indent run.
+        let content =
+            "<Project><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup></Project>";
+
+        let result = update_version_in_xml(content, "2.0.0")?;
+
+        assert_eq!(
+            result,
+            "<Project><PropertyGroup><OutputType>Exe</OutputType><Version>2.0.0</Version></PropertyGroup></Project>"
+        );
+        assert!(
+            !result.contains('\n') && !result.contains('\r'),
+            "no terminator may be introduced into a single-line file:\n{result:?}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_add_new_version_terminates_synthesized_group_when_project_close_has_no_whitespace()
+    -> Result<()> {
+        // The only top-level group is conditional, so a whole
+        // `<PropertyGroup>` is synthesized before `</Project>`. `</Project>`
+        // follows `</PropertyGroup>` immediately, so no whitespace run was
+        // captured for it and the synthesized block must supply BOTH sides
+        // itself: the leading break/indent from `line_ending`, and — the
+        // branch pinned here — a trailing `line_ending` so `</Project>` still
+        // starts on its own line instead of being glued onto
+        // `</PropertyGroup>`.
+        let content = "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\"><Optimize>false</Optimize></PropertyGroup></Project>\n";
+
+        let result = update_version_in_xml(content, "2.0.0")?;
+
+        assert_eq!(
+            result,
+            "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Debug'\"><Optimize>false</Optimize></PropertyGroup>\n  <PropertyGroup>\n    <Version>2.0.0</Version>\n  </PropertyGroup>\n</Project>\n"
+        );
+        assert!(
+            !result.contains("</PropertyGroup></Project>"),
+            "the synthesized group must not be glued onto </Project>:\n{result}",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_begin_top_level_scope_seeds_fallback_group_indent_for_the_first_top_level_element() {
+        // Opening the FIRST element directly under `<Project>` both consumes
+        // the pending `</Project>` whitespace and seeds `fallback_group_indent`
+        // from its trailing indentation — the column a synthesized top-level
+        // `<PropertyGroup>` is later written at. Seeding here (rather than only
+        // in the `PropertyGroup` branches) is what makes the fallback available
+        // even for a document whose first top-level element is something else.
+        let mut project_close_ws = Some("\n    ".to_string());
+        let mut fallback_group_indent = None;
+
+        let preceding = begin_top_level_scope(
+            true,
+            &mut [],
+            &mut project_close_ws,
+            &mut fallback_group_indent,
+        );
+
+        assert_eq!(preceding.as_deref(), Some("\n    "));
+        assert!(
+            project_close_ws.is_none(),
+            "the whitespace belongs to the opened element, not to </Project>"
+        );
+        assert_eq!(fallback_group_indent.as_deref(), Some("    "));
+    }
+
+    #[test]
+    fn test_update_version_without_project_element_reports_no_mutated_node() {
+        // Neither pass can touch a document that carries no `<Project>`: the
+        // `<PropertyGroup>` is not project-scoped, so it is never eligible,
+        // its `<Version>` is never rewritten in place, and no synthesis branch
+        // has a `</Project>` to insert before. That must surface as an error
+        // rather than silently returning the input unchanged, which would make
+        // `changepacks update` report a successful bump it never performed.
+        let content = "<Solution>\n  <PropertyGroup>\n    <Version>1.0.0</Version>\n  </PropertyGroup>\n</Solution>\n";
+
+        let error = update_version_in_xml(content, "2.0.0").unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("C# version update did not mutate any XML node"),
+            "unexpected error: {error:#}"
+        );
     }
 }

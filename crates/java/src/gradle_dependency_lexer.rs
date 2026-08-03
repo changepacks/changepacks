@@ -38,9 +38,9 @@ fn gradle_closer_for(open: u8) -> u8 {
     match open {
         b'(' => b')',
         b'[' => b']',
-        b'{' => b'}',
-        // Unreachable while the caller invariant above holds; retained so the
-        // mapping stays total for all 256 byte values.
+        // `b'{'`, plus — only if the invariant above is ever broken — every
+        // other byte. Folding the two into one arm keeps the mapping total for
+        // all 256 byte values without leaving a branch no input can reach.
         _ => b'}',
     }
 }
@@ -1386,5 +1386,246 @@ dependencies {
             extract_gradle_project_dependencies(content),
             vec![":after-provider", ":after-closure"]
         );
+    }
+
+    // Bracket delimiters suspend direct dependency statements until the list closes.
+    #[test]
+    fn test_extract_gradle_project_dependencies_tracks_bracketed_expressions() {
+        let content = r#"
+dependencies {
+    [project(":list-decoy")]
+    implementation(project(":real"))
+}
+"#;
+
+        assert_eq!(extract_gradle_project_dependencies(content), vec![":real"]);
+    }
+
+    // A semicolon resets the pending dependency statement before the next call.
+    #[test]
+    fn test_extract_gradle_project_dependencies_resets_statement_after_semicolon() {
+        let content = r#"
+dependencies {
+    implementation; project(":standalone-decoy")
+    implementation(project(":real"))
+}
+"#;
+
+        assert_eq!(extract_gradle_project_dependencies(content), vec![":real"]);
+    }
+
+    // Top-level malformed-call recovery clears stale delimiters before scanning resumes.
+    #[test]
+    fn test_extract_gradle_project_dependencies_recovers_from_top_level_malformed_call() {
+        let content = concat!(
+            "project(\":bad\"] /* quarantined */ )\r\n",
+            "\r\n",
+            "noop()\r\n",
+            "dependencies {\r\n",
+            "    implementation(project(\":real\"))\r\n",
+            "}\r\n",
+        );
+
+        assert_eq!(extract_gradle_project_dependencies(content), vec![":real"]);
+    }
+
+    // Malformed quoted and slashy literals stop at their documented boundaries.
+    #[test]
+    fn test_gradle_literal_scanners_report_invalid_and_unterminated_literals() {
+        assert_eq!(
+            quoted_gradle_literal_end(b"version = '1.0'", 0, false, GradleDialect::Groovy),
+            None
+        );
+        assert_eq!(
+            quoted_gradle_literal_end(b"'first\nsecond'", 0, false, GradleDialect::Groovy),
+            None
+        );
+        assert_eq!(
+            quoted_gradle_literal_end(b"'''unterminated", 0, true, GradleDialect::Groovy),
+            None
+        );
+        assert_eq!(
+            slashy_gradle_literal_end(b"/escaped\\/unterminated", 0),
+            None
+        );
+    }
+
+    // A `$/ ... /$` dollar-slashy literal that never closes consumes the rest
+    // of the buffer and reports no end. Both `$` fast-forward outcomes are
+    // pinned: a `$` with a byte after it skips the pair, a `$` as the final
+    // byte advances by one so the scan still terminates.
+    #[test]
+    fn test_dollar_slashy_gradle_literal_end_reports_unterminated() {
+        assert_eq!(dollar_slashy_gradle_literal_end(b"$/never closed", 0), None);
+        assert_eq!(dollar_slashy_gradle_literal_end(b"$/a $b c", 0), None);
+        assert_eq!(
+            dollar_slashy_gradle_literal_end(b"$/ends on dollar$", 0),
+            None
+        );
+        assert_eq!(
+            dollar_slashy_gradle_literal_end(b"$/closed/$ rest", 0),
+            Some(10)
+        );
+    }
+
+    // A plain `project(':path')` argument must be EXACTLY one quoted literal:
+    // a literal running past the argument span, or one trailed by anything
+    // other than trivia, is not a plain project path.
+    #[test]
+    fn test_plain_gradle_project_path_requires_the_literal_to_span_the_argument() {
+        let dialect = GradleDialect::Groovy;
+
+        let trailing = "':app' extra";
+        assert_eq!(
+            plain_gradle_project_path(trailing, 0, trailing.len(), dialect),
+            None,
+            "a token after the closing quote is not trivia"
+        );
+        assert_eq!(
+            plain_gradle_project_path("':app'", 0, 3, dialect),
+            None,
+            "a literal that ends past the argument span is not the argument"
+        );
+        assert_eq!(
+            plain_gradle_project_path("':app'", 0, 6, dialect),
+            Some(":app")
+        );
+    }
+
+    // Trivia helpers clamp comments to a bounded span and recognize CRLF as one break.
+    #[test]
+    fn test_gradle_trivia_helpers_handle_comments_non_calls_and_crlf() {
+        let unterminated_comment = b"/* unterminated";
+        assert_eq!(
+            skip_gradle_comment(unterminated_comment, 0, GradleDialect::Groovy),
+            Some(unterminated_comment.len())
+        );
+
+        let bounded_comment = b"/* comment */implementation(";
+        assert_eq!(
+            skip_gradle_trivia(bounded_comment, 0, 5, GradleDialect::Groovy),
+            5
+        );
+        assert!(!looks_like_statement_call(
+            b"42 / 2",
+            0,
+            GradleDialect::Groovy
+        ));
+        assert_eq!(gradle_line_break_end(b"\r\nimplementation(", 0), Some(2));
+    }
+
+    // Call scanning skips argument comments and preserves the real project-path span.
+    #[test]
+    fn test_scan_gradle_call_skips_comments_inside_arguments() {
+        let content = "project(/* comment */ ':real')";
+        let open = content.find('(').unwrap();
+
+        let GradleCallScan::Complete { end, arguments } =
+            scan_gradle_call(content.as_bytes(), open, GradleDialect::Groovy)
+        else {
+            panic!("commented project call should be complete");
+        };
+
+        assert_eq!(end, content.len());
+        assert_eq!(
+            gradle_dependency_from_arguments(content, &arguments, GradleDialect::Groovy),
+            Some(":real")
+        );
+    }
+
+    // A mismatch without a recovery candidate quarantines through comments to a CRLF blank line.
+    #[test]
+    fn test_scan_gradle_call_quarantines_mismatch_to_next_statement() {
+        let content = concat!(
+            "project(\":bad\"] /* quarantined */ )\r\n",
+            "\r\n",
+            "implementation()",
+        );
+        let open = content.find('(').unwrap();
+
+        let GradleCallScan::Malformed { resume } =
+            scan_gradle_call(content.as_bytes(), open, GradleDialect::Groovy)
+        else {
+            panic!("mismatched project call should be malformed");
+        };
+
+        assert_eq!(&content[resume..], "implementation()");
+    }
+
+    // Unterminated literals and unclosed calls without recovery candidates resume at EOF.
+    #[test]
+    fn test_scan_gradle_call_without_recovery_candidate_resumes_at_eof() {
+        for content in ["project(\"unterminated", "project(\":unclosed\""] {
+            let open = content.find('(').unwrap();
+            let GradleCallScan::Malformed { resume } =
+                scan_gradle_call(content.as_bytes(), open, GradleDialect::Groovy)
+            else {
+                panic!("unclosed project call should be malformed");
+            };
+
+            assert_eq!(resume, content.len());
+        }
+    }
+
+    // A blank-line candidate wins when a later unterminated literal corrupts the outer call.
+    #[test]
+    fn test_extract_gradle_project_dependencies_recovers_before_unterminated_literal() {
+        let content = r#"dependencies {
+    implementation(project(":bad"
+
+    implementation(project(":recovered"))
+    "unterminated
+}
+"#;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec![":recovered"]
+        );
+    }
+
+    // A blank-line candidate also wins when a later closer mismatches the outer call.
+    #[test]
+    fn test_extract_gradle_project_dependencies_recovers_before_mismatched_closer() {
+        let content = r#"dependencies {
+    implementation(project(":bad"
+
+    implementation(project(":recovered"))]
+}
+"#;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec![":recovered"]
+        );
+    }
+
+    // An EOF recovery candidate resumes at the nested declaration despite the missing outer close.
+    #[test]
+    fn test_extract_gradle_project_dependencies_recovers_unclosed_call_at_eof() {
+        let content = r#"dependencies {
+    implementation(project(":bad"
+
+    implementation(project(":recovered"))"#;
+
+        assert_eq!(
+            extract_gradle_project_dependencies(content),
+            vec![":recovered"]
+        );
+    }
+
+    // Non-identifier arguments are rejected, and a later unterminated literal ends extraction.
+    #[test]
+    fn test_extract_gradle_project_dependencies_rejects_non_identifier_before_unterminated_literal()
+    {
+        let content = r#"dependencies {
+    implementation(project(42))
+    implementation(project(":real"))
+}
+"unterminated
+dependencies { implementation(project(":after-decoy")) }
+"#;
+
+        assert_eq!(extract_gradle_project_dependencies(content), vec![":real"]);
     }
 }

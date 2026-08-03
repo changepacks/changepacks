@@ -665,8 +665,8 @@ pub(crate) fn candidate_ranges(
 mod tests {
     use super::{
         GROOVY_ASSIGN_PATTERN, GROOVY_SPACE_PATTERN, GradleDialect, KTS_FALLBACK_PATTERN,
-        KTS_SIMPLE_PATTERN, SCRIPT_VERSION_DECLARATION_PATTERN, candidate_ranges,
-        gradle_dialect_for, may_declare_version,
+        KTS_SIMPLE_PATTERN, LexContext, PreviousToken, SCRIPT_VERSION_DECLARATION_PATTERN,
+        candidate_ranges, gradle_dialect_for, may_declare_version, previous_token,
     };
     use crate::gradle_dependency_lexer::extract_gradle_project_dependencies;
     use crate::version_updater::{
@@ -1615,6 +1615,144 @@ group = "com.example"
         assert_eq!(
             tokio::fs::read(&properties_path).await.unwrap(),
             properties_content
+        );
+    }
+
+    // Mismatched Groovy quotes are declarations, but not safely editable values.
+    #[test]
+    fn test_candidate_ranges_marks_mismatched_groovy_quotes_unsupported() {
+        let candidates = candidate_ranges(
+            "version = '1.0.0\"\n",
+            GradleVersionScope::ScriptOnly,
+            GradleDialect::Groovy,
+        );
+
+        assert!(candidates.editable.is_empty());
+        assert!(candidates.has_unsupported);
+    }
+
+    // Non-code lexical contexts conservatively behave like completed expressions.
+    #[test]
+    fn test_previous_token_defaults_to_expression_end_outside_code() {
+        assert_eq!(
+            previous_token(&[LexContext::LineComment]),
+            PreviousToken::ExpressionEnd
+        );
+    }
+
+    // Kotlin dollar scanning and nested interpolation braces preserve the following version line.
+    #[test]
+    fn test_lexical_kotlin_unquoted_dollar_and_nested_interpolation_keep_script_scope() {
+        let content = concat!(
+            "val ignored = $notAString\n",
+            "val template = \"${run { project.value + 1 }}\"\n",
+            "version = \"1.0.0\"\n",
+        );
+
+        let updated =
+            update_version_in_kts(content, "1.0.1", GradleVersionScope::ScriptOnly).unwrap();
+
+        assert_eq!(
+            updated,
+            content.replace("version = \"1.0.0\"", "version = \"1.0.1\"")
+        );
+    }
+
+    // A semicolon clears a pending allprojects identifier before the next block opens.
+    #[test]
+    fn test_lexical_groovy_semicolon_prevents_false_allprojects_scope() {
+        let content = concat!(
+            "allprojects; {\n",
+            "    version = 'decoy'\n",
+            "}\n",
+            "version = '1.0.0'\n",
+        );
+
+        let updated =
+            update_version_in_groovy(content, "1.0.1", GradleVersionScope::ScriptAndAllProjects)
+                .unwrap();
+
+        assert_eq!(
+            updated,
+            content.replace("version = '1.0.0'", "version = '1.0.1'")
+        );
+    }
+
+    // A bare numeric literal is ONE token: the digit branch consumes the whole
+    // alphanumeric/`_`/`.` run before the scanner resumes. If it stopped after
+    // the first digit, the trailing `.8` / `_000` would be re-scanned as fresh
+    // tokens and could leave the following `version =` mis-classified.
+    #[test]
+    fn test_lexical_groovy_numeric_literals_are_consumed_as_one_token() {
+        let content = concat!(
+            "sourceCompatibility = 1.8\n",
+            "targetCompatibility = 2_000\n",
+            "version = '1.0.0'\n",
+        );
+
+        let updated =
+            update_version_in_groovy(content, "1.0.1", GradleVersionScope::ScriptAndAllProjects)
+                .unwrap();
+
+        assert_eq!(
+            updated,
+            content.replace("version = '1.0.0'", "version = '1.0.1'")
+        );
+    }
+
+    // An identifier dollar clears a pending allprojects token through the generic byte branch.
+    #[test]
+    fn test_lexical_groovy_identifier_dollar_prevents_false_allprojects_scope() {
+        let content = concat!(
+            "allprojects$ {\n",
+            "    version = 'decoy'\n",
+            "}\n",
+            "version = '1.0.0'\n",
+        );
+
+        let updated =
+            update_version_in_groovy(content, "1.0.1", GradleVersionScope::ScriptAndAllProjects)
+                .unwrap();
+
+        assert_eq!(
+            updated,
+            content.replace("version = '1.0.0'", "version = '1.0.1'")
+        );
+    }
+
+    // An escaped newline remains inside a Groovy quoted string despite starting a new line.
+    #[test]
+    fn test_lexical_groovy_quoted_escape_keeps_newline_declaration_inside_string() {
+        let content = concat!(
+            "def template = \"continued\\\n",
+            "version = 'decoy'\"\n",
+            "version = '1.0.0'\n",
+        );
+
+        let updated =
+            update_version_in_groovy(content, "1.0.1", GradleVersionScope::ScriptOnly).unwrap();
+
+        assert_eq!(
+            updated,
+            content.replace("version = '1.0.0'", "version = '1.0.1'")
+        );
+    }
+
+    // Slashy and dollar-slashy strings both quarantine declarations inside interpolation.
+    #[test]
+    fn test_lexical_groovy_slashy_interpolations_keep_declarations_inside_strings() {
+        let content = concat!(
+            "def slashy = /prefix ${run { \"slashy\" }} suffix/\n",
+            "def dollar = $/prefix ${run { \"dollar\" }} suffix/$\n",
+            "version = '1.0.0'\n",
+        );
+
+        let updated =
+            update_version_in_groovy(content, "1.0.1", GradleVersionScope::ScriptOnly).unwrap();
+
+        assert_eq!(
+            updated,
+            content.replace("version = '1.0.0'", "version = '1.0.1'")
         );
     }
 }

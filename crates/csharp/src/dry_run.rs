@@ -240,25 +240,17 @@ where
 }
 
 /// External process boundary for the otherwise deterministic managed flow.
+///
+/// Spawning is driven directly rather than hidden behind a coverage
+/// substitution: `test_run_dotnet_command_surfaces_spawn_failure` reaches this
+/// boundary with a program name no machine can resolve, so the failure path is
+/// exercised for real and needs no .NET SDK to be installed.
 pub(crate) async fn run_dotnet_command(
     program: &'static str,
     args: Vec<OsString>,
     working_dir: PathBuf,
 ) -> Result<PublishOutput> {
-    #[cfg(not(tarpaulin_include))]
-    let output =
-        changepacks_core::publish::run_publish_command_os_args(program, args, &working_dir, true)
-            .await;
-
-    #[cfg(tarpaulin_include)]
-    let output = {
-        let _ = (program, args, working_dir);
-        Err(anyhow::anyhow!(
-            "the dotnet process is not spawned during coverage"
-        ))
-    };
-
-    output
+    changepacks_core::publish::run_publish_command_os_args(program, args, &working_dir, true).await
 }
 
 /// Asynchronously enumerate `*.nupkg` files in `dir` (non-recursive).
@@ -961,6 +953,34 @@ mod tests {
         );
         assert!(!pack_dir.exists(), "temporary pack directory leaked");
         assert!(!feed_dir.exists(), "temporary feed directory leaked");
+    }
+
+    // `run_dotnet_command` is the crate's only real process boundary, and its
+    // contract is that a command which cannot be spawned surfaces as `Err`
+    // rather than as a `PublishOutput` the managed flow would then fold into
+    // its combined result. The program name cannot exist on any machine, so
+    // the spawn fails immediately whether or not the .NET SDK is installed.
+    #[tokio::test]
+    async fn test_run_dotnet_command_surfaces_spawn_failure() {
+        let work = TempDir::new().unwrap();
+
+        let error = run_dotnet_command(
+            "changepacks-csharp-test-program-that-cannot-exist",
+            vec![OsString::from("--version")],
+            work.path().to_path_buf(),
+        )
+        .await
+        .expect_err("a program that cannot exist must not yield a PublishOutput");
+
+        assert!(
+            !format!("{error:#}").trim().is_empty(),
+            "the process boundary must surface a diagnosable error"
+        );
+        assert_eq!(
+            fs::read_dir(work.path()).unwrap().count(),
+            0,
+            "a failed spawn must leave the working directory untouched"
+        );
     }
 
     #[tokio::test]

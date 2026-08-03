@@ -268,10 +268,11 @@ pub struct UnsupportedDryRunProject {
     pub dependencies: HashSet<String>,
 }
 
-/// Emits the seventeen regression tests that `Package`'s and `Workspace`'s
+/// Emits the eighteen regression tests that `Package`'s and `Workspace`'s
 /// `mod tests` pin on the trait defaults produced by
 /// `impl_shared_project_defaults!`, `impl_publish_flows!` and
-/// `impl_publish_command_resolvers!`.
+/// `impl_publish_command_resolvers!`, plus the [`UnsupportedDryRunProject`]
+/// fixture contract those defaults are exercised against.
 ///
 /// Those three macros already de-duplicate the trait *bodies*, but the tests
 /// pinning them were kept as two near-verbatim hand-maintained copies in
@@ -575,6 +576,57 @@ macro_rules! shared_project_default_tests {
                 .unwrap();
 
             assert!(output.is_none());
+        }
+
+        #[tokio::test]
+        async fn test_unsupported_dry_run_project_fixture_contract() {
+            // Pins every constant `impl_unsupported_dry_run_accessors!` emits,
+            // so the fixture the dry-run-unsupported test above depends on
+            // cannot silently drift. Emitted once per trait because
+            // `UnsupportedDryRunProject` implements `Package` and `Workspace`
+            // from two separate impl blocks, each with its own
+            // `update_version` body.
+            let path = std::env::temp_dir().join("project.csproj");
+            let mut project = crate::test_support::UnsupportedDryRunProject {
+                path: path.clone(),
+                dependencies: std::collections::HashSet::new(),
+            };
+
+            assert_eq!($trait_name::name(&project), Some("unsupported-dry-run"));
+            assert_eq!($trait_name::version(&project), Some("1.0.0"));
+            assert_eq!($trait_name::path(&project), path.as_path());
+            assert_eq!(
+                $trait_name::relative_path(&project),
+                std::path::Path::new("project.csproj")
+            );
+            assert_eq!($trait_name::language(&project), crate::Language::CSharp);
+            assert!(!$trait_name::is_changed(&project));
+            assert_eq!(
+                $trait_name::default_publish_command(&project),
+                "echo publish"
+            );
+            assert_eq!($trait_name::default_dry_run_publish_command(&project), None);
+
+            // Both setters are deliberate no-ops on this fixture: the two
+            // constants they would normally move must survive the calls.
+            $trait_name::set_changed(&mut project, true);
+            $trait_name::set_name(&mut project, "renamed".to_string());
+            assert!(
+                !$trait_name::is_changed(&project),
+                "set_changed must stay a no-op on the fixture"
+            );
+            assert_eq!(
+                $trait_name::name(&project),
+                Some("unsupported-dry-run"),
+                "set_name must stay a no-op on the fixture"
+            );
+
+            // The fixture's `update_version` is a success stub, so it reports
+            // `Ok(())` and leaves the pinned version untouched.
+            $trait_name::update_version(&mut project, crate::UpdateType::Patch)
+                .await
+                .unwrap();
+            assert_eq!($trait_name::version(&project), Some("1.0.0"));
         }
 
         #[test]

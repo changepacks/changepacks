@@ -1472,6 +1472,47 @@ mod tests {
         assert_eq!(refs, vec!["Started".to_string(), "Empty".to_string()]);
     }
 
+    // Attributes other than `Include` / `Update` must be skipped outright:
+    // `PrivateAssets` / `OutputItemType` are routine on a `ProjectReference`,
+    // and neither may be mistaken for a project path. The reference is still
+    // collected from its `Include`.
+    #[test]
+    fn test_extract_project_references_skips_unrelated_attributes() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference OutputItemType="Analyzer" Include="..\CoreLib\CoreLib.csproj" PrivateAssets="all" />
+  </ItemGroup>
+</Project>"#;
+
+        let refs = CSharpProjectFinder::parse_csproj_metadata(content)
+            .unwrap()
+            .1;
+
+        assert_eq!(refs, vec!["CoreLib".to_string()]);
+    }
+
+    // An `Include` / `Update` value that is not a `.csproj` yields `None` from
+    // `extract_project_name_from_path`, so the attribute contributes no name
+    // and the element as a whole records nothing. `.vbproj` / `.fsproj`
+    // siblings are real MSBuild references this finder does not manage, so
+    // they must not leak into the dependency graph under a bogus name.
+    #[test]
+    fn test_extract_project_references_ignores_non_csproj_reference_paths() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Legacy\Legacy.vbproj" />
+    <ProjectReference Update="..\Native\Native.vcxproj" />
+    <ProjectReference Include="..\CoreLib\CoreLib.csproj" />
+  </ItemGroup>
+</Project>"#;
+
+        let refs = CSharpProjectFinder::parse_csproj_metadata(content)
+            .unwrap()
+            .1;
+
+        assert_eq!(refs, vec!["CoreLib".to_string()]);
+    }
+
     #[test]
     fn test_project_reference_malformed_attribute_returns_contextual_error() {
         let content = r#"<Project><ItemGroup><ProjectReference Include="Valid.csproj" Broken /></ItemGroup></Project>"#;

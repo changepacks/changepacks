@@ -63,9 +63,10 @@ mod tests {
     use super::*;
     use crate::test_support::MockPackage;
 
-    // The seventeen tests pinning the shared trait defaults are generated from
-    // one surface shared with `workspace.rs`; only the `Package`-only defaults
-    // below stay hand-written here.
+    // The eighteen tests pinning the shared trait defaults and the shared
+    // `UnsupportedDryRunProject` fixture are generated from one surface shared
+    // with `workspace.rs`; only the `Package`-only defaults below stay
+    // hand-written here.
     crate::test_support::shared_project_default_tests!(
         mock: MockPackage,
         trait_name: Package,

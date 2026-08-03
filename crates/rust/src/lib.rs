@@ -236,6 +236,7 @@ pub(crate) fn workspace_dependencies_table_mut(
 mod tests {
     use super::*;
     use changepacks_utils::test_support;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
@@ -446,6 +447,63 @@ mod tests {
             fs::read_to_string(&cargo_toml).unwrap(),
             round_trip_manifest("2.0.0"),
             "only the version literal may change; everything else must be byte-identical"
+        );
+    }
+
+    /// Every rejection path of [`sync_path_dependency_version`] must write
+    /// NOTHING — the entry, and the whole manifest around it, stays
+    /// byte-identical. In order: a registry dependency (a scalar, so not
+    /// table-like), a table without `path` (also a registry dependency, just
+    /// spelled long-hand), a `path` dependency that intentionally pins no
+    /// `version`, a `version` that is not a string, and an entry `accept`
+    /// refuses. The last case is the one that keeps out-of-scope path deps
+    /// (e.g. a member the current bump does not touch) from being rewritten.
+    #[rstest]
+    #[case::not_table_like("\"1.0\"", true)]
+    #[case::no_path_key("{ version = \"1.0\" }", true)]
+    #[case::no_version_key("{ path = \"../dep\" }", true)]
+    #[case::non_string_version("{ path = \"../dep\", version = 1 }", true)]
+    #[case::rejected_by_accept("{ path = \"../dep\", version = \"1.0\" }", false)]
+    fn test_sync_path_dependency_version_rejections_write_nothing(
+        #[case] spec: &str,
+        #[case] accept: bool,
+    ) {
+        let original = format!("dep = {spec}\n");
+        let mut doc: DocumentMut = original.parse().unwrap();
+
+        let written = sync_path_dependency_version(
+            doc.get_mut("dep").expect("fixture declares `dep`"),
+            "2.0.0",
+            |_| accept,
+        );
+
+        assert!(!written, "rejected entry reported a write: {spec}");
+        assert_eq!(
+            doc.to_string(),
+            original,
+            "a rejected entry must leave the manifest byte-identical"
+        );
+    }
+
+    // The accepted path rewrites the `version` slot in place: the range prefix
+    // survives, and so does the entry's end-of-line comment, which a
+    // freshly-built value would drop.
+    #[test]
+    fn test_sync_path_dependency_version_rewrites_accepted_entry_in_place() {
+        let mut doc: DocumentMut = "dep = { path = \"../dep\", version = \"^1.2.3\" } # pinned\n"
+            .parse()
+            .unwrap();
+
+        let written = sync_path_dependency_version(
+            doc.get_mut("dep").expect("fixture declares `dep`"),
+            "2.0.0",
+            |current| current == "^1.2.3",
+        );
+
+        assert!(written);
+        assert_eq!(
+            doc.to_string(),
+            "dep = { path = \"../dep\", version = \"^2.0.0\" } # pinned\n"
         );
     }
 }

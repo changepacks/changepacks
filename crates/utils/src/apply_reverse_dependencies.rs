@@ -957,4 +957,213 @@ mod tests {
             "equivalent update maps must have byte-identical update types, notes, and ordering"
         );
     }
+
+    /// Note of the FIRST result log recorded for `path` in a default-hasher
+    /// update map. Complements [`result_note`], which serves the
+    /// collision-hasher map the ordering variants build.
+    fn first_result_note(
+        update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
+        path: &str,
+    ) -> String {
+        serde_json::to_value(&update_map[Path::new(path)].1[0]).unwrap()["note"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
+    fn auto_update_note(trigger: &str) -> String {
+        format!("Auto-update: depends on '{trigger}' via a local workspace dependency")
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_patches_duplicate_named_and_nameless_dependents() {
+        // Pins the two non-unique arms of the `worklist_name` match. `shared`
+        // is carried by two projects, so `resolve` reports it ambiguous and
+        // both carriers take the `Some(_) => None` arm: they are still patched
+        // directly, but they are recorded WITHOUT a worklist name, so neither
+        // can go on to act as a trigger. The nameless project takes the
+        // `None => Some("unknown")` arm and is likewise patched directly.
+        // Nothing DEPENDS on `shared`, which is what keeps the fixture clear
+        // of the referenced-ambiguity rejection.
+        let core = create_project("core", vec![]);
+        let mut shared_alpha = create_project("alpha", vec!["core"]);
+        shared_alpha.set_name("shared".to_string());
+        let mut shared_zeta = create_project("zeta", vec!["core"]);
+        shared_zeta.set_name("shared".to_string());
+        let mut nameless_package = NodePackage::new(
+            None,
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/nameless/package.json"),
+            PathBuf::from("nameless/package.json"),
+        );
+        nameless_package.add_dependency("core");
+        let nameless = Project::Package(Box::new(nameless_package));
+        let mid = create_project("mid", vec!["core"]);
+        let leaf = create_project("leaf", vec!["mid"]);
+        let projects: Vec<&Project> =
+            vec![&core, &shared_alpha, &shared_zeta, &nameless, &mid, &leaf];
+        let mut update_map = HashMap::from([(
+            PathBuf::from("core/package.json"),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "Update core".to_string(),
+                )],
+            ),
+        )]);
+
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test")).unwrap();
+
+        assert_eq!(update_map.len(), 6);
+        assert_eq!(
+            update_map[Path::new("core/package.json")].0,
+            UpdateType::Minor
+        );
+        for path in [
+            "alpha/package.json",
+            "zeta/package.json",
+            "nameless/package.json",
+            "mid/package.json",
+        ] {
+            assert_eq!(
+                update_map[Path::new(path)].0,
+                UpdateType::Patch,
+                "path {path}"
+            );
+            assert_eq!(
+                first_result_note(&update_map, path),
+                auto_update_note("core"),
+                "path {path}"
+            );
+        }
+        // The uniquely named `mid` is the control: it DOES keep propagating,
+        // one hop farther to `leaf`. So the ambiguous carriers leaving no
+        // descendants behind is a property of their names, not of a fixture
+        // that simply has nowhere left to go.
+        assert_eq!(
+            first_result_note(&update_map, "leaf/package.json"),
+            auto_update_note("mid")
+        );
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_walks_through_a_scheduled_unseeded_dependent() {
+        // Pins the `update_map.contains_key(..)` arm of the worklist loop. A
+        // path that is already SCHEDULED but is NOT an expansion seed — the
+        // shape a persisted `changepack_log_carry_forward_*.json` produces —
+        // is reached here for the very first time, so it must still be queued
+        // and have its own dependents walked even though it needs no new
+        // entry of its own. The free `apply_reverse_dependencies` cannot
+        // express this: it seeds `reached_paths` from EVERY `update_map` key,
+        // so a scheduled path is never newly reached.
+        let core = create_project("core", vec![]);
+        let mid = create_project("mid", vec!["core"]);
+        let leaf = create_project("leaf", vec!["mid"]);
+        let projects: Vec<&Project> = vec![&core, &mid, &leaf];
+        let mut update_map = HashMap::from([
+            (
+                PathBuf::from("core/package.json"),
+                (
+                    UpdateType::Minor,
+                    vec![ChangePackResultLog::new(
+                        UpdateType::Minor,
+                        "explicit core".to_string(),
+                    )],
+                ),
+            ),
+            (
+                PathBuf::from("mid/package.json"),
+                (
+                    UpdateType::Patch,
+                    vec![ChangePackResultLog::new(
+                        UpdateType::Patch,
+                        "persisted generated mid".to_string(),
+                    )],
+                ),
+            ),
+        ]);
+        let expansion_seeds = HashSet::from([PathBuf::from("core/package.json")]);
+
+        let generated = apply_reverse_dependencies_with_provenance(
+            &mut update_map,
+            &projects,
+            ReverseDependencyContext {
+                repo_root_path: Path::new("/test"),
+                expansion_seeds: Some(&expansion_seeds),
+            },
+        )
+        .unwrap();
+
+        // `leaf` depends on `mid`, never on `core`, so it is reachable ONLY by
+        // continuing the walk through the already-scheduled `mid`.
+        assert_eq!(
+            generated,
+            vec![(PathBuf::from("leaf/package.json"), auto_update_note("mid"))]
+        );
+        assert_eq!(update_map.len(), 3);
+        assert_eq!(
+            update_map[Path::new("leaf/package.json")].0,
+            UpdateType::Patch
+        );
+        assert_eq!(
+            first_result_note(&update_map, "leaf/package.json"),
+            auto_update_note("mid")
+        );
+        // The hop itself is untouched: it keeps its own bump and its own log.
+        assert_eq!(
+            update_map[Path::new("mid/package.json")].0,
+            UpdateType::Patch
+        );
+        assert_eq!(update_map[Path::new("mid/package.json")].1.len(), 1);
+        assert_eq!(
+            first_result_note(&update_map, "mid/package.json"),
+            "persisted generated mid"
+        );
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_smaller_later_trigger_replaces_the_recorded_one() {
+        // Pins the OCCUPIED arm of `packages_to_add`. `target` depends on both
+        // `zzz` (the seed) and `aaa`, and the seed is expanded first, so
+        // `target` is claimed by `zzz` before `aaa` is ever dequeued. When
+        // `aaa` re-reaches it, the recorded trigger must be replaced because
+        // `aaa` sorts BEFORE `zzz`. `..._chooses_smallest_trigger_deterministically`
+        // only ever exercises the first-writer-wins side of the same match.
+        let zzz = create_project("zzz", vec![]);
+        let aaa = create_project("aaa", vec!["zzz"]);
+        let target = create_project("target", vec!["zzz", "aaa"]);
+        let projects: Vec<&Project> = vec![&zzz, &aaa, &target];
+        let mut update_map = HashMap::from([(
+            PathBuf::from("zzz/package.json"),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "Update zzz".to_string(),
+                )],
+            ),
+        )]);
+
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test")).unwrap();
+
+        assert_eq!(update_map.len(), 3);
+        assert_eq!(
+            first_result_note(&update_map, "target/package.json"),
+            auto_update_note("aaa"),
+            "the later but smaller trigger must win"
+        );
+        // `aaa` was only ever reached from the seed, so it keeps that trigger
+        // — the replacement above is scoped to the package that was reached
+        // twice, not applied to the whole batch.
+        assert_eq!(
+            first_result_note(&update_map, "aaa/package.json"),
+            auto_update_note("zzz")
+        );
+        assert_eq!(
+            update_map[Path::new("target/package.json")].0,
+            UpdateType::Patch
+        );
+        assert_eq!(update_map[Path::new("target/package.json")].1.len(), 1);
+    }
 }

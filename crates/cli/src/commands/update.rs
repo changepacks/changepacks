@@ -764,21 +764,18 @@ async fn rollback_update_state(snapshots: &UpdateStateSnapshot) -> Result<()> {
     match collect_changepack_log_paths(&snapshots.changepacks_dir).await {
         Ok(current_logs) => {
             // Logs created by the failed update are distinct directory entries,
-            // so their removals can overlap. Failures are re-ordered back to the
-            // listing order by zipping the results against `stale_logs`.
+            // so their removals can overlap. "Remove this path, treat an
+            // already-absent one as success, and otherwise record
+            // `path: error`" is exactly the `bytes: None` contract of
+            // [`restore_file_snapshots`], down to the failure ordering, so the
+            // stale logs are handed to it as removal snapshots instead of the
+            // policy being spelled out a second time here.
             let stale_logs = current_logs
                 .into_iter()
                 .filter(|path| !original_logs.contains(path.as_path()))
+                .map(|path| FileSnapshot { path, bytes: None })
                 .collect::<Vec<_>>();
-            let removals =
-                futures::future::join_all(stale_logs.iter().map(tokio::fs::remove_file)).await;
-            for (path, result) in stale_logs.iter().zip(removals) {
-                if let Err(error) = result
-                    && error.kind() != std::io::ErrorKind::NotFound
-                {
-                    failures.push(format!("{}: {error}", path.display()));
-                }
-            }
+            restore_file_snapshots(&stale_logs, &mut failures).await;
         }
         Err(error) => failures.push(format!("{}: {error}", snapshots.changepacks_dir.display())),
     }
@@ -920,11 +917,12 @@ fn merge_workspace_inherited_updates(
 #[cfg(test)]
 mod tests {
     use super::{
-        UpdateArgs, UpdateProjectMut, WorkspaceRef, apply_project_version_updates,
-        apply_workspace_dependency_updates, collect_projects, collect_update_packages,
-        collect_update_project_muts, collect_update_snapshot_paths, collect_workspace_projects,
-        merge_workspace_inherited_updates, persist_carry_forward_logs, preview_and_confirm,
-        rollback_update_error, snapshot_update_state, validate_update_project_paths,
+        FileSnapshot, UpdateArgs, UpdateProjectMut, UpdateStateSnapshot, WorkspaceRef,
+        apply_project_version_updates, apply_workspace_dependency_updates, collect_projects,
+        collect_update_packages, collect_update_project_muts, collect_update_snapshot_paths,
+        collect_workspace_projects, merge_workspace_inherited_updates, persist_carry_forward_logs,
+        preview_and_confirm, restore_file_snapshots, rollback_update_error, rollback_update_state,
+        snapshot_update_state, validate_update_project_paths,
     };
     use anyhow::{Result, bail};
     use async_trait::async_trait;
@@ -2349,5 +2347,151 @@ path = "../visible"
     fn test_update_args_language_flag(#[case] args: &[&str], #[case] expected_len: usize) {
         let cli = TestCli::parse_from(args);
         assert_eq!(cli.update.language.len(), expected_len);
+    }
+
+    // A manifest that discovery accepts but the Rust writer rejects fails after
+    // the transaction snapshot, so the public handler must execute rollback.
+    #[tokio::test]
+    #[serial]
+    async fn test_update_handler_rolls_back_writer_failure() -> Result<()> {
+        const INVALID_MANIFEST: &[u8] = b"package = \"not-a-table\"\n";
+        let repository = TempDir::new()?;
+        init_git_repo(repository.path());
+        let manifest_path = repository.path().join("Cargo.toml");
+        let changepacks_dir = repository.path().join(".changepacks");
+        let log_path = changepacks_dir.join("changepack_log_invalid_manifest.json");
+        tokio::fs::create_dir(&changepacks_dir).await?;
+        tokio::fs::write(&manifest_path, INVALID_MANIFEST).await?;
+        let log = ChangePackLog::new(
+            BTreeMap::from([(PathBuf::from("Cargo.toml"), UpdateType::Patch)]),
+            "invalid manifest rollback".to_string(),
+        );
+        let original_log = serde_json::to_vec(&log)?;
+        tokio::fs::write(&log_path, &original_log).await?;
+        git_add_and_commit(repository.path(), "invalid manifest update fixture");
+        let _current_dir = DirGuard::change_to(repository.path());
+
+        let error = super::handle_update_with_prompter(
+            &update_args(false, true, FormatOptions::Json),
+            &MockPrompter::default(),
+        )
+        .await
+        .expect_err("the Rust writer must reject a non-table package item");
+
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("package") && rendered.contains("table"),
+            "writer error must explain the invalid package shape: {rendered}"
+        );
+        assert_eq!(tokio::fs::read(&manifest_path).await?, INVALID_MANIFEST);
+        assert_eq!(tokio::fs::read(&log_path).await?, original_log);
+        Ok(())
+    }
+
+    // A path absent both at snapshot time and rollback time takes the benign
+    // `NotFound` removal arm and records no restore failure.
+    #[tokio::test]
+    async fn test_restore_file_snapshots_ignores_missing_unsnapshotted_file() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let missing_path = temp_dir.path().join("never-created.json");
+        let snapshots = [FileSnapshot {
+            path: missing_path.clone(),
+            bytes: None,
+        }];
+        let mut failures = Vec::new();
+
+        restore_file_snapshots(&snapshots, &mut failures).await;
+
+        assert!(failures.is_empty());
+        assert!(!tokio::fs::try_exists(missing_path).await?);
+        Ok(())
+    }
+
+    // A directory where rollback expects to remove a newly created file takes
+    // the non-`NotFound` removal arm and reports the exact offending path.
+    #[tokio::test]
+    async fn test_restore_file_snapshots_reports_directory_removal_failure() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let directory_path = temp_dir.path().join("manifest-as-directory");
+        tokio::fs::create_dir(&directory_path).await?;
+        let snapshots = [FileSnapshot {
+            path: directory_path.clone(),
+            bytes: None,
+        }];
+        let mut failures = Vec::new();
+
+        restore_file_snapshots(&snapshots, &mut failures).await;
+
+        assert_eq!(failures.len(), 1);
+        assert!(failures[0].contains(&directory_path.display().to_string()));
+        assert!(directory_path.is_dir());
+        Ok(())
+    }
+
+    // A failed manifest restore must be attached to the original update error,
+    // preserving both causes in the rollback error chain.
+    #[tokio::test]
+    async fn test_rollback_update_error_contextualizes_restore_failure() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let manifest_path = temp_dir.path().join("manifest-as-directory");
+        let changepacks_dir = temp_dir.path().join(".changepacks");
+        tokio::fs::create_dir(&manifest_path).await?;
+        tokio::fs::create_dir(&changepacks_dir).await?;
+        let snapshots = UpdateStateSnapshot {
+            manifests: vec![FileSnapshot {
+                path: manifest_path.clone(),
+                bytes: Some(b"original manifest".to_vec()),
+            }],
+            changepacks_dir,
+            logs: Vec::new(),
+        };
+
+        let error = rollback_update_error(&snapshots, anyhow::anyhow!("original update failure"))
+            .await
+            .expect_err("writing file bytes over a directory must fail rollback");
+
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("failed to restore update transaction after error"),
+            "rollback context is missing: {rendered}"
+        );
+        assert!(
+            rendered.contains("original update failure"),
+            "original update error is missing: {rendered}"
+        );
+        assert!(
+            rendered.contains(&manifest_path.display().to_string()),
+            "restore failure path is missing: {rendered}"
+        );
+        Ok(())
+    }
+
+    // A regular file in place of `.changepacks` makes log collection fail and
+    // rollback must include that directory path in its aggregated error.
+    #[tokio::test]
+    async fn test_rollback_update_state_reports_changepacks_directory_read_failure() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let changepacks_path = temp_dir.path().join("not-a-directory");
+        tokio::fs::write(&changepacks_path, b"regular file").await?;
+        let snapshots = UpdateStateSnapshot {
+            manifests: Vec::new(),
+            changepacks_dir: changepacks_path.clone(),
+            logs: Vec::new(),
+        };
+
+        let error = rollback_update_state(&snapshots)
+            .await
+            .expect_err("reading logs from a regular file must fail rollback");
+
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains(&changepacks_path.display().to_string()),
+            "rollback error must name the unreadable changepacks path: {rendered}"
+        );
+        assert!(
+            rendered.contains("Failed to read changepacks directory"),
+            "rollback error must retain log collection context: {rendered}"
+        );
+        Ok(())
     }
 }

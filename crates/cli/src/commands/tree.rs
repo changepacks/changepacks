@@ -271,36 +271,42 @@ fn display_tree_node<'a>(
                 prefix,
                 next_index,
             } => {
-                let Some(deps) = ctx.resolved_deps.get(project.path()) else {
-                    continue;
-                };
-                let Some(dep_project) = deps.get(next_index).map(|&(_, project)| project) else {
-                    continue;
-                };
-                let is_last_dep = next_index == deps.len() - 1;
+                // A `Dependencies` frame is pushed only for a project whose
+                // dependency list is present and non-empty, and only ever with
+                // an index below that list's length — `next_index + 1` is
+                // pushed solely when it is not already the last one. The
+                // resolved map is shared immutably for the whole walk, so
+                // neither lookup can miss. The `if let` chain keeps both total
+                // without leaving a skip branch that no input can reach.
+                let resolved_deps = ctx.resolved_deps;
+                if let Some(deps) = resolved_deps.get(project.path())
+                    && let Some(dep_project) = deps.get(next_index).map(|&(_, project)| project)
+                {
+                    let is_last_dep = next_index == deps.len() - 1;
 
-                if !is_last_dep {
-                    frames.push(TreeFrame::Dependencies {
-                        project,
-                        prefix: Rc::clone(&prefix),
-                        next_index: next_index + 1,
-                    });
-                }
+                    if !is_last_dep {
+                        frames.push(TreeFrame::Dependencies {
+                            project,
+                            prefix: Rc::clone(&prefix),
+                            next_index: next_index + 1,
+                        });
+                    }
 
-                if visited.contains(dep_project.path()) {
-                    writeln!(
-                        writer,
-                        "{}{}{}",
-                        prefix,
-                        tree_connector(is_last_dep),
-                        cached_project_line(dep_project, ctx)?
-                    )?;
-                } else {
-                    frames.push(TreeFrame::Node {
-                        project: dep_project,
-                        prefix,
-                        is_last: is_last_dep,
-                    });
+                    if visited.contains(dep_project.path()) {
+                        writeln!(
+                            writer,
+                            "{}{}{}",
+                            prefix,
+                            tree_connector(is_last_dep),
+                            cached_project_line(dep_project, ctx)?
+                        )?;
+                    } else {
+                        frames.push(TreeFrame::Node {
+                            project: dep_project,
+                            prefix,
+                            is_last: is_last_dep,
+                        });
+                    }
                 }
             }
         }

@@ -54,8 +54,26 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     /// # Errors
     ///
     /// Returns an error only if a language override's dependency rewrite fails.
-    async fn update_workspace_dependencies(&self, _packages: &[&dyn Package]) -> Result<()> {
-        Ok(())
+    ///
+    /// Boxed-future shape rather than a defaulted `async fn`, for the reason
+    /// spelled out on [`ProjectFinder::should_visit_manifest`](crate::ProjectFinder::should_visit_manifest):
+    /// `#[async_trait]`'s desugaring of a *defaulted* body is not attributed by
+    /// `llvm-cov`, so the no-op would read as unexecuted forever.
+    fn update_workspace_dependencies<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        _packages: &'life1 [&'life2 dyn Package],
+    ) -> ::core::pin::Pin<
+        ::std::boxed::Box<
+            dyn ::core::future::Future<Output = Result<()>> + ::core::marker::Send + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: ::core::marker::Sync + 'async_trait,
+    {
+        ::std::boxed::Box::pin(async move { Ok(()) })
     }
 }
 
@@ -66,9 +84,10 @@ mod tests {
     use crate::test_support::MockWorkspace;
     use std::collections::BTreeMap;
 
-    // The seventeen tests pinning the shared trait defaults are generated from
-    // one surface shared with `package.rs`; only the `Workspace`-only defaults
-    // below stay hand-written here.
+    // The eighteen tests pinning the shared trait defaults and the shared
+    // `UnsupportedDryRunProject` fixture are generated from one surface shared
+    // with `package.rs`; only the `Workspace`-only defaults below stay
+    // hand-written here.
     crate::test_support::shared_project_default_tests!(
         mock: MockWorkspace,
         trait_name: Workspace,
