@@ -15,8 +15,8 @@ async-trait.workspace = true
 yaml_serde = "0.10"
 anyhow.workspace = true
 tokio = { workspace = true, features = ["fs"] }
-yamlpatch = "1.28"
-yamlpath = "1.28"
+yamlpatch = "1.29"
+yamlpath = "1.29"
 
 [dev-dependencies]
 tempfile.workspace = true
