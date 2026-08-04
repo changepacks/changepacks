@@ -476,24 +476,78 @@ jobs:
     if: ${{ contains(needs.changepacks.outputs.changepacks, 'crates/changepacks/Cargo.toml') }}
     needs:
       - changepacks
+      # The installer published to winget is the release asset itself, so the
+      # asset must already exist before komac is allowed to hash it.
+      - upload-assets
+    permissions:
+      contents: read
+    env:
+      WINGET_IDENTIFIER: Changepacks.Changepacks
+      # Pinned so a broken upstream komac release cannot silently break publishing.
+      KOMAC_VERSION: 2.16.0
     steps:
-      - uses: actions/checkout@v7
-      - name: Setup Rust
-        uses: actions-rust-lang/setup-rust-toolchain@v1
-        with:
-          toolchain: stable
-          target: x86_64-pc-windows-msvc
-          components: clippy, rustfmt
-      - name: Build Rust binary
-        run: cargo build --release --target x86_64-pc-windows-msvc -p changepacks
-      - name: Extract version
+      # Resolve the version and installer straight from the release that the
+      # `changepacks` job just created. The release tag contains `/` and `()`
+      # (e.g. `changepacks(crates/changepacks/Cargo.toml)@0.3.2`), so it cannot
+      # be used as a URL path segment - the release id from the upload url is
+      # the only reliable handle.
+      - name: Resolve release version and installer
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          UPLOAD_URL: ${{ fromJson(needs.changepacks.outputs.release_assets_urls)['crates/changepacks/Cargo.toml'] }}
         run: |
-          echo "version=$(cargo pkgid -p changepacks | sed -E 's/.*#([0-9]+\.[0-9]+\.[0-9]+).*/\1/')" >> $GITHUB_OUTPUT
-        id: version
-      - uses: vedantmgoyal9/winget-releaser@v2
-        with:
-          identifier: Changepacks.Changepacks
-          installers-regex: '\.exe$' # Only .exe files
-          token: ${{ secrets.WINGET_TOKEN }}
-          version: ${{ steps.version.outputs.version }}
+          $ErrorActionPreference = 'Stop'
+          if ($env:UPLOAD_URL -notmatch '/releases/(\d+)/assets') {
+            throw "Cannot parse release id from upload url: $env:UPLOAD_URL"
+          }
+          $release = Invoke-RestMethod `
+            -Uri "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/$($Matches[1])" `
+            -Headers @{
+              Authorization          = "Bearer $env:GH_TOKEN"
+              Accept                 = 'application/vnd.github+json'
+              'X-GitHub-Api-Version' = '2022-11-28'
+            }
+          if ($release.tag_name -notmatch '@(\d+\.\d+\.\d+)$') {
+            throw "Unexpected release tag, cannot derive a winget version: $($release.tag_name)"
+          }
+          $version = $Matches[1]
+          $installers = @($release.assets | Where-Object { $_.name -like '*windows*.exe' })
+          if ($installers.Count -ne 1) {
+            throw "Expected exactly 1 windows .exe asset on '$($release.tag_name)', found $($installers.Count)"
+          }
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "installer-url=$($installers[0].browser_download_url)" >> $env:GITHUB_OUTPUT
+          Write-Host "winget: $env:WINGET_IDENTIFIER $version <- $($installers[0].browser_download_url)"
+
+      # Downloaded directly instead of `cargo binstall komac`: binstall decides
+      # "already installed" from ~/.cargo/.crates.toml, and Swatinem/rust-cache
+      # (pulled in by setup-rust-toolchain) restores that metadata while dropping
+      # komac.exe from ~/.cargo/bin - which made this job fail on every cache hit.
+      - name: Install komac
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $komac = Join-Path $env:RUNNER_TEMP 'komac.exe'
+          Invoke-WebRequest `
+            -Uri "https://github.com/russellbanks/Komac/releases/download/v$env:KOMAC_VERSION/komac-$env:KOMAC_VERSION-x86_64-pc-windows-msvc.exe" `
+            -OutFile $komac
+          & $komac --version
+          if ($LASTEXITCODE -ne 0) { throw "komac download is not runnable" }
+
+      - name: Publish to winget-pkgs
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          KOMAC_FORK_OWNER: ${{ github.repository_owner }}
+          KOMAC_CREATED_WITH: changepacks
+          KOMAC_CREATED_WITH_URL: ${{ github.server_url }}/${{ github.repository }}
+          VERSION: ${{ steps.release.outputs.version }}
+          INSTALLER_URL: ${{ steps.release.outputs.installer-url }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $env:RUNNER_TEMP 'komac.exe') update `
+            $env:WINGET_IDENTIFIER --version $env:VERSION --urls $env:INSTALLER_URL --submit
+          if ($LASTEXITCODE -ne 0) { throw "komac update failed with exit code $LASTEXITCODE" }
 
