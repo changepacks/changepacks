@@ -34,6 +34,7 @@ type ResolvedDeps<'a> = HashMap<&'a Path, Vec<(&'a str, &'a Project)>>;
 /// always in bounds.
 fn resolved_monorepo_deps<'a>(
     project: &'a Project,
+    self_index: usize,
     projects: &[&'a Project],
     analysis: &ProjectNameAnalysis<'a>,
 ) -> Result<Vec<(&'a str, &'a Project)>> {
@@ -50,9 +51,16 @@ fn resolved_monorepo_deps<'a>(
     let mut resolved = Vec::new();
     for dep in deps {
         match analysis.resolve(dep) {
-            ProjectNameResolution::Unique(index) => {
+            // `index != self_index` drops self-edges, matching
+            // `sort_by_dependencies` and `apply_reverse_dependencies` so the
+            // tree renders the same release graph publishing walks. Rendered,
+            // a self-edge would also make the project look like it has a
+            // dependent, evicting it from `tree_roots` and demoting it to the
+            // orphan pass at the bottom of `display_tree`.
+            ProjectNameResolution::Unique(index) if index != self_index => {
                 resolved.push((dep, projects[index]));
             }
+            ProjectNameResolution::Unique(_) => {}
             ProjectNameResolution::Ambiguous => {
                 // `candidates_for` borrows the analysis' cached candidates when
                 // it can, so bind the `Cow` before iterating it.
@@ -123,11 +131,14 @@ pub(super) fn display_tree(
     let analysis = ProjectNameAnalysis::new(projects);
 
     let mut resolved_deps = ResolvedDeps::with_capacity(projects.len());
-    for project in projects {
+    for (index, project) in projects.iter().enumerate() {
         // Resolve every edge before output so ambiguity never produces a partial tree.
+        // `index` is the project's own position in `projects`, which is exactly
+        // what `ProjectNameAnalysis` resolves a name to, so a self-edge is
+        // recognized by index rather than by re-comparing paths.
         resolved_deps.insert(
             project.path(),
-            resolved_monorepo_deps(project, projects, &analysis)?,
+            resolved_monorepo_deps(project, index, projects, &analysis)?,
         );
     }
 
@@ -423,10 +434,17 @@ mod tests {
         projects: &[&'a Project],
     ) -> Result<String> {
         let analysis = ProjectNameAnalysis::new(projects);
+        // `usize::MAX` when `project` is not part of `projects`: no resolved
+        // index can equal it, so the self-edge filter stays inert for a
+        // standalone project the way `display_tree` never needs it to be.
+        let self_index = projects
+            .iter()
+            .position(|candidate| candidate.path() == project.path())
+            .unwrap_or(usize::MAX);
         let mut resolved_deps = ResolvedDeps::with_capacity(1);
         resolved_deps.insert(
             project.path(),
-            resolved_monorepo_deps(project, projects, &analysis)?,
+            resolved_monorepo_deps(project, self_index, projects, &analysis)?,
         );
         format_project_line(project, repo_root_path, update_map, &resolved_deps)
     }
@@ -460,6 +478,27 @@ mod tests {
             concat!(
                 "├── [Node.js] alpha (v1.0.0) - packages/alpha/package.json\n",
                 "└── [Node.js] beta (v1.0.0) - packages/beta/package.json\n",
+            )
+        );
+    }
+
+    #[test]
+    fn test_display_tree_ignores_a_self_edge() {
+        // `solo` names itself (Cargo's `me = { path = "." }` dev-dependency
+        // shape). Rendered, that edge would mark `solo` as having a dependent,
+        // evict it from `tree_roots` and demote it to the orphan pass at the
+        // bottom of `display_tree` — and print it as its own child. It is
+        // dropped instead, so `solo` renders as an ordinary childless root and
+        // `beta`'s real edge is untouched.
+        let solo = package("solo", &["solo"]);
+        let beta = package("beta", &["solo"]);
+
+        assert_eq!(
+            render_tree(&[&solo, &beta]),
+            concat!(
+                "└── [Node.js] beta (v1.0.0) - packages/beta/package.json [deps:\n",
+                "        solo]\n",
+                "    └── [Node.js] solo (v1.0.0) - packages/solo/package.json\n",
             )
         );
     }

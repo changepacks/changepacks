@@ -177,6 +177,31 @@ fn is_local_path_dep(value: &toml_edit::Item) -> bool {
         .is_some_and(|table| table.contains_key("path"))
 }
 
+/// Return `true` for a dependency entry that carries a registry version
+/// requirement — either the scalar shorthand (`dep = "1"`) or a table-like
+/// entry with a string `version` (`dep = { path = "../dep", version = "1" }`).
+///
+/// This is exactly the condition under which Cargo keeps a `dev-dependencies`
+/// entry in a packaged manifest: "when a package is published, only
+/// dev-dependencies that specify a `version` will be included in the published
+/// crate". A path-only dev-dependency is erased at package time, so it can
+/// never require its target to be published first and must not become a
+/// release-graph edge (see [`collect_workspace_dep_names_from_table`]).
+///
+/// The `version` value is checked for being an actual string rather than for
+/// mere key presence, so a malformed entry is classified as versionless rather
+/// than silently trusted.
+fn is_version_bearing_dep(value: &toml_edit::Item) -> bool {
+    if value.as_str().is_some() {
+        return true;
+    }
+    value
+        .as_table_like()
+        .and_then(|table| table.get("version"))
+        .and_then(toml_edit::Item::as_str)
+        .is_some()
+}
+
 /// Resolve the package name represented by a Cargo dependency entry.
 ///
 /// Cargo dependency keys may be aliases (`alias = { package = "real-name", ... }`).
@@ -193,16 +218,53 @@ pub(crate) fn effective_dependency_name<'a>(
         .unwrap_or(dependency_key)
 }
 
-/// Dependency tables Cargo can use for local package edges.
-const CARGO_DEPENDENCY_TABLES: &[&str] =
-    &["dependencies", "dev-dependencies", "build-dependencies"];
+/// Whether a Cargo dependency table survives `cargo package` wholesale, or is
+/// filtered down to its version-bearing entries first.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum DependencyTableKind {
+    /// `[dependencies]` / `[build-dependencies]`: every entry reaches the
+    /// published manifest, so a local edge always constrains publish order.
+    /// (A path-only entry here makes the package unpublishable outright, which
+    /// is Cargo's error to report — not a reason to drop the edge.)
+    Published,
+    /// `[dev-dependencies]`: Cargo erases every entry that carries no version
+    /// requirement, so only the version-bearing ones constrain publish order.
+    Dev,
+}
 
+/// Dependency tables Cargo can use for local package edges, each paired with
+/// how packaging treats it.
+const CARGO_DEPENDENCY_TABLES: &[(&str, DependencyTableKind)] = &[
+    ("dependencies", DependencyTableKind::Published),
+    ("dev-dependencies", DependencyTableKind::Dev),
+    ("build-dependencies", DependencyTableKind::Published),
+];
+
+/// `workspace_versioned` is the nearest workspace root's
+/// [`workspace_versioned_dependencies`] set, or `None` when no root applies.
+/// It is keyed by the `[workspace.dependencies]` KEY, which is exactly what a
+/// member repeats as `key.workspace = true`, so an aliased entry
+/// (`key = { package = "real" }`) still resolves.
 fn collect_workspace_dep_names_from_table<'a>(
     deps: &'a dyn toml_edit::TableLike,
+    kind: DependencyTableKind,
+    workspace_versioned: Option<&HashSet<String>>,
     dep_names: &mut Vec<&'a str>,
 ) {
     for (dep_name, value) in deps.iter() {
-        if crate::is_workspace_marker(value) || is_local_path_dep(value) {
+        // A dev entry only reaches the published manifest when it carries a
+        // version requirement; for an inherited entry that requirement lives on
+        // the workspace root, so the two shapes are decided from different
+        // places.
+        let is_release_edge = if crate::is_workspace_marker(value) {
+            kind == DependencyTableKind::Published
+                || workspace_versioned.is_some_and(|versioned| versioned.contains(dep_name))
+        } else if is_local_path_dep(value) {
+            kind == DependencyTableKind::Published || is_version_bearing_dep(value)
+        } else {
+            false
+        };
+        if is_release_edge {
             dep_names.push(effective_dependency_name(dep_name, value));
         }
     }
@@ -220,12 +282,20 @@ fn collect_workspace_dep_names_from_table<'a>(
 ///
 /// Matches the `package_str` / `workspace_package_str` sibling-helper
 /// idiom already established in this file.
-fn workspace_dep_names(doc: &toml_edit::DocumentMut) -> Vec<&str> {
+fn workspace_dep_names<'a>(
+    doc: &'a toml_edit::DocumentMut,
+    workspace_versioned: Option<&HashSet<String>>,
+) -> Vec<&'a str> {
     let mut dep_names = Vec::new();
 
-    for table_name in CARGO_DEPENDENCY_TABLES {
+    for (table_name, kind) in CARGO_DEPENDENCY_TABLES {
         if let Some(deps) = doc.get(table_name).and_then(toml_edit::Item::as_table_like) {
-            collect_workspace_dep_names_from_table(deps, &mut dep_names);
+            collect_workspace_dep_names_from_table(
+                deps,
+                *kind,
+                workspace_versioned,
+                &mut dep_names,
+            );
         }
     }
 
@@ -234,12 +304,17 @@ fn workspace_dep_names(doc: &toml_edit::DocumentMut) -> Vec<&str> {
             let Some(target_table) = target.as_table_like() else {
                 continue;
             };
-            for table_name in CARGO_DEPENDENCY_TABLES {
+            for (table_name, kind) in CARGO_DEPENDENCY_TABLES {
                 if let Some(deps) = target_table
                     .get(table_name)
                     .and_then(toml_edit::Item::as_table_like)
                 {
-                    collect_workspace_dep_names_from_table(deps, &mut dep_names);
+                    collect_workspace_dep_names_from_table(
+                        deps,
+                        *kind,
+                        workspace_versioned,
+                        &mut dep_names,
+                    );
                 }
             }
         }
@@ -261,6 +336,31 @@ fn workspace_dependency_aliases(doc: &toml_edit::DocumentMut) -> HashMap<String,
                     (package_name != dependency_key)
                         .then(|| (dependency_key.to_string(), package_name.to_string()))
                 })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Keys of the `[workspace.dependencies]` entries that carry a version
+/// requirement.
+///
+/// Keyed by the entry's KEY rather than its aliased package name, because that
+/// is what an inheriting member repeats as `key.workspace = true`.
+///
+/// Recorded POSITIVELY on purpose: an entry that is absent, malformed, or lives
+/// in a root this walk never discovered simply does not appear, which
+/// classifies an inheriting dev-dependency as erased-at-package-time. That is
+/// the same answer Cargo gives for inheritance it cannot resolve, and it keeps
+/// an unknown root from silently minting release-graph edges.
+fn workspace_versioned_dependencies(doc: &toml_edit::DocumentMut) -> HashSet<String> {
+    doc.get("workspace")
+        .and_then(|workspace| workspace.get("dependencies"))
+        .and_then(toml_edit::Item::as_table_like)
+        .map(|dependencies| {
+            dependencies
+                .iter()
+                .filter(|(_, dependency)| is_version_bearing_dep(dependency))
+                .map(|(dependency_key, _)| dependency_key.to_string())
                 .collect()
         })
         .unwrap_or_default()
@@ -335,6 +435,11 @@ struct WorkspaceRootInfo {
     /// differently named local-path package (`alias = { package = "real" }`),
     /// mapping alias key to real package name.
     aliases: HashMap<String, String>,
+    /// Keys of the `[workspace.dependencies]` entries carrying a version
+    /// requirement, so a member's `key.workspace = true` inside
+    /// `[dev-dependencies]` can be told apart from the path-only inheritance
+    /// Cargo erases at package time. See [`workspace_versioned_dependencies`].
+    versioned_dependencies: HashSet<String>,
 }
 
 #[derive(Debug, Default)]
@@ -386,6 +491,7 @@ impl RustProjectFinder {
             WorkspaceRootInfo {
                 publishable: workspace_package_publishable_by_default(doc),
                 aliases: workspace_dependency_aliases(doc),
+                versioned_dependencies: workspace_versioned_dependencies(doc),
             },
         );
     }
@@ -591,7 +697,17 @@ impl ProjectFinder for RustProjectFinder {
         let publish_default = package_publish_default(&cargo_toml);
         let is_workspace = cargo_toml.get("workspace").is_some();
 
-        if !is_workspace {
+        if is_workspace {
+            // Record BEFORE the nearest-root scan below, so a hybrid root
+            // (`[workspace]` + `[package]`) resolves its own dependency
+            // inheritance against its OWN `[workspace.dependencies]` instead of
+            // a parent workspace's. `nearest_workspace_entry` keys on the root
+            // manifest's directory, which is a prefix of the manifest path
+            // itself, so the freshly recorded entry is the deepest match and
+            // wins. Recording here is also idempotent with respect to the
+            // workspace arm below, which no longer re-records it.
+            self.record_workspace_root(path.to_path_buf(), &cargo_toml);
+        } else {
             self.discover_workspace_dependency_aliases_for_member(path, relative_path)
                 .await?;
         }
@@ -617,20 +733,21 @@ impl ProjectFinder for RustProjectFinder {
         // Collect workspace dependencies for this file — the same
         // `dep_names` list feeds every branch below (workspace /
         // inherits-workspace-version / plain-package).
-        let dep_names: Vec<String> = workspace_dep_names(&cargo_toml)
-            .into_iter()
-            .map(|dependency_name| {
-                nearest_root
-                    .and_then(|root| root.aliases.get(dependency_name))
-                    .map_or_else(|| dependency_name.to_string(), Clone::clone)
-            })
-            .collect();
+        let dep_names: Vec<String> = workspace_dep_names(
+            &cargo_toml,
+            nearest_root.map(|root| &root.versioned_dependencies),
+        )
+        .into_iter()
+        .map(|dependency_name| {
+            nearest_root
+                .and_then(|root| root.aliases.get(dependency_name))
+                .map_or_else(|| dependency_name.to_string(), Clone::clone)
+        })
+        .collect();
 
         // if workspace
         if is_workspace {
             let path_key = path.to_path_buf();
-
-            self.record_workspace_root(path_key.clone(), &cargo_toml);
 
             // Read [workspace.package].version if present
             let ws_pkg_version = workspace_package_str(&cargo_toml, "version");
@@ -1907,13 +2024,74 @@ renamed-core = { workspace = true }
         temp_dir.close().unwrap();
     }
 
+    /// Visit one manifest and return the single discovered project's
+    /// dependency names, sorted. Every dependency-edge test below needs the
+    /// same four lines of `TempDir` + `fs::write` + `visit` + `expect_package`,
+    /// so they share this one.
+    async fn dependency_names_of(manifest: &str) -> Vec<String> {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, manifest).unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        let mut names: Vec<String> = projects[0]
+            .expect_package()
+            .dependencies()
+            .iter()
+            .cloned()
+            .collect();
+        names.sort_unstable();
+
+        temp_dir.close().unwrap();
+        names
+    }
+
+    /// Write a workspace root plus one member and return the member's
+    /// dependency names, sorted. The member is visited with its repo-relative
+    /// path so the ancestor walk stops inside `temp_dir`.
+    async fn member_dependency_names_of(root: &str, member: &str) -> Vec<String> {
+        let temp_dir = TempDir::new().unwrap();
+        let member_dir = temp_dir.path().join("crates").join("member");
+        fs::create_dir_all(&member_dir).unwrap();
+        fs::write(temp_dir.path().join("Cargo.toml"), root).unwrap();
+        let member_manifest = member_dir.join("Cargo.toml");
+        fs::write(&member_manifest, member).unwrap();
+
+        let mut finder = RustProjectFinder::new();
+        finder
+            .visit(&member_manifest, Path::new("crates/member/Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
+
+        let projects = finder.projects();
+        let member_project = projects
+            .iter()
+            .find(|project| project.name() == Some("member"))
+            .expect("the member must be discovered");
+        let mut names: Vec<String> = member_project.dependencies().iter().cloned().collect();
+        names.sort_unstable();
+
+        temp_dir.close().unwrap();
+        names
+    }
+
     #[tokio::test]
     async fn test_rust_project_finder_visit_package_with_workspace_dependencies_from_all_cargo_sections()
      {
-        let temp_dir = TempDir::new().unwrap();
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
-        fs::write(
-            &cargo_toml,
+        // Every Cargo dependency table — plain, dev, build, and their
+        // target-specific forms — is scanned. The dev entries carry a version
+        // here so that this test isolates the "which sections are read?"
+        // question from the "does the entry survive packaging?" one covered by
+        // `test_rust_project_finder_omits_versionless_dev_dependencies`.
+        let deps = dependency_names_of(
             r#"[package]
 name = "test-package"
 version = "1.0.0"
@@ -1923,7 +2101,7 @@ runtime-core = { workspace = true }
 external = "1.0"
 
 [dev-dependencies]
-test-support = { workspace = true }
+test-support = { path = "../test-support", version = "1.0" }
 tempfile = "3"
 
 [build-dependencies]
@@ -1935,34 +2113,392 @@ unix-support = { workspace = true }
 libc = "0.2"
 
 [target.'cfg(windows)'.dev-dependencies]
-windows-test-support = { workspace = true }
+windows-test-support = { path = "../windows-test-support", version = "1.0" }
 
 [target.'cfg(target_arch = "wasm32")'.build-dependencies]
 wasm-build-helper = { workspace = true }
+"#,
+        )
+        .await;
+
+        assert_eq!(
+            deps,
+            vec![
+                "build-helper",
+                "runtime-core",
+                "test-support",
+                "unix-support",
+                "wasm-build-helper",
+                "windows-test-support",
+            ]
+        );
+    }
+
+    /// `cargo package` keeps only those dev-dependencies that carry a version
+    /// requirement, so a path-only one is absent from the published manifest
+    /// and cannot constrain publish order. Collecting it anyway is what made
+    /// this repository's own `utils --dev--> node` and `cli --dev--> cli`
+    /// entries look like release-graph cycles and abort `changepacks publish`.
+    #[tokio::test]
+    async fn test_rust_project_finder_omits_versionless_dev_dependencies() {
+        let deps = dependency_names_of(
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+
+[dependencies]
+runtime-core = { path = "../runtime-core", version = "1.0" }
+
+[dev-dependencies]
+dev-only = { path = "../dev-only" }
+test-package = { path = ".", features = ["test-support"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-dev-only = { path = "../windows-dev-only" }
+"#,
+        )
+        .await;
+
+        assert_eq!(deps, vec!["runtime-core"]);
+    }
+
+    /// The version rule applies to dev tables ONLY. A path-only entry in
+    /// `[dependencies]` / `[build-dependencies]` makes the package
+    /// unpublishable outright — that is Cargo's error to report, not a reason
+    /// for changepacks to forget the edge.
+    #[tokio::test]
+    async fn test_rust_project_finder_keeps_versionless_path_dependencies_in_published_tables() {
+        let deps = dependency_names_of(
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+
+[dependencies]
+runtime-core = { path = "../runtime-core" }
+
+[build-dependencies]
+build-helper = { path = "../build-helper" }
+
+[target.'cfg(unix)'.dependencies]
+unix-support = { path = "../unix-support" }
+
+[target.'cfg(unix)'.build-dependencies]
+unix-build-helper = { path = "../unix-build-helper" }
+"#,
+        )
+        .await;
+
+        assert_eq!(
+            deps,
+            vec![
+                "build-helper",
+                "runtime-core",
+                "unix-build-helper",
+                "unix-support",
+            ]
+        );
+    }
+
+    /// An aliased dev-dependency (`alias = { package = "real" }`) still binds
+    /// the edge to the real package name once it clears the version gate.
+    #[tokio::test]
+    async fn test_rust_project_finder_versioned_dev_dependency_resolves_package_alias() {
+        let deps = dependency_names_of(
+            r#"[package]
+name = "test-package"
+version = "1.0.0"
+
+[dev-dependencies]
+alias = { path = "../real", version = "1.0", package = "real-name" }
+versionless-alias = { path = "../other", package = "other-name" }
+"#,
+        )
+        .await;
+
+        assert_eq!(deps, vec!["real-name"]);
+    }
+
+    /// For `dep.workspace = true` the version requirement lives on the ROOT
+    /// entry, so that is what decides whether a dev edge survives packaging.
+    /// Covers all three root shapes: table-with-version, scalar shorthand
+    /// (`dep = "1"`, which is version-bearing despite having no `version` key),
+    /// and path-only.
+    #[tokio::test]
+    async fn test_rust_project_finder_dev_workspace_inheritance_follows_the_root_version() {
+        let deps = member_dependency_names_of(
+            r#"[workspace]
+members = ["crates/member"]
+
+[workspace.package]
+version = "1.0.0"
+
+[workspace.dependencies]
+versioned-dep = { path = "crates/versioned-dep", version = "1.0" }
+scalar-dep = "1"
+pathonly-dep = { path = "crates/pathonly-dep" }
+"#,
+            r#"[package]
+name = "member"
+version = "0.1.0"
+
+[dev-dependencies]
+versioned-dep = { workspace = true }
+scalar-dep = { workspace = true }
+pathonly-dep = { workspace = true }
+"#,
+        )
+        .await;
+
+        assert_eq!(deps, vec!["scalar-dep", "versioned-dep"]);
+    }
+
+    /// The same inherited dev entry stays an edge when it sits in a PUBLISHED
+    /// table, because those survive packaging regardless of the root shape.
+    #[tokio::test]
+    async fn test_rust_project_finder_published_workspace_inheritance_ignores_the_root_version() {
+        let deps = member_dependency_names_of(
+            r#"[workspace]
+members = ["crates/member"]
+
+[workspace.package]
+version = "1.0.0"
+
+[workspace.dependencies]
+pathonly-dep = { path = "crates/pathonly-dep" }
+"#,
+            r#"[package]
+name = "member"
+version = "0.1.0"
+
+[dependencies]
+pathonly-dep = { workspace = true }
+"#,
+        )
+        .await;
+
+        assert_eq!(deps, vec!["pathonly-dep"]);
+    }
+
+    /// A hybrid root (`[workspace]` + `[package]`) inherits from its OWN
+    /// `[workspace.dependencies]`, so its dev edges must be judged against
+    /// those — never against an enclosing workspace that happens to declare the
+    /// same key with a version.
+    #[tokio::test]
+    async fn test_rust_project_finder_hybrid_root_uses_its_own_workspace_dependencies() {
+        let temp_dir = TempDir::new().unwrap();
+        let inner_dir = temp_dir.path().join("inner");
+        fs::create_dir_all(&inner_dir).unwrap();
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["inner"]
+
+[workspace.package]
+version = "9.9.9"
+
+[workspace.dependencies]
+shared = { path = "shared", version = "1.0" }
+"#,
+        )
+        .unwrap();
+        let inner_manifest = inner_dir.join("Cargo.toml");
+        fs::write(
+            &inner_manifest,
+            r#"[package]
+name = "inner"
+version = "0.1.0"
+
+[workspace]
+members = []
+
+[workspace.package]
+version = "0.1.0"
+
+[workspace.dependencies]
+shared = { path = "../shared" }
+
+[dev-dependencies]
+shared = { workspace = true }
 "#,
         )
         .unwrap();
 
         let mut finder = RustProjectFinder::new();
         finder
-            .visit(&cargo_toml, &PathBuf::from("Cargo.toml"))
+            .visit(&temp_dir.path().join("Cargo.toml"), Path::new("Cargo.toml"))
             .await
             .unwrap();
+        finder
+            .visit(&inner_manifest, Path::new("inner/Cargo.toml"))
+            .await
+            .unwrap();
+        finder.finalize().await.unwrap();
 
         let projects = finder.projects();
-        assert_eq!(projects.len(), 1);
-        let deps = projects[0].expect_package().dependencies();
-        assert_eq!(deps.len(), 6, "expected all workspace deps, got {deps:?}");
-        assert!(deps.contains("runtime-core"));
-        assert!(deps.contains("test-support"));
-        assert!(deps.contains("build-helper"));
-        assert!(deps.contains("unix-support"));
-        assert!(deps.contains("windows-test-support"));
-        assert!(deps.contains("wasm-build-helper"));
-        assert!(!deps.contains("external"));
-        assert!(!deps.contains("tempfile"));
-        assert!(!deps.contains("cc"));
-        assert!(!deps.contains("libc"));
+        let inner = projects
+            .iter()
+            .find(|project| project.name() == Some("inner"))
+            .expect("the hybrid root must be discovered");
+        assert!(
+            inner.dependencies().is_empty(),
+            "the parent's versioned `shared` must not rescue the hybrid root's \
+             path-only one, got {:?}",
+            inner.dependencies()
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    /// Version-bearing classifications are per-root: a sibling workspace that
+    /// declares the same dependency key with a version must not make another
+    /// workspace's path-only entry look publishable.
+    #[tokio::test]
+    async fn test_rust_project_finder_sibling_workspaces_do_not_share_versioned_classifications() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut finder = RustProjectFinder::new();
+        for (workspace, root_shared) in [
+            (
+                "alpha",
+                r#"shared = { path = "../shared", version = "1.0" }"#,
+            ),
+            ("beta", r#"shared = { path = "../shared" }"#),
+        ] {
+            let member_dir = temp_dir.path().join(workspace).join("member");
+            fs::create_dir_all(&member_dir).unwrap();
+            fs::write(
+                temp_dir.path().join(workspace).join("Cargo.toml"),
+                format!(
+                    "[workspace]\nmembers = [\"member\"]\n\n[workspace.package]\nversion = \"1.0.0\"\n\n[workspace.dependencies]\n{root_shared}\n"
+                ),
+            )
+            .unwrap();
+            fs::write(
+                member_dir.join("Cargo.toml"),
+                format!(
+                    "[package]\nname = \"{workspace}-member\"\nversion = \"0.1.0\"\n\n[dev-dependencies]\nshared = {{ workspace = true }}\n"
+                ),
+            )
+            .unwrap();
+            finder
+                .visit(
+                    &member_dir.join("Cargo.toml"),
+                    Path::new(&format!("{workspace}/member/Cargo.toml")),
+                )
+                .await
+                .unwrap();
+        }
+        finder.finalize().await.unwrap();
+
+        let projects = finder.projects();
+        let deps_of = |name: &str| {
+            projects
+                .iter()
+                .find(|project| project.name() == Some(name))
+                .unwrap_or_else(|| panic!("{name} must be discovered"))
+                .dependencies()
+                .clone()
+        };
+        assert!(deps_of("alpha-member").contains("shared"));
+        assert!(deps_of("beta-member").is_empty());
+
+        temp_dir.close().unwrap();
+    }
+
+    /// The exact shape that aborted this repository's own release: `utils` and
+    /// `cli` reach `node` / themselves only through path-only dev-dependencies,
+    /// while `node --> utils` is a real `[dependencies]` edge. Only the real
+    /// edge may survive, otherwise the publish batch is a cycle.
+    #[tokio::test]
+    async fn test_rust_project_finder_reproduces_the_changepacks_release_graph() {
+        let temp_dir = TempDir::new().unwrap();
+        fs::write(
+            temp_dir.path().join("Cargo.toml"),
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.3.0"
+
+[workspace.dependencies]
+changepacks-node = { path = "crates/node", version = "^0.3.0" }
+changepacks-utils = { path = "crates/utils", version = "^0.3.0" }
+"#,
+        )
+        .unwrap();
+        let manifests = [
+            (
+                "utils",
+                r#"[package]
+name = "changepacks-utils"
+version = "0.3.0"
+
+[dev-dependencies]
+changepacks-node = { path = "../node" }
+"#,
+            ),
+            (
+                "node",
+                r#"[package]
+name = "changepacks-node"
+version = "0.3.0"
+
+[dependencies]
+changepacks-utils.workspace = true
+"#,
+            ),
+            (
+                "cli",
+                r#"[package]
+name = "changepacks-cli"
+version = "0.3.0"
+
+[dependencies]
+changepacks-node.workspace = true
+changepacks-utils.workspace = true
+
+[dev-dependencies]
+changepacks-cli = { path = ".", features = ["test-support"] }
+"#,
+            ),
+        ];
+        let mut finder = RustProjectFinder::new();
+        for (crate_name, manifest) in manifests {
+            let crate_dir = temp_dir.path().join("crates").join(crate_name);
+            fs::create_dir_all(&crate_dir).unwrap();
+            fs::write(crate_dir.join("Cargo.toml"), manifest).unwrap();
+            finder
+                .visit(
+                    &crate_dir.join("Cargo.toml"),
+                    Path::new(&format!("crates/{crate_name}/Cargo.toml")),
+                )
+                .await
+                .unwrap();
+        }
+        finder.finalize().await.unwrap();
+
+        let projects = finder.projects();
+        let deps_of = |name: &str| {
+            let mut names: Vec<String> = projects
+                .iter()
+                .find(|project| project.name() == Some(name))
+                .unwrap_or_else(|| panic!("{name} must be discovered"))
+                .dependencies()
+                .iter()
+                .cloned()
+                .collect();
+            names.sort_unstable();
+            names
+        };
+        assert!(
+            deps_of("changepacks-utils").is_empty(),
+            "the path-only dev edge to node must be gone"
+        );
+        assert_eq!(deps_of("changepacks-node"), vec!["changepacks-utils"]);
+        assert_eq!(
+            deps_of("changepacks-cli"),
+            vec!["changepacks-node", "changepacks-utils"],
+            "the self dev edge must be gone"
+        );
 
         temp_dir.close().unwrap();
     }

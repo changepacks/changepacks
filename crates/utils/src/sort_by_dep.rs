@@ -273,7 +273,13 @@ fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], in_degree: &[usiz
             }
         }
 
-        let cyclic = component.len() > 1 || adj[offsets[root]..offsets[root + 1]].contains(&root);
+        // A singleton SCC would additionally need a self-edge to be cyclic, but
+        // `sort_by_dependencies` never records one (it skips `dep_idx == idx`),
+        // so no `adj` slice can contain its own source and the extra scan is
+        // provably dead. A residual singleton is therefore always a node merely
+        // BLOCKED by a cycle elsewhere, and reporting it as a cycle member would
+        // name an innocent project in the error.
+        let cyclic = component.len() > 1;
         if cyclic {
             for &node in &component {
                 cycle_members[node] = true;
@@ -344,13 +350,23 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
         let deps = project.dependencies();
         for dep in deps {
             match project_names.resolve(dep) {
-                ProjectNameResolution::Unique(dep_idx) => {
+                // `dep_idx != idx` drops self-edges. A project can never be a
+                // publish-order constraint on itself, so a manifest that names
+                // itself — Cargo's `me = { path = "." }` dev-dependency, used to
+                // switch a test-only feature on, is the canonical case — is
+                // describing a build-time detail, not a release-graph cycle.
+                // Left in, the self-edge gives that node an in-degree Kahn's
+                // loop can never drain, which strands the node AND every
+                // dependent of it, failing the whole publish batch.
+                ProjectNameResolution::Unique(dep_idx) if dep_idx != idx => {
                     // Project at idx depends on project at dep_idx
                     // So dep_idx should come before idx
                     edges.push((dep_idx, idx));
                     in_degree[idx] += 1;
                 }
-                ProjectNameResolution::Missing | ProjectNameResolution::Ambiguous => {}
+                ProjectNameResolution::Unique(_)
+                | ProjectNameResolution::Missing
+                | ProjectNameResolution::Ambiguous => {}
             }
         }
     }
@@ -788,17 +804,61 @@ mod tests {
 
     #[test]
     fn test_sort_self_reference_ignored() {
-        // p1 depends on itself: `p1` IS in `name_to_index`, so the self-edge
-        // gives p1 an in_degree of 1 that Kahn's loop never drains (its only
-        // dependency is itself). The trailing cyclic-fallback loop then appends
-        // it, so both projects still appear in the result.
+        // p1 names itself. A project can never be a publish-order constraint on
+        // itself, so the self-edge is dropped before Kahn's algorithm sees it
+        // and both projects sort normally. Left in, it would give p1 an
+        // in_degree the loop can never drain and fail the whole batch.
         let p1 = create_project("p1", vec!["p1"]);
         let p2 = create_project("p2", vec![]);
 
         let projects = vec![&p1, &p2];
-        let error = sort_by_dependencies(projects).expect_err("self-cycle must fail");
+        let sorted =
+            sort_by_dependencies(projects).expect("a self-edge is not a release-graph cycle");
 
-        assert_eq!(cycle_of(&error).members()[0].name, "p1");
+        let names: Vec<Option<&str>> = sorted.iter().map(|project| project.name()).collect();
+        assert_eq!(names, vec![Some("p1"), Some("p2")]);
+    }
+
+    #[test]
+    fn test_sort_ignores_a_self_edge_while_honoring_real_dependencies() {
+        // The self-edge must not swallow the project's OTHER edges: `app` still
+        // has to publish after `lib`.
+        let lib = create_project("lib", vec![]);
+        let app = create_project("app", vec!["app", "lib"]);
+
+        let sorted = sort_by_dependencies(vec![&app, &lib])
+            .expect("a self-edge must not mask a real dependency");
+
+        let names: Vec<Option<&str>> = sorted.iter().map(|project| project.name()).collect();
+        assert_eq!(names, vec![Some("lib"), Some("app")]);
+    }
+
+    /// The exact release graph this repository publishes: the two dev-only
+    /// back-edges are already gone by the time the sort runs (the Rust finder
+    /// drops them), so what reaches Kahn's algorithm is a plain DAG.
+    #[test]
+    fn test_sort_orders_the_changepacks_release_graph() {
+        let core = create_project("changepacks-core", vec![]);
+        let utils = create_project("changepacks-utils", vec!["changepacks-core"]);
+        let node = create_project("changepacks-node", vec!["changepacks-utils"]);
+        let cli = create_project(
+            "changepacks-cli",
+            vec!["changepacks-node", "changepacks-utils"],
+        );
+
+        let sorted = sort_by_dependencies(vec![&cli, &node, &utils, &core])
+            .expect("the real release graph is a DAG");
+
+        let names: Vec<Option<&str>> = sorted.iter().map(|project| project.name()).collect();
+        assert_eq!(
+            names,
+            vec![
+                Some("changepacks-core"),
+                Some("changepacks-utils"),
+                Some("changepacks-node"),
+                Some("changepacks-cli"),
+            ]
+        );
     }
 
     #[test]
@@ -859,18 +919,14 @@ mod tests {
     }
 
     #[test]
-    fn test_sort_rejects_self_cycle() {
+    fn test_sort_accepts_a_lone_self_referencing_project() {
         let project = create_project("self", vec!["self"]);
 
-        let error = sort_by_dependencies(vec![&project]).expect_err("self-cycle must fail");
+        let sorted =
+            sort_by_dependencies(vec![&project]).expect("a lone self-edge leaves nothing to order");
 
-        let cycle = cycle_of(&error);
-        assert_eq!(cycle.members().len(), 1);
-        assert_eq!(cycle.members()[0].name, "self");
-        assert_eq!(
-            cycle.members()[0].path,
-            std::path::Path::new("self/package.json")
-        );
+        assert_eq!(sorted.len(), 1);
+        assert_eq!(sorted[0].name(), Some("self"));
     }
 
     #[test]
@@ -920,9 +976,15 @@ mod tests {
     }
 
     #[test]
-    fn test_residual_scc_membership_marks_only_cycles() {
-        // 0 <-> 1 is cyclic, 2 is blocked by that cycle, 3 has a self-edge,
+    fn test_residual_scc_membership_marks_only_multi_node_cycles() {
+        // 0 <-> 1 is cyclic, 2 is blocked by that cycle, 3 carries a self-edge,
         // and 4 is an acyclic residual singleton.
+        //
+        // Node 3 pins that a singleton is NEVER reported, self-edge or not.
+        // `sort_by_dependencies` drops self-edges while building the graph, so
+        // this input cannot arise from it at all; keeping the shape here holds
+        // the classifier to the same answer should one ever leak in, rather
+        // than naming a project that constrains nobody but itself.
         let offsets = vec![0, 1, 3, 4, 5, 5];
         let adj = vec![1, 0, 2, 4, 3];
         // Every node is residual, i.e. Kahn left a non-zero in-degree behind.
@@ -930,7 +992,7 @@ mod tests {
 
         assert_eq!(
             cycle_members_in_residual(&adj, &offsets, &in_degree),
-            vec![true, true, false, true, false]
+            vec![true, true, false, false, false]
         );
     }
 
@@ -974,21 +1036,19 @@ mod tests {
     }
 
     #[test]
-    fn test_singleton_scc_requires_a_self_edge() {
-        let self_cycle = create_project("self-cycle", vec!["self-cycle"]);
-        let blocked = create_project("blocked", vec!["self-cycle"]);
+    fn test_self_edge_does_not_strand_its_dependents() {
+        // A self-edge used to give `self-ref` an in-degree Kahn's loop could
+        // never drain, which stranded `blocked` — an innocent dependent — along
+        // with it and failed the batch. Now the edge is dropped at graph build
+        // time, so both projects sort in real dependency order.
+        let self_ref = create_project("self-ref", vec!["self-ref"]);
+        let blocked = create_project("blocked", vec!["self-ref"]);
 
-        let error =
-            sort_by_dependencies(vec![&blocked, &self_cycle]).expect_err("self-cycle must fail");
+        let sorted = sort_by_dependencies(vec![&blocked, &self_ref])
+            .expect("a self-edge must not strand the projects that depend on it");
 
-        assert_eq!(
-            cycle_of(&error)
-                .members()
-                .iter()
-                .map(|member| member.name.as_str())
-                .collect::<Vec<_>>(),
-            vec!["self-cycle"]
-        );
+        let names: Vec<Option<&str>> = sorted.iter().map(|project| project.name()).collect();
+        assert_eq!(names, vec![Some("self-ref"), Some("blocked")]);
     }
 
     #[test]

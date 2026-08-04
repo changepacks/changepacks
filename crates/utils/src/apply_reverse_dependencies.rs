@@ -127,9 +127,15 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
 
         let dependencies = project.dependencies();
         for dep_name in dependencies {
+            // `dep_idx != idx` drops self-edges, matching `sort_by_dependencies`
+            // so both consumers read one release graph. A project bumping
+            // itself is not a reverse dependency; the guard is belt-and-braces
+            // (the "already scheduled" gate below neutralizes it anyway) but it
+            // keeps the graph itself free of an edge that can never mean
+            // anything.
             if !matches!(
                 project_names.resolve(dep_name),
-                ProjectNameResolution::Unique(_)
+                ProjectNameResolution::Unique(dep_idx) if dep_idx != idx
             ) {
                 continue;
             }
@@ -478,6 +484,63 @@ mod tests {
             log_json["note"],
             "Auto-update: depends on 'core' via a local workspace dependency"
         );
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_ignores_a_self_edge() {
+        // `app` names itself (Cargo's `me = { path = "." }` dev-dependency
+        // shape). A project is never its own reverse dependency, so the
+        // self-edge must neither schedule anything nor mask `app`'s real
+        // dependency on `core`.
+        let core = create_project("core", vec![]);
+        let app = create_project("app", vec!["app", "core"]);
+        let projects: Vec<&Project> = vec![&core, &app];
+        let mut update_map = HashMap::from([(
+            PathBuf::from("core/package.json"),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "seed".to_string(),
+                )],
+            ),
+        )]);
+
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test")).unwrap();
+
+        assert_eq!(update_map.len(), 2);
+        assert_eq!(
+            update_map[&PathBuf::from("app/package.json")].0,
+            UpdateType::Patch
+        );
+        let log_json =
+            serde_json::to_value(&update_map[&PathBuf::from("app/package.json")].1[0]).unwrap();
+        assert_eq!(
+            log_json["note"],
+            "Auto-update: depends on 'core' via a local workspace dependency"
+        );
+    }
+
+    #[test]
+    fn test_apply_reverse_dependencies_self_edge_alone_schedules_nothing() {
+        // A project whose ONLY edge is to itself must leave the map exactly as
+        // seeded — no extra entry, no generated provenance log on the seed.
+        let solo = create_project("solo", vec!["solo"]);
+        let other = create_project("other", vec![]);
+        let projects: Vec<&Project> = vec![&solo, &other];
+        let mut update_map = HashMap::from([(
+            PathBuf::from("solo/package.json"),
+            (UpdateType::Minor, vec![]),
+        )]);
+
+        apply_reverse_dependencies(&mut update_map, &projects, Path::new("/test")).unwrap();
+
+        assert_eq!(update_map.len(), 1);
+        assert_eq!(
+            update_map[&PathBuf::from("solo/package.json")].0,
+            UpdateType::Minor
+        );
+        assert!(update_map[&PathBuf::from("solo/package.json")].1.is_empty());
     }
 
     #[test]
