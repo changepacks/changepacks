@@ -63,9 +63,15 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    container:
-      image: xd009642/tarpaulin:develop-nightly
-      options: --security-opt seccomp=unconfined
+    # Runs directly on the runner rather than in `xd009642/tarpaulin`. A
+    # container job runs as root, and root holds CAP_DAC_OVERRIDE, which
+    # bypasses the permission bits - so every test that proves an io failure by
+    # clearing a file's write bit saw the write SUCCEED here while passing in
+    # all twelve `Test` jobs, which run unprivileged. Installing the same
+    # binary on the plain runner keeps this job's filesystem semantics
+    # identical to those jobs and to a developer's machine. The container's
+    # `seccomp=unconfined` went with it: that is a requirement of tarpaulin's
+    # default ptrace engine, and this job runs `--engine llvm`.
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -77,6 +83,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
       - name: Build
         run: cargo check
       # A workspace build unifies features across members, so a crate whose own

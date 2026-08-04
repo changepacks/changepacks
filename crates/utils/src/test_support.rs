@@ -234,7 +234,8 @@ macro_rules! assert_malformed_manifest_rejected {
 ///
 /// # Panics
 ///
-/// Panics if metadata cannot be read or permissions cannot be set.
+/// Panics if metadata cannot be read, if permissions cannot be set, or if
+/// clearing the write bit left the file writable anyway - see below.
 pub fn set_readonly(path: &Path, readonly: bool) {
     let mut permissions = std::fs::metadata(path)
         .unwrap_or_else(|err| panic!("failed to read metadata for {}: {err}", path.display()))
@@ -242,6 +243,24 @@ pub fn set_readonly(path: &Path, readonly: bool) {
     permissions.set_readonly(readonly);
     std::fs::set_permissions(path, permissions)
         .unwrap_or_else(|err| panic!("failed to set permissions for {}: {err}", path.display()));
+
+    // Confirm the bit actually denies writes before any caller relies on it.
+    // A privileged process bypasses the permission check entirely - root holds
+    // CAP_DAC_OVERRIDE on Linux, which is the default in a container-based CI
+    // job - and then every `expect_err("write to a readonly … must fail")`
+    // built on this fixture reports an opaque `Err` that was really an `Ok`.
+    // Failing here instead names the cause once, for all of those call sites.
+    if readonly {
+        // The path is bound eagerly and captured inline rather than passed as a
+        // trailing `assert!` argument: a trailing argument is only evaluated on
+        // failure, and rustfmt puts it on its own line, which then reads as an
+        // unexecuted line in coverage.
+        let target = path.display();
+        assert!(
+            std::fs::OpenOptions::new().write(true).open(path).is_err(),
+            "fixture precondition: {target} stayed writable after its write bit was cleared, so this process bypasses permission checks (root holds CAP_DAC_OVERRIDE) and every readonly-based failure test would silently pass"
+        );
+    }
 }
 
 #[cfg(test)]
