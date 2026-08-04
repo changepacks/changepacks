@@ -1,10 +1,12 @@
 use changepacks_core::Project;
 use clap::ValueEnum;
 
+use super::language_options::{CliLanguage, language_slice_contains};
+
 /// CLI filter for workspace-only or package-only listing.
 ///
 /// Used by the check command to filter projects by type.
-#[derive(Debug, Clone, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FilterOptions {
     /// Show only workspace projects
     Workspace,
@@ -14,7 +16,7 @@ pub enum FilterOptions {
 
 impl FilterOptions {
     #[must_use]
-    pub fn matches(&self, project: &Project) -> bool {
+    pub fn matches(self, project: &Project) -> bool {
         match self {
             Self::Workspace => matches!(project, Project::Workspace(_)),
             Self::Package => matches!(project, Project::Package(_)),
@@ -22,190 +24,88 @@ impl FilterOptions {
     }
 }
 
+/// Apply the shared `--filter` + `--language` retention pass to `projects`.
+///
+/// The two commands that expose both flags — `check` and the default
+/// `changepack` flow — previously open-coded the identical pair of statements:
+/// an `args.filter` retain guarded by `if let Some(..)`, immediately followed by
+/// [`retain_by_language`](super::language_options::retain_by_language). The
+/// language half was already extracted; this is the missing `FilterOptions`
+/// half, so the combined selection rule now lives in one place.
+///
+/// The combined rule runs in a single order-stable, filter-first pass: one
+/// `Vec::retain` whose predicate checks `filter` (vacuously true when absent)
+/// and only then the language selection (vacuously true for an empty `langs`),
+/// instead of two full traversals. `&&` still short-circuits, so a project
+/// rejected by `filter` never reaches the language scan — the surviving set,
+/// its relative order, and the number of predicate evaluations are all
+/// identical to the previous two-pass form. When neither flag is set the whole
+/// call is an early return.
+///
+/// `publish` deliberately does not use this helper — it has no `--filter` flag
+/// and correctly applies only
+/// [`retain_by_language`](super::language_options::retain_by_language).
+///
+/// `filter` is taken by value: [`FilterOptions`] is a fieldless two-variant
+/// `Copy` enum, so a `&FilterOptions` is strictly larger than the value it
+/// points at and forces every caller to write `.as_ref()` for nothing.
+pub fn retain_by_filters(
+    projects: &mut Vec<&Project>,
+    filter: Option<FilterOptions>,
+    langs: &[CliLanguage],
+) {
+    if filter.is_none() && langs.is_empty() {
+        return;
+    }
+    projects.retain(|project| {
+        filter.is_none_or(|filter| filter.matches(project))
+            && (langs.is_empty() || language_slice_contains(langs, project.language()))
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use async_trait::async_trait;
-    use changepacks_core::{Language, Package, UpdateType, Workspace};
+    use changepacks_core::Language;
     use clap::ValueEnum;
-    use std::collections::HashSet;
-    use std::path::{Path, PathBuf};
+    use rstest::rstest;
 
-    #[derive(Debug)]
-    struct MockPackage {
-        name: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        version: Option<String>,
-        language: Language,
-        dependencies: HashSet<String>,
-        changed: bool,
-    }
-
-    #[async_trait]
-    impl Package for MockPackage {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
-
-        async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-
-        fn language(&self) -> Language {
-            self.language
-        }
-
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
-        }
-
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
-        }
-    }
-
-    #[derive(Debug)]
-    struct MockWorkspace {
-        name: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        version: Option<String>,
-        language: Language,
-        dependencies: HashSet<String>,
-        changed: bool,
-    }
-
-    #[async_trait]
-    impl Workspace for MockWorkspace {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
-
-        async fn update_version(&mut self, _update_type: UpdateType) -> anyhow::Result<()> {
-            Ok(())
-        }
-
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-
-        fn language(&self) -> Language {
-            self.language
-        }
-
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
-        }
-
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
-        }
-
-        async fn update_workspace_dependencies(
-            &self,
-            _packages: &[&dyn Package],
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-    }
+    use changepacks_core::test_support::{MockPackage, MockWorkspace};
 
     fn workspace_project() -> Project {
-        Project::Workspace(Box::new(MockWorkspace {
-            name: Some("workspace".to_string()),
-            path: PathBuf::from("/repo/package.json"),
-            relative_path: PathBuf::from("package.json"),
-            version: Some("1.0.0".to_string()),
-            language: Language::Node,
-            dependencies: HashSet::new(),
-            changed: false,
-        }))
+        Project::Workspace(Box::new(MockWorkspace::with_all(
+            Some("workspace"),
+            Some("1.0.0"),
+            "/repo/package.json",
+            "package.json",
+            Language::Node,
+        )))
     }
 
     fn package_project() -> Project {
-        Project::Package(Box::new(MockPackage {
-            name: Some("package".to_string()),
-            path: PathBuf::from("/repo/crates/pkg/Cargo.toml"),
-            relative_path: PathBuf::from("crates/pkg/Cargo.toml"),
-            version: Some("1.0.0".to_string()),
-            language: Language::Rust,
-            dependencies: HashSet::new(),
-            changed: false,
-        }))
+        Project::Package(Box::new(MockPackage::with_all(
+            Some("package"),
+            Some("1.0.0"),
+            "/repo/crates/pkg/Cargo.toml",
+            "crates/pkg/Cargo.toml",
+            Language::Rust,
+        )))
     }
 
-    #[test]
-    fn test_filter_options_matches_workspace_with_workspace_project() {
-        let project = workspace_project();
-        assert!(FilterOptions::Workspace.matches(&project));
-    }
-
-    #[test]
-    fn test_filter_options_matches_workspace_with_package_project() {
-        let project = package_project();
-        assert!(!FilterOptions::Workspace.matches(&project));
-    }
-
-    #[test]
-    fn test_filter_options_matches_package_with_package_project() {
-        let project = package_project();
-        assert!(FilterOptions::Package.matches(&project));
-    }
-
-    #[test]
-    fn test_filter_options_matches_package_with_workspace_project() {
-        let project = workspace_project();
-        assert!(!FilterOptions::Package.matches(&project));
+    // `FilterOptions::X.matches(&project)` is true iff `project` is the
+    // matching variant. Covers both `Workspace`/`Package` filters against
+    // both project variants (4 = 2 filters × 2 project shapes).
+    #[rstest]
+    #[case(FilterOptions::Workspace, workspace_project(), true)]
+    #[case(FilterOptions::Workspace, package_project(), false)]
+    #[case(FilterOptions::Package, package_project(), true)]
+    #[case(FilterOptions::Package, workspace_project(), false)]
+    fn test_filter_options_matches(
+        #[case] filter: FilterOptions,
+        #[case] project: Project,
+        #[case] expected: bool,
+    ) {
+        assert_eq!(filter.matches(&project), expected);
     }
 
     #[test]
@@ -218,5 +118,50 @@ mod tests {
     fn test_filter_options_value_enum_package() {
         let filter = FilterOptions::from_str("package", true).unwrap();
         assert!(matches!(filter, FilterOptions::Package));
+    }
+
+    fn node_package() -> Project {
+        Project::Package(Box::new(MockPackage::with_all(
+            Some("node-pkg"),
+            Some("1.0.0"),
+            "/repo/packages/pkg/package.json",
+            "packages/pkg/package.json",
+            Language::Node,
+        )))
+    }
+
+    /// Locks the combined `--filter` + `--language` retention rule that `check`
+    /// and `changepack` share. Fixture order is workspace(Node),
+    /// package(Rust), package(Node), so each case also proves `Vec::retain`
+    /// keeps the survivors in their original relative order.
+    ///
+    /// Expected values are the repo-relative paths of the surviving projects.
+    #[rstest]
+    // No flags at all: pure no-op, everything survives in order.
+    #[case(None, &[], &["package.json", "crates/pkg/Cargo.toml", "packages/pkg/package.json"])]
+    // `--filter` only.
+    #[case(Some(FilterOptions::Workspace), &[], &["package.json"])]
+    #[case(Some(FilterOptions::Package), &[], &["crates/pkg/Cargo.toml", "packages/pkg/package.json"])]
+    // `--language` only.
+    #[case(None, &[CliLanguage::Node], &["package.json", "packages/pkg/package.json"])]
+    // Both flags: the filter runs first, then the language filter.
+    #[case(Some(FilterOptions::Package), &[CliLanguage::Node], &["packages/pkg/package.json"])]
+    #[case(Some(FilterOptions::Workspace), &[CliLanguage::Rust], &[])]
+    #[case(Some(FilterOptions::Package), &[CliLanguage::Node, CliLanguage::Rust], &["crates/pkg/Cargo.toml", "packages/pkg/package.json"])]
+    fn test_retain_by_filters(
+        #[case] filter: Option<FilterOptions>,
+        #[case] langs: &[CliLanguage],
+        #[case] expected: &[&str],
+    ) {
+        let projects = [workspace_project(), package_project(), node_package()];
+        let mut refs: Vec<&Project> = projects.iter().collect();
+
+        retain_by_filters(&mut refs, filter, langs);
+
+        let actual: Vec<String> = refs
+            .iter()
+            .map(|p| p.relative_path().to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert_eq!(actual, expected);
     }
 }

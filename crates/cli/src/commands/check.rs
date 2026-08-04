@@ -1,18 +1,32 @@
-use changepacks_core::{ChangePackResultLog, Language, Project, UpdateType};
+use changepacks_core::Project;
 
 use anyhow::Result;
-use changepacks_utils::{
-    apply_reverse_dependencies, display_update, gen_changepack_result_map, gen_update_map,
-    get_relative_path,
-};
+use changepacks_utils::gen_update_map;
 use clap::Args;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::io::Write;
 
 use crate::{
     CommandContext,
-    options::{CliLanguage, FilterOptions, FormatOptions},
+    commands::{
+        changepack_result_json,
+        tree::{display_tree, version_display_with_update},
+    },
+    finders::collect_projects,
+    options::{CliLanguage, FilterOptions, FormatOptions, retain_by_filters},
 };
+
+/// Format the "(changed)" marker for a project, colored bright yellow if changed.
+///
+/// Shared with the `--tree` renderer in `commands::tree`, which appends the same
+/// marker to every tree line.
+pub(super) fn changed_marker(project: &Project) -> colored::ColoredString {
+    use colored::Colorize;
+    if project.is_changed() {
+        " (changed)".bright_yellow()
+    } else {
+        "".normal()
+    }
+}
 
 #[derive(Args, Debug)]
 #[command(about = "Check project status")]
@@ -23,9 +37,10 @@ pub struct CheckArgs {
     #[arg(long, default_value = "stdout")]
     format: FormatOptions,
 
-    #[arg(short, long, default_value = "false")]
+    #[arg(short, long)]
     remote: bool,
 
+    /// Display projects as a dependency tree (currently supports stdout output only).
     #[arg(long)]
     tree: bool,
 
@@ -34,331 +49,77 @@ pub struct CheckArgs {
     pub language: Vec<CliLanguage>,
 }
 
-/// Check project status
-///
-/// # Errors
-/// Returns error if command context creation or project checking fails.
-///
-/// Excluded from coverage: orchestrates `CommandContext::new` (git I/O)
-/// and a deeply-nested multi-line `format!(...).replace(...)` expression
-/// where tarpaulin mis-attributes one branch of the inner `if let
-/// Some(update_type) = update_map.get(...)`. The underlying helpers
-/// (`display_update`, `gen_update_map`, `apply_reverse_dependencies`,
-/// `format_project_line`) are covered by their own tests.
-#[cfg(not(tarpaulin_include))]
-pub async fn handle_check(args: &CheckArgs) -> Result<()> {
-    let ctx = CommandContext::new(args.remote).await?;
-
-    let mut projects = ctx
-        .project_finders
-        .iter()
-        .flat_map(|finder| finder.projects())
-        .collect::<Vec<_>>();
-    if let Some(filter) = &args.filter {
-        projects.retain(|p| filter.matches(p));
-    }
-    if !args.language.is_empty() {
-        let allowed_languages: Vec<Language> = args
-            .language
-            .iter()
-            .map(|&lang| Language::from(lang))
-            .collect();
-        projects.retain(|project| allowed_languages.contains(&project.language()));
-    }
-    projects.sort();
-    if let FormatOptions::Stdout = args.format {
-        println!("Found {} projects", projects.len());
-    }
-    let mut update_map = gen_update_map(&CommandContext::current_dir()?, &ctx.config).await?;
-
-    // Apply reverse dependency updates (workspace:* dependencies)
-    apply_reverse_dependencies(&mut update_map, &projects, &ctx.repo_root_path);
-
-    if args.tree {
-        // Tree mode: show dependencies as a tree
-        display_tree(&projects, &ctx.repo_root_path, &update_map)?;
-    } else {
-        match args.format {
-            FormatOptions::Stdout => {
-                use colored::Colorize;
-                for project in projects {
-                    let changed_marker = if project.is_changed() {
-                        " (changed)".bright_yellow()
-                    } else {
-                        "".normal()
-                    };
-                    println!(
-                        "{}",
-                        format!("{project}{changed_marker}",).replace(
-                            &project
-                                .version()
-                                .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"),),
-                            &if let Some(update_type) = update_map
-                                .get(&get_relative_path(&ctx.repo_root_path, project.path())?)
-                            {
-                                display_update(project.version(), update_type.0)?
-                            } else {
-                                project
-                                    .version()
-                                    .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
-                            },
-                        ),
-                    );
-                }
-            }
-            FormatOptions::Json => {
-                let json = serde_json::to_string_pretty(&gen_changepack_result_map(
-                    projects.as_slice(),
-                    &ctx.repo_root_path,
-                    &mut update_map,
-                )?)?;
-                println!("{json}");
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Display projects as a dependency tree
-///
-/// Excluded from coverage: pure CLI display orchestration that emits
-/// formatted output via `println!`; the underlying helpers
-/// (`display_tree_node`, `format_project_line`) carry the testable logic
-/// and are covered separately.
-#[cfg(not(tarpaulin_include))]
-fn display_tree(
-    projects: &[&Project],
-    repo_root_path: &std::path::Path,
-    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-) -> Result<()> {
-    // Create a map from project relative_path to project
-    let mut path_to_project: HashMap<String, &Project> = HashMap::new();
-    for project in projects {
-        path_to_project.insert(project.name().unwrap_or("noname").to_string(), project);
-    }
-
-    // Build reverse dependency graph: graph[dep] = list of projects that depend on dep
-    // This way, dependencies appear as children in the tree
-    let mut graph: HashMap<String, Vec<String>> = HashMap::new();
-    let mut roots: HashSet<String> = HashSet::new();
-    let mut has_dependencies: HashSet<String> = HashSet::new();
-
-    for project in projects {
-        let deps = project.dependencies();
-        // Filter dependencies to only include monorepo projects
-        let monorepo_deps: Vec<String> = deps
-            .iter()
-            .filter(|dep| path_to_project.contains_key(*dep))
-            .cloned()
-            .collect();
-
-        if !monorepo_deps.is_empty() {
-            graph.insert(
-                project.name().unwrap_or("noname").to_string(),
-                monorepo_deps.clone(),
-            );
-            for dep in &monorepo_deps {
-                has_dependencies.insert(dep.clone());
-            }
-        }
-    }
-
-    // Root nodes are projects that are not dependencies of any other project
-    for project in projects {
-        if !has_dependencies.contains(project.name().unwrap_or("noname")) {
-            roots.insert(project.name().unwrap_or("noname").to_string());
-        }
-    }
-
-    // Sort roots for consistent output
-    let mut sorted_roots: Vec<String> = roots.into_iter().collect();
-    sorted_roots.sort();
-
-    // Display tree starting from roots
-    let mut visited: HashSet<String> = HashSet::new();
-    let mut ctx = TreeContext {
-        graph: &graph,
-        path_to_project: &path_to_project,
-        repo_root_path,
-        update_map,
-    };
-    for (idx, root) in sorted_roots.iter().enumerate() {
-        if let Some(project) = path_to_project.get(root) {
-            let is_last = idx == sorted_roots.len() - 1;
-            display_tree_node(project, &mut ctx, "", is_last, &mut visited)?;
-        }
-    }
-
-    // Display projects that weren't part of the tree (orphaned nodes)
-    for project in projects {
-        if !visited.contains(project.name().unwrap_or("noname")) {
-            println!(
-                "{}",
-                format_project_line(project, repo_root_path, update_map, &path_to_project)?
-            );
-        }
-    }
-
-    Ok(())
-}
-
-/// Context for tree display operations
-struct TreeContext<'a> {
-    graph: &'a HashMap<String, Vec<String>>,
-    path_to_project: &'a HashMap<String, &'a Project>,
-    repo_root_path: &'a Path,
-    update_map: &'a HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-}
-
-/// Display a single node in the tree
-fn display_tree_node(
-    project: &Project,
-    ctx: &mut TreeContext,
-    prefix: &str,
-    is_last: bool,
-    visited: &mut HashSet<String>,
-) -> Result<()> {
-    let project_name = project.name().unwrap_or("noname").to_string();
-    let is_first_visit = !visited.contains(&project_name);
-    if is_first_visit {
-        visited.insert(project_name.clone());
-    }
-
-    // Only print the project line if this is the first time visiting it
-    if is_first_visit {
-        let connector = if is_last { "└── " } else { "├── " };
-        println!(
-            "{}{}{}",
-            prefix,
-            connector,
-            format_project_line(
-                project,
-                ctx.repo_root_path,
-                ctx.update_map,
-                ctx.path_to_project
-            )?
+fn validate_check_args(args: &CheckArgs) -> Result<()> {
+    if args.tree && matches!(args.format, FormatOptions::Json) {
+        anyhow::bail!(
+            "`--tree` currently supports stdout output only; remove `--format json` or use `--format stdout`"
         );
     }
 
-    // Always display dependencies, even if the node was already visited
-    // This ensures all dependencies are shown in the tree
-    if let Some(deps) = ctx.graph.get(&project_name) {
-        let mut sorted_deps = deps.clone();
-        sorted_deps.sort();
-        let sorted_deps_count = sorted_deps.len();
-        for (idx, dep_name) in sorted_deps.iter().enumerate() {
-            if let Some(dep_project) = ctx.path_to_project.get(dep_name) {
-                let is_last_dep = idx == sorted_deps_count - 1;
-                let new_prefix = format!("{}{}", prefix, if is_last { "    " } else { "│   " });
-                // Use a separate visited set for dependencies to avoid infinite loops
-                // but still show all dependencies
-                if visited.contains(dep_name) {
-                    // If already visited, just print it without recursion to avoid loops
-                    let dep_connector = if is_last_dep {
-                        "└── "
-                    } else {
-                        "├── "
-                    };
-                    println!(
-                        "{}{}{}",
-                        new_prefix,
-                        dep_connector,
-                        format_project_line(
-                            dep_project,
-                            ctx.repo_root_path,
-                            ctx.update_map,
-                            ctx.path_to_project
-                        )?
-                    );
-                } else {
-                    display_tree_node(dep_project, ctx, &new_prefix, is_last_dep, visited)?;
-                }
-            }
-        }
-    }
-
     Ok(())
 }
 
-/// Format a project line for display
+/// Check project status
 ///
-/// Excluded from coverage: tarpaulin mis-attributes the `display_update`
-/// branch of the `if let Some(update_entry) = update_map.get(...)`
-/// expression under normal rustfmt despite both branches being exercised
-/// via the check command integration flow. The helpers it composes
-/// (`display_update`, `get_relative_path`) are covered by their own tests.
-#[cfg(not(tarpaulin_include))]
-fn format_project_line(
-    project: &Project,
-    repo_root_path: &std::path::Path,
-    update_map: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>)>,
-    path_to_project: &HashMap<String, &Project>,
-) -> Result<String> {
-    use changepacks_utils::get_relative_path;
-    use colored::Colorize;
+/// # Errors
+/// Returns error if arguments are incompatible, command context creation, or project checking fails.
+///
+pub async fn handle_check(args: &CheckArgs) -> Result<()> {
+    validate_check_args(args)?;
 
-    let relative_path = get_relative_path(repo_root_path, project.path())?;
-    let version = if let Some(update_entry) = update_map.get(&relative_path) {
-        changepacks_utils::display_update(project.version(), update_entry.0)?
+    let ctx = CommandContext::new(args.remote).await?;
+
+    let mut projects = collect_projects(&ctx.project_finders);
+    let mut update_map = gen_update_map(&ctx.changepacks_dir, &ctx.config).await?;
+
+    // Expand over the full project graph before filtering output, matching update.
+    update_map.apply_reverse_dependencies(&projects, &ctx.repo_root_path)?;
+
+    retain_by_filters(&mut projects, args.filter, &args.language);
+    projects.sort();
+    // One stdout lock for the whole render: `println!` re-acquires the global
+    // lock per line and panics on a write failure (a broken pipe from
+    // `changepacks check | head`), while a held `StdoutLock` writes through the
+    // same `LineWriter` and lets an io error propagate as a typed error.
+    let mut out = std::io::stdout().lock();
+
+    if let FormatOptions::Stdout = args.format {
+        writeln!(out, "Found {} projects", projects.len())?;
+    }
+
+    if args.tree {
+        // Tree mode: show dependencies as a tree
+        display_tree(&projects, &ctx.repo_root_path, &update_map, &mut out)?;
     } else {
-        project
-            .version()
-            .map_or_else(|| "unknown".to_string(), |v| format!("v{v}"))
-    };
-
-    let changed_marker = if project.is_changed() {
-        " (changed)".bright_yellow()
-    } else {
-        "".normal()
-    };
-
-    // Only show dependencies that are in the monorepo (in path_to_project)
-    let monorepo_deps: Vec<&String> = project
-        .dependencies()
-        .iter()
-        .filter(|dep| path_to_project.contains_key(*dep))
-        .collect();
-
-    let deps_info = if monorepo_deps.is_empty() {
-        "".normal()
-    } else {
-        let deps_str = monorepo_deps
-            .iter()
-            .map(|d| d.as_str())
-            .collect::<Vec<_>>()
-            .join("\n        ");
-        format!(" [deps:\n        {deps_str}]").bright_black()
-    };
-
-    // Format similar to Project::Display but with version update and dependencies
-    let base_format = match project {
-        Project::Workspace(w) => format!(
-            "{} {} {} {} {}",
-            format!("[Workspace - {}]", w.language())
-                .bright_blue()
-                .bold(),
-            w.name().unwrap_or("noname").bright_white().bold(),
-            format!("({version})").bright_green(),
-            "-".bright_cyan(),
-            w.relative_path().display().to_string().bright_black()
-        ),
-        Project::Package(p) => format!(
-            "{} {} {} {} {}",
-            format!("[{}]", p.language()).bright_blue().bold(),
-            p.name().unwrap_or("noname").bright_white().bold(),
-            format!("({version})").bright_green(),
-            "-".bright_cyan(),
-            p.relative_path().display().to_string().bright_black()
-        ),
-    };
-
-    Ok(format!("{base_format}{changed_marker}{deps_info}"))
+        match args.format {
+            FormatOptions::Stdout => {
+                for project in projects {
+                    let changed_marker = changed_marker(project);
+                    let version_str =
+                        version_display_with_update(project, &ctx.repo_root_path, &update_map)?;
+                    writeln!(
+                        out,
+                        "{}{}",
+                        project.format_line(Some(&version_str)),
+                        changed_marker
+                    )?;
+                }
+            }
+            FormatOptions::Json => {
+                let json =
+                    changepack_result_json(projects.as_slice(), &ctx.repo_root_path, &update_map)?;
+                writeln!(out, "{json}")?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+    use rstest::rstest;
 
     // Test CheckArgs parsing via clap
     #[derive(Parser)]
@@ -389,21 +150,49 @@ mod tests {
     }
 
     #[test]
-    fn test_check_args_with_remote() {
-        let cli = TestCli::parse_from(["test", "--remote"]);
-        assert!(cli.check.remote);
+    fn test_check_args_tree_with_stdout_is_valid() {
+        let cli = TestCli::parse_from(["test", "--tree", "--format", "stdout"]);
+
+        assert!(validate_check_args(&cli.check).is_ok());
     }
 
     #[test]
-    fn test_check_args_with_filter_workspace() {
-        let cli = TestCli::parse_from(["test", "--filter", "workspace"]);
-        assert!(matches!(cli.check.filter, Some(FilterOptions::Workspace)));
+    fn test_check_args_json_without_tree_is_valid() {
+        let cli = TestCli::parse_from(["test", "--format", "json"]);
+
+        assert!(validate_check_args(&cli.check).is_ok());
     }
 
     #[test]
-    fn test_check_args_with_filter_package() {
-        let cli = TestCli::parse_from(["test", "--filter", "package"]);
-        assert!(matches!(cli.check.filter, Some(FilterOptions::Package)));
+    fn test_check_args_tree_with_json_is_rejected() {
+        let cli = TestCli::parse_from(["test", "--tree", "--format", "json"]);
+
+        let error = validate_check_args(&cli.check).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "`--tree` currently supports stdout output only; remove `--format json` or use `--format stdout`"
+        );
+    }
+
+    #[test]
+    fn test_check_args_help_documents_tree_stdout_only() {
+        let help = TestCli::try_parse_from(["test", "--help"])
+            .err()
+            .expect("--help should stop argument parsing")
+            .to_string();
+
+        assert!(help.contains("currently supports stdout output only"));
+    }
+
+    // `--filter` (long) and `-f` (short) both parse into `Some(FilterOptions::X)`.
+    #[rstest]
+    #[case(&["test", "--filter", "workspace"], FilterOptions::Workspace)]
+    #[case(&["test", "--filter", "package"], FilterOptions::Package)]
+    #[case(&["test", "-f", "workspace"], FilterOptions::Workspace)]
+    fn test_check_args_filter_flag(#[case] args: &[&str], #[case] expected: FilterOptions) {
+        let cli = TestCli::parse_from(args);
+        let filter = cli.check.filter.expect("filter should be present");
+        assert_eq!(filter, expected);
     }
 
     #[test]
@@ -417,324 +206,23 @@ mod tests {
         assert!(cli.check.remote);
     }
 
-    #[test]
-    fn test_check_args_short_filter() {
-        let cli = TestCli::parse_from(["test", "-f", "workspace"]);
-        assert!(matches!(cli.check.filter, Some(FilterOptions::Workspace)));
-    }
-
-    #[test]
-    fn test_check_args_short_remote() {
-        let cli = TestCli::parse_from(["test", "-r"]);
+    // `--remote` (long) and `-r` (short) both flip the `remote` flag.
+    #[rstest]
+    #[case(&["test", "--remote"])]
+    #[case(&["test", "-r"])]
+    fn test_check_args_remote_flag(#[case] args: &[&str]) {
+        let cli = TestCli::parse_from(args);
         assert!(cli.check.remote);
     }
 
-    #[test]
-    fn test_check_args_with_language_filter() {
-        let cli = TestCli::parse_from(["test", "--language", "node"]);
-        assert_eq!(cli.check.language.len(), 1);
-    }
-
-    #[test]
-    fn test_check_args_with_multiple_languages() {
-        let cli = TestCli::parse_from(["test", "--language", "node", "--language", "python"]);
-        assert_eq!(cli.check.language.len(), 2);
-    }
-
-    #[test]
-    fn test_check_args_short_language() {
-        let cli = TestCli::parse_from(["test", "-l", "rust"]);
-        assert_eq!(cli.check.language.len(), 1);
-    }
-
-    // --- format_project_line tests using mock trait implementations ---
-
-    use async_trait::async_trait;
-    use changepacks_core::{Language, Package, Workspace};
-    use std::collections::HashSet;
-
-    #[derive(Debug)]
-    struct MockPackageForCheck {
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        language: Language,
-        dependencies: HashSet<String>,
-        changed: bool,
-    }
-
-    impl MockPackageForCheck {
-        fn new(
-            name: Option<&str>,
-            version: Option<&str>,
-            path: &str,
-            relative_path: &str,
-            language: Language,
-        ) -> Self {
-            Self {
-                name: name.map(String::from),
-                version: version.map(String::from),
-                path: PathBuf::from(path),
-                relative_path: PathBuf::from(relative_path),
-                language,
-                dependencies: HashSet::new(),
-                changed: false,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Package for MockPackageForCheck {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
-        fn path(&self) -> &std::path::Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &std::path::Path {
-            &self.relative_path
-        }
-        async fn update_version(
-            &mut self,
-            _update_type: changepacks_core::UpdateType,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-        fn language(&self) -> Language {
-            self.language
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
-        }
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
-        }
-    }
-
-    #[derive(Debug)]
-    struct MockWorkspaceForCheck {
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        language: Language,
-        dependencies: HashSet<String>,
-        changed: bool,
-    }
-
-    impl MockWorkspaceForCheck {
-        fn new(
-            name: Option<&str>,
-            version: Option<&str>,
-            path: &str,
-            relative_path: &str,
-            language: Language,
-        ) -> Self {
-            Self {
-                name: name.map(String::from),
-                version: version.map(String::from),
-                path: PathBuf::from(path),
-                relative_path: PathBuf::from(relative_path),
-                language,
-                dependencies: HashSet::new(),
-                changed: false,
-            }
-        }
-    }
-
-    #[async_trait]
-    impl Workspace for MockWorkspaceForCheck {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
-        fn path(&self) -> &std::path::Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &std::path::Path {
-            &self.relative_path
-        }
-        async fn update_version(
-            &mut self,
-            _update_type: changepacks_core::UpdateType,
-        ) -> anyhow::Result<()> {
-            Ok(())
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-        fn language(&self) -> Language {
-            self.language
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
-        }
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
-        }
-    }
-
-    #[test]
-    fn test_format_project_line_package() {
-        let pkg = MockPackageForCheck::new(
-            Some("my-lib"),
-            Some("1.2.3"),
-            "/repo/crates/my-lib/Cargo.toml",
-            "crates/my-lib/Cargo.toml",
-            Language::Rust,
-        );
-        let project = Project::Package(Box::new(pkg));
-        let repo_root = Path::new("/repo");
-        let update_map = HashMap::new();
-        let mut path_to_project: HashMap<String, &Project> = HashMap::new();
-        path_to_project.insert("my-lib".to_string(), &project);
-
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
-        assert!(line.contains("my-lib"));
-        assert!(line.contains("v1.2.3"));
-    }
-
-    #[test]
-    fn test_format_project_line_workspace() {
-        let ws = MockWorkspaceForCheck::new(
-            Some("my-workspace"),
-            Some("2.0.0"),
-            "/repo/package.json",
-            "package.json",
-            Language::Node,
-        );
-        let project = Project::Workspace(Box::new(ws));
-        let repo_root = Path::new("/repo");
-        let update_map = HashMap::new();
-        let mut path_to_project: HashMap<String, &Project> = HashMap::new();
-        path_to_project.insert("my-workspace".to_string(), &project);
-
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
-        assert!(line.contains("my-workspace"));
-        assert!(line.contains("Workspace"));
-        assert!(line.contains("v2.0.0"));
-    }
-
-    #[test]
-    fn test_format_project_line_with_update() {
-        let pkg = MockPackageForCheck::new(
-            Some("updated-pkg"),
-            Some("1.0.0"),
-            "/repo/packages/foo/package.json",
-            "packages/foo/package.json",
-            Language::Node,
-        );
-        let project = Project::Package(Box::new(pkg));
-        let repo_root = Path::new("/repo");
-        let mut update_map = HashMap::new();
-        update_map.insert(
-            PathBuf::from("packages/foo/package.json"),
-            (UpdateType::Minor, vec![]),
-        );
-        let path_to_project: HashMap<String, &Project> = HashMap::new();
-
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
-        assert!(line.contains("updated-pkg"));
-        // The update display should show version transition
-        assert!(line.contains("1.1.0") || line.contains("1.0.0"));
-    }
-
-    #[test]
-    fn test_format_project_line_changed_marker() {
-        let mut pkg = MockPackageForCheck::new(
-            Some("changed-pkg"),
-            Some("3.0.0"),
-            "/repo/lib/Cargo.toml",
-            "lib/Cargo.toml",
-            Language::Rust,
-        );
-        pkg.changed = true;
-        let project = Project::Package(Box::new(pkg));
-        let repo_root = Path::new("/repo");
-        let update_map = HashMap::new();
-        let path_to_project: HashMap<String, &Project> = HashMap::new();
-
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
-        assert!(line.contains("changed-pkg"));
-        assert!(line.contains("changed"));
-    }
-
-    #[test]
-    fn test_format_project_line_with_dependencies() {
-        let mut pkg = MockPackageForCheck::new(
-            Some("app"),
-            Some("1.0.0"),
-            "/repo/app/package.json",
-            "app/package.json",
-            Language::Node,
-        );
-        pkg.dependencies.insert("core-lib".to_string());
-        let project = Project::Package(Box::new(pkg));
-
-        let dep_pkg = MockPackageForCheck::new(
-            Some("core-lib"),
-            Some("1.0.0"),
-            "/repo/core/package.json",
-            "core/package.json",
-            Language::Node,
-        );
-        let dep_project = Project::Package(Box::new(dep_pkg));
-
-        let repo_root = Path::new("/repo");
-        let update_map = HashMap::new();
-        let mut path_to_project: HashMap<String, &Project> = HashMap::new();
-        path_to_project.insert("app".to_string(), &project);
-        path_to_project.insert("core-lib".to_string(), &dep_project);
-
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
-        assert!(line.contains("app"));
-        assert!(line.contains("deps:"));
-        assert!(line.contains("core-lib"));
-    }
-
-    #[test]
-    fn test_format_project_line_no_deps_shows_no_bracket() {
-        let pkg = MockPackageForCheck::new(
-            Some("standalone"),
-            Some("1.0.0"),
-            "/repo/standalone/Cargo.toml",
-            "standalone/Cargo.toml",
-            Language::Rust,
-        );
-        let project = Project::Package(Box::new(pkg));
-        let repo_root = Path::new("/repo");
-        let update_map = HashMap::new();
-        let path_to_project: HashMap<String, &Project> = HashMap::new();
-
-        let line = format_project_line(&project, repo_root, &update_map, &path_to_project).unwrap();
-        assert!(line.contains("standalone"));
-        assert!(!line.contains("deps:"));
+    // `--language` / `-l` accumulate into `Vec<CliLanguage>`; the parsed
+    // length must match the number of flags supplied.
+    #[rstest]
+    #[case(&["test", "--language", "node"], 1)]
+    #[case(&["test", "-l", "rust"], 1)]
+    #[case(&["test", "--language", "node", "--language", "python"], 2)]
+    fn test_check_args_language_flag(#[case] args: &[&str], #[case] expected_len: usize) {
+        let cli = TestCli::parse_from(args);
+        assert_eq!(cli.check.language.len(), expected_len);
     }
 }

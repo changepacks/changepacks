@@ -4,41 +4,66 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use changepacks_core::{ChangePackResult, ChangePackResultLog, Project, UpdateType};
 
-use crate::{get_relative_path, next_version};
+use crate::{get_relative_path, next_version_or_default};
 
 /// Generate a changepack result map from projects and update results
 ///
 /// # Errors
 /// Returns error if relative path calculation or version calculation fails.
-///
-/// Excluded from coverage: tarpaulin's llvm engine consistently
-/// mis-attributes the per-iteration variable bindings and `match` arms
-/// inside this loop despite both `Some(...)` and `None` branches being
-/// exercised by `test_gen_changepack_result_map_*`. The function is
-/// thoroughly covered by its tests; the gap is a reporting artifact.
-#[cfg(not(tarpaulin_include))]
 pub fn gen_changepack_result_map<S: BuildHasher>(
     projects: &[&Project],
     repo_root_path: &Path,
-    update_result: &mut HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
+    update_result: &HashMap<PathBuf, (UpdateType, Vec<ChangePackResultLog>), S>,
 ) -> Result<BTreeMap<PathBuf, ChangePackResult>> {
     let mut map = BTreeMap::<PathBuf, ChangePackResult>::new();
     for project in projects {
-        let key = get_relative_path(repo_root_path, project.path())?;
+        // Name the offending manifest on the relative-path failure, matching
+        // the contextual-anyhow shape every other fallible step here and in
+        // `apply_reverse_dependencies_with_provenance` already uses. Without
+        // it a project outside `repo_root_path` surfaced a bare strip_prefix
+        // message with no clue about WHICH project produced it.
+        let key = get_relative_path(repo_root_path, project.path()).with_context(|| {
+            format!(
+                "Failed to build changepack result for project '{}'",
+                project.path().display()
+            )
+        })?;
         let version = project.version().map(std::string::ToString::to_string);
         let name = project.name().map(std::string::ToString::to_string);
         let changed = project.is_changed();
-        let result = match update_result.remove(&key) {
+        // Hoist the `ChangePackResult` key out of the two match arms — the
+        // arms are alternatives (only ONE runs per project), so cloning
+        // inside each arm forced 2 `PathBuf` clones per project when only 1
+        // was ever kept. Now we clone once here and move the copy into
+        // whichever arm executes; `key` itself still moves into `map.insert`.
+        let key_for_result = key.clone();
+        let result = match update_result.get(&key) {
             Some((update_type, notes)) => {
-                let next = next_version(project.version().unwrap_or("0.0.0"), update_type)?;
-                ChangePackResult::new(notes, version, Some(next), name, changed, key.clone())
+                // Reuse the already-materialized `version` string above instead
+                // of re-dispatching `project.version()` through the `Project`
+                // enum. Semantically identical (both fall back to `"0.0.0"`
+                // when the project has no version) but avoids the second
+                // trait-object hop per project on every `update`/`check`.
+                let next = next_version_or_default(version.as_deref(), *update_type).with_context(
+                    || format!("Failed to compute next version for {}", key.display()),
+                )?;
+                ChangePackResult::new(
+                    notes.clone(),
+                    version,
+                    Some(next),
+                    name,
+                    changed,
+                    key_for_result,
+                )
             }
-            None => ChangePackResult::new(vec![], version, None, name, changed, key.clone()),
+            None => ChangePackResult::new(vec![], version, None, name, changed, key_for_result),
         };
-        map.insert(key.clone(), result);
+        // `key` is not used past this insert, so move it in — the two match
+        // arms above share the single `key_for_result` clone.
+        map.insert(key, result);
     }
     Ok(map)
 }
@@ -69,25 +94,10 @@ mod tests {
         Project::Package(Box::new(package))
     }
 
-    // Helper function to extract field from JSON
-    fn get_json_field<'a>(
-        json: &'a serde_json::Value,
-        field: &str,
-    ) -> Option<&'a serde_json::Value> {
-        json.get(field)
-    }
-
     #[test]
     fn test_gen_changepack_result_map_with_update_result() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
 
         let project_path = repo_root.join("project1");
         fs::create_dir_all(&project_path).unwrap();
@@ -117,33 +127,28 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         assert_eq!(result.len(), 1);
         let change_result = result.get(&PathBuf::from("project1/package.json")).unwrap();
 
         // Serialize to JSON to verify fields
         let json = serde_json::to_value(change_result).unwrap();
+        assert_eq!(json.get("version").and_then(|v| v.as_str()), Some("1.0.0"));
         assert_eq!(
-            get_json_field(&json, "version").and_then(|v| v.as_str()),
-            Some("1.0.0")
-        );
-        assert_eq!(
-            get_json_field(&json, "nextVersion").and_then(|v| v.as_str()),
+            json.get("nextVersion").and_then(|v| v.as_str()),
             Some("1.0.1")
         );
         assert_eq!(
-            get_json_field(&json, "name").and_then(|v| v.as_str()),
+            json.get("name").and_then(|v| v.as_str()),
             Some("test-package")
         );
         assert_eq!(
-            get_json_field(&json, "changed").and_then(|v| v.as_bool()),
+            json.get("changed").and_then(serde_json::Value::as_bool),
             Some(true)
         );
         assert_eq!(
-            get_json_field(&json, "logs")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
+            json.get("logs").and_then(|v| v.as_array()).map(Vec::len),
             Some(1)
         );
 
@@ -154,13 +159,6 @@ mod tests {
     fn test_gen_changepack_result_map_without_update_result() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
 
         let project_path = repo_root.join("project2");
         fs::create_dir_all(&project_path).unwrap();
@@ -179,35 +177,27 @@ mod tests {
             false,
         );
 
-        let mut update_result = HashMap::new();
+        let update_result = HashMap::new();
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         assert_eq!(result.len(), 1);
         let change_result = result.get(&PathBuf::from("project2/package.json")).unwrap();
 
         // Serialize to JSON to verify fields
         let json = serde_json::to_value(change_result).unwrap();
+        assert_eq!(json.get("version").and_then(|v| v.as_str()), Some("2.5.3"));
+        assert!(json.get("nextVersion").is_none() || json.get("nextVersion").unwrap().is_null());
         assert_eq!(
-            get_json_field(&json, "version").and_then(|v| v.as_str()),
-            Some("2.5.3")
-        );
-        assert!(
-            get_json_field(&json, "nextVersion").is_none()
-                || get_json_field(&json, "nextVersion").unwrap().is_null()
-        );
-        assert_eq!(
-            get_json_field(&json, "name").and_then(|v| v.as_str()),
+            json.get("name").and_then(|v| v.as_str()),
             Some("test-package-2")
         );
         assert_eq!(
-            get_json_field(&json, "changed").and_then(|v| v.as_bool()),
+            json.get("changed").and_then(serde_json::Value::as_bool),
             Some(false)
         );
         assert_eq!(
-            get_json_field(&json, "logs")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
+            json.get("logs").and_then(|v| v.as_array()).map(Vec::len),
             Some(0)
         );
 
@@ -218,13 +208,6 @@ mod tests {
     fn test_gen_changepack_result_map_multiple_projects() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
 
         // Create first project
         let project1_path = repo_root.join("project1");
@@ -276,41 +259,28 @@ mod tests {
         // project2 has no update result
 
         let projects = vec![&project1, &project2];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         assert_eq!(result.len(), 2);
 
         let result1 = result.get(&PathBuf::from("project1/package.json")).unwrap();
         let json1 = serde_json::to_value(result1).unwrap();
+        assert_eq!(json1.get("version").and_then(|v| v.as_str()), Some("1.0.0"));
         assert_eq!(
-            get_json_field(&json1, "version").and_then(|v| v.as_str()),
-            Some("1.0.0")
-        );
-        assert_eq!(
-            get_json_field(&json1, "nextVersion").and_then(|v| v.as_str()),
+            json1.get("nextVersion").and_then(|v| v.as_str()),
             Some("1.1.0")
         );
         assert_eq!(
-            get_json_field(&json1, "logs")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
+            json1.get("logs").and_then(|v| v.as_array()).map(Vec::len),
             Some(1)
         );
 
         let result2 = result.get(&PathBuf::from("project2/package.json")).unwrap();
         let json2 = serde_json::to_value(result2).unwrap();
+        assert_eq!(json2.get("version").and_then(|v| v.as_str()), Some("2.0.0"));
+        assert!(json2.get("nextVersion").is_none() || json2.get("nextVersion").unwrap().is_null());
         assert_eq!(
-            get_json_field(&json2, "version").and_then(|v| v.as_str()),
-            Some("2.0.0")
-        );
-        assert!(
-            get_json_field(&json2, "nextVersion").is_none()
-                || get_json_field(&json2, "nextVersion").unwrap().is_null()
-        );
-        assert_eq!(
-            get_json_field(&json2, "logs")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
+            json2.get("logs").and_then(|v| v.as_array()).map(Vec::len),
             Some(0)
         );
 
@@ -321,13 +291,6 @@ mod tests {
     fn test_gen_changepack_result_map_major_update() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
 
         let project_path = repo_root.join("project3");
         fs::create_dir_all(&project_path).unwrap();
@@ -359,16 +322,13 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         let change_result = result.get(&PathBuf::from("project3/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
+        assert_eq!(json.get("version").and_then(|v| v.as_str()), Some("1.2.3"));
         assert_eq!(
-            get_json_field(&json, "version").and_then(|v| v.as_str()),
-            Some("1.2.3")
-        );
-        assert_eq!(
-            get_json_field(&json, "nextVersion").and_then(|v| v.as_str()),
+            json.get("nextVersion").and_then(|v| v.as_str()),
             Some("2.0.0")
         );
 
@@ -379,13 +339,6 @@ mod tests {
     fn test_gen_changepack_result_map_project_without_version() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
 
         let project_path = repo_root.join("project4");
         fs::create_dir_all(&project_path).unwrap();
@@ -416,19 +369,55 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         let change_result = result.get(&PathBuf::from("project4/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
         // When version is "0.0.0", next_version should be "0.0.1" for Patch update
+        assert_eq!(json.get("version").and_then(|v| v.as_str()), Some("0.0.0"));
         assert_eq!(
-            get_json_field(&json, "version").and_then(|v| v.as_str()),
-            Some("0.0.0")
-        );
-        assert_eq!(
-            get_json_field(&json, "nextVersion").and_then(|v| v.as_str()),
+            json.get("nextVersion").and_then(|v| v.as_str()),
             Some("0.0.1")
         );
+
+        temp_dir.close().unwrap();
+    }
+
+    // Every other test builds its project through `create_test_project`, which
+    // always passes `Some(name)`, so the `None` arm of
+    // `project.name().map(...)` was never executed. A nameless manifest is a
+    // real supported state: the Python finder builds `PythonPackage` with
+    // `name = None` for uv workspace-only roots, and that must serialize as a
+    // `null` name rather than an empty string or a panic.
+    #[test]
+    fn test_gen_changepack_result_map_project_without_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_root = temp_dir.path();
+
+        let project_path = repo_root.join("nameless");
+        fs::create_dir_all(&project_path).unwrap();
+        let package_json = project_path.join("package.json");
+        fs::write(&package_json, r#"{"version": "1.0.0"}"#).unwrap();
+
+        let mut package = NodePackage::new(
+            None,
+            Some("1.0.0".to_string()),
+            package_json,
+            PathBuf::from("nameless/package.json"),
+        );
+        package.set_changed(false);
+        let project = Project::Package(Box::new(package));
+
+        let projects = vec![&project];
+        let result = gen_changepack_result_map(&projects, repo_root, &HashMap::new()).unwrap();
+
+        assert_eq!(result.len(), 1);
+        let change_result = result.get(&PathBuf::from("nameless/package.json")).unwrap();
+        let json = serde_json::to_value(change_result).unwrap();
+        // The missing name must survive as JSON `null`, not be defaulted away.
+        assert_eq!(json.get("name"), Some(&serde_json::Value::Null));
+        // The rest of the entry is unaffected by the missing name.
+        assert_eq!(json.get("version").and_then(|v| v.as_str()), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -437,13 +426,6 @@ mod tests {
     fn test_gen_changepack_result_map_multiple_logs() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        // Initialize git repo
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
 
         let project_path = repo_root.join("project5");
         fs::create_dir_all(&project_path).unwrap();
@@ -476,14 +458,12 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         let change_result = result.get(&PathBuf::from("project5/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
         assert_eq!(
-            get_json_field(&json, "logs")
-                .and_then(|v| v.as_array())
-                .map(|a| a.len()),
+            json.get("logs").and_then(|v| v.as_array()).map(Vec::len),
             Some(3)
         );
 
@@ -495,15 +475,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
 
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
-
-        let mut update_result = HashMap::new();
+        let update_result = HashMap::new();
         let projects: Vec<&Project> = vec![];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         assert!(result.is_empty());
 
@@ -514,12 +488,6 @@ mod tests {
     fn test_gen_changepack_result_map_no_matching_update_entry() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
 
         let project_path = repo_root.join("projectA");
         fs::create_dir_all(&project_path).unwrap();
@@ -548,17 +516,14 @@ mod tests {
         );
 
         let projects = vec![&project];
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result).unwrap();
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result).unwrap();
 
         assert_eq!(result.len(), 1);
         let change_result = result.get(&PathBuf::from("projectA/package.json")).unwrap();
         let json = serde_json::to_value(change_result).unwrap();
         // No matching entry means no nextVersion
-        assert!(
-            get_json_field(&json, "nextVersion").is_none()
-                || get_json_field(&json, "nextVersion").unwrap().is_null()
-        );
-        // The unmatched update_result entry should remain unconsumed
+        assert!(json.get("nextVersion").is_none() || json.get("nextVersion").unwrap().is_null());
+        // gen_changepack_result_map no longer drains its input, so every entry remains
         assert_eq!(update_result.len(), 1);
 
         temp_dir.close().unwrap();
@@ -568,12 +533,6 @@ mod tests {
     fn test_gen_changepack_result_map_project_with_empty_version() {
         let temp_dir = TempDir::new().unwrap();
         let repo_root = temp_dir.path();
-
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(repo_root)
-            .output()
-            .unwrap();
 
         let project_path = repo_root.join("project_empty_ver");
         fs::create_dir_all(&project_path).unwrap();
@@ -603,8 +562,124 @@ mod tests {
 
         let projects = vec![&project];
         // Empty version "" with an update triggers next_version("", Patch) which should fail
-        let result = gen_changepack_result_map(&projects, repo_root, &mut update_result);
-        assert!(result.is_err());
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result);
+        let err = result.expect_err("empty version must fail the bump");
+        // The bump failure must name the offending project (the repo-relative
+        // key) so `check`/`update --format json` point at WHICH manifest broke,
+        // matching the path-in-context pattern every read/write here already uses.
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("project_empty_ver"),
+            "error chain should name the failing project, got: {chain}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_gen_changepack_result_map_project_outside_repo_root() {
+        let repo_dir = TempDir::new().unwrap();
+        let repo_root = repo_dir.path();
+
+        // The project manifest lives in a DIFFERENT tree than `repo_root`, so
+        // `get_relative_path` cannot strip the prefix and must fail.
+        let outside_dir = TempDir::new().unwrap();
+        let project_path = outside_dir.path().join("outside-project");
+        fs::create_dir_all(&project_path).unwrap();
+        let package_json = project_path.join("package.json");
+        fs::write(
+            &package_json,
+            r#"{"name": "outside-pkg", "version": "1.0.0"}"#,
+        )
+        .unwrap();
+
+        let project = create_test_project(
+            "outside-pkg",
+            "1.0.0",
+            package_json.clone(),
+            PathBuf::from("outside-project/package.json"),
+            true,
+        );
+
+        let update_result = HashMap::new();
+        let projects = vec![&project];
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result);
+
+        let err = result.expect_err("a project outside the repo root must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("Failed to build changepack result for project"),
+            "error chain should carry the changepack-result context, got: {chain}"
+        );
+        assert!(
+            chain.contains(&package_json.display().to_string()),
+            "error chain should name the offending manifest path, got: {chain}"
+        );
+
+        repo_dir.close().unwrap();
+        outside_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_gen_changepack_result_map_invalid_semver_with_update_entry() {
+        let temp_dir = TempDir::new().unwrap();
+        let repo_root = temp_dir.path();
+
+        let project_path = repo_root.join("bad_semver_pkg");
+        fs::create_dir_all(&project_path).unwrap();
+        let package_json = project_path.join("package.json");
+        fs::write(
+            &package_json,
+            r#"{"name": "bad-semver-pkg", "version": "abc"}"#,
+        )
+        .unwrap();
+
+        // Non-empty but unparseable semver, so `next_version_or_default` fails
+        // on a value the project actually declared rather than on the empty
+        // string, exercising the same bump arm from the other input class.
+        // Joined rather than written with a literal `/` so `display()` renders
+        // the same separator `get_relative_path` produces on this platform;
+        // `PathBuf` equality is component-based, so the map key still matches.
+        let relative_path = Path::new("bad_semver_pkg").join("package.json");
+        let project = create_test_project(
+            "bad-semver-pkg",
+            "abc",
+            package_json,
+            relative_path.clone(),
+            true,
+        );
+
+        // A matching `update_result` entry is the ONLY route into the bump arm;
+        // without it the project takes the `None` arm and never computes a next
+        // version.
+        let mut update_result = HashMap::new();
+        update_result.insert(
+            relative_path.clone(),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "bad semver".to_string(),
+                )],
+            ),
+        );
+
+        let projects = vec![&project];
+        let result = gen_changepack_result_map(&projects, repo_root, &update_result);
+
+        let err = result.expect_err("an unparseable version must fail the bump");
+        let chain = format!("{err:#}");
+        // Pin the exact bump-failure context, not just the path: `check` and
+        // `update --format json` rely on this wording to tell a version-bump
+        // failure apart from the relative-path failure raised earlier.
+        assert!(
+            chain.contains("Failed to compute next version for"),
+            "error chain should carry the next-version context, got: {chain}"
+        );
+        assert!(
+            chain.contains(&relative_path.display().to_string()),
+            "error chain should name the offending manifest path, got: {chain}"
+        );
 
         temp_dir.close().unwrap();
     }

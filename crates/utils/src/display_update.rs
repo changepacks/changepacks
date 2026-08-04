@@ -1,20 +1,27 @@
+use std::borrow::Cow;
+
 use anyhow::Result;
 use changepacks_core::UpdateType;
 
-use crate::next_version;
+use crate::next_version_or_default;
 
 /// Display the version update as a formatted string
 ///
 /// # Errors
 /// Returns error if the next version cannot be calculated.
 pub fn display_update(current_version: Option<&str>, update_type: UpdateType) -> Result<String> {
-    if let Some(current_version) = current_version {
-        let next_version = next_version(current_version, update_type)?;
-        Ok(format!("v{current_version} → v{next_version}"))
-    } else {
-        let next_version = next_version("0.0.0", update_type)?;
-        Ok(format!("{} → v{}", "unknown", next_version))
-    }
+    // Two-branch "reserve `0.0.0` when `None`" prelude consolidated into
+    // `next_version_or_default` — the same helper Node/Python/Dart/CSharp
+    // already delegate through for their `update_version_from_fields`.
+    // The `Some` vs `None` split now only carries the `"v"`-prefix vs
+    // `"unknown"` DISPLAY distinction.
+    let next_version = next_version_or_default(current_version, update_type)?;
+    // `format_version_display` returns a `Cow`, so the `None` ("unknown") case
+    // borrows a static literal instead of allocating; `Cow` renders through
+    // `Display` exactly like the `String` it replaced.
+    let current_display: Cow<'static, str> =
+        changepacks_core::format_version_display(current_version);
+    Ok(format!("{current_display} → v{next_version}"))
 }
 
 #[cfg(test)]
@@ -46,6 +53,27 @@ mod tests {
         assert_eq!(
             display_update(current_version, update_type).unwrap(),
             expected
+        );
+    }
+
+    /// `display_update` renders the `changepacks update` preview straight from
+    /// whatever version string the on-disk manifest carries, so a malformed
+    /// value reaches it unfiltered. Pin that the `?` at the
+    /// `next_version_or_default` call propagates instead of silently falling
+    /// back to a placeholder preview, and that the flattened chain still names
+    /// the offending text so the operator can find the bad manifest.
+    #[test]
+    fn test_display_update_rejects_malformed_version() {
+        let error = display_update(Some("abc"), UpdateType::Patch)
+            .expect_err("a non-semver current version must not render a preview");
+        let chain = error
+            .chain()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(": ");
+        assert!(
+            chain.contains("abc"),
+            "error chain must name the offending version, got: {chain}"
         );
     }
 }

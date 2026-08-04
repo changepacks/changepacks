@@ -32,16 +32,16 @@ jobs:
           - windows-latest
           - macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v9.0.0
       - name: Install maturin
         run: uv pip install maturin --system
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -63,11 +63,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    container:
-      image: xd009642/tarpaulin:develop-nightly
-      options: --security-opt seccomp=unconfined
+    # Runs directly on the runner rather than in `xd009642/tarpaulin`. A
+    # container job runs as root, and root holds CAP_DAC_OVERRIDE, which
+    # bypasses the permission bits - so every test that proves an io failure by
+    # clearing a file's write bit saw the write SUCCEED here while passing in
+    # all twelve `Test` jobs, which run unprivileged. Installing the same
+    # binary on the plain runner keeps this job's filesystem semantics
+    # identical to those jobs and to a developer's machine. The container's
+    # `seccomp=unconfined` went with it: that is a requirement of tarpaulin's
+    # default ptrace engine, and this job runs `--engine llvm`.
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/setup-java@v5
         with:
@@ -77,8 +83,28 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - name: Install cargo-tarpaulin
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-tarpaulin
       - name: Build
         run: cargo check
+      # A workspace build unifies features across members, so a crate whose own
+      # manifest under-declares what its `src/` uses still compiles: some
+      # sibling turned the feature on for everyone. `cargo publish` builds each
+      # crate alone and is the only step that ever caught such a gap - after
+      # lint, from a full rebuild of the packaged tarballs. Re-checking every
+      # member against its own manifest reproduces the same failure in seconds,
+      # and the `--all-features` pass additionally compiles the optional paths
+      # (`test-support`, `toml`) that a default build never reaches.
+      - name: Check each crate in isolation
+        run: |
+          for manifest in crates/*/Cargo.toml bridge/*/Cargo.toml; do
+            echo "::group::$manifest"
+            cargo check --manifest-path "$manifest"
+            cargo check --all-features --manifest-path "$manifest"
+            echo "::endgroup::"
+          done
       - name: Lint
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test Deploy
@@ -97,7 +123,7 @@ jobs:
           cargo fmt
           cargo tarpaulin --out Lcov Stdout --engine llvm
       - name: Upload to codecov.io
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: true
@@ -118,7 +144,7 @@ jobs:
       - test
       - coverage-test
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Make gradlew executable
         working-directory: ./examples/dart/flutter_app/android
         run: chmod +x gradlew
@@ -162,9 +188,9 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: '10.13'
       CARGO_INCREMENTAL: '1'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Setup node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
           node-version: 22
       - uses: oven-sh/setup-bun@v2
@@ -197,7 +223,7 @@ jobs:
         shell: bash
         working-directory: bridge/node
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bindings-${{ matrix.settings.target }}
           path: |
@@ -272,7 +298,7 @@ jobs:
             target: aarch64
             os: macos
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Build wheels
         uses: PyO3/maturin-action@main
         with:
@@ -281,7 +307,7 @@ jobs:
           working-directory: bridge/python
           manylinux: ${{ matrix.manylinux || '' }}
       - name: Upload wheels
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}
           path: bridge/python/dist
@@ -298,7 +324,7 @@ jobs:
       - node-build
     if: ${{ contains(needs.changepacks.outputs.changepacks, 'bridge/node/package.json') }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
@@ -311,7 +337,7 @@ jobs:
         run: bunx napi create-npm-dirs
         working-directory: bridge/node
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           path: bridge/node/artifacts
       - name: Move artifacts
@@ -351,9 +377,9 @@ jobs:
       # Used to generate artifact attestation
       attestations: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
       - name: Generate artifact attestation
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'wheels-*/*'
       - name: Publish to PyPI
@@ -401,7 +427,7 @@ jobs:
             binary_name: changepacks-darwin-arm64
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -428,7 +454,7 @@ jobs:
     needs:
       - changepacks
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - name: Setup Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:

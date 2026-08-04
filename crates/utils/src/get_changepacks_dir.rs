@@ -12,7 +12,7 @@ pub fn get_changepacks_dir(current_dir: &Path) -> Result<PathBuf> {
     let repo = find_current_git_repo(current_dir)?;
     let changepacks_dir = repo
         .work_dir()
-        .context("Failed to find current git repository")?
+        .context("Git repository has no working directory (bare repository is not supported)")?
         .join(".changepacks");
     Ok(changepacks_dir)
 }
@@ -30,11 +30,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let result = get_changepacks_dir(temp_path);
         assert!(result.is_ok());
@@ -46,27 +42,25 @@ mod tests {
     }
 
     #[test]
-    fn test_get_changepacks_dir_creates_directory() {
+    fn test_get_changepacks_dir_returns_path_without_creating() {
         // Create a temporary directory and initialize git
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let result = get_changepacks_dir(temp_path);
         assert!(result.is_ok());
 
         let changepacks_dir = result.unwrap();
 
-        // Create the directory to test that the path is correct
-        fs::create_dir_all(&changepacks_dir).unwrap();
-        assert!(changepacks_dir.exists());
-        assert!(changepacks_dir.is_dir());
+        // Verify the returned path is exactly <repo>/.changepacks
+        assert_eq!(changepacks_dir, temp_path.join(".changepacks"));
+
+        // Verify the path does not exist after the call (non-mutating contract)
+        assert!(!changepacks_dir.exists());
+
         temp_dir.close().unwrap();
     }
 
@@ -83,17 +77,35 @@ mod tests {
     }
 
     #[test]
+    fn test_get_changepacks_dir_bare_repo_is_rejected() {
+        // A bare repository is discovered successfully but has no work dir, so
+        // this is the only way to reach the `work_dir()` -> None arm. Pin the
+        // documented message so the branch cannot silently lose its context.
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path();
+
+        crate::test_support::run_git(temp_path, &["init", "--bare", "-b", "main"]);
+
+        let err = get_changepacks_dir(temp_path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(
+                "Git repository has no working directory (bare repository is not supported)"
+            ),
+            "expected bare-repository context in error, got: {msg}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[test]
     fn test_get_changepacks_dir_path_structure() {
         // Create a temporary directory and initialize git
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         let result = get_changepacks_dir(temp_path);
         assert!(result.is_ok());
@@ -114,11 +126,7 @@ mod tests {
         let temp_path = temp_dir.path();
 
         // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
+        crate::test_support::init_git_repo(temp_path);
 
         // Create a nested subdirectory
         let nested_dir = temp_path.join("src").join("subdir");
@@ -131,7 +139,7 @@ mod tests {
 
         // The changepacks dir should still be at the git root, not in the subdirectory
         assert!(changepacks_dir.to_string_lossy().contains(".changepacks"));
-        assert!(changepacks_dir.parent().unwrap() == temp_path);
+        assert_eq!(changepacks_dir.parent().unwrap(), temp_path);
 
         temp_dir.close().unwrap();
     }

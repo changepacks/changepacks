@@ -5,19 +5,12 @@
 //! Delegates to `changepacks_cli::main()` with command-line arguments. Handles graceful
 //! exit on user cancellation (Ctrl+C or ESC) and prints error messages on failure.
 
-use std::process;
-
 #[tokio::main]
 #[cfg(not(tarpaulin_include))]
 async fn main() {
-    if let Err(e) =
-        changepacks_cli::main(std::env::args().collect::<Vec<String>>().as_slice()).await
-    {
-        // Exit gracefully on user cancellation (Ctrl+C or ESC)
-        if e.downcast_ref::<changepacks_cli::UserCancelled>().is_some() {
-            process::exit(0);
-        }
-        eprintln!("Error: {e}");
-        process::exit(1);
+    if let Err(e) = changepacks_cli::main_from_env(false).await {
+        changepacks_cli::exit_if_user_cancelled(&e);
+        eprintln!("Error: {e:#}");
+        std::process::exit(1);
     }
 }

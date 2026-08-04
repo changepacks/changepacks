@@ -9,32 +9,54 @@
 #undef le16toh
 #undef be16toh
 
+static uint16_t swap16(uint16_t value) {
+    return (uint16_t)((value >> 8) | (value << 8));
+}
+
+#if !((defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && \
+       (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)) || \
+      (defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
+       (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)) || \
+      (defined(__BYTE_ORDER) && defined(__LITTLE_ENDIAN) && \
+       (__BYTE_ORDER == __LITTLE_ENDIAN)) || \
+      (defined(__BYTE_ORDER) && defined(__BIG_ENDIAN) && \
+       (__BYTE_ORDER == __BIG_ENDIAN)))
+static int host_is_little_endian(void) {
+    const uint16_t marker = UINT16_C(1);
+    const unsigned char *bytes = (const unsigned char *)&marker;
+
+    return bytes[0] == 1U;
+}
+#endif
+
 // Provide function symbols that can be linked
 // Use visibility attribute to ensure symbols are exported
-__attribute__((visibility("default"))) 
+__attribute__((visibility("default")))
 uint16_t le16toh(uint16_t x) {
-    // Simple byte swap for little-endian to host conversion
-    // On little-endian systems (most ARM/x86), this is a no-op
-    // On big-endian systems, swap bytes
 #if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
     return x;
+#elif defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+    return swap16(x);
 #elif defined(__BYTE_ORDER) && defined(__LITTLE_ENDIAN) && (__BYTE_ORDER == __LITTLE_ENDIAN)
     return x;
+#elif defined(__BYTE_ORDER) && defined(__BIG_ENDIAN) && (__BYTE_ORDER == __BIG_ENDIAN)
+    return swap16(x);
 #else
-    return (uint16_t)(((x & 0xff00) >> 8) | ((x & 0x00ff) << 8));
+    return host_is_little_endian() ? x : swap16(x);
 #endif
 }
 
-__attribute__((visibility("default"))) 
+__attribute__((visibility("default")))
 uint16_t be16toh(uint16_t x) {
-    // Simple byte swap for big-endian to host conversion
 #if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
     return x;
+#elif defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+    return swap16(x);
 #elif defined(__BYTE_ORDER) && defined(__BIG_ENDIAN) && (__BYTE_ORDER == __BIG_ENDIAN)
     return x;
+#elif defined(__BYTE_ORDER) && defined(__LITTLE_ENDIAN) && (__BYTE_ORDER == __LITTLE_ENDIAN)
+    return swap16(x);
 #else
-    return (uint16_t)(((x & 0xff00) >> 8) | ((x & 0x00ff) << 8));
+    return host_is_little_endian() ? swap16(x) : x;
 #endif
 }
-
-

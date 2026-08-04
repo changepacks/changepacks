@@ -1,138 +1,53 @@
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::next_version;
-use tokio::fs::{read_to_string, write};
 
-#[derive(Debug)]
-pub struct DartPackage {
-    name: Option<String>,
-    version: Option<String>,
-    path: PathBuf,
-    relative_path: PathBuf,
-    is_changed: bool,
-    dependencies: HashSet<String>,
-}
-
-impl DartPackage {
-    #[must_use]
-    pub fn new(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-    ) -> Self {
-        Self {
-            name,
-            version,
-            path,
-            relative_path,
-            is_changed: false,
-            dependencies: HashSet::new(),
-        }
-    }
-}
+// Seven-field discovered-project declaration plus `new` / `new_discovered`,
+// shared verbatim with the other four identical language types.
+changepacks_core::declare_discovered_project!(pub struct DartPackage);
 
 #[async_trait]
 impl Package for DartPackage {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
+    // Standard package/workspace accessors.
+    changepacks_core::impl_basic_accessors!();
 
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
+    // Publishability flag accessor.
+    changepacks_core::impl_publishable_by_default!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let current_version = self.version.as_deref().unwrap_or("0.0.0");
-        let new_version = next_version(current_version, update_type)?;
-
-        let pubspec_yaml_raw = read_to_string(&self.path).await?;
-        write(
-            &self.path,
-            format!(
-                "{}{}",
-                yamlpatch::apply_yaml_patches(
-                    &yamlpath::Document::new(&pubspec_yaml_raw).context("Failed to parse YAML")?,
-                    &[yamlpatch::Patch {
-                        operation: yamlpatch::Op::Replace(serde_yaml::Value::String(
-                            new_version.clone()
-                        )),
-                        route: yamlpath::route!("version")
-                    }],
-                )?
-                .source()
-                .trim_end(),
-                if pubspec_yaml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
-            ),
-        )
-        .await?;
-        self.version = Some(new_version);
-        Ok(())
+        crate::bump_pubspec_version(&mut self.version, &self.path, update_type).await
     }
 
-    fn language(&self) -> Language {
-        Language::Dart
-    }
+    // Fixed language accessor.
+    changepacks_core::impl_language!(Language::Dart);
 
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
+    // Const publish defaults.
+    changepacks_core::impl_const_publish_commands!(
+        crate::PUBLISH_COMMAND,
+        crate::DRY_RUN_PUBLISH_COMMAND
+    );
 
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn default_publish_command(&self) -> String {
-        "dart pub publish".to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        Some("dart pub publish --dry-run".to_string())
-    }
-
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
-    }
+    // Dependency set accessors.
+    changepacks_core::impl_dependencies_accessors!();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
-    #[tokio::test]
-    async fn test_new() {
+    #[test]
+    fn test_new() {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_package
+            r"name: test_package
 version: 1.0.0
-"#,
+",
         )
         .unwrap();
 
@@ -148,6 +63,7 @@ version: 1.0.0
         assert_eq!(package.path(), pubspec_path);
         assert_eq!(package.relative_path(), PathBuf::from("pubspec.yaml"));
         assert!(!package.is_changed());
+        assert!(package.is_publishable_by_default());
         assert_eq!(package.language(), Language::Dart);
         assert_eq!(package.default_publish_command(), "dart pub publish");
         assert_eq!(
@@ -158,70 +74,42 @@ version: 1.0.0
         temp_dir.close().unwrap();
     }
 
-    #[tokio::test]
-    async fn test_set_changed() {
-        let temp_dir = TempDir::new().unwrap();
-        let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
-            &pubspec_path,
-            r#"name: test_package
-version: 1.0.0
-"#,
-        )
-        .unwrap();
-
-        let mut package = DartPackage::new(
+    #[test]
+    fn test_new_discovered_carries_default_publishability() {
+        let package = DartPackage::new_discovered(
             Some("test_package".to_string()),
             Some("1.0.0".to_string()),
-            pubspec_path.clone(),
+            PathBuf::from("/test/pubspec.yaml"),
             PathBuf::from("pubspec.yaml"),
+            false,
         );
 
-        assert!(!package.is_changed());
-        package.set_changed(true);
-        assert!(package.is_changed());
-        package.set_changed(false);
-        assert!(!package.is_changed());
-
-        temp_dir.close().unwrap();
+        assert!(!package.is_publishable_by_default());
     }
 
-    #[tokio::test]
-    async fn test_update_version_patch() {
-        let temp_dir = TempDir::new().unwrap();
-        let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
-            &pubspec_path,
-            r#"name: test_package
-version: 1.0.0
-"#,
-        )
-        .unwrap();
-
-        let mut package = DartPackage::new(
+    #[test]
+    fn test_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(DartPackage::new(
             Some("test_package".to_string()),
             Some("1.0.0".to_string()),
-            pubspec_path.clone(),
+            PathBuf::from("/test/pubspec.yaml"),
             PathBuf::from("pubspec.yaml"),
-        );
-
-        package.update_version(UpdateType::Patch).await.unwrap();
-
-        let content = fs::read_to_string(&pubspec_path).unwrap();
-        assert!(content.contains("version: 1.0.1"));
-
-        temp_dir.close().unwrap();
+        ));
     }
 
+    #[rstest]
+    #[case(UpdateType::Patch, "1.0.1")]
+    #[case(UpdateType::Minor, "1.1.0")]
+    #[case(UpdateType::Major, "2.0.0")]
     #[tokio::test]
-    async fn test_update_version_minor() {
+    async fn test_update_version(#[case] update_type: UpdateType, #[case] expected: &str) {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_package
+            r"name: test_package
 version: 1.0.0
-"#,
+",
         )
         .unwrap();
 
@@ -232,37 +120,10 @@ version: 1.0.0
             PathBuf::from("pubspec.yaml"),
         );
 
-        package.update_version(UpdateType::Minor).await.unwrap();
+        package.update_version(update_type).await.unwrap();
 
         let content = fs::read_to_string(&pubspec_path).unwrap();
-        assert!(content.contains("version: 1.1.0"));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_update_version_major() {
-        let temp_dir = TempDir::new().unwrap();
-        let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
-            &pubspec_path,
-            r#"name: test_package
-version: 1.0.0
-"#,
-        )
-        .unwrap();
-
-        let mut package = DartPackage::new(
-            Some("test_package".to_string()),
-            Some("1.0.0".to_string()),
-            pubspec_path.clone(),
-            PathBuf::from("pubspec.yaml"),
-        );
-
-        package.update_version(UpdateType::Major).await.unwrap();
-
-        let content = fs::read_to_string(&pubspec_path).unwrap();
-        assert!(content.contains("version: 2.0.0"));
+        assert!(content.contains(&format!("version: {expected}")));
 
         temp_dir.close().unwrap();
     }
@@ -271,12 +132,12 @@ version: 1.0.0
     async fn test_update_version_preserves_formatting() {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        let original_content = r#"name: test_package
+        let original_content = r"name: test_package
 version: 1.0.0
 description: A test package
 dependencies:
   http: ^1.0.0
-"#;
+";
         fs::write(&pubspec_path, original_content).unwrap();
 
         let mut package = DartPackage::new(
@@ -297,42 +158,125 @@ dependencies:
         temp_dir.close().unwrap();
     }
 
-    #[test]
-    fn test_dependencies() {
+    #[tokio::test]
+    async fn test_dart_package_update_version_preserves_newline() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(&pubspec_path, "name: test_package\nversion: 1.0.0\n").unwrap();
+
         let mut package = DartPackage::new(
             Some("test_package".to_string()),
             Some("1.0.0".to_string()),
-            PathBuf::from("/test/pubspec.yaml"),
-            PathBuf::from("test/pubspec.yaml"),
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
         );
 
-        // Initially empty
-        assert!(package.dependencies().is_empty());
+        package.update_version(UpdateType::Patch).await.unwrap();
 
-        // Add dependencies
-        package.add_dependency("http");
-        package.add_dependency("core");
+        let content = fs::read_to_string(&pubspec_path).unwrap();
+        assert!(content.ends_with('\n'));
+        assert!(content.contains("version: 1.0.1"));
 
-        let deps = package.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("http"));
-        assert!(deps.contains("core"));
+        temp_dir.close().unwrap();
+    }
 
-        // Adding duplicate should not increase count
-        package.add_dependency("http");
-        assert_eq!(package.dependencies().len(), 2);
+    /// A `DartPackage` whose manifest carries no `version` key must have one
+    /// ADDED, not fail. `DartWorkspace` pins this via
+    /// `test_update_version_without_version`, but the `Package` surface had no
+    /// equivalent: every existing `DartPackage` update test starts from
+    /// `Some("1.0.0")`, so only the `Replace` route was exercised here.
+    ///
+    /// This drives the `existing_version == false` path of
+    /// `bump_pubspec_version` (crates/dart/src/lib.rs:49) into the
+    /// `yamlpatch::Op::Add` root-route branch of `write_pubspec_version`
+    /// (crates/dart/src/lib.rs:86-92). It pins the order-sensitive pre-read of
+    /// `version.is_some()`: `bump_version_with` sets `version` to `Some(..)`
+    /// unconditionally, so reading the flag after the bump would take the
+    /// `Replace` route and fail against a manifest with no `version` key.
+    #[tokio::test]
+    async fn test_dart_package_update_version_adds_missing_version_key() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        fs::write(
+            &pubspec_path,
+            "name: test_package\ndescription: A test package\n",
+        )
+        .unwrap();
+
+        let mut package = DartPackage::new(
+            Some("test_package".to_string()),
+            None,
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        package.update_version(UpdateType::Minor).await.unwrap();
+
+        // Full-file equality: the added key must not disturb either original
+        // line, and `next_version_or_default` falls back to `0.0.0` before the
+        // Minor bump, so the written version is `0.1.0`.
+        assert_eq!(
+            fs::read_to_string(&pubspec_path).unwrap(),
+            "name: test_package\ndescription: A test package\nversion: 0.1.0\n"
+        );
+        // The in-memory version must track the written manifest.
+        assert_eq!(package.version(), Some("0.1.0"));
+
+        temp_dir.close().unwrap();
+    }
+
+    /// A `pubspec.yaml` that does not parse must abort the bump BEFORE the
+    /// writer touches the file. The finder covers a malformed manifest
+    /// (`test_visit_malformed_pubspec_yaml`), but nothing pinned the
+    /// `yamlpath` parse failure as observed through the `Package` trait entry
+    /// point — so a writer that swallowed the parse error and rewrote the file
+    /// from scratch would still leave this path green. Mirrors
+    /// `test_python_package_update_version_malformed_manifest_leaves_file_untouched`.
+    #[tokio::test]
+    async fn test_dart_package_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let pubspec_path = temp_dir.path().join("pubspec.yaml");
+        let original = "name: test_package\nversion: [1.0.0\n";
+        fs::write(&pubspec_path, original).unwrap();
+
+        let mut package = DartPackage::new(
+            Some("test_package".to_string()),
+            Some("1.0.0".to_string()),
+            pubspec_path.clone(),
+            PathBuf::from("pubspec.yaml"),
+        );
+
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            package.update_version(UpdateType::Patch).await,
+            &pubspec_path,
+            "pubspec.yaml",
+            original
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[test]
+    fn test_dependencies() {
+        changepacks_core::assert_dependencies_roundtrip!(
+            DartPackage::new(
+                Some("test_package".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/pubspec.yaml"),
+                PathBuf::from("test/pubspec.yaml"),
+            ),
+            "http",
+            "core"
+        );
     }
 
     #[test]
     fn test_set_name() {
-        let mut package = DartPackage::new(
+        changepacks_core::assert_set_name_roundtrip!(DartPackage::new(
             None,
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pubspec.yaml"),
             PathBuf::from("pubspec.yaml"),
-        );
-        assert_eq!(package.name(), None);
-        package.set_name("my-project".to_string());
-        assert_eq!(package.name(), Some("my-project"));
+        ));
     }
 }

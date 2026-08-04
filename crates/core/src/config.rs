@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// Loaded from `.changepacks/config.json`, controls ignore patterns, base branch, publish commands, and update-on rules.
 ///
@@ -22,22 +22,26 @@ pub struct Config {
 
     /// Custom publish commands by language key or project path
     #[serde(default)]
-    pub publish: HashMap<String, String>,
+    pub publish: BTreeMap<String, String>,
 
     /// Custom dry-run publish commands by language key or project path.
     ///
-    /// Overrides the default dry-run derivation (appending `--dry-run` to the
-    /// resolved publish command). Use this for ecosystems whose publish tool
-    /// does not support `--dry-run` (e.g., `dotnet nuget push`) or when a
-    /// custom verification flow is preferred.
+    /// `changepacks publish --dry-run` resolves its command in three steps:
+    /// this map keyed by the repo-relative project path, then this map keyed by
+    /// the language key, then the language crate's own built-in dry-run command
+    /// (e.g., `npm publish --dry-run`, `cargo publish --dry-run`). A custom
+    /// [`Config::publish`] entry does not change the dry-run command; only this
+    /// map does. Use it for ecosystems whose publish tool has no built-in
+    /// `--dry-run` (e.g., `dotnet nuget push`) or when a custom verification
+    /// flow is preferred.
     #[serde(default)]
-    pub publish_dry_run: HashMap<String, String>,
+    pub publish_dry_run: BTreeMap<String, String>,
 
     /// Dependency rules for forced updates.
     /// Key: glob pattern for trigger packages (e.g., "crates/*")
     /// Value: list of package paths that must be updated when trigger matches
     #[serde(default)]
-    pub update_on: HashMap<String, Vec<String>>,
+    pub update_on: BTreeMap<String, Vec<String>>,
 }
 
 fn default_base_branch() -> String {
@@ -50,9 +54,9 @@ impl Default for Config {
             ignore: Vec::new(),
             base_branch: default_base_branch(),
             latest_package: None,
-            publish: HashMap::new(),
-            publish_dry_run: HashMap::new(),
-            update_on: HashMap::new(),
+            publish: BTreeMap::new(),
+            publish_dry_run: BTreeMap::new(),
+            update_on: BTreeMap::new(),
         }
     }
 }
@@ -142,17 +146,49 @@ mod tests {
         assert_eq!(config.base_branch, "release");
         assert!(config.latest_package.is_none());
         assert!(config.publish.is_empty());
+        assert!(config.publish_dry_run.is_empty());
         assert!(config.update_on.is_empty());
     }
 
     #[test]
     fn test_config_deserialize_empty_object() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let config: Config = serde_json::from_str(json).unwrap();
         assert_eq!(config.base_branch, "main");
         assert!(config.ignore.is_empty());
         assert!(config.latest_package.is_none());
         assert!(config.publish.is_empty());
+        assert!(config.publish_dry_run.is_empty());
+        assert!(config.update_on.is_empty());
+    }
+
+    // `Config` deliberately does NOT use `#[serde(deny_unknown_fields)]`.
+    // The on-disk `.changepacks/config.json` format is a hard backward
+    // compatibility constraint: a newer changepacks release may add config
+    // keys, and an OLDER binary must still be able to read that file. Adding
+    // `deny_unknown_fields` would turn every newly introduced key into a hard
+    // parse error on older binaries, so unknown keys must stay silently
+    // ignored. This test pins that forward-compatibility contract.
+    #[test]
+    fn test_config_ignores_unknown_keys_for_forward_compatibility() {
+        let json = r#"{
+            "baseBranch": "develop",
+            "futureFeature": { "enabled": true, "targets": ["a", "b"] },
+            "unknownScalar": 42,
+            "someFutureFlag": "on"
+        }"#;
+        let config: Config =
+            serde_json::from_str(json).expect("unknown config keys must not fail deserialization");
+
+        // The known key is still honoured.
+        assert_eq!(config.base_branch, "develop");
+
+        // Everything else falls back to its default, unaffected by the
+        // unrecognized keys.
+        assert!(config.ignore.is_empty());
+        assert!(config.latest_package.is_none());
+        assert!(config.publish.is_empty());
+        assert!(config.publish_dry_run.is_empty());
         assert!(config.update_on.is_empty());
     }
 
@@ -230,5 +266,72 @@ mod tests {
         let json = serde_json::to_string(&config).unwrap();
         let deserialized: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(config, deserialized);
+    }
+
+    // With BTreeMap-backed maps, two `Config` values carrying the SAME
+    // entries inserted in REVERSED order must serialize to byte-identical
+    // JSON, because BTreeMap always emits keys in sorted order. This is what
+    // makes `changepacks config` output deterministic across runs. A HashMap
+    // would have randomized key order per process (via RandomState), breaking
+    // this equality.
+    #[test]
+    fn test_config_serialization_is_deterministic_regardless_of_insertion_order() {
+        let mut forward = Config::default();
+        forward
+            .publish
+            .insert("node".to_string(), "npm publish".to_string());
+        forward
+            .publish
+            .insert("rust".to_string(), "cargo publish".to_string());
+        forward
+            .publish
+            .insert("dart".to_string(), "dart pub publish".to_string());
+        forward
+            .publish_dry_run
+            .insert("node".to_string(), "npm publish --dry-run".to_string());
+        forward
+            .publish_dry_run
+            .insert("csharp".to_string(), "dotnet pack -c Release".to_string());
+        forward.update_on.insert(
+            "crates/core/Cargo.toml".to_string(),
+            vec!["bridge/node/package.json".to_string()],
+        );
+        forward.update_on.insert(
+            "crates/changepacks/Cargo.toml".to_string(),
+            vec!["bridge/python/pyproject.toml".to_string()],
+        );
+
+        let mut reversed = Config::default();
+        reversed
+            .publish
+            .insert("dart".to_string(), "dart pub publish".to_string());
+        reversed
+            .publish
+            .insert("rust".to_string(), "cargo publish".to_string());
+        reversed
+            .publish
+            .insert("node".to_string(), "npm publish".to_string());
+        reversed
+            .publish_dry_run
+            .insert("csharp".to_string(), "dotnet pack -c Release".to_string());
+        reversed
+            .publish_dry_run
+            .insert("node".to_string(), "npm publish --dry-run".to_string());
+        reversed.update_on.insert(
+            "crates/changepacks/Cargo.toml".to_string(),
+            vec!["bridge/python/pyproject.toml".to_string()],
+        );
+        reversed.update_on.insert(
+            "crates/core/Cargo.toml".to_string(),
+            vec!["bridge/node/package.json".to_string()],
+        );
+
+        // Same logical content, opposite insertion order.
+        assert_eq!(forward, reversed);
+        assert_eq!(
+            serde_json::to_string(&forward).unwrap(),
+            serde_json::to_string(&reversed).unwrap(),
+            "BTreeMap-backed Config must serialize identically regardless of insertion order"
+        );
     }
 }

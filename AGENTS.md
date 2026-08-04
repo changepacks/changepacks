@@ -6,7 +6,7 @@
 
 ## OVERVIEW
 
-Rust-powered CLI for unified version management and changelog generation across Node.js, Python, Rust, and Dart monorepos. Inspired by changesets.
+Rust-powered CLI for unified version management and changelog generation across Node.js, Python, Rust, Dart, Java, and C# monorepos. Inspired by changesets.
 
 ## STRUCTURE
 
@@ -20,11 +20,13 @@ changepacks/
 │   ├── node/         # Node.js (package.json) support
 │   ├── python/       # Python (pyproject.toml) support
 │   ├── rust/         # Rust (Cargo.toml) support
-│   └── dart/         # Dart (pubspec.yaml) support
+│   ├── dart/         # Dart (pubspec.yaml) support
+│   ├── java/         # Java/Gradle (build.gradle.kts) support
+│   └── csharp/       # C#/.NET (*.csproj) support
 ├── bridge/           # FFI bindings for package managers
 │   ├── node/         # N-API bindings (@napi-rs)
 │   └── python/       # PyO3 bindings (maturin)
-├── examples/         # Test fixtures by language (node, python, dart)
+├── examples/         # Test fixtures by language (node, python, dart, java, csharp)
 └── .changepacks/     # Config and changepack logs
 ```
 
@@ -85,4 +87,3 @@ bun run lint             # cargo clippy + cargo fmt --check + bun workspaces lin
 - **No CI workflows** in repo - builds/tests run locally
 - **Bridge packages** auto-update when core crates change (see `updateOn` in config)
 - **Examples** are test fixtures, not production code
-- **Typo**: `crates/core/src/proejct_finder.rs` (project misspelled)

@@ -1,119 +1,180 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
-use changepacks_core::{Project, ProjectFinder};
+use changepacks_core::{Project, ProjectFinder, manifest_parent_dir};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
-use tokio::fs::read_to_string;
 
-use crate::{package::NodePackage, workspace::NodeWorkspace};
+use crate::{
+    PackageManager, detect_package_manager_in_ancestors_cached, package::NodePackage,
+    read_and_parse_package_json, workspace::NodeWorkspace,
+};
 
-#[derive(Debug)]
-pub struct NodeProjectFinder {
-    projects: HashMap<PathBuf, Project>,
-    project_files: Vec<&'static str>,
+/// Manifest filenames this finder recognizes. Static because the list is
+/// compile-time constant — no per-instance heap `Vec` is needed and the
+/// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
+/// a `&'static [&'static str]`.
+const PROJECT_FILES: &[&str] = &["package.json"];
+
+/// Dependency sections in package.json scanned for local workspace dependencies.
+const PACKAGE_JSON_DEPENDENCY_SECTIONS: &[&str] = &[
+    "dependencies",
+    "devDependencies",
+    "peerDependencies",
+    "optionalDependencies",
+];
+
+/// Look up a field in the `package.json` manifest as an owned string, mirroring the
+/// `doc.get(field).and_then(|v| v.as_str()).map(ToString::to_string)` chain that
+/// used to be open-coded twice inside `visit` (once for `version`, once for `name`).
+/// Extracted so a future manifest shape change only needs to be adapted in one place —
+/// the JSON counterpart of `changepacks_utils::toml_item_str`, the shared
+/// manifest-field read the `changepacks-python` finder now uses for `[project]`.
+fn package_json_str(doc: &serde_json::Value, field: &str) -> Option<String> {
+    doc.get(field)
+        .and_then(|v| v.as_str())
+        .map(std::string::ToString::to_string)
 }
 
-impl Default for NodeProjectFinder {
-    fn default() -> Self {
-        Self::new()
-    }
+#[derive(Debug, Default)]
+pub struct NodeProjectFinder {
+    projects: HashMap<PathBuf, Project>,
+    package_manager_probe_cache: HashMap<PathBuf, Option<PackageManager>>,
 }
 
 impl NodeProjectFinder {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            projects: HashMap::new(),
-            project_files: vec!["package.json"],
+        Self::default()
+    }
+}
+
+fn add_workspace_dependencies(project: &mut Project, package_json: &serde_json::Value) {
+    for section in PACKAGE_JSON_DEPENDENCY_SECTIONS {
+        let Some(deps) = package_json.get(*section).and_then(|deps| deps.as_object()) else {
+            continue;
+        };
+        for dep_name in deps.keys() {
+            project.add_dependency(dep_name);
         }
     }
 }
 
+/// Decide whether the manifest at `path` describes a Node workspace.
+///
+/// Workspace detection is short-circuited: a valid `workspaces`
+/// array or object in `package.json` (npm / yarn / bun monorepos —
+/// the common case) is enough on its own, so only fall back to a
+/// `pnpm-workspace.yaml` stat when that field is absent. Shared with the Dart finder via
+/// `changepacks_utils::is_workspace_by_sibling` — the one source of
+/// truth for the "declared field OR fixed sibling file" policy
+/// (missing/directory marker → not-a-workspace; other metadata errors
+/// propagate; all file ops via `tokio::fs`).
+///
+/// The absent/valid/invalid triage itself is
+/// `changepacks_utils::ensure_declared_shape`, shared verbatim with the
+/// Dart and Python finders; only the shape predicate stays here because
+/// it is the one part that speaks `serde_json::Value`.
+///
+/// Extracted from `visit` to mirror `detect_dart_workspace` in
+/// `crates/dart/src/finder.rs`, so the workspace triage is a named call site
+/// beside `add_workspace_dependencies` in every `HashMap`-backed finder.
+/// Pure extraction: the `ensure_declared_shape` arguments, the resulting
+/// error message template, and the `is_workspace_by_sibling` call and its
+/// error propagation are unchanged.
+async fn detect_node_workspace(package_json: &serde_json::Value, path: &Path) -> Result<bool> {
+    let has_workspace_declaration = changepacks_utils::ensure_declared_shape(
+        package_json
+            .get("workspaces")
+            .map(|workspaces| workspaces.is_array() || workspaces.is_object()),
+        path,
+        "workspaces",
+        "an array or object",
+    )?;
+    changepacks_utils::is_workspace_by_sibling(
+        has_workspace_declaration,
+        path,
+        "pnpm-workspace.yaml",
+    )
+    .await
+}
+
 #[async_trait]
 impl ProjectFinder for NodeProjectFinder {
-    fn projects(&self) -> Vec<&Project> {
-        self.projects.values().collect::<Vec<_>>()
-    }
-    fn projects_mut(&mut self) -> Vec<&mut Project> {
-        self.projects.values_mut().collect::<Vec<_>>()
-    }
+    // `projects()` / `projects_mut()` share their byte-identical body with
+    // the Python and Dart finders (all three use a
+    // `HashMap<PathBuf, Project>` backing store). Consolidated via the
+    // `impl_projects_hashmap_accessors!()` macro in `changepacks-core` so
+    // future accessor tweaks land in one place — expansion is byte-
+    // identical to the previous hand-rolled bodies.
+    changepacks_core::impl_projects_hashmap_accessors!();
 
     fn project_files(&self) -> &[&str] {
-        &self.project_files
+        PROJECT_FILES
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        // glob all the package.json in the root without .gitignore
-        if path.is_file()
-            && self.project_files().contains(
-                &path
-                    .file_name()
-                    .context(format!("File name not found - {}", path.display()))?
-                    .to_str()
-                    .context(format!("File name not found - {}", path.display()))?,
-            )
-        {
-            if self.projects.contains_key(path) {
-                return Ok(());
-            }
-            // read package.json
-            let package_json = read_to_string(path).await?;
-            let package_json: serde_json::Value = serde_json::from_str(&package_json)?;
-            // if workspaces
-            let (path, mut project) = if package_json.get("workspaces").is_some()
-                || path
-                    .parent()
-                    .context(format!("Parent not found - {}", path.display()))?
-                    .join("pnpm-workspace.yaml")
-                    .is_file()
-            {
-                let version = package_json["version"]
-                    .as_str()
-                    .map(std::string::ToString::to_string);
-                let name = package_json["name"]
-                    .as_str()
-                    .map(std::string::ToString::to_string);
-                (
-                    path.to_path_buf(),
-                    Project::Workspace(Box::new(NodeWorkspace::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
-            } else {
-                let version = package_json["version"]
-                    .as_str()
-                    .map(std::string::ToString::to_string);
-                let name = package_json["name"]
-                    .as_str()
-                    .map(std::string::ToString::to_string);
-                (
-                    path.to_path_buf(),
-                    Project::Package(Box::new(NodePackage::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
-            };
-
-            if let Some(deps) = package_json.get("dependencies").and_then(|d| d.as_object()) {
-                for (dep_name, value) in deps {
-                    // Only track workspace:* dependencies (exact version sync)
-                    // workspace:^ uses semver ranges so doesn't need forced updates
-                    if value.as_str() == Some("workspace:*") {
-                        project.add_dependency(dep_name);
-                    }
-                }
-            }
-
-            self.projects.insert(path, project);
+        // Parse this manifest if it is a recognized project file not already
+        // visited. Both guards live in `ProjectFinder::should_visit_manifest`
+        // (name/stat gate first, already-discovered map probe second) so the
+        // prelude is written once for every file-name-based finder.
+        if !self.should_visit_manifest(path).await? {
+            return Ok(());
         }
+        // read package.json
+        let (_package_json_raw, package_json) = read_and_parse_package_json(path).await?;
+        let publishable_by_default = !matches!(
+            package_json.get("private"),
+            Some(serde_json::Value::Bool(true))
+        );
+        // Both branches use the same name/version and the same path;
+        // hoist so each branch collapses to a single constructor call.
+        let version = package_json_str(&package_json, "version");
+        let name = package_json_str(&package_json, "name");
+        let path_key = path.to_path_buf();
+        let relative_path_key = relative_path.to_path_buf();
+        // The package-manager probe (lockfile stats up the ancestor chain) and the
+        // workspace-shape probe (declared `workspaces` field, else a sibling
+        // `pnpm-workspace.yaml` stat) share no data, so their filesystem round-trips
+        // are overlapped instead of awaited one after the other. Only the first
+        // branch touches `self`, and it borrows a single field, so the concurrent
+        // borrow is disjoint from the `self.projects` insert below.
+        //
+        // Check if this is a workspace (npm / yarn / bun / pnpm monorepo); the
+        // declared-shape triage and the sibling `pnpm-workspace.yaml` fallback
+        // live in the module-private `detect_node_workspace` helper.
+        let (package_manager, is_workspace) = tokio::try_join!(
+            async {
+                // `visit` runs behind `should_visit_manifest`, which only
+                // accepts a path whose file name is `package.json`, so the
+                // manifest always has a parent directory. `manifest_parent_dir`
+                // keeps the lookup total through the shared "Parent not found"
+                // context instead of a fallback arm no input can reach.
+                detect_package_manager_in_ancestors_cached(
+                    manifest_parent_dir(path)?,
+                    relative_path.components().count(),
+                    &mut self.package_manager_probe_cache,
+                )
+                .await
+            },
+            detect_node_workspace(&package_json, path),
+        )?;
+        let mut project = changepacks_core::discovered_project!(
+            is_workspace,
+            NodeWorkspace::new_discovered,
+            NodePackage::new_discovered,
+            name,
+            version,
+            path_key.clone(),
+            relative_path_key,
+            package_manager,
+            publishable_by_default,
+        );
+
+        add_workspace_dependencies(&mut project, &package_json);
+
+        self.projects.insert(path_key, project);
         Ok(())
     }
 }
@@ -121,20 +182,26 @@ impl ProjectFinder for NodeProjectFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use changepacks_core::Project;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_node_project_finder_new() {
-        let finder = NodeProjectFinder::new();
-        assert_eq!(finder.project_files(), &["package.json"]);
-        assert_eq!(finder.projects().len(), 0);
+    fn package_json_with_private(name: &str, private: Option<&str>, workspace: bool) -> String {
+        let workspaces = if workspace {
+            r#", "workspaces": []"#
+        } else {
+            ""
+        };
+        let private = private.map_or_else(String::new, |value| format!(r#", "private": {value}"#));
+        format!(r#"{{"name": "{name}", "version": "1.0.0"{workspaces}{private}}}"#)
     }
 
-    #[test]
-    fn test_node_project_finder_default() {
-        let finder = NodeProjectFinder::default();
+    // Both `NodeProjectFinder::new()` and `NodeProjectFinder::default()` must
+    // yield the same empty, `package.json`-scoped finder.
+    #[rstest]
+    #[case(NodeProjectFinder::new())]
+    #[case(NodeProjectFinder::default())]
+    fn test_node_project_finder_construction(#[case] finder: NodeProjectFinder) {
         assert_eq!(finder.project_files(), &["package.json"]);
         assert_eq!(finder.projects().len(), 0);
     }
@@ -161,29 +228,56 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("test-package"));
-                assert_eq!(pkg.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("test-package"));
+        assert_eq!(pkg.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
 
     #[tokio::test]
-    async fn test_node_project_finder_visit_workspace_with_workspaces() {
+    async fn test_node_project_finder_visit_package_without_name() {
+        // Regression: a package.json without a `name` field is legitimate for
+        // private/unpublished packages, and the resulting `None` name is what
+        // later drives the repo-name fallback in
+        // `changepacks_utils::find_project_dirs`. Every other fixture in this
+        // module goes through `package_json_with_private`, which always emits a
+        // name, so this shape would otherwise never be exercised. Mirrors the
+        // Python equivalent `test_python_project_finder_visit_package_without_project_section`.
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(&package_json, r#"{"version": "1.0.0"}"#).unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.project_count(), 1);
+        let projects = finder.projects();
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), None);
+        assert_eq!(pkg.version(), Some("1.0.0"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[rstest]
+    #[case(Some("true"), false)]
+    #[case(Some("false"), true)]
+    #[case(None, true)]
+    #[case(Some(r#""true""#), true)]
+    #[tokio::test]
+    async fn test_node_package_private_field_controls_default_publishability(
+        #[case] private: Option<&str>,
+        #[case] expected: bool,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let package_json = temp_dir.path().join("package.json");
         fs::write(
             &package_json,
-            r#"{
-  "name": "test-workspace",
-  "version": "1.0.0",
-  "workspaces": ["packages/*"]
-}
-"#,
+            package_json_with_private("test-package", private, false),
         )
         .unwrap();
 
@@ -195,13 +289,151 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test-workspace"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        assert_eq!(
+            projects[0].expect_package().is_publishable_by_default(),
+            expected
+        );
+    }
+
+    #[tokio::test]
+    async fn test_visit_caches_async_package_manager_detection() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        let lockfile = temp_dir.path().join("pnpm-lock.yaml");
+        fs::write(
+            &package_json,
+            r#"{"name":"test-package","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(&lockfile, "").unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+        fs::remove_file(lockfile).unwrap();
+
+        let package = finder.projects()[0].expect_package();
+        assert_eq!(package.default_publish_command(), "pnpm publish");
+        assert_eq!(
+            package.default_dry_run_publish_command().as_deref(),
+            Some("pnpm publish --dry-run")
+        );
+    }
+
+    #[rstest]
+    #[case(r#"["packages/*"]"#)]
+    #[case(r#"{"packages":["packages/*"]}"#)]
+    #[case("[]")]
+    #[case("{}")]
+    #[tokio::test]
+    async fn test_node_project_finder_visit_workspace_with_valid_workspaces(
+        #[case] workspaces: &str,
+    ) {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            format!(
+                r#"{{
+  "name": "test-workspace",
+  "version": "1.0.0",
+  "workspaces": {workspaces}
+}}
+"#
+            ),
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test-workspace"));
+        assert_eq!(ws.version(), Some("1.0.0"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[rstest]
+    #[case(Some("true"), false)]
+    #[case(Some("false"), true)]
+    #[case(None, true)]
+    #[case(Some(r#""true""#), true)]
+    #[tokio::test]
+    async fn test_node_workspace_private_field_controls_default_publishability(
+        #[case] private: Option<&str>,
+        #[case] expected: bool,
+    ) {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            package_json_with_private("test-workspace", private, true),
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert_eq!(
+            projects[0].expect_workspace().is_publishable_by_default(),
+            expected
+        );
+    }
+
+    #[rstest]
+    #[case("null")]
+    #[case(r#""packages/*""#)]
+    #[case("true")]
+    #[case("42")]
+    #[tokio::test]
+    async fn test_node_project_finder_rejects_invalid_workspaces_declaration(
+        #[case] workspaces: &str,
+    ) {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            format!(
+                r#"{{
+  "name": "test-package",
+  "version": "1.0.0",
+  "workspaces": {workspaces}
+}}
+"#
+            ),
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        let result = finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await;
+
+        let error_msg = result
+            .expect_err("invalid workspaces declaration should fail")
+            .to_string();
+        assert!(
+            error_msg.contains("Invalid `workspaces` declaration"),
+            "error message should explain the invalid declaration, got: {error_msg}"
+        );
+        assert!(
+            error_msg.contains(package_json.to_string_lossy().as_ref()),
+            "error message should contain the manifest path, got: {error_msg}"
+        );
+        assert!(finder.projects().is_empty());
 
         temp_dir.close().unwrap();
     }
@@ -232,13 +464,9 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test-workspace"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test-workspace"));
+        assert_eq!(ws.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
@@ -265,13 +493,9 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test-workspace"));
-                assert_eq!(ws.version(), None);
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test-workspace"));
+        assert_eq!(ws.version(), None);
 
         temp_dir.close().unwrap();
     }
@@ -433,7 +657,24 @@ mod tests {
   "dependencies": {
     "core": "workspace:*",
     "utils": "workspace:^",
+    "cli": "workspace:~",
+    "api": "workspace:^1.2.3",
     "external": "^1.0.0"
+  },
+  "devDependencies": {
+    "test-utils": "workspace:*"
+  },
+  "peerDependencies": {
+    "plugin-api": "workspace:*"
+  },
+  "peerDependenciesMeta": {
+    "plugin-api": {
+      "optional": true
+    }
+  },
+  "optionalDependencies": {
+    "native-addon": "workspace:*",
+    "native-external": "^2.0.0"
   }
 }
 "#,
@@ -451,12 +692,185 @@ mod tests {
 
         let project = projects.first().unwrap();
         let deps = project.dependencies();
-        // Only workspace:* dependencies should be tracked
-        assert_eq!(deps.len(), 1);
+        assert_eq!(deps.len(), 9);
         assert!(deps.contains("core"));
-        // workspace:^ and external deps should not be tracked
-        assert!(!deps.contains("utils"));
-        assert!(!deps.contains("external"));
+        assert!(deps.contains("utils"));
+        assert!(deps.contains("cli"));
+        assert!(deps.contains("api"));
+        assert!(deps.contains("test-utils"));
+        assert!(deps.contains("plugin-api"));
+        assert!(deps.contains("native-addon"));
+        assert!(deps.contains("external"));
+        assert!(deps.contains("native-external"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_project_finder_visit_package_with_file_dependencies() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-package",
+  "version": "1.0.0",
+  "dependencies": {
+    "foo": "file:../foo",
+    "bar": "^1.0.0"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+
+        let deps = projects.first().unwrap().dependencies();
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains("foo"));
+        assert!(deps.contains("bar"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_project_finder_visit_package_with_link_and_portal_dependencies() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(
+            &package_json,
+            r#"{
+  "name": "test-package",
+  "version": "1.0.0",
+  "dependencies": {
+    "linked-pkg": "link:../x",
+    "portaled-pkg": "portal:../y",
+    "lodash": "^4.0.0"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+
+        let deps = projects.first().unwrap().dependencies();
+        assert_eq!(deps.len(), 3);
+        assert!(deps.contains("linked-pkg"));
+        assert!(deps.contains("portaled-pkg"));
+        assert!(deps.contains("lodash"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_semver_dependencies_feed_local_graphs_and_ignore_unmatched_names() {
+        use changepacks_core::{ChangePackResultLog, UpdateType};
+        use changepacks_utils::{apply_reverse_dependencies, sort_by_dependencies};
+        use std::collections::HashMap;
+
+        let temp_dir = TempDir::new().unwrap();
+        let manifests = [
+            (
+                "core",
+                r#"{
+  "name": "core",
+  "version": "1.0.0"
+}
+"#,
+            ),
+            (
+                "app",
+                r#"{
+  "name": "app",
+  "version": "1.0.0",
+  "dependencies": {
+    "core": "^1.0.0",
+    "unmatched-external": "^9.0.0"
+  }
+}
+"#,
+            ),
+        ];
+
+        let mut finder = NodeProjectFinder::new();
+        for (directory, contents) in manifests {
+            let path = temp_dir.path().join(directory).join("package.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, contents).unwrap();
+            finder
+                .visit(&path, &PathBuf::from(directory).join("package.json"))
+                .await
+                .unwrap();
+        }
+
+        let projects = finder.projects();
+        let by_name = |name: &str| {
+            *projects
+                .iter()
+                .find(|project| project.name() == Some(name))
+                .unwrap()
+        };
+        let app = by_name("app");
+        assert_eq!(app.dependencies().len(), 2);
+        assert!(app.dependencies().contains("core"));
+        assert!(app.dependencies().contains("unmatched-external"));
+
+        let sorted =
+            sort_by_dependencies(vec![app, by_name("core")]).expect("fixture graph is a DAG");
+        assert_eq!(sorted[0].name(), Some("core"));
+        assert_eq!(sorted[1].name(), Some("app"));
+
+        let mut update_map = HashMap::new();
+        update_map.insert(
+            PathBuf::from("core").join("package.json"),
+            (
+                UpdateType::Minor,
+                vec![ChangePackResultLog::new(
+                    UpdateType::Minor,
+                    "Update core".to_string(),
+                )],
+            ),
+        );
+        apply_reverse_dependencies(&mut update_map, &projects, temp_dir.path()).unwrap();
+        assert_eq!(
+            update_map[&PathBuf::from("app").join("package.json")].0,
+            UpdateType::Patch
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_node_project_finder_visit_malformed_package_json() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        fs::write(&package_json, r#"{ "name": "test", invalid json }"#).unwrap();
+
+        let mut finder = NodeProjectFinder::new();
+        let result = finder
+            .visit(&package_json, &PathBuf::from("package.json"))
+            .await;
+
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("Failed to parse package.json"));
+        assert!(error_msg.contains(package_json.to_string_lossy().as_ref()));
 
         temp_dir.close().unwrap();
     }

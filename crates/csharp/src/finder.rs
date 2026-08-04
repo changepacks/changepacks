@@ -1,35 +1,32 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use changepacks_core::{Project, ProjectFinder};
+use changepacks_core::{Project, ProjectFinder, has_extension_ignore_ascii_case, is_regular_file};
 use quick_xml::Reader;
-use quick_xml::events::Event;
+use quick_xml::XmlVersion;
+use quick_xml::escape::resolve_predefined_entity;
+use quick_xml::events::{BytesEnd, BytesRef, BytesStart, Event};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
-use tokio::fs::read_to_string;
 
-use crate::{package::CSharpPackage, workspace::CSharpWorkspace};
+use crate::{package::CSharpPackage, xml_utils::is_unconditional_project_property_group};
 
-#[derive(Debug)]
+/// Manifest filenames this finder recognizes. Static because the list is
+/// compile-time constant — no per-instance heap `Vec` is needed and the
+/// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
+/// a `&'static [&'static str]`.
+const PROJECT_FILES: &[&str] = &[".csproj"];
+
+#[derive(Debug, Default)]
 pub struct CSharpProjectFinder {
     projects: HashMap<PathBuf, Project>,
-    project_files: Vec<&'static str>,
-}
-
-impl Default for CSharpProjectFinder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl CSharpProjectFinder {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            projects: HashMap::new(),
-            project_files: vec![".csproj"],
-        }
+        Self::default()
     }
 
     /// Extract the project name from the .csproj file path (filename without extension)
@@ -38,212 +35,415 @@ impl CSharpProjectFinder {
             .and_then(|s| s.to_str())
             .map(std::string::ToString::to_string)
     }
+
+    /// Walk the .csproj XML ONCE and extract the project version, its
+    /// `ProjectReference` dependency names, and default publishability in a
+    /// single pass. The
+    /// previous shape (`extract_version` + `extract_project_references`)
+    /// ran two independent `quick_xml::Reader` passes over the identical
+    /// bytes; merging them halves the parse cost on repos with many
+    /// `.csproj` files (Unity / dotnet monorepos) while preserving existing
+    /// version and project-reference behavior.
+    fn parse_csproj_metadata(content: &str) -> Result<(Option<String>, Vec<String>, bool)> {
+        let mut reader = Reader::from_str(content);
+        // Preallocate the XML event buffer to skip the first few
+        // geometric-doubling reallocations. Mirrors the
+        // `Vec::with_capacity(paths.len())` preallocation policy already
+        // applied across `sort_by_dep.rs`, `gen_update_map.rs`, and
+        // `find_project_dirs.rs`. `read_event_into` calls `buf.clear()`
+        // between events so the capacity persists; 256 bytes comfortably
+        // covers the largest single event (attribute-laden `<Project Sdk=
+        // "Microsoft.NET.Sdk"...>`, ~1-2 dozen bytes for the common
+        // `<Version>` and `<ProjectReference>` shapes) without over-
+        // reserving on tiny `.csproj` files.
+        let mut buf = Vec::with_capacity(256);
+        // Every piece of mutable scan state lives in `CsprojScan`, so this
+        // function is left with only the reader plumbing and the event
+        // dispatch. See `CsprojScan` for the per-field rationale.
+        let mut scan = CsprojScan::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => scan.on_start(&e)?,
+                Ok(Event::Empty(e)) if e.local_name().as_ref() == b"ProjectReference" => {
+                    collect_project_reference(&e, &mut scan.projects)?;
+                }
+                Ok(Event::End(e)) => scan.on_end(&e)?,
+                Ok(Event::Text(e)) => record_decoded_csproj_text(
+                    e.decode(),
+                    scan.in_version,
+                    scan.in_is_packable,
+                    &mut scan.version_text,
+                    &mut scan.publishable_by_default,
+                )?,
+                Ok(Event::CData(e)) => record_decoded_csproj_text(
+                    e.decode(),
+                    scan.in_version,
+                    scan.in_is_packable,
+                    &mut scan.version_text,
+                    &mut scan.publishable_by_default,
+                )?,
+                // A character or general entity reference inside the eligible
+                // `<Version>` is its own event, never part of the surrounding
+                // `Event::Text`. Without this arm it fell through the wildcard
+                // below and the version silently lost everything from the
+                // reference onwards. The C# *writer* already treats this event
+                // class explicitly (`xml_utils::update_version_in_xml`), so
+                // reader and writer now agree about the same document.
+                // References outside `<Version>` keep passing through untouched.
+                Ok(Event::GeneralRef(e)) if scan.in_version => {
+                    append_resolved_reference(&e, &mut scan.version_text)?;
+                }
+                Ok(Event::Eof) => {
+                    anyhow::ensure!(scan.element_depth == 0, "unexpected end of XML document");
+                    break;
+                }
+                Err(error) => return Err(error.into()),
+                _ => {}
+            }
+            buf.clear();
+        }
+        Ok(scan.finish())
+    }
+}
+
+/// Mutable state carried across the single `.csproj` event walk driven by
+/// [`CSharpProjectFinder::parse_csproj_metadata`].
+///
+/// The nine fields used to be nine `let mut` bindings threaded through one
+/// 137-line function, which made the element-open and element-close rules hard
+/// to read in isolation. Grouping them here lets `on_start` / `on_end` own the
+/// two non-trivial transition rules while `parse_csproj_metadata` keeps only
+/// the reader setup and the event dispatch. Behaviour, error messages, and the
+/// preallocation policy are unchanged.
+struct CsprojScan {
+    /// Depth of the currently open unconditional `<PropertyGroup>`, if any.
+    eligible_property_group_depth: Option<usize>,
+    in_version: bool,
+    in_is_packable: bool,
+    element_depth: usize,
+    /// Depth of the outermost `<Project>` element, set on first sight.
+    project_depth: Option<usize>,
+    version: Option<String>,
+    /// Fragment accumulator for the `<Version>` element currently being
+    /// read. quick-xml splits element content at every `&...;` reference:
+    /// `<Version>1.2&#46;3</Version>` arrives as `Text("1.2")`,
+    /// `GeneralRef("#46")`, `Text("3")`. Recording only the first fragment
+    /// therefore truncated such a version to `1.2`. Fragments are appended
+    /// here while `in_version` holds and folded into `version` on the
+    /// matching `</Version>`, so the "first non-empty `<Version>` wins"
+    /// rule is unchanged for every manifest without a reference.
+    version_text: String,
+    publishable_by_default: bool,
+    projects: Vec<String>,
+}
+
+impl CsprojScan {
+    fn new() -> Self {
+        Self {
+            eligible_property_group_depth: None,
+            in_version: false,
+            in_is_packable: false,
+            element_depth: 0,
+            project_depth: None,
+            version: None,
+            version_text: String::new(),
+            publishable_by_default: true,
+            // Preallocate against the typical `<ProjectReference>` fan-out
+            // observed in test fixtures (2 refs in
+            // `test_visit_package_with_project_references`,
+            // `test_extract_project_references`, and
+            // `test_parse_csproj_metadata_returns_version_and_refs_in_one_pass`).
+            // 4 comfortably covers the common 1-4 range without over-reserving
+            // on `.csproj` files with zero project references. Matches the
+            // `Vec::with_capacity(256)` policy applied to the event buffer in
+            // `parse_csproj_metadata` — the sibling preallocation policy shared
+            // with `sort_by_dep.rs`, `gen_update_map.rs`, and
+            // `find_project_dirs.rs`.
+            projects: Vec::with_capacity(4),
+        }
+    }
+
+    /// Apply one `Event::Start`: descend a level, then update whichever piece
+    /// of state this element name governs.
+    fn on_start(&mut self, e: &BytesStart<'_>) -> Result<()> {
+        self.element_depth += 1;
+        let name = e.local_name();
+        if name.as_ref() == b"Project" && self.project_depth.is_none() {
+            self.project_depth = Some(self.element_depth);
+        } else if name.as_ref() == b"PropertyGroup"
+            && is_unconditional_project_property_group(e, self.element_depth, self.project_depth)?
+        {
+            self.eligible_property_group_depth = Some(self.element_depth);
+        } else if name.as_ref() == b"Version" {
+            self.in_version =
+                is_eligible_property_child(self.eligible_property_group_depth, self.element_depth);
+        } else if name.as_ref() == b"IsPackable" {
+            self.in_is_packable =
+                is_eligible_property_child(self.eligible_property_group_depth, self.element_depth);
+        } else if name.as_ref() == b"ProjectReference" {
+            collect_project_reference(e, &mut self.projects)?;
+        }
+        Ok(())
+    }
+
+    /// Apply one `Event::End`: close whichever accumulator this element name
+    /// governs, then ascend a level.
+    fn on_end(&mut self, e: &BytesEnd<'_>) -> Result<()> {
+        let name = e.local_name();
+        if name.as_ref() == b"PropertyGroup"
+            && self.eligible_property_group_depth == Some(self.element_depth)
+        {
+            self.eligible_property_group_depth = None;
+        } else if name.as_ref() == b"Version" {
+            self.in_version = false;
+            // Fold the accumulated fragments in. `version.is_none()`
+            // keeps the original first-non-empty-wins rule: a
+            // whitespace-only `<Version>` still leaves `None` (so a
+            // later element may still win) and a second populated
+            // `<Version>` is still ignored.
+            if self.version.is_none() {
+                let candidate = self.version_text.trim();
+                if !candidate.is_empty() {
+                    self.version = Some(candidate.to_string());
+                }
+            }
+            self.version_text.clear();
+        } else if name.as_ref() == b"IsPackable" {
+            self.in_is_packable = false;
+        }
+        self.element_depth = self
+            .element_depth
+            .checked_sub(1)
+            .context("unexpected XML end tag")?;
+        Ok(())
+    }
+
+    /// Consume the finished scan into the tuple `parse_csproj_metadata`
+    /// returns: `(version, project_references, publishable_by_default)`.
+    fn finish(self) -> (Option<String>, Vec<String>, bool) {
+        (self.version, self.projects, self.publishable_by_default)
+    }
+}
+
+/// Whether the element currently being opened is a DIRECT child of the
+/// currently open unconditional `<PropertyGroup>`.
+///
+/// `<Version>` and `<IsPackable>` are only honoured one level below an
+/// eligible `<PropertyGroup>`; a deeper nesting (or no open eligible group at
+/// all) must not switch the accumulators on. Both element arms of
+/// `parse_csproj_metadata` evaluated this identical predicate inline, so it
+/// lives here once. It stays *inside* those arms rather than being hoisted
+/// above the else-if chain, keeping it evaluated only for those two element
+/// names and the per-event parse cost unchanged.
+const fn is_eligible_property_child(
+    eligible_property_group_depth: Option<usize>,
+    element_depth: usize,
+) -> bool {
+    matches!(eligible_property_group_depth, Some(depth) if element_depth == depth + 1)
+}
+
+/// Fold one decoded `<Version>` / `<IsPackable>` text or CDATA node into the
+/// accumulating metadata.
+///
+/// The `decoded` argument is exactly what `BytesText::decode` and
+/// `BytesCData::decode` return in the pinned quick-xml version, so a decode
+/// failure is surfaced to the caller instead of being discarded. The previous
+/// shape swallowed the `EncodingError`, which silently produced
+/// `version = None` and `publishable_by_default = true` for a `.csproj` whose
+/// text node could not be decoded — changepacks then treated a versioned
+/// project as unversioned and bumped it from `0.0.0`.
+fn record_decoded_csproj_text(
+    decoded: std::result::Result<std::borrow::Cow<'_, str>, quick_xml::encoding::EncodingError>,
+    in_version: bool,
+    in_is_packable: bool,
+    version_text: &mut String,
+    publishable_by_default: &mut bool,
+) -> Result<()> {
+    let text = decoded.context("Failed to decode .csproj text node")?;
+    let text = text.as_ref();
+    // Append rather than commit: `</Version>` decides which accumulated value
+    // wins, so a value split across fragments by an entity reference survives
+    // intact while single-fragment values behave exactly as before.
+    if in_version {
+        version_text.push_str(text);
+    }
+    if in_is_packable && text.trim().eq_ignore_ascii_case("false") {
+        *publishable_by_default = false;
+    }
+    Ok(())
+}
+
+/// Append the resolved text of one `&...;` reference found inside an eligible
+/// `<Version>` element to the in-progress version value.
+///
+/// Numeric character references (`&#46;`, `&#x2E;`) resolve through quick-xml's
+/// own `resolve_char_ref`; the five predefined XML entities resolve through
+/// `resolve_predefined_entity`. Anything else is an entity this parser cannot
+/// expand — a DTD-declared one — and producing a silently wrong version number
+/// from it is worse than failing, so it surfaces as a contextual error naming
+/// the entity instead.
+fn append_resolved_reference(reference: &BytesRef<'_>, version_text: &mut String) -> Result<()> {
+    if let Some(character) = reference
+        .resolve_char_ref()
+        .context("Failed to resolve .csproj character reference")?
+    {
+        version_text.push(character);
+        return Ok(());
+    }
+
+    let name = reference
+        .decode()
+        .context("Failed to decode .csproj entity reference")?;
+    let resolved = resolve_predefined_entity(&name).with_context(|| {
+        format!("Unresolvable entity reference `&{name};` in .csproj <Version>")
+    })?;
+    version_text.push_str(resolved);
+    Ok(())
+}
+
+/// Walk a `<ProjectReference Include="...">` / `Update="..."` element's attributes and
+/// push its extracted project name into `projects`. Shared by both the
+/// `Event::Start` and `Event::Empty` arms of `parse_csproj_metadata` so
+/// the attribute-parsing lives in exactly one place.
+fn collect_project_reference(
+    e: &quick_xml::events::BytesStart<'_>,
+    projects: &mut Vec<String>,
+) -> Result<()> {
+    let mut include_name = None;
+    let mut update_name = None;
+
+    for attr in e.attributes() {
+        let attr = attr.context("Failed to parse ProjectReference attribute")?;
+        let attr_name = attr.key.as_ref();
+        if !matches!(attr_name, b"Include" | b"Update") {
+            continue;
+        }
+        let value = attr
+            .normalized_value(XmlVersion::Implicit1_0)
+            .context("Failed to normalize ProjectReference attribute value")?;
+        let Some(name) = extract_project_name_from_path(&value) else {
+            continue;
+        };
+        if attr_name == b"Include" {
+            include_name = Some(name);
+        } else {
+            update_name = Some(name);
+        }
+    }
+
+    if let Some(name) = include_name.or(update_name) {
+        projects.push(name);
+    }
+    Ok(())
 }
 
 /// Extract project name from a path string, handling both Windows and Unix separators
 /// Input: `"..\CoreLib\CoreLib.csproj"` or `"../CoreLib/CoreLib.csproj"`
 /// Output: `"CoreLib"`
+///
+/// Case-insensitive `.csproj` match so `Include=".\Foo\Foo.CSPROJ"` (mixed-
+/// case, common in older solutions and hand-written `.csproj` files) resolves
+/// the same as the canonical `Foo.csproj`. The previous `strip_suffix(".csproj")`
+/// was case-sensitive and silently dropped uppercase / mixed-case references,
+/// which fed `sort_by_dependencies` a missing edge and skipped the reverse-dep
+/// propagation in `apply_reverse_dependencies` on Windows-native repos.
+/// Mirrors the case-insensitive extension gate now applied in `visit`.
 fn extract_project_name_from_path(path_str: &str) -> Option<String> {
-    // Split by both Windows (\) and Unix (/) separators
-    let filename = path_str.rsplit(['\\', '/']).next()?;
+    // Split by both Windows (\) and Unix (/) separators; if there is no
+    // separator, the whole `path_str` IS the filename. `rsplit_once` returns
+    // `Some((prefix, tail))` when a separator is found and `None` otherwise,
+    // so `map_or` falls back to `path_str` intact — self-documenting, no
+    // unreachable panic surface. The extension gate below is the sole
+    // actual `None` source for this function.
+    let filename = path_str
+        .rsplit_once(['\\', '/'])
+        .map_or(path_str, |(_, tail)| tail);
 
-    // Remove .csproj extension
-    filename
-        .strip_suffix(".csproj")
-        .map(std::string::ToString::to_string)
-}
-
-impl CSharpProjectFinder {
-    /// Extract version from .csproj XML content using quick-xml
-    fn extract_version(content: &str) -> Option<String> {
-        let mut reader = Reader::from_str(content);
-        let mut buf = Vec::new();
-        let mut in_property_group = false;
-        let mut in_version = false;
-
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) => {
-                    let name = e.local_name();
-                    if name.as_ref() == b"PropertyGroup" {
-                        in_property_group = true;
-                    } else if in_property_group && name.as_ref() == b"Version" {
-                        in_version = true;
-                    }
-                }
-                Ok(Event::End(e)) => {
-                    let name = e.local_name();
-                    if name.as_ref() == b"PropertyGroup" {
-                        in_property_group = false;
-                    } else if name.as_ref() == b"Version" {
-                        in_version = false;
-                    }
-                }
-                Ok(Event::Text(e)) => {
-                    if in_version && let Ok(text) = e.decode() {
-                        let version = text.trim().to_string();
-                        if !version.is_empty() {
-                            return Some(version);
-                        }
-                    }
-                }
-                Ok(Event::Eof) | Err(_) => break,
-                _ => {}
-            }
-            buf.clear();
-        }
-        None
-    }
-
-    /// Extract `PackageReference` dependencies from .csproj XML content using quick-xml
-    ///
-    /// Excluded from coverage: marked `#[allow(dead_code)]` because the
-    /// active extraction path runs through `extract_project_references`.
-    /// Kept around for future NuGet dependency support; its single-tag
-    /// branches (`Event::Empty` vs `Event::Start` with attributes) are
-    /// not all exercised by current test fixtures.
-    #[cfg(not(tarpaulin_include))]
-    #[allow(dead_code)]
-    fn extract_package_references(content: &str) -> Vec<String> {
-        let mut reader = Reader::from_str(content);
-        let mut buf = Vec::new();
-        let mut packages = Vec::new();
-
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(e) | Event::Start(e))
-                    if e.local_name().as_ref() == b"PackageReference" =>
-                {
-                    for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"Include"
-                            && let Ok(value) = attr.unescape_value()
-                        {
-                            packages.push(value.to_string());
-                        }
-                    }
-                }
-                Ok(Event::Eof) | Err(_) => break,
-                _ => {}
-            }
-            buf.clear();
-        }
-        packages
-    }
-
-    /// Extract `ProjectReference` dependencies from .csproj XML content using quick-xml
-    /// Returns the project names (extracted from paths)
-    fn extract_project_references(content: &str) -> Vec<String> {
-        let mut reader = Reader::from_str(content);
-        let mut buf = Vec::new();
-        let mut projects = Vec::new();
-
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Empty(e) | Event::Start(e))
-                    if e.local_name().as_ref() == b"ProjectReference" =>
-                {
-                    for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"Include"
-                            && let Ok(value) = attr.unescape_value()
-                        {
-                            // Extract project name from path like "..\CoreLib\CoreLib.csproj"
-                            // Handle both Windows (\) and Unix (/) path separators
-                            if let Some(name) = extract_project_name_from_path(&value) {
-                                projects.push(name);
-                            }
-                        }
-                    }
-                }
-                Ok(Event::Eof) | Err(_) => break,
-                _ => {}
-            }
-            buf.clear();
-        }
-        projects
-    }
-
-    /// Check if this project is part of a solution (workspace)
-    /// A project is considered a workspace if there's a .sln file in the same directory
-    async fn is_workspace(path: &Path) -> bool {
-        if let Some(parent) = path.parent() {
-            // Check if there's a .sln file in the parent directory
-            if let Ok(mut entries) = tokio::fs::read_dir(parent).await {
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    if let Some(ext) = entry.path().extension()
-                        && ext == "sln"
-                    {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
+    // Split filename on the LAST `.` so `Foo.csproj` → (`Foo`, `csproj`)
+    // and `Foo.tests.csproj` → (`Foo.tests`, `csproj`). Then gate on the
+    // extension using `eq_ignore_ascii_case` so mixed-case suffixes
+    // (`.CSPROJ`, `.CsProj`) match the same as lowercase. Preserves the
+    // previous `Option<String>` return and the "invalid extension → None"
+    // contract byte-for-byte on the canonical `.csproj` case.
+    let (stem, ext) = filename.rsplit_once('.')?;
+    ext.eq_ignore_ascii_case("csproj").then(|| stem.to_string())
 }
 
 #[async_trait]
 impl ProjectFinder for CSharpProjectFinder {
-    fn projects(&self) -> Vec<&Project> {
-        self.projects.values().collect::<Vec<_>>()
-    }
-
-    fn projects_mut(&mut self) -> Vec<&mut Project> {
-        self.projects.values_mut().collect::<Vec<_>>()
-    }
+    changepacks_core::impl_projects_hashmap_accessors!();
 
     fn project_files(&self) -> &[&str] {
-        &self.project_files
+        PROJECT_FILES
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        // Check if this is a .csproj file
-        if path.is_file() {
-            let extension = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-
-            if extension != "csproj" {
-                return Ok(());
-            }
-
-            if self.projects.contains_key(path) {
-                return Ok(());
-            }
-
-            // Read .csproj content
-            let csproj_content = read_to_string(path).await?;
-
-            let name = Self::extract_name_from_path(path);
-            let version = Self::extract_version(&csproj_content);
-            let is_workspace = Self::is_workspace(path).await;
-
-            let (path_key, mut project) = if is_workspace {
-                (
-                    path.to_path_buf(),
-                    Project::Workspace(Box::new(CSharpWorkspace::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
-            } else {
-                (
-                    path.to_path_buf(),
-                    Project::Package(Box::new(CSharpPackage::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
-            };
-
-            // Add ProjectReference dependencies (local project references)
-            for dep in Self::extract_project_references(&csproj_content) {
-                project.add_dependency(&dep);
-            }
-
-            self.projects.insert(path_key, project);
+        // Cheap-checks-first ordering (mirrors the `matches_project_file`
+        // reorder in `changepacks-core`): reject on the file-extension
+        // gate BEFORE hitting `tokio::fs::metadata`, so every non-
+        // `.csproj` file in a `find_project_dirs` walk skips the async
+        // stat entirely. On a 10 000-file monorepo with zero `.csproj`
+        // entries this saves 10 000 stats per `visit` sweep.
+        //
+        // Extension match is case-insensitive so `.CSPROJ` /
+        // `.CsProj` (mixed-case, common in Windows tooling and hand-
+        // written project files) resolves the same as the canonical
+        // lowercase form. Matches the case-insensitive suffix decoder
+        // used by `extract_project_name_from_path`.
+        if !has_extension_ignore_ascii_case(path, "csproj") {
+            return Ok(());
         }
+
+        // Already-discovered probe, shared with every other finder via
+        // `ProjectFinder::contains_project`. It stays a separate statement
+        // here (rather than folding into `should_visit_manifest`) because
+        // this finder claims an EXTENSION entry, which the name-based
+        // `matches_project_file` gate can never match — see its docs.
+        // Extension-first ordering is therefore preserved exactly.
+        if self.contains_project(path) {
+            return Ok(());
+        }
+
+        // Only after the cheap gates pass do we pay for a stat. Delegates
+        // to the shared `is_regular_file` helper in `changepacks_core`
+        // so missing paths and directories are skipped while other metadata
+        // errors are propagated to the discovery caller.
+        if !is_regular_file(path).await? {
+            return Ok(());
+        }
+
+        // Read .csproj content
+        let csproj_content = crate::read_csproj(path).await?;
+
+        let name = Self::extract_name_from_path(path);
+        // Single-pass metadata extraction — replaces the previous
+        // `extract_version(...)` + `extract_project_references(...)`
+        // pair that each constructed its own `quick_xml::Reader` and
+        // walked the identical XML bytes. Halves parse work per
+        // `.csproj` (meaningful on Unity/dotnet monorepos).
+        let (version, project_refs, publishable_by_default) =
+            Self::parse_csproj_metadata(&csproj_content)
+                .with_context(|| format!("Failed to parse C# project XML: {}", path.display()))?;
+        let path_key = path.to_path_buf();
+        let relative_path_key = relative_path.to_path_buf();
+        let mut project = Project::Package(Box::new(CSharpPackage::new_discovered(
+            name,
+            version,
+            path_key.clone(),
+            relative_path_key,
+            publishable_by_default,
+        )));
+
+        // Add ProjectReference dependencies (local project references)
+        // — `project_refs` came from the single-pass
+        // `parse_csproj_metadata` call above, so no second walk of the
+        // XML is needed here.
+        for dep in project_refs {
+            project.add_dependency(&dep);
+        }
+
+        self.projects.insert(path_key, project);
         Ok(())
     }
 }
@@ -251,8 +451,19 @@ impl ProjectFinder for CSharpProjectFinder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use changepacks_core::UpdateType;
+    use changepacks_utils::sort_by_dependencies;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
+    use tokio::fs as async_fs;
+
+    struct VersionPolicyCase {
+        name: &'static str,
+        input: &'static str,
+        discovered: Option<&'static str>,
+        expected: &'static str,
+    }
 
     #[tokio::test]
     async fn test_new() {
@@ -290,23 +501,24 @@ mod tests {
             .unwrap();
 
         assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("TestProject"));
-                assert_eq!(pkg.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = finder.projects()[0].expect_package();
+        assert_eq!(pkg.name(), Some("TestProject"));
+        assert_eq!(pkg.version(), Some("1.0.0"));
 
         temp_dir.close().unwrap();
     }
 
+    // `visit` gates on `has_extension_ignore_ascii_case(path, "csproj")`, so a
+    // mixed-case `.CSPROJ` manifest MUST be discovered exactly like the
+    // canonical lowercase form. Every other `visit` test in this module uses a
+    // lowercase fixture, leaving the case-insensitive branch — the one that
+    // actually fires on Windows-native and hand-written solutions — unexercised.
+    // This is the discovery-side counterpart to the
+    // `extract_project_name_from_path` `.CSPROJ` cases below.
     #[tokio::test]
-    async fn test_visit_workspace_with_sln() {
+    async fn test_visit_mixed_case_csproj_extension() {
         let temp_dir = TempDir::new().unwrap();
-        let csproj_path = temp_dir.path().join("TestProject.csproj");
-        let sln_path = temp_dir.path().join("TestSolution.sln");
-
+        let csproj_path = temp_dir.path().join("App.CSPROJ");
         fs::write(
             &csproj_path,
             r#"<Project Sdk="Microsoft.NET.Sdk">
@@ -318,7 +530,186 @@ mod tests {
         )
         .unwrap();
 
-        fs::write(&sln_path, "Microsoft Visual Studio Solution File").unwrap();
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&csproj_path, &PathBuf::from("App.CSPROJ"))
+            .await
+            .unwrap();
+
+        assert_eq!(finder.project_count(), 1);
+        assert_eq!(finder.projects().len(), 1);
+        let pkg = finder.projects()[0].expect_package();
+        assert_eq!(pkg.name(), Some("App"));
+        assert_eq!(pkg.version(), Some("1.0.0"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_root_solution_csproj_manifests_are_packages() {
+        let temp_dir = TempDir::new().unwrap();
+        let library_path = temp_dir.path().join("Library.csproj");
+        let app_path = temp_dir.path().join("App.csproj");
+        fs::write(
+            temp_dir.path().join("Product.sln"),
+            "Microsoft Visual Studio Solution File",
+        )
+        .unwrap();
+        fs::write(
+            &library_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.2.3</Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &app_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>4.5.6</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="Library.csproj" />
+  </ItemGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&app_path, Path::new("App.csproj"))
+            .await
+            .unwrap();
+        finder
+            .visit(&library_path, Path::new("Library.csproj"))
+            .await
+            .unwrap();
+
+        let projects = sort_by_dependencies(finder.projects()).unwrap();
+        assert_eq!(projects.len(), 2);
+        assert!(
+            projects
+                .iter()
+                .all(|project| matches!(project, Project::Package(_))),
+            "solution-contained manifests must remain packages: {projects:?}"
+        );
+        assert_eq!(
+            projects
+                .iter()
+                .map(|project| (project.name(), project.version(), project.relative_path()))
+                .collect::<Vec<_>>(),
+            vec![
+                (Some("Library"), Some("1.2.3"), Path::new("Library.csproj"),),
+                (Some("App"), Some("4.5.6"), Path::new("App.csproj")),
+            ]
+        );
+        assert!(projects[1].dependencies().contains("Library"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_nested_solution_csproj_manifests_are_packages() {
+        let temp_dir = TempDir::new().unwrap();
+        let solution_dir = temp_dir.path().join("solutions").join("Product");
+        let library_path = solution_dir
+            .join("src")
+            .join("Library")
+            .join("Library.csproj");
+        let app_path = solution_dir.join("src").join("App").join("App.csproj");
+        fs::create_dir_all(library_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(app_path.parent().unwrap()).unwrap();
+        fs::write(
+            solution_dir.join("Product.sln"),
+            "Microsoft Visual Studio Solution File",
+        )
+        .unwrap();
+        fs::write(
+            &library_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>2.0.0</Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &app_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>3.1.4</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Library\Library.csproj" />
+  </ItemGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&app_path, Path::new("solutions/Product/src/App/App.csproj"))
+            .await
+            .unwrap();
+        finder
+            .visit(
+                &library_path,
+                Path::new("solutions/Product/src/Library/Library.csproj"),
+            )
+            .await
+            .unwrap();
+
+        let projects = sort_by_dependencies(finder.projects()).unwrap();
+        assert_eq!(projects.len(), 2);
+        assert!(
+            projects
+                .iter()
+                .all(|project| matches!(project, Project::Package(_))),
+            "nested solution manifests must remain packages: {projects:?}"
+        );
+        assert_eq!(
+            projects
+                .iter()
+                .map(|project| (project.name(), project.version(), project.relative_path()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    Some("Library"),
+                    Some("2.0.0"),
+                    Path::new("solutions/Product/src/Library/Library.csproj"),
+                ),
+                (
+                    Some("App"),
+                    Some("3.1.4"),
+                    Path::new("solutions/Product/src/App/App.csproj"),
+                ),
+            ]
+        );
+        assert!(projects[1].dependencies().contains("Library"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_package_reads_version_from_cdata() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("TestProject.csproj");
+        fs::write(
+            &csproj_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version><![CDATA[1.2.3]]></Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
 
         let mut finder = CSharpProjectFinder::new();
         finder
@@ -326,14 +717,43 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("TestProject"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        assert_eq!(
+            finder.projects()[0].expect_package().version(),
+            Some("1.2.3")
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_visit_package_ignores_sln_directory() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("TestProject.csproj");
+        fs::create_dir(temp_dir.path().join("Fake.sln")).unwrap();
+        fs::write(
+            &csproj_path,
+            r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+</Project>
+"#,
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&csproj_path, &PathBuf::from("TestProject.csproj"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(
+            matches!(projects[0], Project::Package(_)),
+            "expected Package when only a .sln directory exists, got {:?}",
+            projects[0]
+        );
 
         temp_dir.close().unwrap();
     }
@@ -360,13 +780,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(finder.projects().len(), 1);
-        match finder.projects()[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("TestProject"));
-                assert_eq!(pkg.version(), None);
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = finder.projects()[0].expect_package();
+        assert_eq!(pkg.name(), Some("TestProject"));
+        assert_eq!(pkg.version(), None);
 
         temp_dir.close().unwrap();
     }
@@ -375,7 +791,7 @@ mod tests {
     async fn test_visit_non_csproj_file() {
         let temp_dir = TempDir::new().unwrap();
         let other_file = temp_dir.path().join("other.xml");
-        fs::write(&other_file, r#"<root>content</root>"#).unwrap();
+        fs::write(&other_file, r"<root>content</root>").unwrap();
 
         let mut finder = CSharpProjectFinder::new();
         finder
@@ -501,14 +917,10 @@ mod tests {
 
         let mut projects = finder.projects_mut();
         assert_eq!(projects.len(), 1);
-        match &mut projects[0] {
-            Project::Package(pkg) => {
-                assert!(!pkg.is_changed());
-                pkg.set_changed(true);
-                assert!(pkg.is_changed());
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package_mut();
+        assert!(!pkg.is_changed());
+        pkg.set_changed(true);
+        assert!(pkg.is_changed());
 
         temp_dir.close().unwrap();
     }
@@ -543,53 +955,474 @@ mod tests {
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("TestProject"));
-                let deps = pkg.dependencies();
-                // Only ProjectReferences are tracked (not PackageReferences)
-                assert_eq!(deps.len(), 2);
-                assert!(deps.contains("CoreLib"));
-                assert!(deps.contains("Utils"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("TestProject"));
+        let deps = pkg.dependencies();
+        // Only ProjectReferences are tracked (not PackageReferences)
+        assert_eq!(deps.len(), 2);
+        assert!(deps.contains("CoreLib"));
+        assert!(deps.contains("Utils"));
 
         temp_dir.close().unwrap();
     }
 
-    #[test]
-    fn test_extract_version() {
-        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+    // Fixtures for `test_extract_version` — one per XML shape the finder
+    // must handle. Named consts keep each rstest `#[case]` line short and
+    // self-describing.
+
+    const XML_STANDARD_VERSION: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <Version>1.2.3</Version>
   </PropertyGroup>
 </Project>"#;
-        assert_eq!(
-            CSharpProjectFinder::extract_version(content),
-            Some("1.2.3".to_string())
-        );
 
-        let no_version = r#"<Project Sdk="Microsoft.NET.Sdk">
+    const XML_NO_VERSION_ELEMENT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
   </PropertyGroup>
 </Project>"#;
-        assert_eq!(CSharpProjectFinder::extract_version(no_version), None);
+
+    const XML_VERSION_WITH_END_TAG_WHITESPACE: &str = r"<Project><PropertyGroup><Version>
+   1.2.3
+   </Version></PropertyGroup></Project>";
+
+    const XML_EMPTY_VERSION: &str =
+        r"<Project><PropertyGroup><Version>  </Version></PropertyGroup></Project>";
+
+    // Self-closing tags like <IsPackable /> generate Event::Empty, which
+    // exercises the wildcard `_ => {}` arm in extract_version.
+    const XML_VERSION_AFTER_EMPTY_ELEMENT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable />
+    <Version>3.2.1</Version>
+  </PropertyGroup>
+</Project>"#;
+
+    // XML comments generate Event::Comment, exercising the wildcard arm.
+    const XML_VERSION_AFTER_COMMENT: &str = r"<Project>
+  <PropertyGroup>
+    <!-- version follows -->
+    <Version>4.0.0</Version>
+  </PropertyGroup>
+</Project>";
+
+    // A decimal character reference splits the value into
+    // Text("1.2") / GeneralRef("#46") / Text("3"). Before the GeneralRef arm
+    // existed, only the first fragment was kept and the version read as `1.2`.
+    const XML_VERSION_WITH_DECIMAL_CHAR_REF: &str =
+        r"<Project><PropertyGroup><Version>1.2&#46;3</Version></PropertyGroup></Project>";
+
+    // Same split, hexadecimal spelling of the same code point.
+    const XML_VERSION_WITH_HEX_CHAR_REF: &str =
+        r"<Project><PropertyGroup><Version>1.2&#x2E;3</Version></PropertyGroup></Project>";
+
+    // A predefined XML entity is a GeneralRef too, and resolves to `&`.
+    const XML_VERSION_WITH_PREDEFINED_ENTITY: &str =
+        r"<Project><PropertyGroup><Version>1.0.0-a&amp;b</Version></PropertyGroup></Project>";
+
+    // The reference is the WHOLE value, so the pre-fix parser saw no leading
+    // text fragment at all and returned None.
+    const XML_VERSION_IS_ONLY_A_CHAR_REF: &str =
+        r"<Project><PropertyGroup><Version>&#49;&#46;&#48;</Version></PropertyGroup></Project>";
+
+    // Two `<Version>` elements in the same eligible group: the first still wins.
+    const XML_DUPLICATE_VERSION: &str = r"<Project><PropertyGroup><Version>1.0.0</Version><Version>2.0.0</Version></PropertyGroup></Project>";
+
+    // Whitespace-only first `<Version>` must still leave the value unset, so a
+    // later populated element wins — the accumulator must not "claim" it.
+    const XML_EMPTY_THEN_POPULATED_VERSION: &str = r"<Project><PropertyGroup><Version>  </Version><Version>2.0.0</Version></PropertyGroup></Project>";
+
+    // CDATA content is a separate event class and must accumulate the same way.
+    const XML_CDATA_VERSION: &str =
+        r"<Project><PropertyGroup><Version><![CDATA[1.2.3]]></Version></PropertyGroup></Project>";
+
+    // A reference inside a conditional (non-eligible) group is not part of any
+    // candidate version and must be ignored, not accumulated.
+    const XML_CONDITIONAL_VERSION_WITH_CHAR_REF: &str = r#"<Project><PropertyGroup Condition="'$(Configuration)' == 'Release'"><Version>9.9&#46;9</Version></PropertyGroup><PropertyGroup><Version>1.2.3</Version></PropertyGroup></Project>"#;
+
+    // A `<PropertyGroup>` nested inside a `<Target>` sits one level too deep to
+    // be an unconditional project property group, so its `<Version>` is a
+    // build-time local and must never become the package version — the
+    // top-level group's value wins. The WRITE path already pins this shape
+    // (the `target-local` fixture in `test_update_version_in_xml_cases`), but
+    // no read-path case placed a `<Version>` outside an eligible group's direct
+    // children, so nothing failed if the eligibility guard on `in_version` were
+    // dropped.
+    const XML_TARGET_LOCAL_VERSION: &str = r#"<Project>
+  <Target Name="Build">
+    <PropertyGroup>
+      <Version>7.0.0</Version>
+    </PropertyGroup>
+  </Target>
+  <PropertyGroup>
+    <Version>1.2.3</Version>
+  </PropertyGroup>
+</Project>"#;
+
+    // The other half of the same rule, this time with an eligible group OPEN:
+    // MSBuild property values may themselves contain XML, so `<Version>` two
+    // levels below the group is part of the `<PackageMetadata>` property's
+    // literal value, not a property of its own. Only the DIRECT child counts.
+    // This is the case that pins the depth comparison in
+    // `is_eligible_property_child` rather than just its `None` arm.
+    const XML_VERSION_NESTED_BELOW_PROPERTY: &str = r"<Project>
+  <PropertyGroup>
+    <PackageMetadata><Version>9.9.9</Version></PackageMetadata>
+    <Version>1.2.3</Version>
+  </PropertyGroup>
+</Project>";
+
+    #[rstest]
+    // Standard `<Version>` inside `<PropertyGroup>`.
+    #[case(XML_STANDARD_VERSION, Some("1.2.3"))]
+    // No `<Version>` element at all → None.
+    #[case(XML_NO_VERSION_ELEMENT, None)]
+    // Whitespace/newlines around the version value are trimmed.
+    #[case(XML_VERSION_WITH_END_TAG_WHITESPACE, Some("1.2.3"))]
+    // Whitespace-only value returns None (empty after trim).
+    #[case(XML_EMPTY_VERSION, None)]
+    // Version element after a self-closing sibling (Event::Empty path).
+    #[case(XML_VERSION_AFTER_EMPTY_ELEMENT, Some("3.2.1"))]
+    // Version element after an XML comment (Event::Comment path).
+    #[case(XML_VERSION_AFTER_COMMENT, Some("4.0.0"))]
+    // Regression: a decimal character reference must not truncate the version.
+    #[case(XML_VERSION_WITH_DECIMAL_CHAR_REF, Some("1.2.3"))]
+    // Same for the hexadecimal spelling.
+    #[case(XML_VERSION_WITH_HEX_CHAR_REF, Some("1.2.3"))]
+    // Predefined entities resolve to their replacement text.
+    #[case(XML_VERSION_WITH_PREDEFINED_ENTITY, Some("1.0.0-a&b"))]
+    // A value made up entirely of references used to parse as None.
+    #[case(XML_VERSION_IS_ONLY_A_CHAR_REF, Some("1.0"))]
+    // Unchanged: the first populated `<Version>` wins.
+    #[case(XML_DUPLICATE_VERSION, Some("1.0.0"))]
+    // Unchanged: a whitespace-only element does not claim the value.
+    #[case(XML_EMPTY_THEN_POPULATED_VERSION, Some("2.0.0"))]
+    // Unchanged: CDATA content still yields the version.
+    #[case(XML_CDATA_VERSION, Some("1.2.3"))]
+    // Unchanged: a conditional group's `<Version>` is ignored, references included.
+    #[case(XML_CONDITIONAL_VERSION_WITH_CHAR_REF, Some("1.2.3"))]
+    // A `<Target>`-local `<Version>` is a build-time property, not the package
+    // version: the top-level group still wins.
+    #[case(XML_TARGET_LOCAL_VERSION, Some("1.2.3"))]
+    // A `<Version>` nested inside another property's value is not a direct
+    // child of the eligible group, so it loses to the real one.
+    #[case(XML_VERSION_NESTED_BELOW_PROPERTY, Some("1.2.3"))]
+    fn test_extract_version(#[case] content: &str, #[case] expected: Option<&str>) {
+        assert_eq!(
+            CSharpProjectFinder::parse_csproj_metadata(content)
+                .unwrap()
+                .0,
+            expected.map(std::string::ToString::to_string)
+        );
+    }
+
+    // A DTD-declared entity cannot be expanded by this parser. Silently
+    // dropping it would emit a wrong version number (and then a wrong bump),
+    // so it must fail loudly and name the offending entity.
+    #[test]
+    fn test_unresolvable_version_entity_returns_contextual_error() {
+        let content =
+            r"<Project><PropertyGroup><Version>1.0&mystery;0</Version></PropertyGroup></Project>";
+
+        let error = CSharpProjectFinder::parse_csproj_metadata(content).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Unresolvable entity reference `&mystery;`"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    // The other failing branch of `append_resolved_reference`: the reference IS
+    // numeric, so `resolve_char_ref` owns it, but `D800` is a UTF-16 surrogate
+    // and therefore not a Unicode scalar value, so quick-xml cannot turn it
+    // into a `char`. Without the `.context(...)` on `resolve_char_ref` the
+    // failure would surface as quick-xml's bare escape error with no hint that
+    // a `.csproj` `<Version>` produced it, so the literal context string is the
+    // assertion.
+    #[test]
+    fn test_out_of_range_version_char_ref_returns_contextual_error() {
+        let content =
+            r"<Project><PropertyGroup><Version>1.0&#xD800;0</Version></PropertyGroup></Project>";
+
+        let error = CSharpProjectFinder::parse_csproj_metadata(content).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Failed to resolve .csproj character reference"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    // The GeneralRef arm is scoped to `<Version>`: an unresolvable entity
+    // anywhere else in the manifest stays a pass-through, exactly as before,
+    // and must neither fail the parse nor leak into the version.
+    #[test]
+    fn test_entity_reference_outside_version_is_ignored() {
+        let content = r"<Project><PropertyGroup><Description>Hello &custom; World</Description><Version>1.2.3</Version><IsPackable>fa&#108;se</IsPackable></PropertyGroup></Project>";
+
+        let (version, refs, publishable_by_default) =
+            CSharpProjectFinder::parse_csproj_metadata(content).unwrap();
+
+        assert_eq!(version.as_deref(), Some("1.2.3"));
+        assert!(refs.is_empty());
+        // `<IsPackable>` keeps its unchanged per-fragment semantics: no
+        // fragment equals "false" on its own, so the default stands.
+        assert!(publishable_by_default);
     }
 
     #[test]
-    fn test_extract_package_references() {
-        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
-  <ItemGroup>
-    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
-    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
-  </ItemGroup>
-</Project>"#;
-        let refs = CSharpProjectFinder::extract_package_references(content);
-        assert_eq!(refs.len(), 2);
-        assert!(refs.contains(&"Newtonsoft.Json".to_string()));
-        assert!(refs.contains(&"System.CommandLine".to_string()));
+    fn test_parse_csproj_metadata_is_packable_publishability() {
+        let cases = [
+            (
+                "false",
+                "<Project><PropertyGroup><IsPackable>false</IsPackable></PropertyGroup></Project>",
+                false,
+            ),
+            (
+                "trimmed mixed case false",
+                "<Project><PropertyGroup><IsPackable>\n False\t </IsPackable></PropertyGroup></Project>",
+                false,
+            ),
+            (
+                "true",
+                "<Project><PropertyGroup><IsPackable>true</IsPackable></PropertyGroup></Project>",
+                true,
+            ),
+            (
+                "missing",
+                "<Project><PropertyGroup><Version>1.0.0</Version></PropertyGroup></Project>",
+                true,
+            ),
+            (
+                "self closing",
+                "<Project><PropertyGroup><IsPackable /></PropertyGroup></Project>",
+                true,
+            ),
+            (
+                "conditional property group",
+                r#"<Project><PropertyGroup Condition="'$(Configuration)' == 'Release'"><IsPackable>false</IsPackable></PropertyGroup></Project>"#,
+                true,
+            ),
+            (
+                "computed",
+                "<Project><PropertyGroup><IsPackable>$(Packable)</IsPackable></PropertyGroup></Project>",
+                true,
+            ),
+            (
+                "nested property group",
+                "<Project><Target><PropertyGroup><IsPackable>false</IsPackable></PropertyGroup></Target></Project>",
+                true,
+            ),
+        ];
+
+        for (label, content, expected) in cases {
+            let publishable_by_default = CSharpProjectFinder::parse_csproj_metadata(content)
+                .unwrap()
+                .2;
+            assert_eq!(publishable_by_default, expected, "{label}");
+        }
+    }
+
+    #[test]
+    fn test_parse_csproj_metadata_scopes_is_packable_like_version() {
+        let cases = [
+            (
+                "text",
+                "<Root><Project><PropertyGroup><Version>1.2.3</Version><IsPackable>false</IsPackable></PropertyGroup></Project></Root>",
+            ),
+            (
+                "cdata",
+                "<Root><Project><PropertyGroup><Version>1.2.3</Version><IsPackable><![CDATA[false]]></IsPackable></PropertyGroup></Project></Root>",
+            ),
+        ];
+
+        for (label, content) in cases {
+            let (version, _, publishable_by_default) =
+                CSharpProjectFinder::parse_csproj_metadata(content).unwrap();
+            assert_eq!(version.as_deref(), Some("1.2.3"), "{label}");
+            assert!(!publishable_by_default, "{label}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_visit_package_carries_is_packable_false_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Private.csproj");
+        fs::write(
+            &csproj_path,
+            "<Project><PropertyGroup><IsPackable>false</IsPackable></PropertyGroup></Project>",
+        )
+        .unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        finder
+            .visit(&csproj_path, Path::new("Private.csproj"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        assert!(!projects[0].is_publishable_by_default());
+    }
+
+    // Happy-path anchor for the decode-error propagation change: a
+    // well-formed manifest whose `<Version>` arrives as plain text and whose
+    // `<IsPackable>` arrives as CDATA must still parse exactly as before.
+    // Both values now flow through a `?` at their call sites, so this pins
+    // that the added error path did not disturb the success path.
+    #[test]
+    fn test_parse_csproj_metadata_decodes_text_and_cdata_on_happy_path() {
+        let content = "<Project><PropertyGroup><Version>1.2.3</Version><IsPackable><![CDATA[false]]></IsPackable></PropertyGroup></Project>";
+
+        let (version, refs, publishable_by_default) =
+            CSharpProjectFinder::parse_csproj_metadata(content).unwrap();
+
+        assert_eq!(version.as_deref(), Some("1.2.3"));
+        assert!(refs.is_empty());
+        assert!(!publishable_by_default);
+    }
+
+    // A failed `BytesText::decode` / `BytesCData::decode` must surface as a
+    // contextual error rather than silently yielding `version = None` and
+    // `publishable_by_default = true` — the latter makes changepacks treat a
+    // versioned project as unversioned and bump it from `0.0.0`. The helper is
+    // exercised directly because `Reader::from_str` can never produce this
+    // error: a `&str` is valid UTF-8 by construction.
+    #[test]
+    fn test_record_decoded_csproj_text_propagates_decode_error() {
+        // Half of a two-byte UTF-8 sequence — invalid on its own. Sliced at
+        // runtime so the bytes are not a compile-time-known literal.
+        let truncated = &"é".as_bytes()[..1];
+        let utf8_error = std::str::from_utf8(truncated).unwrap_err();
+        // The accumulator is a `String` (fragments are appended and committed
+        // on `</Version>`); "nothing recorded" is therefore an empty buffer
+        // instead of `None`, which still means `version = None` at the
+        // `parse_csproj_metadata` boundary.
+        let mut version_text = String::new();
+        let mut publishable_by_default = true;
+
+        let error = super::record_decoded_csproj_text(
+            Err(quick_xml::encoding::EncodingError::from(utf8_error)),
+            true,
+            true,
+            &mut version_text,
+            &mut publishable_by_default,
+        )
+        .unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Failed to decode .csproj text node"),
+            "context missing from chain: {error:#}"
+        );
+        assert!(
+            format!("{error:#}").contains("cannot decode input using UTF-8"),
+            "root cause dropped from chain: {error:#}"
+        );
+        assert!(version_text.is_empty());
+        assert!(publishable_by_default);
+    }
+
+    #[test]
+    fn test_extract_version_malformed_xml() {
+        let content = "<Project><PropertyGroup><Version>1.0.0";
+        assert!(CSharpProjectFinder::parse_csproj_metadata(content).is_err());
+    }
+
+    // The mirror image of `test_extract_version_malformed_xml`: that one
+    // pins truncation (a start tag that never closes), this one pins the
+    // opposite imbalance — a document that opens with a CLOSING tag and so
+    // has no matching start. The two failure shapes take different exits
+    // out of `parse_csproj_metadata` (EOF-with-open-depth vs. the
+    // `Event::End` arm / the reader's own end-tag check), so truncation
+    // coverage alone does not guard this one. Asserted as `is_err()` only,
+    // deliberately: which of the two exits fires is a quick-xml
+    // configuration detail, and pinning its wording here would make the
+    // test fail on a dependency bump that changes nothing we care about.
+    #[test]
+    fn test_parse_csproj_metadata_unmatched_end_tag_is_err() {
+        assert!(CSharpProjectFinder::parse_csproj_metadata("</Project>").is_err());
+    }
+
+    // Same input at the `visit` level, mirroring
+    // `test_visit_malformed_xml_returns_path_context`: whichever exit the
+    // unmatched end tag takes, `visit` must still wrap it with the
+    // manifest path so the discovery caller can tell WHICH `.csproj` in a
+    // monorepo is broken. Asserts the context message and the path, not the
+    // root-cause wording, for the reason given on the unit test above.
+    #[tokio::test]
+    async fn test_visit_unmatched_end_tag_returns_path_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("StrayEnd.csproj");
+        fs::write(&csproj_path, "</Project>").unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        let error = finder
+            .visit(&csproj_path, &PathBuf::from("StrayEnd.csproj"))
+            .await
+            .unwrap_err();
+
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains("Failed to parse C# project XML"),
+            "context missing from chain: {chain}"
+        );
+        assert!(
+            chain.contains(&csproj_path.display().to_string()),
+            "offending manifest path missing from chain: {chain}"
+        );
+        assert_eq!(
+            finder.projects().len(),
+            0,
+            "a manifest that failed to parse must not be registered"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    // Pins the `with_context` wrapper `visit` puts around
+    // `parse_csproj_metadata`: the top-level message must name the failure
+    // and the manifest path, AND the underlying parser error must survive
+    // in the anyhow chain. The chain assertion is what distinguishes a
+    // context wrapper from a `map_err` that discards the root cause — the
+    // extractor-level `test_extract_version_malformed_xml` only proves
+    // `parse_csproj_metadata` returns `Err`, and asserting on
+    // `error.to_string()` alone would still pass if `visit` replaced the
+    // source instead of wrapping it.
+    #[tokio::test]
+    async fn test_visit_malformed_xml_returns_path_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let csproj_path = temp_dir.path().join("Broken.csproj");
+        fs::write(&csproj_path, "<Project><PropertyGroup><Version>1.0.0").unwrap();
+
+        let mut finder = CSharpProjectFinder::new();
+        let error = finder
+            .visit(&csproj_path, &PathBuf::from("Broken.csproj"))
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("Failed to parse C# project XML"));
+        assert!(message.contains("Broken.csproj"));
+
+        // Full alternate-Display chain: context + every source below it.
+        let chain = format!("{error:#}");
+        assert!(
+            chain.contains("Failed to parse C# project XML"),
+            "context missing from chain: {chain}"
+        );
+        assert!(
+            chain.contains(&csproj_path.display().to_string()),
+            "absolute manifest path missing from chain: {chain}"
+        );
+        assert!(
+            chain.contains("unexpected end of XML document"),
+            "root cause dropped from chain: {chain}"
+        );
+        assert_eq!(
+            error.root_cause().to_string(),
+            "unexpected end of XML document",
+            "context must wrap the parser error, not replace it: {chain}"
+        );
+
+        temp_dir.close().unwrap();
     }
 
     #[test]
@@ -598,91 +1431,263 @@ mod tests {
   <ItemGroup>
     <ProjectReference Include="..\CoreLib\CoreLib.csproj" />
     <ProjectReference Include="..\Utils\Utils.csproj" />
+    <ProjectReference Update="..\Updated\Updated.csproj" />
   </ItemGroup>
 </Project>"#;
-        let refs = CSharpProjectFinder::extract_project_references(content);
+        let refs = CSharpProjectFinder::parse_csproj_metadata(content)
+            .unwrap()
+            .1;
+        assert_eq!(refs.len(), 3);
+        assert!(refs.contains(&"CoreLib".to_string()));
+        assert!(refs.contains(&"Utils".to_string()));
+        assert!(refs.contains(&"Updated".to_string()));
+    }
+
+    #[test]
+    fn test_extract_project_references_prefers_include_over_update() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\CoreLib\CoreLib.csproj" Update="..\Fallback\Fallback.csproj" />
+  </ItemGroup>
+</Project>"#;
+        let refs = CSharpProjectFinder::parse_csproj_metadata(content)
+            .unwrap()
+            .1;
+        assert_eq!(refs, vec!["CoreLib".to_string()]);
+    }
+
+    #[test]
+    fn test_extract_project_references_from_start_and_empty_elements() {
+        let content = r#"<Project>
+  <ItemGroup>
+    <ProjectReference Include="..\Started\Started.csproj"></ProjectReference>
+    <ProjectReference Include="..\Empty\Empty.csproj" />
+  </ItemGroup>
+</Project>"#;
+
+        let refs = CSharpProjectFinder::parse_csproj_metadata(content)
+            .unwrap()
+            .1;
+
+        assert_eq!(refs, vec!["Started".to_string(), "Empty".to_string()]);
+    }
+
+    // Attributes other than `Include` / `Update` must be skipped outright:
+    // `PrivateAssets` / `OutputItemType` are routine on a `ProjectReference`,
+    // and neither may be mistaken for a project path. The reference is still
+    // collected from its `Include`.
+    #[test]
+    fn test_extract_project_references_skips_unrelated_attributes() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference OutputItemType="Analyzer" Include="..\CoreLib\CoreLib.csproj" PrivateAssets="all" />
+  </ItemGroup>
+</Project>"#;
+
+        let refs = CSharpProjectFinder::parse_csproj_metadata(content)
+            .unwrap()
+            .1;
+
+        assert_eq!(refs, vec!["CoreLib".to_string()]);
+    }
+
+    // An `Include` / `Update` value that is not a `.csproj` yields `None` from
+    // `extract_project_name_from_path`, so the attribute contributes no name
+    // and the element as a whole records nothing. `.vbproj` / `.fsproj`
+    // siblings are real MSBuild references this finder does not manage, so
+    // they must not leak into the dependency graph under a bogus name.
+    #[test]
+    fn test_extract_project_references_ignores_non_csproj_reference_paths() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Legacy\Legacy.vbproj" />
+    <ProjectReference Update="..\Native\Native.vcxproj" />
+    <ProjectReference Include="..\CoreLib\CoreLib.csproj" />
+  </ItemGroup>
+</Project>"#;
+
+        let refs = CSharpProjectFinder::parse_csproj_metadata(content)
+            .unwrap()
+            .1;
+
+        assert_eq!(refs, vec!["CoreLib".to_string()]);
+    }
+
+    #[test]
+    fn test_project_reference_malformed_attribute_returns_contextual_error() {
+        let content = r#"<Project><ItemGroup><ProjectReference Include="Valid.csproj" Broken /></ItemGroup></Project>"#;
+
+        let error = CSharpProjectFinder::parse_csproj_metadata(content).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Failed to parse ProjectReference attribute"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn test_project_reference_malformed_entity_returns_contextual_error() {
+        let content = r#"<Project><ItemGroup><ProjectReference Include="..\Bad&unknown;\Bad.csproj" /></ItemGroup></Project>"#;
+
+        let error = CSharpProjectFinder::parse_csproj_metadata(content).unwrap_err();
+
+        assert!(
+            format!("{error:#}").contains("Failed to normalize ProjectReference attribute value"),
+            "unexpected error: {error:#}"
+        );
+    }
+
+    // The unified `parse_csproj_metadata` MUST return both the version and
+    // the `ProjectReference` list in a single walk. This test fixes that
+    // contract on a fixture combining both elements (plus a
+    // `PackageReference` decoy that must be ignored) so any future refactor
+    // that reintroduces a second XML walk — or accidentally drops one of
+    // the outputs — trips a failing test immediately. Serves as the
+    // regression anchor for the single-pass metadata-parse consolidation.
+    #[test]
+    fn test_parse_csproj_metadata_returns_version_and_refs_in_one_pass() {
+        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>1.5.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CoreLib\CoreLib.csproj" />
+    <ProjectReference Include="..\Utils\Utils.csproj" />
+  </ItemGroup>
+</Project>"#;
+        let (version, refs, publishable_by_default) =
+            CSharpProjectFinder::parse_csproj_metadata(content).unwrap();
+        assert_eq!(version, Some("1.5.0".to_string()));
         assert_eq!(refs.len(), 2);
         assert!(refs.contains(&"CoreLib".to_string()));
         assert!(refs.contains(&"Utils".to_string()));
+        assert!(publishable_by_default);
     }
 
-    #[test]
-    fn test_extract_project_name_from_path() {
-        // Windows-style paths
-        assert_eq!(
-            super::extract_project_name_from_path(r"..\CoreLib\CoreLib.csproj"),
-            Some("CoreLib".to_string())
-        );
-        assert_eq!(
-            super::extract_project_name_from_path(r"..\..\Utils\Utils.csproj"),
-            Some("Utils".to_string())
-        );
-        // Unix-style paths
-        assert_eq!(
-            super::extract_project_name_from_path("../CoreLib/CoreLib.csproj"),
-            Some("CoreLib".to_string())
-        );
-        // Just filename
-        assert_eq!(
-            super::extract_project_name_from_path("MyProject.csproj"),
-            Some("MyProject".to_string())
-        );
-        // Invalid - no .csproj extension
-        assert_eq!(super::extract_project_name_from_path("MyProject.txt"), None);
+    #[tokio::test]
+    async fn test_discovery_and_rewrite_use_unconditional_top_level_property_groups() -> Result<()>
+    {
+        let cases = [
+            VersionPolicyCase {
+                name: "target-local",
+                input: "<Project>\n  <Target Name=\"Build\">\n    <PropertyGroup>\n      <Version>7.0.0</Version>\n    </PropertyGroup>\n  </Target>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n  </PropertyGroup>\n</Project>",
+                discovered: None,
+                expected: "<Project>\n  <Target Name=\"Build\">\n    <PropertyGroup>\n      <Version>7.0.0</Version>\n    </PropertyGroup>\n  </Target>\n  <PropertyGroup>\n    <TargetFramework>net8.0</TargetFramework>\n    <Version>0.0.1</Version>\n  </PropertyGroup>\n</Project>",
+            },
+            VersionPolicyCase {
+                name: "conditional-only",
+                input: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>7.0.0</Version>\n  </PropertyGroup>\n</Project>",
+                discovered: None,
+                expected: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>7.0.0</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Version>0.0.1</Version>\n  </PropertyGroup>\n</Project>",
+            },
+            VersionPolicyCase {
+                name: "conditional-before-unconditional",
+                input: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>7.0.0</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Version>1.2.3</Version>\n  </PropertyGroup>\n</Project>",
+                discovered: Some("1.2.3"),
+                expected: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version>7.0.0</Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Version>1.2.4</Version>\n  </PropertyGroup>\n</Project>",
+            },
+            VersionPolicyCase {
+                name: "cdata",
+                input: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version><![CDATA[7.0.0]]></Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Version><![CDATA[1.2.3]]></Version>\n  </PropertyGroup>\n</Project>",
+                discovered: Some("1.2.3"),
+                expected: "<Project>\n  <PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <Version><![CDATA[7.0.0]]></Version>\n  </PropertyGroup>\n  <PropertyGroup>\n    <Version><![CDATA[1.2.4]]></Version>\n  </PropertyGroup>\n</Project>",
+            },
+            VersionPolicyCase {
+                name: "self-closing",
+                input: "<Project>\n  <Target Name=\"Build\">\n    <PropertyGroup>\n      <Version>7.0.0</Version>\n    </PropertyGroup>\n  </Target>\n  <PropertyGroup>\n    <Version/>\n  </PropertyGroup>\n</Project>",
+                discovered: None,
+                expected: "<Project>\n  <Target Name=\"Build\">\n    <PropertyGroup>\n      <Version>7.0.0</Version>\n    </PropertyGroup>\n  </Target>\n  <PropertyGroup>\n    <Version>0.0.1</Version>\n  </PropertyGroup>\n</Project>",
+            },
+            VersionPolicyCase {
+                name: "namespaced",
+                input: "<msb:Project xmlns:msb=\"urn:msbuild\">\n  <msb:PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <msb:Version>7.0.0</msb:Version>\n  </msb:PropertyGroup>\n  <msb:PropertyGroup>\n    <msb:Version>1.2.3</msb:Version>\n  </msb:PropertyGroup>\n</msb:Project>",
+                discovered: Some("1.2.3"),
+                expected: "<msb:Project xmlns:msb=\"urn:msbuild\">\n  <msb:PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n    <msb:Version>7.0.0</msb:Version>\n  </msb:PropertyGroup>\n  <msb:PropertyGroup>\n    <msb:Version>1.2.4</msb:Version>\n  </msb:PropertyGroup>\n</msb:Project>",
+            },
+            VersionPolicyCase {
+                name: "crlf",
+                input: "<Project>\r\n  <Target Name=\"Build\">\r\n    <PropertyGroup>\r\n      <Version>7.0.0</Version>\r\n    </PropertyGroup>\r\n  </Target>\r\n  <PropertyGroup>\r\n    <TargetFramework>net8.0</TargetFramework>\r\n  </PropertyGroup>\r\n</Project>\r\n",
+                discovered: None,
+                expected: "<Project>\r\n  <Target Name=\"Build\">\r\n    <PropertyGroup>\r\n      <Version>7.0.0</Version>\r\n    </PropertyGroup>\r\n  </Target>\r\n  <PropertyGroup>\r\n    <TargetFramework>net8.0</TargetFramework>\r\n    <Version>0.0.1</Version>\r\n  </PropertyGroup>\r\n</Project>\r\n",
+            },
+            VersionPolicyCase {
+                name: "tab-indented",
+                input: "<Project>\n\t<PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n\t\t<Version>7.0.0</Version>\n\t</PropertyGroup>\n\t<PropertyGroup>\n\t\t<Version>1.2.3</Version>\n\t</PropertyGroup>\n</Project>",
+                discovered: Some("1.2.3"),
+                expected: "<Project>\n\t<PropertyGroup Condition=\"'$(Configuration)' == 'Release'\">\n\t\t<Version>7.0.0</Version>\n\t</PropertyGroup>\n\t<PropertyGroup>\n\t\t<Version>1.2.4</Version>\n\t</PropertyGroup>\n</Project>",
+            },
+        ];
+
+        for case in cases {
+            let temp_dir = TempDir::new()?;
+            let manifest = temp_dir.path().join("Test.csproj");
+            async_fs::write(&manifest, case.input).await?;
+            let mut finder = CSharpProjectFinder::new();
+
+            finder.visit(&manifest, Path::new("Test.csproj")).await?;
+            {
+                let mut projects = finder.projects_mut();
+                let project = projects
+                    .first_mut()
+                    .context("finder did not return the C# fixture")?;
+                assert_eq!(
+                    project.version(),
+                    case.discovered,
+                    "{} discovery",
+                    case.name
+                );
+                project.update_version(UpdateType::Patch).await?;
+            }
+            assert_eq!(
+                async_fs::read_to_string(&manifest).await?,
+                case.expected,
+                "{} rewrite",
+                case.name
+            );
+            temp_dir.close()?;
+        }
+
+        Ok(())
     }
 
-    #[test]
-    fn test_extract_version_end_tag() {
-        let content = r#"<Project><PropertyGroup><Version>
-   1.2.3
-   </Version></PropertyGroup></Project>"#;
+    #[rstest]
+    // Windows-style paths (both single and doubled `..`).
+    #[case(r"..\CoreLib\CoreLib.csproj", Some("CoreLib"))]
+    #[case(r"..\..\Utils\Utils.csproj", Some("Utils"))]
+    // Unix-style paths.
+    #[case("../CoreLib/CoreLib.csproj", Some("CoreLib"))]
+    // Just filename — no separator at all.
+    #[case("MyProject.csproj", Some("MyProject"))]
+    // Invalid — the extension is the sole legit `None` source.
+    #[case("MyProject.txt", None)]
+    // Case-insensitive `.csproj` — mixed-case suffixes (common in Windows
+    // shell / hand-written project files) resolve the same as lowercase.
+    // Regression anchor for the switch from `strip_suffix(".csproj")`
+    // to `eq_ignore_ascii_case`.
+    #[case("MyProject.CSPROJ", Some("MyProject"))]
+    #[case("MyProject.CsProj", Some("MyProject"))]
+    #[case(r"..\CoreLib\CoreLib.CSPROJ", Some("CoreLib"))]
+    // No extension at all → None (rsplit_once('.') fails, function returns
+    // early via `?`). Locks in the "no dot means no extension" contract.
+    #[case("MyProject", None)]
+    // Multi-dot stem — the split is on the LAST `.`, so the dots inside the
+    // stem are preserved. `Foo.Tests.csproj` is the standard .NET test-project
+    // naming convention, so a `split_once` regression here would silently
+    // rename every test project to `Foo` and break its dependency edges.
+    #[case("Foo.Tests.csproj", Some("Foo.Tests"))]
+    // Bare extension — the stem is empty but the extension gate still passes,
+    // so the current contract yields `Some("")` rather than `None`.
+    #[case(".csproj", Some(""))]
+    // Trailing separator — the separator split yields an empty filename, which
+    // has no `.`, so the `?` on `rsplit_once('.')` returns `None`.
+    #[case(r"..\CoreLib\", None)]
+    fn test_extract_project_name_from_path(#[case] input: &str, #[case] expected: Option<&str>) {
         assert_eq!(
-            CSharpProjectFinder::extract_version(content),
-            Some("1.2.3".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_version_malformed_xml() {
-        let content = "<Project><PropertyGroup><Version>1.0.0";
-        // Should not panic - either returns Some or None
-        let _ = CSharpProjectFinder::extract_version(content);
-    }
-
-    #[test]
-    fn test_extract_version_empty_version() {
-        let content = r#"<Project><PropertyGroup><Version>  </Version></PropertyGroup></Project>"#;
-        assert_eq!(CSharpProjectFinder::extract_version(content), None);
-    }
-
-    #[test]
-    fn test_extract_version_with_empty_element() {
-        // Self-closing tags like <IsPackable /> generate Event::Empty,
-        // which exercises the wildcard `_ => {}` arm in extract_version
-        let content = r#"<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <IsPackable />
-    <Version>3.2.1</Version>
-  </PropertyGroup>
-</Project>"#;
-        assert_eq!(
-            CSharpProjectFinder::extract_version(content),
-            Some("3.2.1".to_string())
-        );
-    }
-
-    #[test]
-    fn test_extract_version_with_comment() {
-        // XML comments generate Event::Comment, exercising the wildcard arm
-        let content = r#"<Project>
-  <PropertyGroup>
-    <!-- version follows -->
-    <Version>4.0.0</Version>
-  </PropertyGroup>
-</Project>"#;
-        assert_eq!(
-            CSharpProjectFinder::extract_version(content),
-            Some("4.0.0".to_string())
+            super::extract_project_name_from_path(input),
+            expected.map(std::string::ToString::to_string)
         );
     }
 }

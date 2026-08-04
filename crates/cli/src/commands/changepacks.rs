@@ -1,14 +1,16 @@
-use changepacks_core::{ChangePackLog, Language, Project, UpdateType};
-use std::{collections::HashMap, path::PathBuf};
-use tokio::fs::write;
+use changepacks_core::{ChangePackLog, Project, UpdateType};
+use std::{collections::BTreeMap, path::PathBuf};
+use tokio::fs::{create_dir_all, write};
 
-use changepacks_utils::{get_changepacks_dir, get_relative_path};
+use changepacks_utils::get_relative_path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::{
     CommandContext,
-    options::{CliLanguage, FilterOptions},
+    commands::writeln_stdout,
+    finders::collect_projects,
+    options::{CliLanguage, FilterOptions, retain_by_filters},
     prompter::{InquirePrompter, Prompter},
 };
 
@@ -28,110 +30,153 @@ pub async fn handle_changepack(args: &ChangepackArgs) -> Result<()> {
     handle_changepack_with_prompter(args, &InquirePrompter).await
 }
 
-/// # Errors
-/// Returns error if project discovery, prompting, or changepack file creation fails.
+/// Resolve which of the surviving `entries` should be bumped with `update_type`
+/// during a single selection turn.
 ///
-/// Excluded from coverage: orchestrates `CommandContext::new` (git I/O)
-/// and an interactive `prompter.multi_select(...)` flow that needs a real
-/// terminal; the underlying helpers are covered separately by their own
-/// unit tests.
-#[cfg(not(tarpaulin_include))]
-pub async fn handle_changepack_with_prompter(
+/// This is the per-update-type half of [`select_changepack`]'s loop: it owns the
+/// `--yes` / single-patch short circuit, the "changed projects are pre-checked"
+/// defaults, and the prompt itself, so the caller is left owning only the outer
+/// loop over update types and the final note prompt. The returned projects are
+/// copies of the very same `&Project` references stored in `entries`, which is
+/// what lets [`partition_selected_entries`] identify them by pointer.
+///
+/// # Errors
+/// Returns an error if prompting fails (including user cancellation).
+fn select_projects_for_update_type<'a>(
+    entries: &[(&'a Project, PathBuf)],
+    update_type: UpdateType,
     args: &ChangepackArgs,
     prompter: &dyn Prompter,
-) -> Result<()> {
-    let ctx = CommandContext::new(args.remote).await?;
+) -> Result<Vec<&'a Project>> {
+    // Cheap per-turn view of the surviving projects for the prompter /
+    // `--yes` / single-patch branches — a pointer collect over `entries`,
+    // no path recomputation (each path was allocated once, up front).
+    let projects: Vec<&Project> = entries.iter().map(|(p, _)| *p).collect();
 
-    let mut projects = ctx
-        .project_finders
-        .iter()
-        .flat_map(|finder| finder.projects())
-        .collect::<Vec<_>>();
+    if args.yes || (update_type == UpdateType::Patch && projects.len() == 1) {
+        return Ok(projects);
+    }
 
+    let message = format!("Select projects to update for {update_type}");
+    // Preallocate: `FilterMap`'s `size_hint` reports
+    // `(0, Some(projects.len()))` and `Vec::from_iter` reserves
+    // against the LOWER bound (0), so a plain `.collect()` here
+    // hits geometric-doubling reallocations whenever many projects
+    // are marked changed. `projects.len()` is a tight upper bound
+    // (each iteration pushes AT MOST one index). Matches the
+    // preallocation policy already applied across `sort_by_dep.rs`,
+    // `gen_update_map.rs`, `find_project_dirs.rs`,
+    // `apply_reverse_dependencies`, and `finders.rs`'s
+    // `collect_projects` (which pre-sizes from
+    // `total_project_count`). Byte-identical output (same indices,
+    // same order).
+    let mut defaults = Vec::with_capacity(projects.len());
+    for (index, project) in projects.iter().enumerate() {
+        if project.is_changed() {
+            defaults.push(index);
+        }
+    }
+    prompter.multi_select(&message, projects, defaults)
+}
+
+/// Record every selected entry in `update_map` under `update_type` and return
+/// the entries that survive into the next turn.
+///
+/// Identify selected projects by pointer equality — every entry in
+/// `selected_projects` is a copy of the `&Project` reference that already lives
+/// in `entries`, so their addresses match and an O(1) `HashSet` lookup drives
+/// the combined pass below. That pass fuses "insert if selected" and "keep if
+/// not" so `entries` is walked ONCE per update-type turn: selected entries MOVE
+/// their `PathBuf` into `update_map` (no clone), unselected entries are kept for
+/// the next turn. The sort order is preserved because the kept entries
+/// accumulate in input order, matching the previous filter behaviour
+/// byte-for-byte.
+fn partition_selected_entries<'a>(
+    entries: Vec<(&'a Project, PathBuf)>,
+    selected_projects: &[&Project],
+    update_type: UpdateType,
+    update_map: &mut BTreeMap<PathBuf, UpdateType>,
+) -> Vec<(&'a Project, PathBuf)> {
+    // Preallocate: `HashSet::from_iter` (via `.collect()`) does NOT reserve
+    // from `Iterator::size_hint`, so the fill rehashes as it grows — and it
+    // runs inside the per-update-type loop (≤3 turns). `selected_projects.len()`
+    // is the exact upper bound, so seeding + `.extend(...)` skips those
+    // rehashes. Matches the preallocation policy already applied throughout
+    // this file (`defaults`, `keep_entries`) and the workspace. Byte-identical
+    // pointer-set membership.
+    let mut selected_ptrs: std::collections::HashSet<*const Project> =
+        std::collections::HashSet::with_capacity(selected_projects.len());
+    selected_ptrs.extend(selected_projects.iter().map(|&p| std::ptr::from_ref(p)));
+
+    let mut keep_entries: Vec<(&Project, PathBuf)> = Vec::with_capacity(entries.len());
+    for (project, rel_path) in entries {
+        if selected_ptrs.contains(&std::ptr::from_ref(project)) {
+            update_map.insert(rel_path, update_type);
+        } else {
+            keep_entries.push((project, rel_path));
+        }
+    }
+    keep_entries
+}
+
+/// Select projects and resolve the changepack notes without performing git or file I/O.
+///
+/// # Errors
+/// Returns an error if a project path is outside the repository root, writing the
+/// project count to stdout fails, or prompting fails.
+fn select_changepack(
+    mut projects: Vec<&Project>,
+    repo_root_path: &std::path::Path,
+    args: &ChangepackArgs,
+    prompter: &dyn Prompter,
+) -> Result<(BTreeMap<PathBuf, UpdateType>, String)> {
     // Hide packages that inherit their version from workspace root.
     // They are updated automatically when the workspace version bumps.
-    projects.retain(|p| {
-        if let Project::Package(pkg) = p {
-            !pkg.inherits_workspace_version()
-        } else {
-            true
-        }
-    });
+    projects.retain(|p| !matches!(p, Project::Package(pkg) if pkg.inherits_workspace_version()));
 
-    if let Some(filter) = &args.filter {
-        projects.retain(|p| filter.matches(p));
-    }
-    if !args.language.is_empty() {
-        let allowed_languages: Vec<Language> = args
-            .language
-            .iter()
-            .map(|&lang| Language::from(lang))
-            .collect();
-        projects.retain(|project| allowed_languages.contains(&project.language()));
-    }
+    retain_by_filters(&mut projects, args.filter, &args.language);
 
-    println!("Found {} projects", projects.len());
+    writeln_stdout(format_args!("Found {} projects", projects.len()))?;
     // workspace first
     projects.sort();
 
-    let mut update_map = HashMap::<PathBuf, UpdateType>::new();
+    let mut update_map = BTreeMap::<PathBuf, UpdateType>::new();
 
-    for update_type in if let Some(update_type) = &args.update_type {
-        vec![*update_type]
+    // Compute each project's relative path exactly ONCE per invocation. A
+    // project's relative path never changes across update-type turns, so
+    // pairing every `&Project` with its `PathBuf` up front — instead of
+    // rebuilding `rel_paths` inside the loop (once per surviving project per
+    // turn, up to three Major/Minor/Patch turns) — allocates each `PathBuf`
+    // a single time. `projects` is already sorted (workspace first) and
+    // `into_iter` preserves that order, so `entries` inherits the same
+    // display order. Error propagation is unchanged: the first turn
+    // previously walked every project in this same sorted order, so any
+    // `get_relative_path` failure still surfaces at the same point with the
+    // same message.
+    let mut entries: Vec<(&Project, PathBuf)> = projects
+        .into_iter()
+        .map(|p| Ok((p, get_relative_path(repo_root_path, p.path())?)))
+        .collect::<Result<_>>()?;
+
+    let update_types: &[UpdateType] = if let Some(update_type) = args.update_type.as_ref() {
+        std::slice::from_ref(update_type)
     } else {
-        vec![UpdateType::Major, UpdateType::Minor, UpdateType::Patch]
-    } {
-        if projects.is_empty() {
+        &[UpdateType::Major, UpdateType::Minor, UpdateType::Patch]
+    };
+    for &update_type in update_types {
+        if entries.is_empty() {
             break;
         }
 
-        let selected_projects = if args.yes {
-            projects.clone()
-        } else if update_type == UpdateType::Patch && projects.len() == 1 {
-            vec![projects[0]]
-        } else {
-            let message = format!("Select projects to update for {update_type}");
-            let defaults = projects
-                .iter()
-                .enumerate()
-                .filter_map(|(index, project)| {
-                    if project.is_changed() {
-                        Some(index)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>();
-            prompter.multi_select(&message, projects.clone(), defaults)?
-        };
+        let selected_projects =
+            select_projects_for_update_type(&entries, update_type, args, prompter)?;
 
-        // remove selected projects from projects by index
-        for project in selected_projects {
-            update_map.insert(
-                get_relative_path(&ctx.repo_root_path, project.path())?,
-                update_type,
-            );
-        }
-
-        let project_with_relpath: Vec<_> = projects
-            .iter()
-            .map(|project| {
-                get_relative_path(&ctx.repo_root_path, project.path()).map(|rel| (project, rel))
-            })
-            .collect::<Result<Vec<_>>>()?;
-
-        let keep_projects: Vec<_> = project_with_relpath
-            .into_iter()
-            .filter(|(_, rel_path)| !update_map.contains_key(rel_path))
-            .map(|(project, _)| *project)
-            .collect();
-
-        projects = keep_projects;
+        entries =
+            partition_selected_entries(entries, &selected_projects, update_type, &mut update_map);
     }
 
     if update_map.is_empty() {
-        println!("No projects selected");
-        return Ok(());
+        return Ok((update_map, String::new()));
     }
 
     let notes = if let Some(message) = &args.message {
@@ -140,16 +185,53 @@ pub async fn handle_changepack_with_prompter(
         prompter.text("write notes here")?
     };
 
+    Ok((update_map, notes))
+}
+
+/// # Errors
+/// Returns error if project discovery, prompting, or changepack file creation fails.
+pub async fn handle_changepack_with_prompter(
+    args: &ChangepackArgs,
+    prompter: &dyn Prompter,
+) -> Result<()> {
+    let ctx = CommandContext::new(args.remote).await?;
+    let projects = collect_projects(&ctx.project_finders);
+    let (update_map, notes) = select_changepack(projects, &ctx.repo_root_path, args, prompter)?;
+
+    if update_map.is_empty() {
+        writeln_stdout(format_args!("No projects selected"))?;
+        return Ok(());
+    }
+
     if notes.is_empty() {
-        println!("Notes are empty");
+        writeln_stdout(format_args!("Notes are empty"))?;
         return Ok(());
     }
     let changepack_log = ChangePackLog::new(update_map, notes);
-    // random uuid
+    // random nanoid (21-char URL-safe id) for a unique log filename
     let changepack_log_id = nanoid::nanoid!();
-    let changepack_log_file = get_changepacks_dir(&CommandContext::current_dir()?)?
+    let changepack_log_file = ctx
+        .changepacks_dir
         .join(format!("changepack_log_{changepack_log_id}.json"));
-    write(changepack_log_file, serde_json::to_string(&changepack_log)?).await?;
+    create_dir_all(&ctx.changepacks_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to create changepacks directory {}",
+                ctx.changepacks_dir.display()
+            )
+        })?;
+    write(
+        &changepack_log_file,
+        serde_json::to_string_pretty(&changepack_log)?,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "Failed to write changepack log {}",
+            changepack_log_file.display()
+        )
+    })?;
 
     Ok(())
 }
@@ -157,6 +239,191 @@ pub async fn handle_changepack_with_prompter(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::prompter::MockPrompter;
+    use changepacks_core::{
+        Language,
+        test_support::{MockPackage, MockWorkspace},
+    };
+    use changepacks_rust::package::RustPackage;
+
+    fn args() -> ChangepackArgs {
+        ChangepackArgs {
+            filter: None,
+            remote: false,
+            yes: true,
+            message: Some("release note".to_string()),
+            update_type: Some(UpdateType::Patch),
+            language: vec![],
+        }
+    }
+
+    fn package(root: &str, name: &str, language: Language) -> Project {
+        let path = format!("{root}/{name}/manifest");
+        Project::Package(Box::new(MockPackage::with_all(
+            Some(name),
+            Some("1.0.0"),
+            &path,
+            &format!("{name}/manifest"),
+            language,
+        )))
+    }
+
+    fn workspace(root: &str, name: &str, language: Language) -> Project {
+        let path = format!("{root}/{name}/manifest");
+        Project::Workspace(Box::new(MockWorkspace::with_all(
+            Some(name),
+            Some("1.0.0"),
+            &path,
+            &format!("{name}/manifest"),
+            language,
+        )))
+    }
+
+    #[test]
+    fn select_changepack_applies_project_filter_with_mock_prompter() {
+        let root = PathBuf::from("repo");
+        let projects = [
+            workspace("repo", "workspace", Language::Node),
+            package("repo", "package", Language::Node),
+        ];
+        let mut args = args();
+        args.filter = Some(FilterOptions::Package);
+
+        let (updates, message) = select_changepack(
+            projects.iter().collect(),
+            &root,
+            &args,
+            &MockPrompter::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            updates,
+            BTreeMap::from([(PathBuf::from("package/manifest"), UpdateType::Patch)])
+        );
+        assert_eq!(message, "release note");
+    }
+
+    #[test]
+    fn select_changepack_applies_language_gate() {
+        let root = PathBuf::from("repo");
+        let projects = [
+            package("repo", "node", Language::Node),
+            package("repo", "rust", Language::Rust),
+        ];
+        let mut args = args();
+        args.language = vec![CliLanguage::Rust];
+
+        let (updates, _) = select_changepack(
+            projects.iter().collect(),
+            &root,
+            &args,
+            &MockPrompter::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            updates,
+            BTreeMap::from([(PathBuf::from("rust/manifest"), UpdateType::Patch)])
+        );
+    }
+
+    #[test]
+    fn select_changepack_excludes_rust_packages_with_inherited_versions() {
+        let root = PathBuf::from("repo");
+        let inherited = Project::Package(Box::new(RustPackage::new_with_workspace_version(
+            Some("inherited".to_string()),
+            Some("1.0.0".to_string()),
+            root.join("inherited/Cargo.toml"),
+            PathBuf::from("inherited/Cargo.toml"),
+            Some(root.join("Cargo.toml")),
+        )));
+        let projects = [inherited, package("repo", "owned", Language::Rust)];
+
+        let (updates, _) = select_changepack(
+            projects.iter().collect(),
+            &root,
+            &args(),
+            &MockPrompter::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            updates,
+            BTreeMap::from([(PathBuf::from("owned/manifest"), UpdateType::Patch)])
+        );
+    }
+
+    #[test]
+    fn select_changepack_uses_each_explicit_update_type() {
+        let root = PathBuf::from("repo");
+        for update_type in [UpdateType::Major, UpdateType::Minor, UpdateType::Patch] {
+            let projects = [package("repo", "package", Language::Node)];
+            let mut args = args();
+            args.update_type = Some(update_type);
+
+            let (updates, _) = select_changepack(
+                projects.iter().collect(),
+                &root,
+                &args,
+                &MockPrompter::default(),
+            )
+            .unwrap();
+
+            assert_eq!(updates.values().copied().collect::<Vec<_>>(), [update_type]);
+        }
+    }
+
+    #[test]
+    fn select_changepack_returns_empty_without_notes_when_nothing_is_selected() {
+        let root = PathBuf::from("repo");
+        let projects = [
+            package("repo", "alpha", Language::Node),
+            package("repo", "beta", Language::Node),
+        ];
+        let mut args = args();
+        args.yes = false;
+        args.update_type = None;
+        args.message = None;
+        let prompter = MockPrompter {
+            select_all: false,
+            text_value: "must not be used".to_string(),
+            ..Default::default()
+        };
+
+        let (updates, message) =
+            select_changepack(projects.iter().collect(), &root, &args, &prompter).unwrap();
+
+        assert!(updates.is_empty());
+        assert!(message.is_empty());
+    }
+
+    #[test]
+    fn select_changepack_returns_updates_in_deterministic_path_order() {
+        let root = PathBuf::from("repo");
+        let projects = [
+            package("repo", "zeta", Language::Node),
+            package("repo", "alpha", Language::Node),
+            package("repo", "middle", Language::Node),
+        ];
+
+        let (updates, _) = select_changepack(
+            projects.iter().collect(),
+            &root,
+            &args(),
+            &MockPrompter::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            updates.keys().cloned().collect::<Vec<_>>(),
+            [
+                PathBuf::from("alpha/manifest"),
+                PathBuf::from("middle/manifest"),
+                PathBuf::from("zeta/manifest"),
+            ]
+        );
+    }
 
     #[test]
     fn test_changepack_args_debug() {
@@ -170,7 +437,7 @@ mod tests {
         };
 
         // Test Debug trait
-        let debug_str = format!("{:?}", args);
+        let debug_str = format!("{args:?}");
         assert!(debug_str.contains("ChangepackArgs"));
     }
 

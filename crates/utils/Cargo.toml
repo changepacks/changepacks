@@ -8,22 +8,38 @@ homepage.workspace = true
 description = "Shared utilities for changepacks (path handling, version calculation, git operations)"
 readme = "../../README.md"
 
+[features]
+test-support = []
+# Opt-in TOML manifest helpers (`ensure_toml_table_like`). Kept optional so
+# crates that never touch TOML (e.g. `changepacks-node`) do not pull
+# `toml_edit` in through `changepacks-utils`.
+toml = ["dep:toml_edit"]
+
 [dependencies]
-gix = { version = "0.80", default-features = false, features = ["index", "status", "parallel"] }
-anyhow = "1.0"
+gix = { version = "0.86", default-features = false, features = ["index", "status", "parallel", "revision", "sha1"] }
+anyhow.workspace = true
 changepacks-core.workspace = true
-colored = "3"
-tokio = { version = "1.50", features = ["fs"] }
-futures = "0.3"
-serde_json = "1.0"
+# `macros` is required by the `tokio::join!` in `clear_update_logs`. It must be
+# declared here rather than inherited: the dev-dependency below and the
+# workspace build both supply it, so a missing entry only surfaces when the
+# crate is built alone — which is what `cargo publish` does.
+tokio = { workspace = true, features = ["fs", "macros"] }
+futures.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
 ignore = "0.4"
 glob = "0.3"
+toml_edit = { workspace = true, optional = true }
 
 [dev-dependencies]
-rstest = "0.26"
-tempfile = "3.27"
-tokio = { version = "1.50", features = ["test-util", "macros"] }
+rstest.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }
 changepacks-node = { path = "../node" }
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+[lints]
+workspace = true
+
+[[bench]]
+name = "utils_bench"
+harness = false

@@ -10,16 +10,15 @@ readme = "../../README.md"
 publish = false
 
 [dependencies]
-tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 changepacks-cli.workspace = true
-anyhow = "1.0"
 
 [build-dependencies]
-cc = "*"
+cc = "1"
 
 [[bin]]
 name = "changepacks"
 path = "src/main.rs"
 
- [lints.rust]
- unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+[lints]
+workspace = true

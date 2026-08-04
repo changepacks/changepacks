@@ -1,116 +1,510 @@
 use changepacks_core::Project;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::fmt;
+use std::path::PathBuf;
 
-/// Sort projects by their dependencies using topological sort.
-/// Projects with no dependencies or whose dependencies are already published will come first.
-/// Returns a sorted vector of project references (no cloning, just reordering).
-#[must_use]
-pub fn sort_by_dependencies(projects: Vec<&Project>) -> Vec<&Project> {
-    if projects.is_empty() {
-        return projects;
+use crate::project_names::{
+    ProjectNameAnalysis, ProjectNameResolution, ReferencedDependencyAmbiguity, compare_paths,
+};
+use crate::write_separated::write_separated;
+
+/// The separator both dependency-error `Display` impls render their list with.
+const LIST_SEPARATOR: &str = ", ";
+
+/// A project participating in a dependency cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyCycleMember {
+    pub name: String,
+    pub path: PathBuf,
+}
+
+impl fmt::Display for DependencyCycleMember {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{} ({})", self.name, self.path.display())
     }
+}
 
-    // Create a map from project relative_path to index
-    let mut path_to_index: HashMap<String, usize> = HashMap::new();
-    // Also create a map from project name to index (for dependencies stored as names)
-    let mut name_to_index: HashMap<String, usize> = HashMap::new();
-    for (idx, project) in projects.iter().enumerate() {
-        let path = project.relative_path().to_string_lossy().into_owned();
-        path_to_index.insert(path.clone(), idx);
-        // Also map by name if available
-        if let Some(name) = project.name() {
-            name_to_index.insert(name.to_string(), idx);
+/// Deterministic details for every project that participates in a dependency cycle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyCycleError {
+    members: Vec<DependencyCycleMember>,
+}
+
+impl DependencyCycleError {
+    #[must_use]
+    pub fn members(&self) -> &[DependencyCycleMember] {
+        &self.members
+    }
+}
+
+impl fmt::Display for DependencyCycleError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "dependency cycle detected: ")?;
+        write_separated(formatter, self.members.iter(), LIST_SEPARATOR)
+    }
+}
+
+impl std::error::Error for DependencyCycleError {}
+
+/// Deterministic details for a dependency name that matches multiple projects.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DependencyAmbiguityError {
+    dependency: String,
+    candidates: Vec<PathBuf>,
+}
+
+impl DependencyAmbiguityError {
+    pub(crate) fn new(dependency: String, candidates: Vec<PathBuf>) -> Self {
+        Self {
+            dependency,
+            candidates,
         }
     }
 
-    // Build dependency graph: for each project, find which projects depend on it
+    #[must_use]
+    pub fn dependency(&self) -> &str {
+        &self.dependency
+    }
+
+    #[must_use]
+    pub fn candidates(&self) -> &[PathBuf] {
+        &self.candidates
+    }
+}
+
+/// The single crate-internal bridge from the borrowed diagnostic produced by
+/// [`ProjectNameAnalysis`] to the owned public error. Both `sort_by_dependencies`
+/// and `apply_reverse_dependencies_with_provenance` raise the very same payload,
+/// so keeping one conversion here means a payload change can never be applied to
+/// only one of them.
+impl From<&ReferencedDependencyAmbiguity<'_>> for DependencyAmbiguityError {
+    fn from(ambiguity: &ReferencedDependencyAmbiguity<'_>) -> Self {
+        Self::new(
+            ambiguity.dependency().to_string(),
+            ambiguity.candidates().to_vec(),
+        )
+    }
+}
+
+impl fmt::Display for DependencyAmbiguityError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "ambiguous dependency `{}`: candidates: ",
+            self.dependency
+        )?;
+        write_separated(
+            formatter,
+            self.candidates.iter().map(|candidate| candidate.display()),
+            LIST_SEPARATOR,
+        )
+    }
+}
+
+impl std::error::Error for DependencyAmbiguityError {}
+
+/// An error that prevents projects from having a unique dependency ordering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DependencySortError {
+    Cycle(DependencyCycleError),
+    AmbiguousDependency(DependencyAmbiguityError),
+}
+
+impl fmt::Display for DependencySortError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cycle(error) => error.fmt(formatter),
+            Self::AmbiguousDependency(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for DependencySortError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Cycle(error) => Some(error),
+            Self::AmbiguousDependency(error) => Some(error),
+        }
+    }
+}
+
+/// Restore the canonical start-offset array with a single reverse shift:
+/// every entry moves one slot to the right and `offsets[0]` returns to 0.
+///
+/// Both CSR builds in this module (the forward adjacency in
+/// `sort_by_dependencies` and the residual transpose in
+/// `cycle_members_in_residual`) fill their buckets with the offset array
+/// itself acting as the write cursor, which leaves every entry holding the
+/// END of its bucket. Sharing one helper keeps that final rewind identical
+/// for both, so a change can never be applied to only one of them.
+fn restore_start_offsets(offsets: &mut [usize]) {
+    for index in (1..offsets.len()).rev() {
+        offsets[index] = offsets[index - 1];
+    }
+    offsets[0] = 0;
+}
+
+/// Find cycle members with one iterative Kosaraju pass over the residual graph.
+///
+/// A node is cyclic when it belongs to an SCC with multiple nodes, or when its
+/// singleton SCC has a self-edge. Residual nodes outside those SCCs are merely
+/// blocked dependents and are intentionally left unmarked.
+///
+/// `in_degree` is Kahn's leftover degree array: a node is residual exactly when
+/// its entry is still non-zero, so the residual mask is read straight off it
+/// instead of being materialized into a throwaway `Vec<bool>`.
+///
+/// The pass-one `visited` mask is reused with inverted polarity as pass two's
+/// "assigned" mask instead of allocating a second `Vec<bool>`. Pass one leaves
+/// `visited[i] == (in_degree[i] > 0)`: its root loop skips only zero-in-degree
+/// and already-visited nodes, and it only descends into residual targets. Pass
+/// two touches residual nodes exclusively - its roots come from `finish_order`
+/// and its edges from the residual-filtered `reverse_adj` - so "still `true`"
+/// is exactly "residual and not yet assigned", and claiming a node for a
+/// component clears its flag.
+fn cycle_members_in_residual(adj: &[usize], offsets: &[usize], in_degree: &[usize]) -> Vec<bool> {
+    let node_count = in_degree.len();
+    let mut visited = vec![false; node_count];
+    let mut finish_order = Vec::with_capacity(node_count);
+    // Pass one pushes a node only under `!visited[target]` and the push sets
+    // `visited[target] = true` (and the root push is guarded the same way), so
+    // each node enters `dfs_stack` at most once per call and the live depth is
+    // bounded by `node_count` — an exact upper bound, and exact for a graph
+    // whose residual is one pure cycle. Preallocating to it removes the
+    // ~log2(N) geometric-doubling reallocations `Vec::new()` would otherwise
+    // incur on every cycle report.
+    let mut dfs_stack: Vec<(usize, usize)> = Vec::with_capacity(node_count);
+
+    for root in 0..node_count {
+        if in_degree[root] == 0 || visited[root] {
+            continue;
+        }
+
+        visited[root] = true;
+        dfs_stack.push((root, offsets[root]));
+        while let Some((node, next_edge)) = dfs_stack.last_mut() {
+            if *next_edge < offsets[*node + 1] {
+                let target = adj[*next_edge];
+                *next_edge += 1;
+                if in_degree[target] > 0 && !visited[target] {
+                    visited[target] = true;
+                    dfs_stack.push((target, offsets[target]));
+                }
+            } else {
+                // `last_mut` already proved the stack is non-empty, so copying
+                // the node index out first (which ends that borrow under NLL)
+                // lets the pop run without an unreachable `expect` arm.
+                let finished = *node;
+                dfs_stack.pop();
+                finish_order.push(finished);
+            }
+        }
+    }
+
+    // Build the transpose CSR for residual edges only.
+    let mut reverse_offsets = vec![0; node_count + 1];
+    for source in 0..node_count {
+        if in_degree[source] == 0 {
+            continue;
+        }
+        for &target in &adj[offsets[source]..offsets[source + 1]] {
+            if in_degree[target] > 0 {
+                reverse_offsets[target + 1] += 1;
+            }
+        }
+    }
+    for index in 1..reverse_offsets.len() {
+        reverse_offsets[index] += reverse_offsets[index - 1];
+    }
+
+    // In-place counting-sort fill, mirroring `sort_by_dependencies`:
+    // `reverse_offsets[target]` itself doubles as the write cursor for target
+    // `target`, so no cloned cursor Vec is allocated and memcpy'd per call.
+    // Sources are still visited in ascending order and each edge lands in the
+    // next free slot of its bucket, so the per-target fill order (and therefore
+    // the SCC traversal order and the reported cycle members) is byte-for-byte
+    // what the cloned cursor produced. Afterwards `reverse_offsets[i]` holds
+    // the END of target `i` (the canonical `reverse_offsets[i + 1]`);
+    // `reverse_offsets[node_count]` is untouched because no edge carries that
+    // source index, so it still holds the total edge count.
+    let reverse_len = reverse_offsets[node_count];
+    let mut reverse_adj = vec![0; reverse_len];
+    for source in 0..node_count {
+        if in_degree[source] == 0 {
+            continue;
+        }
+        for &target in &adj[offsets[source]..offsets[source + 1]] {
+            if in_degree[target] > 0 {
+                let slot = reverse_offsets[target];
+                reverse_adj[slot] = source;
+                reverse_offsets[target] += 1;
+            }
+        }
+    }
+
+    restore_start_offsets(&mut reverse_offsets);
+
+    let mut cycle_members = vec![false; node_count];
+    // `component` is filled from `stack` pops and cleared after every SCC, so
+    // its peak length is the size of the largest SCC, which is bounded by
+    // `node_count`. `stack` pushes a node only under `visited[source]` and the
+    // push clears that flag (the root push is guarded the same way), so each
+    // node enters it at most once across the whole pass — the same bound. Both
+    // bounds are exact for a graph whose residual is one pure cycle, so
+    // preallocating to `node_count` removes the ~log2(N) geometric-doubling
+    // reallocations `Vec::new()` would otherwise incur on every cycle report.
+    let mut component = Vec::with_capacity(node_count);
+    let mut stack = Vec::with_capacity(node_count);
+
+    // `visited` is recycled here: `true` now means "residual and unassigned".
+    for root in finish_order.into_iter().rev() {
+        if !visited[root] {
+            continue;
+        }
+
+        visited[root] = false;
+        stack.push(root);
+        while let Some(node) = stack.pop() {
+            component.push(node);
+            for &source in &reverse_adj[reverse_offsets[node]..reverse_offsets[node + 1]] {
+                if visited[source] {
+                    visited[source] = false;
+                    stack.push(source);
+                }
+            }
+        }
+
+        let cyclic = component.len() > 1 || adj[offsets[root]..offsets[root + 1]].contains(&root);
+        if cyclic {
+            for &node in &component {
+                cycle_members[node] = true;
+            }
+        }
+        component.clear();
+    }
+
+    cycle_members
+}
+
+/// Sort projects by their dependencies using topological sort.
+/// Projects with no dependencies or whose dependencies are already published will come first.
+/// Returns project references in dependency order, or deterministic cycle/ambiguity details.
+///
+/// # Errors
+/// Returns [`DependencySortError`] when the dependency graph cannot be ordered:
+/// a dependency cycle, or a dependency name that resolves to more than one
+/// project in the workspace.
+pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, DependencySortError> {
+    if projects.is_empty() {
+        return Ok(projects);
+    }
+
+    // Fast path: with no project carrying any local (monorepo) dependency the
+    // graph has zero edges, so the work below - a full `ProjectNameAnalysis`
+    // map plus the `in_degree`, `edges`, `offsets`, `adj` and
+    // `sorted_indices` allocations - reproduces the input order and is pure
+    // waste. Common on single-package repos and workspaces that don't use
+    // `workspace:*` / `workspace = true` / `[tool.uv.sources]` /
+    // `<ProjectReference/>`. Two invariants make the early return
+    // byte-identical to the full path:
+    // (a) a `referenced_ambiguity` can only originate from a dependency name
+    //     (see `project_names.rs`), so a dependency-free set can never raise
+    //     the ambiguity error - duplicate names stay unreferenced and legal;
+    // (b) with no edges every `in_degree` is 0, so Kahn's initial fill pushes
+    //     `0..n` in ascending order, no decrement ever runs, and the final
+    //     reorder maps each index back onto itself.
+    // `.all(...)` short-circuits on the first dep-carrying project, so it's
+    // O(1) amortized when the rest of the function would have fired anyway.
+    if projects
+        .iter()
+        .all(|project| project.dependencies().is_empty())
+    {
+        return Ok(projects);
+    }
+
+    let project_names = ProjectNameAnalysis::new(&projects);
+
+    if let Some(ambiguity) = project_names.referenced_ambiguity() {
+        return Err(DependencySortError::AmbiguousDependency(ambiguity.into()));
+    }
+
+    // Build dependency graph: for each project, find which projects depend on it.
+    // Duplicate names are ambiguous across polyglot publish sets. Only names
+    // actually referenced by an edge are errors.
     // in_degree[i] = number of dependencies that project i has
     let mut in_degree: Vec<usize> = vec![0; projects.len()];
-    // graph[i] = list of projects that depend on project i
-    let mut graph: Vec<Vec<usize>> = vec![Vec::new(); projects.len()];
+    // Collect edges in the same order the old adjacency Vecs received pushes:
+    // project-major, then dependency iteration order.
+    let dependency_count: usize = projects
+        .iter()
+        .map(|project| project.dependencies().len())
+        .sum();
+    let mut edges: Vec<(usize, usize)> = Vec::with_capacity(dependency_count);
 
     for (idx, project) in projects.iter().enumerate() {
         let deps = project.dependencies();
         for dep in deps {
-            // Try to find dependency by path first, then by name
-            let dep_idx = path_to_index
-                .get(dep)
-                .or_else(|| name_to_index.get(dep))
-                .copied();
-
-            if let Some(dep_idx) = dep_idx {
-                // Project at idx depends on project at dep_idx
-                // So dep_idx should come before idx
-                graph[dep_idx].push(idx);
-                in_degree[idx] += 1;
+            match project_names.resolve(dep) {
+                ProjectNameResolution::Unique(dep_idx) => {
+                    // Project at idx depends on project at dep_idx
+                    // So dep_idx should come before idx
+                    edges.push((dep_idx, idx));
+                    in_degree[idx] += 1;
+                }
+                ProjectNameResolution::Missing | ProjectNameResolution::Ambiguous => {}
             }
         }
     }
 
-    // Kahn's algorithm for topological sort
-    let mut queue: VecDeque<usize> = VecDeque::new();
+    // Store adjacency as CSR: adj[offsets[i]..offsets[i + 1]] contains the
+    // projects that depend on project i. Stable counting-sort fill preserves
+    // the old graph[dep_idx].push(idx) order within each source exactly.
+    let mut offsets: Vec<usize> = vec![0; projects.len() + 1];
+    for &(dep_idx, _) in &edges {
+        offsets[dep_idx + 1] += 1;
+    }
+    for idx in 1..offsets.len() {
+        offsets[idx] += offsets[idx - 1];
+    }
+
+    // In-place counting-sort fill: `offsets[dep_idx]` itself doubles as the
+    // write cursor for source `dep_idx`, so no cloned cursor Vec is allocated
+    // and memcpy'd per call. Edges are still consumed in their original order
+    // and each one lands in the next free slot of its bucket, so the
+    // per-source fill order is byte-for-byte what the cloned cursor produced.
+    // Afterwards `offsets[i]` holds the END of source `i` (the canonical
+    // `offsets[i + 1]`); `offsets[projects.len()]` is untouched because no
+    // edge carries that source index.
+    let mut adj: Vec<usize> = vec![0; edges.len()];
+    for (dep_idx, dependent_idx) in edges {
+        let slot = offsets[dep_idx];
+        adj[slot] = dependent_idx;
+        offsets[dep_idx] += 1;
+    }
+
+    restore_start_offsets(&mut offsets);
+
+    // Kahn's algorithm for topological sort.
+    //
+    // `sorted_indices` doubles as the FIFO queue: `head` is the read cursor and
+    // the tail is the vector's end, so the live queue is exactly the
+    // `sorted_indices[head..]` window. Kahn's traversal pushes every index in
+    // `0..projects.len()` at most once, so the final length is bounded by
+    // `projects.len()`. Preallocating up front removes the ~log2(N)
+    // geometric-doubling reallocations `Vec::new()` would otherwise incur on
+    // every `publish` / `check --tree` invocation, and folding the queue into
+    // the output vector removes the separate `VecDeque` allocation plus the
+    // copy of every index from the deque into the result.
+    let mut sorted_indices: Vec<usize> = Vec::with_capacity(projects.len());
     for (idx, &degree) in in_degree.iter().enumerate() {
         if degree == 0 {
-            queue.push_back(idx);
+            sorted_indices.push(idx);
         }
     }
 
-    let mut sorted_indices: Vec<usize> = Vec::new();
-    let mut visited = HashSet::new();
+    // Kahn's invariant: each node is pushed to the queue at most once, so the
+    // per-pop membership guard is unreachable. The initial fill enumerates
+    // each index exactly once, and inside the loop each edge is walked
+    // exactly once (deps are stored in a `HashSet<String>` so no duplicate
+    // edges, and `project_names.resolve(dep)` resolves each dep to a single
+    // index), so every `in_degree` decrement is unique and the `== 0`
+    // push happens at most once per node. That "pushed at most once" property
+    // is what makes the head cursor equivalent to popping a deque front:
+    // indices are appended in the same order the deque received them and are
+    // consumed in that same order, never revisited.
+    let mut head = 0;
+    while head < sorted_indices.len() {
+        let idx = sorted_indices[head];
+        head += 1;
 
-    while let Some(idx) = queue.pop_front() {
-        if !visited.contains(&idx) {
-            visited.insert(idx);
-            sorted_indices.push(idx);
-
-            // Decrease in-degree of dependent projects
-            for &dependent_idx in &graph[idx] {
-                in_degree[dependent_idx] -= 1;
-                if in_degree[dependent_idx] == 0 && !visited.contains(&dependent_idx) {
-                    queue.push_back(dependent_idx);
-                }
+        // Decrease in-degree of dependent projects
+        for &dependent_idx in &adj[offsets[idx]..offsets[idx + 1]] {
+            in_degree[dependent_idx] -= 1;
+            if in_degree[dependent_idx] == 0 {
+                sorted_indices.push(dependent_idx);
             }
         }
     }
 
-    // Add any remaining projects that weren't part of the dependency graph
-    for (idx, _) in projects.iter().enumerate() {
-        if !visited.contains(&idx) {
-            sorted_indices.push(idx);
-        }
+    if sorted_indices.len() < projects.len() {
+        let cycle_members = cycle_members_in_residual(&adj, &offsets, &in_degree);
+        // `Filter` reports a `size_hint` lower bound of 0, and `Vec::from_iter`
+        // reserves against that lower bound, so `collect()` here would start
+        // from an empty vector and geometric-double its way up on every cycle
+        // report. The number of nodes that survive Kahn's loop is exactly
+        // `projects.len() - sorted_indices.len()` (the enclosing `if` is
+        // exactly `sorted_indices.len() < projects.len()`, so the subtraction
+        // cannot underflow and is non-zero), and the cycle members are a
+        // subset of those residual nodes — an exact upper bound, and exact for
+        // a graph whose residual is one pure cycle. Preallocating to it makes
+        // the fill a single allocation.
+        let mut members: Vec<DependencyCycleMember> =
+            Vec::with_capacity(projects.len() - sorted_indices.len());
+        members.extend(
+            cycle_members
+                .iter()
+                .enumerate()
+                .filter(|&(_, &in_cycle)| in_cycle)
+                .map(|(index, _)| DependencyCycleMember {
+                    name: projects[index].name().unwrap_or("<unnamed>").to_string(),
+                    path: projects[index].relative_path().to_path_buf(),
+                }),
+        );
+        // Unstable sort: the comparator is a total order over the entire
+        // element. `DependencyCycleMember` is exactly `name` + `path`, and the
+        // tie-break chain ends in `compare_paths`, which only reports `Equal`
+        // for byte-identical paths — so two members compare `Equal` only when
+        // every field is equal and no reordering is observable. Members come
+        // from distinct project indices, so ties do not arise in practice
+        // either. `sort_unstable_by` avoids the up-to-n/2 scratch buffer that
+        // the stable merge sort heap-allocates on every cycle report.
+        members.sort_unstable_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then_with(|| compare_paths(&left.path, &right.path))
+        });
+        return Err(DependencySortError::Cycle(DependencyCycleError { members }));
     }
 
-    // Reorder projects based on sorted indices (no cloning, just reordering references)
-    sorted_indices.iter().map(|&idx| projects[idx]).collect()
+    // Reorder projects based on sorted indices (no cloning, just reordering references).
+    // `sorted_indices` is dropped immediately after this expression, so
+    // consuming it via `into_iter()` yields `usize` (Copy) values directly
+    // and drops the `|&idx|` pattern. Zero perf change (compiler already
+    // elides), but the intent — "consume the vector" — reads clearer than
+    // "borrow every element then drop the borrow".
+    Ok(sorted_indices
+        .into_iter()
+        .map(|idx| projects[idx])
+        .collect())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use changepacks_core::{Package, Project};
-    use changepacks_node::package::NodePackage;
-    use std::path::PathBuf;
+    use std::path::Path;
 
-    // Helper function to create a test project with dependencies
-    // Dependencies are stored as paths (e.g., "p2" -> "p2/package.json")
-    fn create_project(name: &str, dependencies: Vec<&str>) -> Project {
-        let mut package = NodePackage::new(
-            Some(name.to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from(format!("/test/{}/package.json", name)),
-            PathBuf::from(format!("{}/package.json", name)),
-        );
-        for dep in dependencies {
-            // Store dependency as path (e.g., "p2" -> "p2/package.json")
-            package.add_dependency(dep);
-        }
-        Project::Package(Box::new(package))
+    use super::*;
+
+    use crate::test_support::{create_project, create_project_at};
+
+    /// Narrow a sort error to its cycle details, panicking on any other variant.
+    fn cycle_of(error: &DependencySortError) -> &DependencyCycleError {
+        let DependencySortError::Cycle(cycle) = error else {
+            panic!("expected a cycle error, got: {error}");
+        };
+        cycle
+    }
+
+    /// Narrow a sort error to its ambiguity details, panicking on any other variant.
+    fn ambiguity_of(error: &DependencySortError) -> &DependencyAmbiguityError {
+        let DependencySortError::AmbiguousDependency(ambiguity) = error else {
+            panic!("expected an ambiguous dependency error, got: {error}");
+        };
+        ambiguity
     }
 
     #[test]
     fn test_sort_empty() {
         let projects: Vec<&Project> = vec![];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
         assert_eq!(sorted.len(), 0);
     }
 
@@ -121,7 +515,7 @@ mod tests {
         let p3 = create_project("p3", vec![]);
 
         let projects = vec![&p3, &p1, &p2];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 3);
         // All have no dependencies, so order should be preserved or stable
@@ -139,7 +533,7 @@ mod tests {
         let p1 = create_project("p1", vec!["p2"]);
 
         let projects = vec![&p1, &p2, &p3];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 3);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -160,7 +554,7 @@ mod tests {
         let p1 = create_project("p1", vec!["p2"]);
 
         let projects = vec![&p3, &p2, &p1];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 3);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -184,7 +578,7 @@ mod tests {
         let p1 = create_project("p1", vec!["p2", "p3"]);
 
         let projects = vec![&p1, &p2, &p3, &p4];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 4);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -207,7 +601,7 @@ mod tests {
         let p4 = create_project("p4", vec!["p2"]);
 
         let projects = vec![&p4, &p3, &p2, &p1];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 4);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -230,7 +624,7 @@ mod tests {
         let p2 = create_project("p2", vec![]);
 
         let projects = vec![&p1, &p2];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 2);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -242,11 +636,151 @@ mod tests {
     }
 
     #[test]
+    fn test_sort_transitive_missing_dependency_preserves_downstream_order() {
+        // `a` names a dependency no project in the set provides, so the
+        // `ProjectNameResolution::Missing` arm drops that edge. Dropping it
+        // must not disturb the real `a -> b` edge: `b` still depends on `a`
+        // and must still be published after it. Pins that the drop is edge
+        // local, not project local.
+        let a = create_project("a", vec!["not-in-this-set"]);
+        let b = create_project("b", vec!["a"]);
+        let c = create_project("c", vec![]);
+
+        let sorted = sort_by_dependencies(vec![&b, &a, &c]).unwrap();
+        let names: Vec<Option<&str>> = sorted.iter().map(|project| project.name()).collect();
+
+        assert_eq!(names.len(), 3);
+        let a_idx = names.iter().position(|&n| n == Some("a")).unwrap();
+        let b_idx = names.iter().position(|&n| n == Some("b")).unwrap();
+        assert!(a_idx < b_idx, "expected a before b, got {names:?}");
+        assert!(names.contains(&Some("c")));
+    }
+
+    #[test]
+    fn test_sort_rejects_referenced_ambiguous_dependency() {
+        let core_a = create_project_at(Some("core"), "packages/core/package.json");
+        let core_b = create_project_at(Some("core"), "crates/core/Cargo.toml");
+        let app = create_project("app", vec!["core"]);
+
+        let projects = vec![&app, &core_a, &core_b];
+        let error = sort_by_dependencies(projects).expect_err("ambiguous edge must fail");
+        let ambiguity = ambiguity_of(&error);
+
+        assert_eq!(ambiguity.dependency(), "core");
+        assert_eq!(
+            ambiguity.candidates(),
+            [
+                PathBuf::from("crates/core/Cargo.toml"),
+                PathBuf::from("packages/core/package.json"),
+            ]
+        );
+        assert_eq!(
+            error.to_string(),
+            "ambiguous dependency `core`: candidates: crates/core/Cargo.toml, packages/core/package.json"
+        );
+    }
+
+    #[test]
+    fn test_ambiguous_dependency_diagnostic_is_deterministic() {
+        let zeta = create_project_at(Some("shared"), "zeta/package.json");
+        let alpha = create_project_at(Some("shared"), "alpha/package.json");
+        let app = create_project("app", vec!["shared"]);
+
+        let first = sort_by_dependencies(vec![&app, &zeta, &alpha])
+            .expect_err("ambiguous edge must fail")
+            .to_string();
+        let second = sort_by_dependencies(vec![&alpha, &app, &zeta])
+            .expect_err("ambiguous edge must fail")
+            .to_string();
+
+        assert_eq!(first, second);
+        assert_eq!(
+            first,
+            "ambiguous dependency `shared`: candidates: alpha/package.json, zeta/package.json"
+        );
+    }
+
+    #[test]
+    fn test_ambiguous_dependency_diagnostic_breaks_normalized_path_ties() {
+        let slash = create_project_at(Some("shared"), "a/b/package.json");
+        let backslash = create_project_at(Some("shared"), "a\\b/package.json");
+        let app = create_project("app", vec!["shared"]);
+
+        let first = sort_by_dependencies(vec![&app, &slash, &backslash])
+            .expect_err("ambiguous edge must fail");
+        let second = sort_by_dependencies(vec![&app, &backslash, &slash])
+            .expect_err("ambiguous edge must fail");
+
+        let first_candidates: Vec<_> = ambiguity_of(&first)
+            .candidates()
+            .iter()
+            .map(|path| path.to_string_lossy())
+            .collect();
+        let second_candidates: Vec<_> = ambiguity_of(&second)
+            .candidates()
+            .iter()
+            .map(|path| path.to_string_lossy())
+            .collect();
+
+        assert_eq!(first_candidates, second_candidates);
+        assert_eq!(first.to_string(), second.to_string());
+    }
+
+    #[test]
+    fn test_sort_allows_unreferenced_duplicate_names() {
+        let core_a = create_project_at(Some("core"), "packages/core/package.json");
+        let core_b = create_project_at(Some("core"), "crates/core/Cargo.toml");
+        let app = create_project("app", vec![]);
+
+        let sorted = sort_by_dependencies(vec![&app, &core_a, &core_b]).unwrap();
+        let paths: Vec<_> = sorted
+            .iter()
+            .map(|project| project.relative_path())
+            .collect();
+
+        assert_eq!(
+            paths,
+            vec![
+                Path::new("app/package.json"),
+                Path::new("packages/core/package.json"),
+                Path::new("crates/core/Cargo.toml"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sort_no_dependency_fast_path_preserves_input_order() {
+        // Dependency-free set that also carries a duplicate name, so it locks
+        // both fast-path invariants at once: the returned order is the input
+        // order verbatim, and unreferenced duplicate names are still legal
+        // (no ambiguity error) even though the fast path skips
+        // `ProjectNameAnalysis` entirely.
+        let core_a = create_project_at(Some("core"), "packages/core/package.json");
+        let core_b = create_project_at(Some("core"), "crates/core/Cargo.toml");
+        let app = create_project_at(Some("app"), "apps/app/package.json");
+
+        let sorted = sort_by_dependencies(vec![&core_b, &app, &core_a]).unwrap();
+        let paths: Vec<_> = sorted
+            .iter()
+            .map(|project| project.relative_path())
+            .collect();
+
+        assert_eq!(
+            paths,
+            vec![
+                Path::new("crates/core/Cargo.toml"),
+                Path::new("apps/app/package.json"),
+                Path::new("packages/core/package.json"),
+            ]
+        );
+    }
+
+    #[test]
     fn test_sort_single_project() {
         let p1 = create_project("p1", vec![]);
 
         let projects = vec![&p1];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 1);
         assert_eq!(sorted[0].name(), Some("p1"));
@@ -254,18 +788,17 @@ mod tests {
 
     #[test]
     fn test_sort_self_reference_ignored() {
-        // p1 depends on itself (should be ignored as it's not in the name_to_index map correctly)
+        // p1 depends on itself: `p1` IS in `name_to_index`, so the self-edge
+        // gives p1 an in_degree of 1 that Kahn's loop never drains (its only
+        // dependency is itself). The trailing cyclic-fallback loop then appends
+        // it, so both projects still appear in the result.
         let p1 = create_project("p1", vec!["p1"]);
         let p2 = create_project("p2", vec![]);
 
         let projects = vec![&p1, &p2];
-        let sorted = sort_by_dependencies(projects);
+        let error = sort_by_dependencies(projects).expect_err("self-cycle must fail");
 
-        assert_eq!(sorted.len(), 2);
-        // Both should be in the result, order may vary but both should be present
-        let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
-        assert!(names.contains(&Some("p1")));
-        assert!(names.contains(&Some("p2")));
+        assert_eq!(cycle_of(&error).members()[0].name, "p1");
     }
 
     #[test]
@@ -276,14 +809,9 @@ mod tests {
         let p3 = create_project("p3", vec!["p2"]);
 
         let projects = vec![&p1, &p2, &p3];
-        let sorted = sort_by_dependencies(projects);
+        let error = sort_by_dependencies(projects).expect_err("cycle must fail");
 
-        // All projects should still be in the result even with cyclic deps
-        assert_eq!(sorted.len(), 3);
-        let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
-        assert!(names.contains(&Some("p1")));
-        assert!(names.contains(&Some("p2")));
-        assert!(names.contains(&Some("p3")));
+        assert_eq!(cycle_of(&error).members().len(), 3);
     }
 
     #[test]
@@ -302,7 +830,7 @@ mod tests {
         let p1 = create_project("p1", vec!["p2", "p3"]);
 
         let projects = vec![&p1, &p2, &p3, &p4, &p5];
-        let sorted = sort_by_dependencies(projects);
+        let sorted = sort_by_dependencies(projects).unwrap();
 
         assert_eq!(sorted.len(), 5);
         let names: Vec<Option<&str>> = sorted.iter().map(|p| p.name()).collect();
@@ -315,5 +843,243 @@ mod tests {
         assert!(p4_idx > p5_idx);
         // p1 should come last
         assert_eq!(names[4], Some("p1"));
+    }
+
+    #[test]
+    fn test_sort_dag_returns_dependency_order() {
+        let leaf = create_project("leaf", vec![]);
+        let middle = create_project("middle", vec!["leaf"]);
+        let root = create_project("root", vec!["middle"]);
+
+        let sorted = sort_by_dependencies(vec![&root, &leaf, &middle])
+            .expect("a DAG must have a topological ordering");
+        let names: Vec<_> = sorted.iter().map(|project| project.name()).collect();
+
+        assert_eq!(names, vec![Some("leaf"), Some("middle"), Some("root")]);
+    }
+
+    #[test]
+    fn test_sort_rejects_self_cycle() {
+        let project = create_project("self", vec!["self"]);
+
+        let error = sort_by_dependencies(vec![&project]).expect_err("self-cycle must fail");
+
+        let cycle = cycle_of(&error);
+        assert_eq!(cycle.members().len(), 1);
+        assert_eq!(cycle.members()[0].name, "self");
+        assert_eq!(
+            cycle.members()[0].path,
+            std::path::Path::new("self/package.json")
+        );
+    }
+
+    #[test]
+    fn test_sort_rejects_multi_node_cycle() {
+        let alpha = create_project("alpha", vec!["beta"]);
+        let beta = create_project("beta", vec!["gamma"]);
+        let gamma = create_project("gamma", vec!["alpha"]);
+
+        let error = sort_by_dependencies(vec![&alpha, &beta, &gamma])
+            .expect_err("multi-node cycle must fail");
+
+        assert_eq!(
+            cycle_of(&error)
+                .members()
+                .iter()
+                .map(|member| member.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta", "gamma"]
+        );
+    }
+
+    #[test]
+    fn test_cycle_details_are_deterministic_and_exclude_blocked_dependents() {
+        let zeta = create_project("zeta", vec!["alpha"]);
+        let alpha = create_project("alpha", vec!["zeta"]);
+        let blocked = create_project("blocked", vec!["zeta"]);
+
+        let error =
+            sort_by_dependencies(vec![&zeta, &blocked, &alpha]).expect_err("cycle must fail");
+
+        let details: Vec<_> = cycle_of(&error)
+            .members()
+            .iter()
+            .map(|member| (member.name.as_str(), member.path.as_path()))
+            .collect();
+        assert_eq!(
+            details,
+            vec![
+                ("alpha", std::path::Path::new("alpha/package.json")),
+                ("zeta", std::path::Path::new("zeta/package.json")),
+            ]
+        );
+        assert_eq!(
+            error.to_string(),
+            "dependency cycle detected: alpha (alpha/package.json), zeta (zeta/package.json)"
+        );
+    }
+
+    #[test]
+    fn test_residual_scc_membership_marks_only_cycles() {
+        // 0 <-> 1 is cyclic, 2 is blocked by that cycle, 3 has a self-edge,
+        // and 4 is an acyclic residual singleton.
+        let offsets = vec![0, 1, 3, 4, 5, 5];
+        let adj = vec![1, 0, 2, 4, 3];
+        // Every node is residual, i.e. Kahn left a non-zero in-degree behind.
+        let in_degree = vec![1usize; 5];
+
+        assert_eq!(
+            cycle_members_in_residual(&adj, &offsets, &in_degree),
+            vec![true, true, false, true, false]
+        );
+    }
+
+    #[test]
+    fn test_residual_scc_membership_handles_multi_source_transpose_buckets() {
+        // 0 -> 1 -> 2 -> 0 is a three-node cycle; 3 and 4 are blocked dependents
+        // that both point into cycle node 0, and 4 also points at 3 (chain) and
+        // at cycle node 2. That gives the residual transpose two buckets with a
+        // fan-in above one - node 0 receives from {2, 3, 4} and node 2 from
+        // {1, 4} - so the per-bucket write cursor really advances and the single
+        // reverse shift that restores the start offsets is exercised.
+        let offsets = vec![0, 1, 2, 3, 4, 7];
+        let adj = vec![1, 2, 0, 0, 0, 2, 3];
+        // Every node is residual, i.e. Kahn left a non-zero in-degree behind.
+        let in_degree = vec![1usize; 5];
+
+        assert_eq!(
+            cycle_members_in_residual(&adj, &offsets, &in_degree),
+            vec![true, true, true, false, false]
+        );
+    }
+
+    #[test]
+    fn test_cycle_error_excludes_a_chain_blocked_by_the_cycle() {
+        let cycle_a = create_project("cycle-a", vec!["cycle-b"]);
+        let cycle_b = create_project("cycle-b", vec!["cycle-a"]);
+        let blocked_a = create_project("blocked-a", vec!["cycle-a"]);
+        let blocked_b = create_project("blocked-b", vec!["blocked-a"]);
+
+        let error = sort_by_dependencies(vec![&blocked_b, &cycle_b, &blocked_a, &cycle_a])
+            .expect_err("cycle must fail");
+
+        assert_eq!(
+            cycle_of(&error)
+                .members()
+                .iter()
+                .map(|member| member.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cycle-a", "cycle-b"]
+        );
+    }
+
+    #[test]
+    fn test_singleton_scc_requires_a_self_edge() {
+        let self_cycle = create_project("self-cycle", vec!["self-cycle"]);
+        let blocked = create_project("blocked", vec!["self-cycle"]);
+
+        let error =
+            sort_by_dependencies(vec![&blocked, &self_cycle]).expect_err("self-cycle must fail");
+
+        assert_eq!(
+            cycle_of(&error)
+                .members()
+                .iter()
+                .map(|member| member.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["self-cycle"]
+        );
+    }
+
+    #[test]
+    fn test_disjoint_cycles_are_all_reported_in_deterministic_order() {
+        let zeta = create_project_at(Some("zeta"), "z/zeta.json");
+        let alpha = create_project_at(Some("alpha"), "a/alpha.json");
+        let delta = create_project_at(Some("delta"), "d/delta.json");
+        let beta = create_project_at(Some("beta"), "b/beta.json");
+
+        let mut zeta = zeta;
+        let mut alpha = alpha;
+        let mut delta = delta;
+        let mut beta = beta;
+        zeta.add_dependency("alpha");
+        alpha.add_dependency("zeta");
+        delta.add_dependency("beta");
+        beta.add_dependency("delta");
+
+        let error = sort_by_dependencies(vec![&zeta, &delta, &alpha, &beta])
+            .expect_err("disjoint cycles must fail");
+
+        assert_eq!(
+            cycle_of(&error)
+                .members()
+                .iter()
+                .map(|member| (member.name.as_str(), member.path.as_path()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("alpha", Path::new("a/alpha.json")),
+                ("beta", Path::new("b/beta.json")),
+                ("delta", Path::new("d/delta.json")),
+                ("zeta", Path::new("z/zeta.json")),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_sort_error_accessors_are_variant_specific_and_expose_a_source() {
+        let alpha = create_project("alpha", vec!["beta"]);
+        let beta = create_project("beta", vec!["alpha"]);
+        let cycle = sort_by_dependencies(vec![&alpha, &beta]).expect_err("cycle must fail");
+
+        let core_a = create_project_at(Some("core"), "packages/core/package.json");
+        let core_b = create_project_at(Some("core"), "crates/core/Cargo.toml");
+        let app = create_project("app", vec!["core"]);
+        let ambiguity = sort_by_dependencies(vec![&app, &core_a, &core_b])
+            .expect_err("ambiguous edge must fail");
+
+        // The cross-variant fallback: a cycle is never the ambiguity variant, and
+        // an ambiguity is never the cycle variant.
+        assert!(matches!(cycle, DependencySortError::Cycle(_)));
+        assert!(!matches!(ambiguity, DependencySortError::Cycle(_)));
+
+        // Both variants delegate `source` to their inner error, so the inner
+        // Display is reachable through the trait object.
+        let cycle_source = std::error::Error::source(&cycle).expect("cycle source");
+        let ambiguity_source = std::error::Error::source(&ambiguity).expect("ambiguity source");
+        assert_eq!(cycle_source.to_string(), cycle.to_string());
+        assert_eq!(ambiguity_source.to_string(), ambiguity.to_string());
+        assert!(
+            cycle_source
+                .downcast_ref::<DependencyCycleError>()
+                .is_some()
+        );
+        assert!(
+            ambiguity_source
+                .downcast_ref::<DependencyAmbiguityError>()
+                .is_some()
+        );
+
+        // Sanity: each fixture really is the variant it claims to be.
+        assert_eq!(cycle_of(&cycle).members().len(), 2);
+        assert_eq!(ambiguity_of(&ambiguity).dependency(), "core");
+    }
+
+    #[test]
+    fn test_large_cycle_reports_every_member() {
+        const SIZE: usize = 4_096;
+        let mut projects: Vec<_> = (0..SIZE)
+            .map(|index| create_project(&format!("cycle-{index:04}"), vec![]))
+            .collect();
+        for (index, project) in projects.iter_mut().enumerate() {
+            project.add_dependency(&format!("cycle-{:04}", (index + 1) % SIZE));
+        }
+        let refs = projects.iter().collect();
+
+        let error = sort_by_dependencies(refs).expect_err("large cycle must fail");
+
+        let cycle = cycle_of(&error);
+        assert_eq!(cycle.members().len(), SIZE);
+        assert_eq!(cycle.members().first().unwrap().name, "cycle-0000");
+        assert_eq!(cycle.members().last().unwrap().name, "cycle-4095");
     }
 }

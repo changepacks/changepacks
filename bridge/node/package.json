@@ -4,7 +4,6 @@
   "description": "changepacks is a CLI tool that helps you efficiently manage versioning and changelogs in multi-language projects. It provides unified support for various package management systems including Node.js, Python, Rust, and more.",
   "main": "main.js",
   "license": "Apache License 2.0",
-  "browser": "browser.js",
   "keywords": [
     "napi-rs",
     "NAPI",
@@ -40,7 +39,7 @@
     "changepacks": "./main.js"
   },
   "engines": {
-    "node": ">= 12.22.0 < 13 || >= 14.17.0 < 15 || >= 15.12.0 < 16 || >= 16.0.0"
+    "node": ">=18"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
@@ -48,7 +47,6 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "bench": "node --import @oxc-node/core/register benchmark/bench.ts",
     "build": "napi build --platform --release",
     "build:debug": "napi build --platform",
     "format": "run-p format:prettier format:rs format:toml",
@@ -57,29 +55,29 @@
     "format:rs": "cargo fmt",
     "lint": "oxlint .",
     "prepublishOnly": "napi prepublish -t npm --no-gh-release",
-    "test": "echo 'test'",
+    "test": "bun run build && ava",
     "preversion": "napi build --platform && git add .",
     "version": "napi version"
   },
   "devDependencies": {
-    "@emnapi/core": "^1.8.1",
-    "@emnapi/runtime": "^1.8.1",
-    "@napi-rs/cli": "^3.5.1",
-    "@oxc-node/core": "^0.0.35",
+    "@emnapi/core": "^1.11.3",
+    "@emnapi/runtime": "^1.11.3",
+    "@napi-rs/cli": "^3.8.2",
+    "@oxc-node/core": "^0.1.0",
     "@taplo/cli": "^0.7.0",
-    "@tybys/wasm-util": "^0.10.1",
-    "ava": "^6.4.1",
-    "chalk": "^5.6.2",
-    "npm-run-all2": "^8.0.4",
-    "oxlint": "^1.47.0",
-    "prettier": "^3.8.1",
-    "tinybench": "^6.0.0",
-    "typescript": "^5.9.3"
+    "@tybys/wasm-util": "^0.10.3",
+    "ava": "^8.0.1",
+    "chalk": "^6.0.0",
+    "npm-run-all2": "^9.0.3",
+    "oxlint": "^1.77.0",
+    "prettier": "^3.9.6",
+    "typescript": "^7.0.2"
   },
   "ava": {
-    "extensions": {
-      "ts": "module"
-    },
+    "extensions": [
+      "js",
+      "ts"
+    ],
     "timeout": "2m",
     "workerThreads": false,
     "environmentVariables": {

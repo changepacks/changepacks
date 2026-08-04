@@ -9,14 +9,22 @@ description = "Rust project support for changepacks (Cargo)"
 readme = "../../README.md"
 
 [dependencies]
-toml = "1.0"
 changepacks-core.workspace = true
-changepacks-utils.workspace = true
-anyhow = "1.0"
-tokio = { version = "1.50", features = ["fs"] }
-async-trait = "0.1"
-toml_edit = "0.25"
+# `toml` pulls in the shared `ensure_toml_table_like` manifest guard; this
+# crate already depends on `toml_edit` directly, so the feature adds no new
+# transitive dependency.
+changepacks-utils = { workspace = true, features = ["toml"] }
+anyhow.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+async-trait.workspace = true
+toml_edit.workspace = true
 
 [dev-dependencies]
-tempfile = "3.27"
-tokio = { version = "1.50", features = ["test-util", "macros"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util", "macros"] }
+rstest.workspace = true
+changepacks-utils = { workspace = true, features = ["test-support"] }
+changepacks-core = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true

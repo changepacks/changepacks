@@ -8,8 +8,15 @@ homepage.workspace = true
 description = "CLI interface and commands for changepacks"
 readme = "../../README.md"
 
+[features]
+# Exports this crate's test doubles (`prompter::MockPrompter`) to test-only
+# builds. Off by default so the mock never ships in the release binary or the
+# FFI bridges; `tests/integration.rs` turns it on via the self dev-dependency
+# below, which Cargo drops at publish time because it carries no version req.
+test-support = []
+
 [dependencies]
-nanoid = "0.4"
+nanoid = "0.5"
 clap = { version = "^4", features = ["derive"] }
 changepacks-utils.workspace = true
 changepacks-core.workspace = true
@@ -19,20 +26,27 @@ changepacks-python.workspace = true
 changepacks-dart.workspace = true
 changepacks-csharp.workspace = true
 changepacks-java.workspace = true
-anyhow = "1.0"
+anyhow.workspace = true
 thiserror = "2"
 inquire = "0.9"
-colored = "3"
-serde_json = "1.0"
-tokio = { version = "1.50", features = ["fs"] }
-futures = "0.3"
+colored.workspace = true
+serde_json.workspace = true
+# `macros` is required by the `tokio::join!` in `commands::update`. Today it
+# also arrives through `changepacks-node`, whose own dependency enables it, but
+# relying on that would make this crate stop compiling the moment that transitive
+# edge changes — so the requirement is declared where it is used.
+tokio = { workspace = true, features = ["fs", "io-util", "macros"] }
+futures.workspace = true
 
 [dev-dependencies]
-async-trait = "0.1"
-rstest = "0.26"
-tempfile = "3"
-serial_test = "3"
-tokio = { version = "1.50", features = ["fs", "rt-multi-thread", "macros"] }
+async-trait.workspace = true
+rstest.workspace = true
+tempfile.workspace = true
+serial_test = "4"
+tokio = { workspace = true, features = ["fs", "rt-multi-thread", "macros"] }
+changepacks-utils = { workspace = true, features = ["test-support"] }
+changepacks-core = { workspace = true, features = ["test-support"] }
+changepacks-cli = { path = ".", features = ["test-support"] }
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+[lints]
+workspace = true

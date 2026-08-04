@@ -8,6 +8,10 @@
 
 #[tokio::main]
 #[cfg(not(tarpaulin_include))]
-async fn main() -> anyhow::Result<()> {
-    changepacks_cli::main(&std::env::args().collect::<Vec<String>>()).await
+async fn main() {
+    if let Err(e) = changepacks_cli::main_from_env(false).await {
+        changepacks_cli::exit_if_user_cancelled(&e);
+        eprintln!("Error: {e:#}");
+        std::process::exit(1);
+    }
 }

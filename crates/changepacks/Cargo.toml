@@ -11,8 +11,7 @@ default-run = "changepacks"
 
 [dependencies]
 changepacks-cli.workspace = true
-tokio = { version = "1.50", features = ["rt-multi-thread", "macros"] }
-anyhow = "1.0"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-manifest = "1.5"
@@ -21,5 +20,5 @@ embed-manifest = "1.5"
 name = "changepacks"
 path = "src/main.rs"
 
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+[lints]
+workspace = true

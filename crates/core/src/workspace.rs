@@ -1,7 +1,7 @@
 use std::{collections::HashSet, path::Path};
 
-use crate::{Config, Language, Package, update_type::UpdateType};
-use anyhow::{Context, Result};
+use crate::{Language, Package, update_type::UpdateType};
+use anyhow::Result;
 use async_trait::async_trait;
 
 /// Interface for monorepo workspace roots.
@@ -22,30 +22,12 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     fn dependencies(&self) -> &HashSet<String>;
     fn add_dependency(&mut self, dependency: &str);
 
-    /// # Errors
-    /// Returns error if the parent path cannot be determined.
-    // Default implementation for check_changed
-    ///
-    /// Excluded from coverage: see `Package::check_changed` for the same
-    /// tarpaulin attribution caveat on the multi-line `&&` condition.
-    #[cfg(not(tarpaulin_include))]
-    fn check_changed(&mut self, path: &Path) -> Result<()> {
-        if self.is_changed() {
-            return Ok(());
-        }
-        if !path.to_string_lossy().contains(".changepacks")
-            && path.starts_with(self.path().parent().context("Parent not found")?)
-        {
-            self.set_changed(true);
-        }
-        Ok(())
-    }
-
     fn is_changed(&self) -> bool;
     fn set_changed(&mut self, changed: bool);
 
-    /// Set the workspace name (used for fallback when name is not found in manifest)
-    fn set_name(&mut self, _name: String) {}
+    /// Set the workspace name (used for fallback when name is not found in manifest).
+    /// Implementors typically get this via `impl_basic_accessors!()`.
+    fn set_name(&mut self, name: String);
 
     /// Get the default publish command for this workspace type
     fn default_publish_command(&self) -> String;
@@ -57,296 +39,68 @@ pub trait Workspace: std::fmt::Debug + Send + Sync {
     /// via `config.publish_dry_run`.
     fn default_dry_run_publish_command(&self) -> Option<String>;
 
-    /// Publish the workspace using the configured command or default
+    crate::impl_shared_project_defaults!();
+
+    crate::impl_publish_flows!(crate::publish::WORKSPACE_DIR_NOT_FOUND);
+
+    crate::impl_publish_command_resolvers!();
+
+    /// Updates workspace-level dependency versions after package versions are bumped.
+    ///
+    /// This is an intentional no-op in the default implementation. Only `RustWorkspace`
+    /// overrides this method to sync `[workspace.dependencies]` path-dependency versions
+    /// with their corresponding package versions.
     ///
     /// # Errors
-    /// Returns error if the publish command fails to spawn or the workspace directory is missing.
-    /// A non-zero exit code is reported via `PublishOutput::success = false`.
-    #[cfg(not(tarpaulin_include))]
-    async fn publish(&self, config: &Config) -> Result<crate::publish::PublishOutput> {
-        let command = self.get_publish_command(config);
-        let dir = self
-            .path()
-            .parent()
-            .context("Workspace directory not found")?;
-        crate::publish::run_publish_command(&command, dir).await
-    }
-
-    /// Run the publish command in dry-run mode to verify the pre-release flow
-    /// works without actually publishing.
     ///
-    /// Returns `Ok(Some(output))` with the captured command output, or
-    /// `Ok(None)` when the language does not support a dry-run mode and the
-    /// user has not provided an override in `config.publish_dry_run`.
+    /// Returns an error only if a language override's dependency rewrite fails.
     ///
-    /// # Errors
-    /// Returns error if the dry-run command fails to spawn or the workspace
-    /// directory is missing. A non-zero exit code is reported via
-    /// `PublishOutput::success = false`.
-    #[cfg(not(tarpaulin_include))]
-    async fn dry_run_publish(
-        &self,
-        config: &Config,
-    ) -> Result<Option<crate::publish::PublishOutput>> {
-        let Some(command) = self.get_dry_run_publish_command(config) else {
-            return Ok(None);
-        };
-        let dir = self
-            .path()
-            .parent()
-            .context("Workspace directory not found")?;
-        Ok(Some(
-            crate::publish::run_publish_command(&command, dir).await?,
-        ))
-    }
-
-    /// Get the publish command for this workspace, checking config first
-    fn get_publish_command(&self, config: &Config) -> String {
-        crate::publish::resolve_publish_command(
-            self.relative_path(),
-            self.language(),
-            &self.default_publish_command(),
-            config,
-        )
-    }
-
-    /// Get the dry-run publish command for this workspace, checking config
-    /// first, then falling back to the workspace's `default_dry_run_publish_command`.
-    fn get_dry_run_publish_command(&self, config: &Config) -> Option<String> {
-        crate::publish::resolve_dry_run_publish_command(
-            self.relative_path(),
-            self.language(),
-            self.default_dry_run_publish_command().as_deref(),
-            config,
-        )
-    }
-
-    #[cfg(not(tarpaulin_include))]
-    async fn update_workspace_dependencies(&self, _packages: &[&dyn Package]) -> Result<()> {
-        Ok(())
+    /// Boxed-future shape rather than a defaulted `async fn`, for the reason
+    /// spelled out on [`ProjectFinder::should_visit_manifest`](crate::ProjectFinder::should_visit_manifest):
+    /// `#[async_trait]`'s desugaring of a *defaulted* body is not attributed by
+    /// `llvm-cov`, so the no-op would read as unexecuted forever.
+    fn update_workspace_dependencies<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        _packages: &'life1 [&'life2 dyn Package],
+    ) -> ::core::pin::Pin<
+        ::std::boxed::Box<
+            dyn ::core::future::Future<Output = Result<()>> + ::core::marker::Send + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: ::core::marker::Sync + 'async_trait,
+    {
+        ::std::boxed::Box::pin(async move { Ok(()) })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use std::path::PathBuf;
+    use crate::Config;
+    use crate::test_support::MockWorkspace;
+    use std::collections::BTreeMap;
 
-    #[derive(Debug)]
-    struct MockWorkspace {
-        name: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-        version: Option<String>,
-        language: Language,
-        dependencies: HashSet<String>,
-        changed: bool,
-    }
-
-    impl MockWorkspace {
-        fn new(name: Option<&str>, path: &str, relative_path: &str) -> Self {
-            Self {
-                name: name.map(String::from),
-                path: PathBuf::from(path),
-                relative_path: PathBuf::from(relative_path),
-                version: Some("1.0.0".to_string()),
-                language: Language::Node,
-                dependencies: HashSet::new(),
-                changed: false,
-            }
-        }
-
-        fn with_language(mut self, language: Language) -> Self {
-            self.language = language;
-            self
-        }
-    }
-
-    #[async_trait]
-    impl Workspace for MockWorkspace {
-        fn name(&self) -> Option<&str> {
-            self.name.as_deref()
-        }
-        fn path(&self) -> &Path {
-            &self.path
-        }
-        fn relative_path(&self) -> &Path {
-            &self.relative_path
-        }
-        fn version(&self) -> Option<&str> {
-            self.version.as_deref()
-        }
-        async fn update_version(&mut self, _update_type: UpdateType) -> Result<()> {
-            Ok(())
-        }
-        fn language(&self) -> Language {
-            self.language
-        }
-        fn dependencies(&self) -> &HashSet<String> {
-            &self.dependencies
-        }
-        fn add_dependency(&mut self, dependency: &str) {
-            self.dependencies.insert(dependency.to_string());
-        }
-        fn is_changed(&self) -> bool {
-            self.changed
-        }
-        fn set_changed(&mut self, changed: bool) {
-            self.changed = changed;
-        }
-        fn default_publish_command(&self) -> String {
-            "echo publish".to_string()
-        }
-        fn default_dry_run_publish_command(&self) -> Option<String> {
-            Some("echo publish --dry-run".to_string())
-        }
-    }
-
-    #[test]
-    fn test_check_changed_already_changed() {
-        let mut workspace =
-            MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
-        workspace.changed = true;
-
-        // Should return early if already changed
-        workspace
-            .check_changed(Path::new("/project/src/index.js"))
-            .unwrap();
-        assert!(workspace.is_changed());
-    }
-
-    #[test]
-    fn test_check_changed_sets_changed() {
-        let mut workspace =
-            MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
-
-        // File in project directory should mark as changed
-        workspace
-            .check_changed(Path::new("/project/src/index.js"))
-            .unwrap();
-        assert!(workspace.is_changed());
-    }
-
-    #[test]
-    fn test_check_changed_ignores_changepacks() {
-        let mut workspace =
-            MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
-
-        // Files in .changepacks should be ignored
-        workspace
-            .check_changed(Path::new("/project/.changepacks/change.json"))
-            .unwrap();
-        assert!(!workspace.is_changed());
-    }
-
-    #[test]
-    fn test_check_changed_ignores_other_projects() {
-        let mut workspace =
-            MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
-
-        // Files in other directories should not mark as changed
-        workspace
-            .check_changed(Path::new("/other-project/src/index.js"))
-            .unwrap();
-        assert!(!workspace.is_changed());
-    }
-
-    #[test]
-    fn test_get_publish_command_by_path() {
-        let workspace = MockWorkspace::new(
-            Some("test"),
-            "/project/package.json",
-            "packages/core/package.json",
-        );
-        let mut publish = HashMap::new();
-        publish.insert(
-            "packages/core/package.json".to_string(),
-            "custom publish".to_string(),
-        );
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(workspace.get_publish_command(&config), "custom publish");
-    }
-
-    #[test]
-    fn test_get_publish_command_by_language() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json")
-            .with_language(Language::Node);
-        let mut publish = HashMap::new();
-        publish.insert(
-            "node".to_string(),
-            "npm publish --access public".to_string(),
-        );
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(
-            workspace.get_publish_command(&config),
-            "npm publish --access public"
-        );
-    }
-
-    #[test]
-    fn test_get_publish_command_python() {
-        let workspace =
-            MockWorkspace::new(Some("test"), "/project/pyproject.toml", "pyproject.toml")
-                .with_language(Language::Python);
-        let mut publish = HashMap::new();
-        publish.insert("python".to_string(), "poetry publish".to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(workspace.get_publish_command(&config), "poetry publish");
-    }
-
-    #[test]
-    fn test_get_publish_command_rust() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/Cargo.toml", "Cargo.toml")
-            .with_language(Language::Rust);
-        let mut publish = HashMap::new();
-        publish.insert("rust".to_string(), "cargo publish".to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(workspace.get_publish_command(&config), "cargo publish");
-    }
-
-    #[test]
-    fn test_get_publish_command_dart() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/pubspec.yaml", "pubspec.yaml")
-            .with_language(Language::Dart);
-        let mut publish = HashMap::new();
-        publish.insert("dart".to_string(), "dart pub publish".to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        assert_eq!(workspace.get_publish_command(&config), "dart pub publish");
-    }
-
-    #[test]
-    fn test_get_publish_command_default() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
-        let config = Config::default();
-
-        assert_eq!(workspace.get_publish_command(&config), "echo publish");
-    }
+    // The eighteen tests pinning the shared trait defaults and the shared
+    // `UnsupportedDryRunProject` fixture are generated from one surface shared
+    // with `package.rs`; only the `Workspace`-only defaults below stay
+    // hand-written here.
+    crate::test_support::shared_project_default_tests!(
+        mock: MockWorkspace,
+        trait_name: Workspace,
+        kind: "workspace",
+        dir_not_found: "Workspace directory not found",
+        publishable_test: test_workspace_is_publishable_by_default,
+    );
 
     #[test]
     fn test_get_dry_run_publish_command_falls_back_to_workspace_default() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json")
-            .with_language(Language::Node);
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json")
+                .with_language(Language::Node);
         let config = Config::default();
 
         // With no override, the trait method returns the workspace's own
@@ -359,12 +113,12 @@ mod tests {
 
     #[test]
     fn test_get_dry_run_publish_command_override_by_path() {
-        let workspace = MockWorkspace::new(
+        let workspace = MockWorkspace::with_paths(
             Some("test"),
             "/project/package.json",
             "packages/core/package.json",
         );
-        let mut publish_dry_run = HashMap::new();
+        let mut publish_dry_run = BTreeMap::new();
         publish_dry_run.insert(
             "packages/core/package.json".to_string(),
             "custom dry".to_string(),
@@ -383,9 +137,10 @@ mod tests {
 
     #[test]
     fn test_get_dry_run_publish_command_override_by_language() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json")
-            .with_language(Language::Node);
-        let mut publish_dry_run = HashMap::new();
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json")
+                .with_language(Language::Node);
+        let mut publish_dry_run = BTreeMap::new();
         publish_dry_run.insert(
             "node".to_string(),
             "npm publish --dry-run --tag next".to_string(),
@@ -403,75 +158,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_publish_success() {
-        let temp_dir = std::env::temp_dir();
-        let path = temp_dir.join("package.json");
-        let workspace = MockWorkspace::new(Some("test"), path.to_str().unwrap(), "package.json");
-        let config = Config::default();
-
-        // This will run "echo publish" which should succeed
-        let output = workspace.publish(&config).await.unwrap();
-        assert!(output.success);
-    }
-
-    #[tokio::test]
-    async fn test_publish_failure() {
-        let temp_dir = std::env::temp_dir();
-        let path = temp_dir.join("package.json");
-        let workspace = MockWorkspace::new(Some("test"), path.to_str().unwrap(), "package.json");
-        let mut publish = HashMap::new();
-        let fail_cmd = if cfg!(target_os = "windows") {
-            "cmd /c exit 1"
-        } else {
-            "exit 1"
-        };
-        publish.insert("node".to_string(), fail_cmd.to_string());
-        let config = Config {
-            publish,
-            ..Default::default()
-        };
-
-        let output = workspace.publish(&config).await.unwrap();
-        assert!(!output.success);
-    }
-
-    #[tokio::test]
     async fn test_update_workspace_dependencies_default() {
-        let workspace = MockWorkspace::new(Some("test"), "/project/package.json", "package.json");
+        let workspace =
+            MockWorkspace::with_paths(Some("test"), "/project/package.json", "package.json");
         let packages: Vec<&dyn Package> = vec![];
 
         let result = workspace.update_workspace_dependencies(&packages).await;
         assert!(result.is_ok());
-    }
-
-    #[tokio::test]
-    async fn test_publish_no_parent_directory() {
-        let workspace = MockWorkspace {
-            name: Some("test".to_string()),
-            path: PathBuf::from(""),
-            relative_path: PathBuf::from(""),
-            version: Some("1.0.0".to_string()),
-            language: Language::Node,
-            dependencies: HashSet::new(),
-            changed: false,
-        };
-        let config = Config::default();
-        let result = workspace.publish(&config).await;
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Workspace directory not found")
-        );
-    }
-
-    #[test]
-    fn test_set_name_default_is_noop() {
-        let mut workspace =
-            MockWorkspace::new(Some("original"), "/project/package.json", "package.json");
-        workspace.set_name("new-name".to_string());
-        // Default implementation is a no-op, name should remain unchanged
-        assert_eq!(workspace.name(), Some("original"));
     }
 }

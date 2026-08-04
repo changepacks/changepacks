@@ -1,18 +1,30 @@
-/// Detects JSON indentation (2-space, 4-space, or tab) from file content.
+/// Detects JSON indentation as the actual leading-whitespace string of the
+/// first non-blank indented line, borrowed from `content`.
 ///
-/// Scans content line-by-line to find the first non-empty, non-blank line and measures
-/// its leading whitespace. Returns 1 for tabs, 0 for no indentation.
+/// Returns the exact indent unit — a single `\t` for tab-indented files,
+/// `"    "` for four-space, `"  "` for two-space, etc. Returns `""` when no
+/// indented line is found. This lets `write_package_json_version` in
+/// `changepacks-node` preserve tab and arbitrary-width indentation instead of
+/// silently rewriting every tab-indented `package.json` as single-space.
+///
+/// Segments are split on both `\n` and `\r` rather than via [`str::lines`],
+/// which terminates on LF only. A classic-Mac, CR-only manifest therefore
+/// still reports its real indent instead of `""`. This is byte-identical for
+/// LF files, and for CRLF files too: the pair yields one extra empty segment
+/// that the existing blank-segment guard already skips.
 #[must_use]
-pub fn detect_indent(content: &str) -> usize {
-    let mut indent = 0;
-    for line in content.lines() {
-        if line.trim().is_empty() || line.trim() == line.trim_end() {
+pub fn detect_indent_str(content: &str) -> &str {
+    for line in content.split(['\n', '\r']) {
+        let stripped = line.trim_start();
+        if stripped.is_empty() {
             continue;
         }
-        indent = line.len() - line.trim_start().len();
-        break;
+        let indent_len = line.len() - stripped.len();
+        if indent_len > 0 {
+            return &line[..indent_len];
+        }
     }
-    indent
+    ""
 }
 
 #[cfg(test)]
@@ -22,22 +34,28 @@ mod tests {
     use rstest::rstest;
 
     #[rstest]
-    #[case("    print('Hello, world!');", 4)]
-    #[case("{\n  \"foo\": \"bar\"}", 2)]
-    #[case("{\n    \"foo\": \"bar\"}", 4)]
-    #[case("\tconsole.log('test');", 1)]
-    #[case("noindent", 0)]
-    #[case("  foo\n    bar", 2)]
-    #[case("", 0)]
-    #[case("           ", 0)]
-    #[case("\n    indented\n   less\n", 4)] // First non-empty, non-blank line counts
-    #[case("{\n\t\"key\": \"value\"\n}", 1)] // JSON with tab indentation
-    #[case("line1\nline2\nline3", 0)] // No indented lines at all
-    #[case("{\n   \"key\": \"value\"\n}", 3)] // 3-space indentation
-    #[case("\t\tdeep\n\tshallow", 2)] // Double-tab, first match wins
-    #[case("{\n\n\n  \"after_blanks\": true\n}", 2)] // Blank lines before first indented
-    fn test_detect_indent(#[case] content: &str, #[case] expected: usize) {
-        let indent = detect_indent(content);
+    #[case("    print('Hello, world!');", "    ")]
+    #[case("{\n  \"foo\": \"bar\"}", "  ")]
+    #[case("{\n    \"foo\": \"bar\"}", "    ")]
+    #[case("\tconsole.log('test');", "\t")]
+    #[case("noindent", "")]
+    #[case("", "")]
+    #[case("           ", "")]
+    #[case("{\n\t\"key\": \"value\"\n}", "\t")] // Tab-indented JSON
+    #[case("{\n   \"key\": \"value\"\n}", "   ")] // 3-space indent preserved as-is
+    #[case("\t\tdeep\n\tshallow", "\t\t")] // Double-tab, first match wins
+    #[case("\n    indented\n   less\n", "    ")] // First non-empty line wins
+    #[case("{\n\n\n  \"after_blanks\": true\n}", "  ")] // Skip blanks
+    #[case("{\r\n  \"key\": \"value\"\r\n}\r\n", "  ")] // CRLF, 2-space
+    #[case("{\r\n\t\"key\": \"value\"\r\n}\r\n", "\t")] // CRLF, tab
+    #[case("{\r\n\r\n    \"key\": \"value\"\r\n}\r\n", "    ")] // CRLF, skip blank
+    #[case("{\r  \"key\": \"value\"\r}\r", "  ")] // bare CR, 2-space
+    #[case("{\r\t\"key\": \"value\"\r}\r", "\t")] // bare CR, tab
+    #[case("{\r\r    \"key\": \"value\"\r}\r", "    ")] // bare CR, skip blank
+    #[case("{\n \t\"key\": \"value\"\n}", " \t")] // Mixed space-then-tab returned verbatim, not normalised
+    #[case("{\n\t \"key\": \"value\"\n}", "\t ")] // Mixed tab-then-space returned verbatim, not normalised
+    fn test_detect_indent_str(#[case] content: &str, #[case] expected: &str) {
+        let indent = detect_indent_str(content);
         assert_eq!(indent, expected);
     }
 }

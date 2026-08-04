@@ -15,7 +15,7 @@
 [![GitHub issues](https://img.shields.io/github/issues/changepacks/changepacks)](https://github.com/changepacks/changepacks/issues)
 [![GitHub pull requests](https://img.shields.io/github/issues-pr/changepacks/changepacks)](https://github.com/changepacks/changepacks/pulls)
 [![GitHub last commit](https://img.shields.io/github/last-commit/changepacks/changepacks)](https://github.com/changepacks/changepacks/commits/main)
-[![Rust](https://img.shields.io/badge/Rust-1.72%2B-orange.svg)](https://rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.91%2B-orange.svg)](https://rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org/)
 [![Bun](https://img.shields.io/badge/Bun-latest-000000.svg)](https://bun.sh)
@@ -211,7 +211,7 @@ changepacks publish
 Options:
 
 ```bash
-changepacks publish --dry-run           # Verify release flow by running each project's publish command in dry-run mode (e.g., npm publish --dry-run, cargo publish --dry-run)
+changepacks publish --dry-run           # Verify release flow using each language's built-in dry-run command (e.g., npm publish --dry-run, cargo publish --dry-run)
 changepacks publish --yes               # Skip confirmation prompts
 changepacks publish --format json       # Output results in JSON format
 changepacks publish --remote            # Use remote branch for change detection
@@ -228,7 +228,7 @@ Default publish commands by language:
 - **Rust**: `cargo publish`
 - **Dart**: `dart pub publish`
 - **Java**: `./gradlew publish`
-- **C#**: `dotnet nuget push`
+- **C#**: `dotnet pack -c Release && dotnet nuget push`
 
 ### Check Config
 
@@ -274,8 +274,8 @@ You can edit `.changepacks/config.json` to customize:
 - Custom dry-run publish commands (`publishDryRun`):
   - Overrides the dry-run command used by `changepacks publish --dry-run`.
   - Same keying rules as `publish` (language key or relative project path).
-  - If not specified, `changepacks publish --dry-run` derives the dry-run command by appending `--dry-run` to the resolved publish command (e.g., `npm publish --dry-run`, `cargo publish --dry-run`).
-  - Required for ecosystems whose publish tool does not support `--dry-run` natively (e.g., `dotnet nuget push`); without an override these projects are skipped with a warning.
+  - If not specified, each language uses its built-in dry-run command (e.g., `npm publish --dry-run`, `uv publish --dry-run`, `cargo publish --dry-run`, `dart pub publish --dry-run`; Java runs `./gradlew publishToMavenLocal` against an isolated temporary Maven local repository that is removed afterward; C# runs a managed `dotnet pack` + push to a temporary local feed).
+  - A custom `publish` command does not change the dry-run command — set `publishDryRun` to override what `changepacks publish --dry-run` executes.
 - Dependency rules for forced updates (`updateOn`):
   - Key: glob pattern for trigger packages (e.g., `"crates/*/Cargo.toml"`).
   - Value: list of package file paths that must be updated when trigger matches.
@@ -372,7 +372,7 @@ The project follows a trait-based, modular architecture:
 
 - **Async-First**: All I/O operations use tokio for parallel execution
 - **Format Preservation**: Language-specific parsers (toml_edit, yamlpatch, serde_json) maintain file formatting
-- **Git-Native**: Uses git2 library for change detection and repository operations
+- **Git-Native**: Uses gix library for change detection and repository operations
 - **Topological Sorting**: Kahn's algorithm ensures correct publish order based on dependencies
 
 ## Contributing
@@ -442,7 +442,7 @@ If you're using changepacks in your project, we'd love to feature you here! Plea
 
 ## License
 
-This project is distributed under the MIT License. See the [LICENSE](LICENSE) file for more details.
+This project is distributed under the Apache License 2.0. See the [LICENSE](LICENSE) file for more details.
 
 ## Roadmap
 

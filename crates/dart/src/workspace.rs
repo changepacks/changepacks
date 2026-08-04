@@ -1,153 +1,73 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
-use changepacks_utils::next_version;
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use tokio::fs::{read_to_string, write};
 
-#[derive(Debug)]
-pub struct DartWorkspace {
-    path: PathBuf,
-    relative_path: PathBuf,
-    version: Option<String>,
-    name: Option<String>,
-    is_changed: bool,
-    dependencies: HashSet<String>,
-}
-
-impl DartWorkspace {
-    #[must_use]
-    pub fn new(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-    ) -> Self {
-        Self {
-            path,
-            relative_path,
-            name,
-            version,
-            is_changed: false,
-            dependencies: HashSet::new(),
-        }
-    }
-}
+// Seven-field discovered-project declaration plus `new` / `new_discovered`,
+// shared verbatim with the other four identical language types.
+changepacks_core::declare_discovered_project!(pub struct DartWorkspace);
 
 #[async_trait]
 impl Workspace for DartWorkspace {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
+    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
+    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
+    // bodies with every other language crate's `Package` / `Workspace`
+    // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
+    // — expansion is byte-identical to the previous hand-rolled bodies.
+    changepacks_core::impl_basic_accessors!();
 
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
+    // Publishability flag accessor.
+    changepacks_core::impl_publishable_by_default!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(
-            self.version.as_ref().unwrap_or(&String::from("0.0.0")),
-            update_type,
-        )?;
-
-        let pubspec_yaml_raw = read_to_string(&self.path).await?;
-
-        write(
-            &self.path,
-            format!(
-                "{}{}",
-                yamlpatch::apply_yaml_patches(
-                    &yamlpath::Document::new(&pubspec_yaml_raw).context("Failed to parse YAML")?,
-                    &[yamlpatch::Patch {
-                        operation: if self.version.is_some() {
-                            yamlpatch::Op::Replace(serde_yaml::Value::String(next_version.clone()))
-                        } else {
-                            yamlpatch::Op::Add {
-                                key: "version".to_string(),
-                                value: serde_yaml::Value::String(next_version.clone()),
-                            }
-                        },
-                        route: if self.version.is_some() {
-                            yamlpath::route!("version")
-                        } else {
-                            yamlpath::route!()
-                        }
-                    }],
-                )?
-                .source()
-                .trim_end(),
-                if pubspec_yaml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
-            ),
-        )
-        .await?;
-        self.version = Some(next_version);
-        Ok(())
+        crate::bump_pubspec_version(&mut self.version, &self.path, update_type).await
     }
 
-    fn language(&self) -> Language {
-        Language::Dart
-    }
+    // Byte-identical `fn language(&self) -> Language { Language::Dart }`
+    // one-liner shared with every other language crate's `Package` /
+    // `Workspace` impl. Consolidated via `impl_language!()` in
+    // `changepacks-core` alongside the other accessor macros.
+    changepacks_core::impl_language!(Language::Dart);
 
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
+    // `default_publish_command` / `default_dry_run_publish_command` share
+    // their const-based shape with every other const-driven language
+    // crate. Consolidated via `impl_const_publish_commands!()` in
+    // `changepacks-core` — expansion is byte-identical to the previous
+    // hand-rolled bodies.
+    changepacks_core::impl_const_publish_commands!(
+        crate::PUBLISH_COMMAND,
+        crate::DRY_RUN_PUBLISH_COMMAND
+    );
 
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn default_publish_command(&self) -> String {
-        "dart pub publish".to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        Some("dart pub publish --dry-run".to_string())
-    }
-
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
-    }
+    // `dependencies()` / `add_dependency()` share their byte-identical
+    // body with every other language crate's `Package` and `Workspace`
+    // impl (all use `dependencies: HashSet<String>` as their backing
+    // store). Consolidated via the `impl_dependencies_accessors!()`
+    // macro in `changepacks-core` so future accessor tweaks land in
+    // one place — expansion is byte-identical to the previous
+    // hand-rolled bodies.
+    changepacks_core::impl_dependencies_accessors!();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
-    #[tokio::test]
-    async fn test_new_with_name_and_version() {
+    #[test]
+    fn test_new_with_name_and_version() {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_workspace
+            r"name: test_workspace
 version: 1.0.0
 workspace:
   packages:
     - packages/*
-"#,
+",
         )
         .unwrap();
 
@@ -163,6 +83,7 @@ workspace:
         assert_eq!(workspace.path(), pubspec_path);
         assert_eq!(workspace.relative_path(), PathBuf::from("pubspec.yaml"));
         assert!(!workspace.is_changed());
+        assert!(workspace.is_publishable_by_default());
         assert_eq!(workspace.language(), Language::Dart);
         assert_eq!(workspace.default_publish_command(), "dart pub publish");
         assert_eq!(
@@ -173,16 +94,29 @@ workspace:
         temp_dir.close().unwrap();
     }
 
-    #[tokio::test]
-    async fn test_new_without_name_and_version() {
+    #[test]
+    fn test_new_discovered_carries_default_publishability() {
+        let workspace = DartWorkspace::new_discovered(
+            Some("test_workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pubspec.yaml"),
+            PathBuf::from("pubspec.yaml"),
+            false,
+        );
+
+        assert!(!workspace.is_publishable_by_default());
+    }
+
+    #[test]
+    fn test_new_without_name_and_version() {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"workspace:
+            r"workspace:
   packages:
     - packages/*
-"#,
+",
         )
         .unwrap();
 
@@ -201,49 +135,35 @@ workspace:
         temp_dir.close().unwrap();
     }
 
-    #[tokio::test]
-    async fn test_set_changed() {
-        let temp_dir = TempDir::new().unwrap();
-        let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
-            &pubspec_path,
-            r#"name: test_workspace
-version: 1.0.0
-workspace:
-  packages:
-    - packages/*
-"#,
-        )
-        .unwrap();
-
-        let mut workspace = DartWorkspace::new(
+    #[test]
+    fn test_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(DartWorkspace::new(
             Some("test_workspace".to_string()),
             Some("1.0.0".to_string()),
-            pubspec_path.clone(),
+            PathBuf::from("/test/pubspec.yaml"),
             PathBuf::from("pubspec.yaml"),
-        );
-
-        assert!(!workspace.is_changed());
-        workspace.set_changed(true);
-        assert!(workspace.is_changed());
-        workspace.set_changed(false);
-        assert!(!workspace.is_changed());
-
-        temp_dir.close().unwrap();
+        ));
     }
 
+    #[rstest]
+    #[case(UpdateType::Patch, "1.0.1")]
+    #[case(UpdateType::Minor, "1.1.0")]
+    #[case(UpdateType::Major, "2.0.0")]
     #[tokio::test]
-    async fn test_update_version_with_existing_version() {
+    async fn test_update_version_with_existing_version(
+        #[case] update_type: UpdateType,
+        #[case] expected: &str,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_workspace
+            r"name: test_workspace
 version: 1.0.0
 workspace:
   packages:
     - packages/*
-"#,
+",
         )
         .unwrap();
 
@@ -254,10 +174,10 @@ workspace:
             PathBuf::from("pubspec.yaml"),
         );
 
-        workspace.update_version(UpdateType::Patch).await.unwrap();
+        workspace.update_version(update_type).await.unwrap();
 
         let content = fs::read_to_string(&pubspec_path).unwrap();
-        assert!(content.contains("version: 1.0.1"));
+        assert!(content.contains(&format!("version: {expected}")));
 
         temp_dir.close().unwrap();
     }
@@ -268,11 +188,11 @@ workspace:
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
         fs::write(
             &pubspec_path,
-            r#"name: test_workspace
+            r"name: test_workspace
 workspace:
   packages:
     - packages/*
-"#,
+",
         )
         .unwrap();
 
@@ -291,20 +211,18 @@ workspace:
         temp_dir.close().unwrap();
     }
 
+    /// Workspace counterpart of
+    /// `test_dart_package_update_version_malformed_manifest_leaves_file_untouched`.
+    /// `DartWorkspace` had no error-path coverage at all, so a `yamlpath` parse
+    /// failure reached through the `Workspace` trait entry point was unpinned:
+    /// nothing stopped a future writer from truncating or half-writing a
+    /// manifest it could not parse.
     #[tokio::test]
-    async fn test_update_version_minor() {
+    async fn test_dart_workspace_update_version_malformed_manifest_leaves_file_untouched() {
         let temp_dir = TempDir::new().unwrap();
         let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
-            &pubspec_path,
-            r#"name: test_workspace
-version: 1.0.0
-workspace:
-  packages:
-    - packages/*
-"#,
-        )
-        .unwrap();
+        let original = "name: test_workspace\nversion: [1.0.0\n";
+        fs::write(&pubspec_path, original).unwrap();
 
         let mut workspace = DartWorkspace::new(
             Some("test_workspace".to_string()),
@@ -313,80 +231,37 @@ workspace:
             PathBuf::from("pubspec.yaml"),
         );
 
-        workspace.update_version(UpdateType::Minor).await.unwrap();
-
-        let content = fs::read_to_string(&pubspec_path).unwrap();
-        assert!(content.contains("version: 1.1.0"));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_update_version_major() {
-        let temp_dir = TempDir::new().unwrap();
-        let pubspec_path = temp_dir.path().join("pubspec.yaml");
-        fs::write(
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            workspace.update_version(UpdateType::Patch).await,
             &pubspec_path,
-            r#"name: test_workspace
-version: 1.0.0
-workspace:
-  packages:
-    - packages/*
-"#,
-        )
-        .unwrap();
-
-        let mut workspace = DartWorkspace::new(
-            Some("test_workspace".to_string()),
-            Some("1.0.0".to_string()),
-            pubspec_path.clone(),
-            PathBuf::from("pubspec.yaml"),
+            "pubspec.yaml",
+            original
         );
-
-        workspace.update_version(UpdateType::Major).await.unwrap();
-
-        let content = fs::read_to_string(&pubspec_path).unwrap();
-        assert!(content.contains("version: 2.0.0"));
 
         temp_dir.close().unwrap();
     }
 
     #[test]
     fn test_dependencies() {
-        let mut workspace = DartWorkspace::new(
-            Some("test_workspace".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/pubspec.yaml"),
-            PathBuf::from("test/pubspec.yaml"),
+        changepacks_core::assert_dependencies_roundtrip!(
+            DartWorkspace::new(
+                Some("test_workspace".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/pubspec.yaml"),
+                PathBuf::from("test/pubspec.yaml"),
+            ),
+            "http",
+            "core"
         );
-
-        // Initially empty
-        assert!(workspace.dependencies().is_empty());
-
-        // Add dependencies
-        workspace.add_dependency("http");
-        workspace.add_dependency("core");
-
-        let deps = workspace.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("http"));
-        assert!(deps.contains("core"));
-
-        // Adding duplicate should not increase count
-        workspace.add_dependency("http");
-        assert_eq!(workspace.dependencies().len(), 2);
     }
 
     #[test]
     fn test_set_name() {
-        let mut workspace = DartWorkspace::new(
+        changepacks_core::assert_set_name_roundtrip!(DartWorkspace::new(
             None,
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pubspec.yaml"),
             PathBuf::from("pubspec.yaml"),
-        );
-        assert_eq!(workspace.name(), None);
-        workspace.set_name("my-project".to_string());
-        assert_eq!(workspace.name(), Some("my-project"));
+        ));
     }
 }

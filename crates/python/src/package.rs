@@ -1,136 +1,50 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType};
-use changepacks_utils::next_version;
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use tokio::fs::{read_to_string, write};
-use toml_edit::DocumentMut;
 
-#[derive(Debug)]
-pub struct PythonPackage {
-    name: Option<String>,
-    version: Option<String>,
-    path: PathBuf,
-    relative_path: PathBuf,
-    is_changed: bool,
-    dependencies: HashSet<String>,
-}
-
-impl PythonPackage {
-    #[must_use]
-    pub fn new(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-    ) -> Self {
-        Self {
-            name,
-            version,
-            path,
-            relative_path,
-            is_changed: false,
-            dependencies: HashSet::new(),
-        }
-    }
-}
+// Seven-field discovered-project declaration plus `new` / `new_discovered`,
+// shared verbatim with the other four identical language types.
+changepacks_core::declare_discovered_project!(pub struct PythonPackage);
 
 #[async_trait]
 impl Package for PythonPackage {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
+    // Standard package/workspace accessors.
+    changepacks_core::impl_basic_accessors!();
 
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
+    // Publishability flag accessor.
+    changepacks_core::impl_publishable_by_default!();
 
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
-
+    // Body shared with `PythonWorkspace::update_version` via the crate-local
+    // helper; the signature stays hand-written because `async_trait` forbids
+    // generating it from a macro (see `bump_pyproject_version` in `lib.rs`).
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let current_version = self.version.as_deref().unwrap_or("0.0.0");
-        let new_version = next_version(current_version, update_type)?;
-
-        let pyproject_toml_raw = read_to_string(&self.path).await?;
-        let mut pyproject_toml: DocumentMut = pyproject_toml_raw.parse::<DocumentMut>()?;
-        pyproject_toml["project"]["version"] = new_version.clone().into();
-        write(
-            &self.path,
-            format!(
-                "{}{}",
-                pyproject_toml.to_string().trim_end(),
-                if pyproject_toml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
-            ),
-        )
-        .await?;
-        self.version = Some(new_version);
-        Ok(())
+        crate::bump_pyproject_version(&mut self.version, &self.path, update_type).await
     }
 
-    fn language(&self) -> Language {
-        Language::Python
-    }
+    // Fixed language accessor.
+    changepacks_core::impl_language!(Language::Python);
 
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
+    // Const publish defaults; `publishDryRun` can override this preview command.
+    changepacks_core::impl_const_publish_commands!(
+        crate::PUBLISH_COMMAND,
+        crate::DRY_RUN_PUBLISH_COMMAND
+    );
 
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn default_publish_command(&self) -> String {
-        "uv publish".to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        // `uv publish` supports `--check-url` for non-mutating verification.
-        // Users who prefer a different verification flow (e.g. `uv build` or
-        // `twine check`) can override via `publishDryRun` in config.
-        Some("uv publish --dry-run".to_string())
-    }
-
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
-    }
+    // Dependency set accessors.
+    changepacks_core::impl_dependencies_accessors!();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use changepacks_core::UpdateType;
+    use rstest::rstest;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 
-    #[tokio::test]
-    async fn test_python_package_new() {
-        let package = PythonPackage::new(
-            Some("test-package".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/pyproject.toml"),
-            PathBuf::from("test/pyproject.toml"),
-        );
-
+    fn assert_python_package_defaults(package: &PythonPackage) {
         assert_eq!(package.name(), Some("test-package"));
         assert_eq!(package.version(), Some("1.0.0"));
         assert_eq!(package.path(), PathBuf::from("/test/pyproject.toml"));
@@ -147,24 +61,53 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_python_package_set_changed() {
-        let mut package = PythonPackage::new(
+    #[test]
+    fn test_python_package_new() {
+        let package = PythonPackage::new(
             Some("test-package".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pyproject.toml"),
             PathBuf::from("test/pyproject.toml"),
         );
 
-        assert!(!package.is_changed());
-        package.set_changed(true);
-        assert!(package.is_changed());
-        package.set_changed(false);
-        assert!(!package.is_changed());
+        assert_python_package_defaults(&package);
+        assert!(package.is_publishable_by_default());
     }
 
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn test_python_package_discovered_publishability(#[case] expected: bool) {
+        let package = PythonPackage::new_discovered(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("test/pyproject.toml"),
+            expected,
+        );
+
+        assert_eq!(package.is_publishable_by_default(), expected);
+    }
+
+    #[test]
+    fn test_python_package_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(PythonPackage::new(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("test/pyproject.toml"),
+        ));
+    }
+
+    #[rstest]
+    #[case(UpdateType::Patch, "1.0.1")]
+    #[case(UpdateType::Minor, "1.1.0")]
+    #[case(UpdateType::Major, "2.0.0")]
     #[tokio::test]
-    async fn test_python_package_update_version_patch() {
+    async fn test_python_package_update_version(
+        #[case] update_type: UpdateType,
+        #[case] expected: &str,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let pyproject_toml = temp_dir.path().join("pyproject.toml");
         fs::write(
@@ -183,66 +126,10 @@ version = "1.0.0"
             PathBuf::from("pyproject.toml"),
         );
 
-        package.update_version(UpdateType::Patch).await.unwrap();
+        package.update_version(update_type).await.unwrap();
 
         let content = read_to_string(&pyproject_toml).await.unwrap();
-        assert!(content.contains("version = \"1.0.1\""));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_python_package_update_version_minor() {
-        let temp_dir = TempDir::new().unwrap();
-        let pyproject_toml = temp_dir.path().join("pyproject.toml");
-        fs::write(
-            &pyproject_toml,
-            r#"[project]
-name = "test-package"
-version = "1.0.0"
-"#,
-        )
-        .unwrap();
-
-        let mut package = PythonPackage::new(
-            Some("test-package".to_string()),
-            Some("1.0.0".to_string()),
-            pyproject_toml.clone(),
-            PathBuf::from("pyproject.toml"),
-        );
-
-        package.update_version(UpdateType::Minor).await.unwrap();
-
-        let content = read_to_string(&pyproject_toml).await.unwrap();
-        assert!(content.contains("version = \"1.1.0\""));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_python_package_update_version_major() {
-        let temp_dir = TempDir::new().unwrap();
-        let pyproject_toml = temp_dir.path().join("pyproject.toml");
-        fs::write(
-            &pyproject_toml,
-            r#"[project]
-name = "test-package"
-version = "1.0.0"
-"#,
-        )
-        .unwrap();
-
-        let mut package = PythonPackage::new(
-            Some("test-package".to_string()),
-            Some("1.0.0".to_string()),
-            pyproject_toml.clone(),
-            PathBuf::from("pyproject.toml"),
-        );
-
-        package.update_version(UpdateType::Major).await.unwrap();
-
-        let content = read_to_string(&pyproject_toml).await.unwrap();
-        assert!(content.contains("version = \"2.0.0\""));
+        assert!(content.contains(&format!("version = \"{expected}\"")));
 
         temp_dir.close().unwrap();
     }
@@ -283,42 +170,117 @@ requests = "2.31.0"
         temp_dir.close().unwrap();
     }
 
-    #[test]
-    fn test_python_package_dependencies() {
+    #[tokio::test]
+    async fn test_python_package_update_version_preserves_newline() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            "[project]\nname = \"test-package\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+
         let mut package = PythonPackage::new(
             Some("test-package".to_string()),
             Some("1.0.0".to_string()),
-            PathBuf::from("/test/pyproject.toml"),
-            PathBuf::from("test/pyproject.toml"),
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
         );
 
-        // Initially empty
-        assert!(package.dependencies().is_empty());
+        package.update_version(UpdateType::Patch).await.unwrap();
 
-        // Add dependencies
-        package.add_dependency("requests");
-        package.add_dependency("core");
+        let content = read_to_string(&pyproject_toml).await.unwrap();
+        assert!(content.ends_with('\n'));
+        assert!(content.contains(r#"version = "1.0.1""#));
 
-        let deps = package.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("requests"));
-        assert!(deps.contains("core"));
+        temp_dir.close().unwrap();
+    }
 
-        // Adding duplicate should not increase count
-        package.add_dependency("requests");
-        assert_eq!(package.dependencies().len(), 2);
+    #[test]
+    fn test_python_package_dependencies() {
+        changepacks_core::assert_dependencies_roundtrip!(
+            PythonPackage::new(
+                Some("test-package".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/pyproject.toml"),
+                PathBuf::from("test/pyproject.toml"),
+            ),
+            "requests",
+            "core"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_python_package_update_version_without_project_section() {
+        // Regression: a pyproject.toml with only `[build-system]` (no `[project]`)
+        // is a legitimate PEP 517 shape. PythonPackage::update_version must create
+        // the `[project]` table and set the version, preserving `[build-system]`.
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[build-system]
+requires = ["setuptools"]
+"#,
+        )
+        .unwrap();
+
+        let mut package = PythonPackage::new(
+            None,
+            None,
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
+        );
+
+        package.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&pyproject_toml).await.unwrap();
+        assert!(content.contains("[project]"));
+        assert!(content.contains("version = \"0.0.1\""));
+        assert!(content.contains("[build-system]"));
+        assert!(content.contains("requires = [\"setuptools\"]"));
+
+        temp_dir.close().unwrap();
+    }
+
+    /// A `pyproject.toml` that does not parse must abort the bump BEFORE the
+    /// writer touches the file. The finder covers a malformed manifest, and
+    /// `write_pyproject_version` covers semantic rejections, but nothing pinned
+    /// the parse failure as observed through the `Package` trait entry point —
+    /// so swallowing the parse error inside the writer would still leave this
+    /// path green. Mirrors
+    /// `test_write_pyproject_version_non_table_project_leaves_file_untouched`.
+    #[tokio::test]
+    async fn test_python_package_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        let original = "invalid toml [[[";
+        fs::write(&pyproject_toml, original).unwrap();
+
+        let mut package = PythonPackage::new(
+            Some("test-package".to_string()),
+            Some("1.0.0".to_string()),
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
+        );
+
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            package.update_version(UpdateType::Patch).await,
+            &pyproject_toml,
+            "pyproject.toml",
+            original
+        );
+
+        temp_dir.close().unwrap();
     }
 
     #[test]
     fn test_set_name() {
-        let mut package = PythonPackage::new(
+        changepacks_core::assert_set_name_roundtrip!(PythonPackage::new(
             None,
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pyproject.toml"),
             PathBuf::from("pyproject.toml"),
-        );
-        assert_eq!(package.name(), None);
-        package.set_name("my-project".to_string());
-        assert_eq!(package.name(), Some("my-project"));
+        ));
     }
 }

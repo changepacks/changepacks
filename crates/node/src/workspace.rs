@@ -1,129 +1,58 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use changepacks_core::{Language, UpdateType, Workspace};
-use changepacks_utils::{detect_indent, next_version};
-use serde::Serialize;
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use tokio::fs::{read_to_string, write};
+use changepacks_core::{Config, Language, UpdateType, Workspace};
 
-use crate::detect_package_manager_recursive;
-
-#[derive(Debug)]
-pub struct NodeWorkspace {
-    path: PathBuf,
-    relative_path: PathBuf,
-    version: Option<String>,
-    name: Option<String>,
-    is_changed: bool,
-    dependencies: HashSet<String>,
-}
-
-impl NodeWorkspace {
-    #[must_use]
-    pub fn new(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-    ) -> Self {
-        Self {
-            path,
-            relative_path,
-            name,
-            version,
-            is_changed: false,
-            dependencies: HashSet::new(),
-        }
-    }
-}
+// Eight-field declaration plus the shared constructor pair, identical to
+// `NodePackage` (see `declare_node_project!` in `lib.rs`); the extra
+// `package_manager` field rules out
+// `changepacks_core::declare_discovered_project!`.
+crate::declare_node_project!(pub struct NodeWorkspace);
 
 #[async_trait]
 impl Workspace for NodeWorkspace {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
+    // Standard package/workspace accessors.
+    changepacks_core::impl_basic_accessors!();
 
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
+    // Publishability flag accessor.
+    changepacks_core::impl_publishable_by_default!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(
-            self.version.as_ref().unwrap_or(&String::from("0.0.0")),
-            update_type,
-        )?;
+        // Shared with `NodePackage::update_version` (see the note on
+        // `crate::bump_package_json_version` for why this is a function call
+        // and not a macro).
+        crate::bump_package_json_version(&mut self.version, &self.path, update_type).await
+    }
 
-        let package_json_raw = read_to_string(Path::new(&self.path)).await?;
-        let indent = detect_indent(&package_json_raw);
-        let mut package_json: serde_json::Value = serde_json::from_str(&package_json_raw)?;
-        package_json["version"] = serde_json::Value::String(next_version.clone());
-        let ind = &b" ".repeat(indent);
-        let formatter = serde_json::ser::PrettyFormatter::with_indent(ind);
-        let writer = Vec::new();
-        let mut ser = serde_json::Serializer::with_formatter(writer, formatter);
-        package_json.serialize(&mut ser)?;
-        write(
+    // Fixed language accessor.
+    changepacks_core::impl_language!(Language::Node);
+
+    // Node publish command defaults (runtime-detected package manager).
+    crate::impl_node_publish_wiring!();
+
+    // Dependency set accessors.
+    changepacks_core::impl_dependencies_accessors!();
+
+    async fn publish(&self, config: &Config) -> Result<changepacks_core::publish::PublishOutput> {
+        crate::run_publish_for_path(
             &self.path,
-            format!(
-                "{}{}",
-                String::from_utf8(ser.into_inner())?.trim_end(),
-                if package_json_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
-            ),
+            &self.relative_path,
+            config,
+            changepacks_core::publish::WORKSPACE_DIR_NOT_FOUND,
         )
-        .await?;
-        self.version = Some(next_version);
-        Ok(())
+        .await
     }
 
-    fn language(&self) -> Language {
-        Language::Node
-    }
-
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
-
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn default_publish_command(&self) -> String {
-        detect_package_manager_recursive(&self.path)
-            .publish_command()
-            .to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        Some(
-            detect_package_manager_recursive(&self.path)
-                .dry_run_publish_command()
-                .to_string(),
+    async fn dry_run_publish(
+        &self,
+        config: &Config,
+    ) -> Result<Option<changepacks_core::publish::PublishOutput>> {
+        crate::run_dry_run_publish_for_path(
+            &self.path,
+            &self.relative_path,
+            config,
+            changepacks_core::publish::WORKSPACE_DIR_NOT_FOUND,
         )
-    }
-
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
+        .await
     }
 }
 
@@ -131,12 +60,35 @@ impl Workspace for NodeWorkspace {
 mod tests {
     use super::*;
     use changepacks_core::UpdateType;
+    use rstest::rstest;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 
-    #[tokio::test]
-    async fn test_node_workspace_new() {
+    /// `NodeWorkspace` binding of the shared PATH-collection-failure scenario.
+    async fn assert_collection_failure_prevents_command(dry_run: bool) {
+        crate::test_util::assert_collection_failure_prevents_command(
+            dry_run,
+            async |package_json, config| {
+                let workspace = NodeWorkspace::new(
+                    Some("test-workspace".to_string()),
+                    Some("1.0.0".to_string()),
+                    package_json,
+                    PathBuf::from("package.json"),
+                );
+                if dry_run {
+                    workspace.dry_run_publish(&config).await.map(|_| ())
+                } else {
+                    workspace.publish(&config).await.map(|_| ())
+                }
+            },
+        )
+        .await;
+    }
+
+    #[test]
+    fn test_node_workspace_new() {
         let workspace = NodeWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
@@ -153,6 +105,7 @@ mod tests {
         );
         assert_eq!(workspace.language(), Language::Node);
         assert!(!workspace.is_changed());
+        assert!(workspace.is_publishable_by_default());
         assert_eq!(workspace.default_publish_command(), "npm publish");
         assert_eq!(
             workspace.default_dry_run_publish_command().as_deref(),
@@ -160,8 +113,24 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_node_workspace_new_without_name_and_version() {
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn test_node_workspace_discovered_publishability(#[case] expected: bool) {
+        let workspace = NodeWorkspace::new_discovered(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/package.json"),
+            PathBuf::from("test/package.json"),
+            crate::PackageManager::Npm,
+            expected,
+        );
+
+        assert_eq!(workspace.is_publishable_by_default(), expected);
+    }
+
+    #[test]
+    fn test_node_workspace_new_without_name_and_version() {
         let workspace = NodeWorkspace::new(
             None,
             None,
@@ -173,24 +142,25 @@ mod tests {
         assert_eq!(workspace.version(), None);
     }
 
-    #[tokio::test]
-    async fn test_node_workspace_set_changed() {
-        let mut workspace = NodeWorkspace::new(
+    #[test]
+    fn test_node_workspace_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(NodeWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/package.json"),
             PathBuf::from("test/package.json"),
-        );
-
-        assert!(!workspace.is_changed());
-        workspace.set_changed(true);
-        assert!(workspace.is_changed());
-        workspace.set_changed(false);
-        assert!(!workspace.is_changed());
+        ));
     }
 
+    #[rstest]
+    #[case(UpdateType::Patch, "1.0.1")]
+    #[case(UpdateType::Minor, "1.1.0")]
+    #[case(UpdateType::Major, "2.0.0")]
     #[tokio::test]
-    async fn test_node_workspace_update_version_with_existing_version() {
+    async fn test_node_workspace_update_version_with_existing_version(
+        #[case] update_type: UpdateType,
+        #[case] expected: &str,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let package_json = temp_dir.path().join("package.json");
         fs::write(
@@ -211,10 +181,10 @@ mod tests {
             PathBuf::from("package.json"),
         );
 
-        workspace.update_version(UpdateType::Patch).await.unwrap();
+        workspace.update_version(update_type).await.unwrap();
 
         let content = read_to_string(&package_json).await.unwrap();
-        assert!(content.contains(r#""version": "1.0.1""#));
+        assert!(content.contains(&format!(r#""version": "{expected}""#)));
 
         temp_dir.close().unwrap();
     }
@@ -244,66 +214,6 @@ mod tests {
 
         let content = read_to_string(&package_json).await.unwrap();
         assert!(content.contains(r#""version": "0.0.1""#));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_node_workspace_update_version_minor() {
-        let temp_dir = TempDir::new().unwrap();
-        let package_json = temp_dir.path().join("package.json");
-        fs::write(
-            &package_json,
-            r#"{
-  "name": "test-workspace",
-  "version": "1.0.0",
-  "workspaces": ["packages/*"]
-}
-"#,
-        )
-        .unwrap();
-
-        let mut workspace = NodeWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            package_json.clone(),
-            PathBuf::from("package.json"),
-        );
-
-        workspace.update_version(UpdateType::Minor).await.unwrap();
-
-        let content = read_to_string(&package_json).await.unwrap();
-        assert!(content.contains(r#""version": "1.1.0""#));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_node_workspace_update_version_major() {
-        let temp_dir = TempDir::new().unwrap();
-        let package_json = temp_dir.path().join("package.json");
-        fs::write(
-            &package_json,
-            r#"{
-  "name": "test-workspace",
-  "version": "1.0.0",
-  "workspaces": ["packages/*"]
-}
-"#,
-        )
-        .unwrap();
-
-        let mut workspace = NodeWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            package_json.clone(),
-            PathBuf::from("package.json"),
-        );
-
-        workspace.update_version(UpdateType::Major).await.unwrap();
-
-        let content = read_to_string(&package_json).await.unwrap();
-        assert!(content.contains(r#""version": "2.0.0""#));
 
         temp_dir.close().unwrap();
     }
@@ -344,42 +254,65 @@ mod tests {
         temp_dir.close().unwrap();
     }
 
-    #[test]
-    fn test_node_workspace_dependencies() {
+    /// Workspace-side twin of the `NodePackage` malformed-manifest test: the
+    /// two `update_version` bodies share `bump_package_json_version`, so both
+    /// trait entry points must be pinned independently or a regression could be
+    /// hidden behind whichever one is still covered.
+    #[tokio::test]
+    async fn test_node_workspace_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let package_json = temp_dir.path().join("package.json");
+        let original = r#"{ "name": "test-workspace", invalid json }"#;
+        fs::write(&package_json, original).unwrap();
+
         let mut workspace = NodeWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
-            PathBuf::from("/test/package.json"),
-            PathBuf::from("test/package.json"),
+            package_json.clone(),
+            PathBuf::from("package.json"),
         );
 
-        // Initially empty
-        assert!(workspace.dependencies().is_empty());
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            workspace.update_version(UpdateType::Patch).await,
+            &package_json,
+            "package.json",
+            original
+        );
 
-        // Add dependencies
-        workspace.add_dependency("core");
-        workspace.add_dependency("utils");
+        temp_dir.close().unwrap();
+    }
 
-        let deps = workspace.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("core"));
-        assert!(deps.contains("utils"));
-
-        // Adding duplicate should not increase count
-        workspace.add_dependency("core");
-        assert_eq!(workspace.dependencies().len(), 2);
+    #[test]
+    fn test_node_workspace_dependencies() {
+        changepacks_core::assert_dependencies_roundtrip!(
+            NodeWorkspace::new(
+                Some("test-workspace".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/package.json"),
+                PathBuf::from("test/package.json"),
+            ),
+            "core",
+            "utils"
+        );
     }
 
     #[test]
     fn test_set_name() {
-        let mut workspace = NodeWorkspace::new(
+        changepacks_core::assert_set_name_roundtrip!(NodeWorkspace::new(
             None,
             Some("1.0.0".to_string()),
             PathBuf::from("/test/package.json"),
             PathBuf::from("package.json"),
-        );
-        assert_eq!(workspace.name(), None);
-        workspace.set_name("my-project".to_string());
-        assert_eq!(workspace.name(), Some("my-project"));
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_publish_stops_when_path_collection_fails() {
+        assert_collection_failure_prevents_command(false).await;
+    }
+
+    #[tokio::test]
+    async fn test_dry_run_publish_stops_when_path_collection_fails() {
+        assert_collection_failure_prevents_command(true).await;
     }
 }

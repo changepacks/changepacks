@@ -6,6 +6,7 @@
 //! implementations. The main traits are `Package` for single projects, `Workspace` for
 //! monorepo roots, and `ProjectFinder` for discovering projects in a git tree.
 
+mod change_detection;
 mod changepack_result;
 mod config;
 mod language;
@@ -18,14 +19,20 @@ mod update_log;
 mod update_type;
 mod workspace;
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 // Re-export traits for convenience
+pub use change_detection::{contains_changepacks_component, manifest_parent_dir};
 pub use changepack_result::{ChangePackResult, ChangePackResultLog};
 pub use config::Config;
 pub use language::Language;
 pub use package::Package;
-pub use project::Project;
-pub use project_finder::ProjectFinder;
-pub use publish::PublishOutput;
+pub use project::{Project, cmp_normalized_paths, format_version_display};
+pub use project_finder::{
+    ProjectFinder, has_extension_ignore_ascii_case, is_regular_file, regular_file_metadata,
+};
+pub use publish::{PublishOutput, normalize_path_separators, normalize_path_separators_of};
 pub use publish_result::PublishResult;
 pub use update_log::ChangePackLog;
 pub use update_type::UpdateType;

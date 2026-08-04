@@ -1,128 +1,145 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Project, ProjectFinder};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
 };
-use tokio::fs::read_to_string;
 
-use crate::{package::PythonPackage, workspace::PythonWorkspace};
+use crate::{package::PythonPackage, read_and_parse_pyproject_toml, workspace::PythonWorkspace};
 
-#[derive(Debug)]
+/// Manifest filenames this finder recognizes. Static because the list is
+/// compile-time constant — no per-instance heap `Vec` is needed and the
+/// `ProjectFinder::project_files` return type (`&[&str]`) already accepts
+/// a `&'static [&'static str]`.
+const PROJECT_FILES: &[&str] = &["pyproject.toml"];
+
+#[derive(Debug, Default)]
 pub struct PythonProjectFinder {
     projects: HashMap<PathBuf, Project>,
-    project_files: Vec<&'static str>,
-}
-
-impl Default for PythonProjectFinder {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 impl PythonProjectFinder {
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            projects: HashMap::new(),
-            project_files: vec!["pyproject.toml"],
+        Self::default()
+    }
+}
+
+/// Register every local workspace dependency declared under `[tool.uv.sources]`.
+///
+/// `[tool.uv.sources]` is a TOML **table** keyed by dependency name
+/// (e.g. `pkg-a = { path = "../pkg-a" }`), not an array of strings, so it is
+/// iterated as a table — otherwise Python packages never register their
+/// workspace deps for topological publish ordering.
+///
+/// Takes the already-cached `[tool.uv]` item from `visit` so no extra manifest
+/// lookup or re-parse is introduced. Mirrors `add_workspace_dependencies` in
+/// the Node and Dart finders, which hoist the equivalent scan into a named
+/// free function.
+fn add_uv_source_dependencies(project: &mut Project, uv_table: Option<&toml_edit::Item>) {
+    let Some(sources) = uv_table
+        .and_then(|u| u.get("sources"))
+        .and_then(toml_edit::Item::as_table_like)
+    else {
+        return;
+    };
+    for (dep_name, source) in sources.iter() {
+        let is_local_source = source.as_table_like().is_some_and(|source| {
+            source.contains_key("path")
+                || source.get("workspace").and_then(toml_edit::Item::as_bool) == Some(true)
+        });
+        if is_local_source {
+            project.add_dependency(dep_name);
         }
     }
 }
 
 #[async_trait]
 impl ProjectFinder for PythonProjectFinder {
-    fn projects(&self) -> Vec<&Project> {
-        self.projects.values().collect::<Vec<_>>()
-    }
-    fn projects_mut(&mut self) -> Vec<&mut Project> {
-        self.projects.values_mut().collect::<Vec<_>>()
-    }
+    // `projects()` / `projects_mut()` share their byte-identical body with
+    // the Node and Dart finders (all three use a
+    // `HashMap<PathBuf, Project>` backing store). Consolidated via the
+    // `impl_projects_hashmap_accessors!()` macro in `changepacks-core` so
+    // future accessor tweaks land in one place — expansion is byte-
+    // identical to the previous hand-rolled bodies.
+    changepacks_core::impl_projects_hashmap_accessors!();
 
     fn project_files(&self) -> &[&str] {
-        &self.project_files
+        PROJECT_FILES
     }
 
     async fn visit(&mut self, path: &Path, relative_path: &Path) -> Result<()> {
-        if path.is_file()
-            && self.project_files().contains(
-                &path
-                    .file_name()
-                    .context(format!("File name not found - {}", path.display()))?
-                    .to_str()
-                    .context(format!("File name not found - {}", path.display()))?,
-            )
-        {
-            if self.projects.contains_key(path) {
-                return Ok(());
-            }
-            // read pyproject.toml
-            let pyproject_toml = read_to_string(path).await?;
-            let pyproject_toml: toml::Value = toml::from_str(&pyproject_toml)?;
-            let project = pyproject_toml
-                .get("project")
-                .context(format!("Project not found - {}", path.display()))?;
-
-            // if workspace
-            let (path, mut project) = if pyproject_toml
-                .get("tool")
-                .and_then(|t| t.get("uv").and_then(|u| u.get("workspace")))
-                .is_some()
-            {
-                let version = project
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .map(std::string::ToString::to_string);
-                let name = project
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .map(std::string::ToString::to_string);
-                (
-                    path.to_path_buf(),
-                    Project::Workspace(Box::new(PythonWorkspace::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
-            } else {
-                let version = project
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .map(std::string::ToString::to_string);
-                let name = project
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .map(std::string::ToString::to_string);
-
-                (
-                    path.to_path_buf(),
-                    Project::Package(Box::new(PythonPackage::new(
-                        name,
-                        version,
-                        path.to_path_buf(),
-                        relative_path.to_path_buf(),
-                    ))),
-                )
-            };
-
-            // read tool.uv.sources section
-            if let Some(sources) = pyproject_toml
-                .get("tool")
-                .and_then(|t| t.get("uv").and_then(|u| u.get("sources")))
-                && let Some(sources) = sources.as_array()
-            {
-                for source in sources {
-                    if let Some(source_str) = source.as_str() {
-                        project.add_dependency(source_str);
-                    }
-                }
-            }
-
-            self.projects.insert(path, project);
+        // Parse this manifest if it is a recognized project file not already
+        // visited. Both guards live in `ProjectFinder::should_visit_manifest`
+        // (name/stat gate first, already-discovered map probe second) so the
+        // prelude is written once for every file-name-based finder.
+        if !self.should_visit_manifest(path).await? {
+            return Ok(());
         }
+        // read and parse pyproject.toml
+        let (_raw, pyproject_toml) = read_and_parse_pyproject_toml(path).await?;
+        // `[project]` is OPTIONAL: uv workspace-only roots (the docs'
+        // canonical example) declare just `[tool.uv.workspace]` at the
+        // repo root and no `[project]` table. Match the tolerant
+        // extraction that `PythonWorkspace::update_version` already
+        // uses (see `write_pyproject_version` in `crates/python/src/lib.rs`).
+        // Both name and version fall through to `None` when the table
+        // is missing, exactly like the constructor arguments accept.
+        let project_table = pyproject_toml.get("project");
+
+        // Both branches use the same name/version and the same path;
+        // hoist so each branch collapses to a single constructor call.
+        // `toml_item_str` is the shared `<table>.<field>` string read, also
+        // used by the `changepacks-rust` finder's `[package]` /
+        // `[workspace.package]` readers; a non-string value (e.g. an
+        // inline-table inheritance marker) resolves to `None`, exactly as the
+        // local helper this replaces did.
+        let version = changepacks_utils::toml_item_str(project_table, "version");
+        let name = changepacks_utils::toml_item_str(project_table, "name");
+        let publishable_by_default = name.is_some();
+        let path_key = path.to_path_buf();
+        let relative_path_key = relative_path.to_path_buf();
+
+        // Hoist the `[tool.uv]` lookup ONCE: both the workspace guard
+        // below and the `[tool.uv.sources]` walk further down previously
+        // walked the identical `pyproject_toml.get("tool").and_then(|t|
+        // t.get("uv"))` chain independently. `Option<&Item>` is `Copy`,
+        // so caching the intermediate binding lets both call sites reuse
+        // it — saves one HashMap-style lookup per Python-project visit
+        // on every `check` / `update` / `publish` invocation. Behavior
+        // is byte-identical: both branches short-circuit on the same
+        // `None` positions.
+        let uv_table = pyproject_toml.get("tool").and_then(|t| t.get("uv"));
+
+        // The absent/valid/invalid triage is
+        // `changepacks_utils::ensure_declared_shape`, shared verbatim with the
+        // Node and Dart finders; only the shape predicate stays here because it
+        // is the one part that speaks `toml_edit::Item`.
+        let has_workspace_declaration = changepacks_utils::ensure_declared_shape(
+            uv_table
+                .and_then(|u| u.get("workspace"))
+                .map(|workspace| workspace.as_table_like().is_some()),
+            path,
+            "[tool.uv].workspace",
+            "a table or inline table",
+        )?;
+
+        let mut project = changepacks_core::discovered_project!(
+            has_workspace_declaration,
+            PythonWorkspace::new_discovered,
+            PythonPackage::new_discovered,
+            name,
+            version,
+            path_key.clone(),
+            relative_path_key,
+            publishable_by_default,
+        );
+
+        // read tool.uv.sources section — see `add_uv_source_dependencies`.
+        add_uv_source_dependencies(&mut project, uv_table);
+
+        self.projects.insert(path_key, project);
         Ok(())
     }
 }
@@ -131,19 +148,16 @@ impl ProjectFinder for PythonProjectFinder {
 mod tests {
     use super::*;
     use changepacks_core::Project;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
 
-    #[test]
-    fn test_python_project_finder_new() {
-        let finder = PythonProjectFinder::new();
-        assert_eq!(finder.project_files(), &["pyproject.toml"]);
-        assert_eq!(finder.projects().len(), 0);
-    }
-
-    #[test]
-    fn test_python_project_finder_default() {
-        let finder = PythonProjectFinder::default();
+    // Both `PythonProjectFinder::new()` and `PythonProjectFinder::default()`
+    // must yield the same empty, `pyproject.toml`-scoped finder.
+    #[rstest]
+    #[case(PythonProjectFinder::new())]
+    #[case(PythonProjectFinder::default())]
+    fn test_python_project_finder_construction(#[case] finder: PythonProjectFinder) {
         assert_eq!(finder.project_files(), &["pyproject.toml"]);
         assert_eq!(finder.projects().len(), 0);
     }
@@ -169,30 +183,42 @@ version = "1.0.0"
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Package(pkg) => {
-                assert_eq!(pkg.name(), Some("test-package"));
-                assert_eq!(pkg.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Package"),
-        }
+        let pkg = projects[0].expect_package();
+        assert_eq!(pkg.name(), Some("test-package"));
+        assert_eq!(pkg.version(), Some("1.0.0"));
+        assert!(pkg.is_publishable_by_default());
 
         temp_dir.close().unwrap();
     }
 
+    #[rstest]
+    #[case(
+        r#"[tool.uv.workspace]
+members = ["packages/*"]
+"#
+    )]
+    #[case("[tool.uv.workspace]\n")]
+    #[case(
+        r#"[tool.uv]
+workspace = { members = ["packages/*"] }
+"#
+    )]
+    #[case("[tool.uv]\nworkspace = {}\n")]
     #[tokio::test]
-    async fn test_python_project_finder_visit_workspace() {
+    async fn test_python_project_finder_visit_workspace_with_table_like_declaration(
+        #[case] workspace: &str,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let pyproject_toml = temp_dir.path().join("pyproject.toml");
         fs::write(
             &pyproject_toml,
-            r#"[tool.uv.workspace]
-members = ["packages/*"]
-
+            format!(
+                r#"{workspace}
 [project]
 name = "test-workspace"
 version = "1.0.0"
-"#,
+"#
+            ),
         )
         .unwrap();
 
@@ -204,13 +230,55 @@ version = "1.0.0"
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test-workspace"));
-                assert_eq!(ws.version(), Some("1.0.0"));
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test-workspace"));
+        assert_eq!(ws.version(), Some("1.0.0"));
+        assert!(ws.is_publishable_by_default());
+
+        temp_dir.close().unwrap();
+    }
+
+    #[rstest]
+    #[case("true")]
+    #[case(r#""packages/*""#)]
+    #[case("[]")]
+    #[tokio::test]
+    async fn test_python_project_finder_rejects_invalid_uv_workspace_declaration(
+        #[case] workspace: &str,
+    ) {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            format!(
+                r#"[tool.uv]
+workspace = {workspace}
+
+[project]
+name = "test-package"
+version = "1.0.0"
+"#
+            ),
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        let result = finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await;
+
+        let error_msg = result
+            .expect_err("invalid uv workspace declaration should fail")
+            .to_string();
+        assert!(
+            error_msg.contains("Invalid `[tool.uv].workspace` declaration"),
+            "error message should explain the invalid declaration, got: {error_msg}"
+        );
+        assert!(
+            error_msg.contains(pyproject_toml.to_string_lossy().as_ref()),
+            "error message should contain the manifest path, got: {error_msg}"
+        );
+        assert!(finder.projects().is_empty());
 
         temp_dir.close().unwrap();
     }
@@ -238,13 +306,9 @@ name = "test-workspace"
 
         let projects = finder.projects();
         assert_eq!(projects.len(), 1);
-        match projects[0] {
-            Project::Workspace(ws) => {
-                assert_eq!(ws.name(), Some("test-workspace"));
-                assert_eq!(ws.version(), None);
-            }
-            _ => panic!("Expected Workspace"),
-        }
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), Some("test-workspace"));
+        assert_eq!(ws.version(), None);
 
         temp_dir.close().unwrap();
     }
@@ -391,6 +455,13 @@ version = "1.0.0"
 
     #[tokio::test]
     async fn test_python_project_finder_visit_package_without_project_section() {
+        // Regression: a pyproject.toml with only `[build-system]` (no
+        // `[project]`, no `[tool.uv.workspace]`) is a legitimate PEP 517
+        // shape used e.g. by build-only backend configs. The finder must
+        // register it as a Package with `None` name/version rather than
+        // failing hard — `write_pyproject_version` already handles the
+        // missing-section case downstream (it creates `[project]` on
+        // demand), so the extraction here must be lenient too.
         let temp_dir = TempDir::new().unwrap();
         let pyproject_toml = temp_dir.path().join("pyproject.toml");
         fs::write(
@@ -402,12 +473,321 @@ requires = ["setuptools"]
         .unwrap();
 
         let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+
+        let mut projects = finder.projects_mut();
+        assert_eq!(projects.len(), 1);
+        let project = projects.pop().unwrap();
+        assert!(matches!(&project, Project::Package(_)));
+        assert_eq!(project.name(), None);
+        assert_eq!(project.version(), None);
+        assert!(!project.is_publishable_by_default());
+
+        project.set_name("repository-name".to_string());
+
+        assert_eq!(project.name(), Some("repository-name"));
+        assert!(!project.is_publishable_by_default());
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_project_finder_visit_workspace_without_project_section() {
+        // Regression: uv workspace-only roots (the docs' canonical
+        // example) declare just `[tool.uv.workspace]` at the repo root
+        // with no `[project]` table at all. Members supply their own
+        // `[project]` sections. The finder must register the root as a
+        // `Project::Workspace` with `None` name/version, mirroring how
+        // `PythonWorkspace::update_version` (see
+        // `test_python_workspace_update_version_without_project_section`)
+        // already handles the missing-section case downstream.
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        let ws = projects[0].expect_workspace();
+        assert_eq!(ws.name(), None);
+        assert_eq!(ws.version(), None);
+        assert!(!ws.is_publishable_by_default());
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_workspace_only_root_fallback_name_does_not_enable_default_publish() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv.workspace]
+members = ["packages/*"]
+"#,
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+
+        let mut projects = finder.projects_mut();
+        assert_eq!(projects.len(), 1);
+        let project = projects.pop().unwrap();
+        assert!(!project.is_publishable_by_default());
+
+        project.set_name("repository-name".to_string());
+
+        assert_eq!(project.name(), Some("repository-name"));
+        assert!(!project.is_publishable_by_default());
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_project_finder_visit_registers_uv_sources_dependencies() {
+        // Regression: `[tool.uv.sources]` is a TOML **table** keyed by
+        // dependency name (`pkg-a = { path = "..." }`), not an array of
+        // strings. The finder must iterate it as a table so Python
+        // workspaces feed real deps into `sort_by_dependencies` for
+        // topological publish order.
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv.workspace]
+members = ["packages/*"]
+
+	[tool.uv.sources]
+		pkg-a = { path = "packages/pkg-a", editable = true }
+		pkg-b = { workspace = true }
+		pkg-c = { git = "https://example.com/pkg-c.git", editable = true }
+		pkg-d = { url = "https://example.com/pkg-d.tar.gz" }
+		pkg-e = { workspace = false }
+
+	[project]
+	name = "test-workspace"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        let deps = projects[0].expect_workspace().dependencies();
+        assert_eq!(
+            deps.len(),
+            2,
+            "expected only local tool.uv.sources entries, got {deps:?}"
+        );
+        assert!(deps.contains("pkg-a"), "missing pkg-a in {deps:?}");
+        assert!(deps.contains("pkg-b"), "missing pkg-b in {deps:?}");
+        assert!(!deps.contains("pkg-c"), "unexpected pkg-c in {deps:?}");
+        assert!(!deps.contains("pkg-d"), "unexpected pkg-d in {deps:?}");
+        assert!(!deps.contains("pkg-e"), "unexpected pkg-e in {deps:?}");
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_project_finder_skips_non_table_uv_sources() {
+        // Pins the outer shape guard in `add_uv_source_dependencies`:
+        // `[tool.uv].sources` that is NOT table-like (here a bare string)
+        // is skipped leniently instead of panicking or being iterated, so
+        // `visit` still succeeds and simply registers no dependencies.
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[tool.uv]
+sources = "packages/pkg-a"
+
+[project]
+name = "test-package"
+version = "1.0.0"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        let deps = projects[0].dependencies();
+        assert!(
+            deps.is_empty(),
+            "scalar tool.uv.sources must register no dependencies, got {deps:?}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_project_finder_skips_non_table_uv_source_entry() {
+        // Pins the per-entry shape guard in `add_uv_source_dependencies`:
+        // inside a valid `[tool.uv.sources]` table, an entry whose value is
+        // not table-like (`pkg-f`) is skipped while well-formed sibling
+        // entries (`pkg-a`) are still registered.
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            r#"[project]
+name = "test-package"
+version = "1.0.0"
+
+[tool.uv.sources]
+pkg-a = { path = "packages/pkg-a" }
+pkg-f = "packages/pkg-f"
+"#,
+        )
+        .unwrap();
+
+        let mut finder = PythonProjectFinder::new();
+        finder
+            .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
+            .await
+            .unwrap();
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 1);
+        let deps = projects[0].dependencies();
+        assert_eq!(
+            deps.len(),
+            1,
+            "expected only the table-like source entry, got {deps:?}"
+        );
+        assert!(deps.contains("pkg-a"), "missing pkg-a in {deps:?}");
+        assert!(!deps.contains("pkg-f"), "unexpected pkg-f in {deps:?}");
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_uv_sources_feed_local_graphs_and_ignore_registry_only_names() {
+        // End-to-end counterpart to the Node and Dart finder graph tests: the
+        // per-manifest assertions above only prove which names
+        // `add_uv_source_dependencies` registers, not that the registered set
+        // actually drives publish ordering. Discover two real manifests where
+        // `app` declares one local `[tool.uv.sources]` entry (`core`, a
+        // relative `path`) plus one registry-only entry (`registry-only`,
+        // pinned to a named index), then push both projects through
+        // `sort_by_dependencies`. Inverting the local-source predicate in
+        // `add_uv_source_dependencies` flips the registered set and drops the
+        // `core -> app` edge, so the graph keeps the `[app, core]` input order
+        // and both assertions below fail.
+        use changepacks_utils::sort_by_dependencies;
+
+        let temp_dir = TempDir::new().unwrap();
+        let manifests = [
+            (
+                "core",
+                r#"[project]
+name = "core"
+version = "1.0.0"
+"#,
+            ),
+            (
+                "app",
+                r#"[project]
+name = "app"
+version = "1.0.0"
+dependencies = ["core", "registry-only"]
+
+[tool.uv.sources]
+core = { path = "../core" }
+registry-only = { index = "internal-index" }
+"#,
+            ),
+        ];
+
+        let mut finder = PythonProjectFinder::new();
+        for (directory, contents) in manifests {
+            let path = temp_dir.path().join(directory).join("pyproject.toml");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, contents).unwrap();
+            finder
+                .visit(&path, &PathBuf::from(directory).join("pyproject.toml"))
+                .await
+                .unwrap();
+        }
+
+        let projects = finder.projects();
+        assert_eq!(projects.len(), 2);
+        let by_name = |name: &str| {
+            *projects
+                .iter()
+                .find(|project| project.name() == Some(name))
+                .unwrap()
+        };
+        let app = by_name("app");
+        let app_deps = app.dependencies();
+        assert_eq!(
+            app_deps.len(),
+            1,
+            "only the local path source must register, got {app_deps:?}"
+        );
+        assert!(app_deps.contains("core"), "missing core in {app_deps:?}");
+
+        let sorted =
+            sort_by_dependencies(vec![app, by_name("core")]).expect("fixture graph is a DAG");
+        assert_eq!(sorted[0].name(), Some("core"));
+        assert_eq!(sorted[1].name(), Some("app"));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_python_project_finder_visit_malformed_manifest() {
+        // Regression: malformed pyproject.toml must fail with path-aware
+        // error context. The error message must include both the manifest
+        // path and "Failed to parse pyproject.toml".
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(&pyproject_toml, "invalid toml [[[").unwrap();
+
+        let mut finder = PythonProjectFinder::new();
         let result = finder
             .visit(&pyproject_toml, &PathBuf::from("pyproject.toml"))
             .await;
 
-        assert!(result.is_err());
-        assert_eq!(finder.projects().len(), 0);
+        assert!(result.is_err(), "Expected error for malformed manifest");
+        let error_msg = result.unwrap_err().to_string();
+        assert!(
+            error_msg.contains("Failed to parse pyproject.toml"),
+            "Error message missing 'Failed to parse pyproject.toml': {error_msg}"
+        );
+        assert!(
+            error_msg.contains(pyproject_toml.to_string_lossy().as_ref()),
+            "Error message missing path: {error_msg}"
+        );
 
         temp_dir.close().unwrap();
     }

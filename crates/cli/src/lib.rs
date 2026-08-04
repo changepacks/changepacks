@@ -13,8 +13,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::{
     commands::{
-        ChangepackArgs, CheckArgs, ConfigArgs, InitArgs, PublishArgs, UpdateArgs,
-        handle_changepack, handle_check, handle_config, handle_init, handle_publish, handle_update,
+        ChangepackArgs, CheckArgs, InitArgs, PublishArgs, UpdateArgs, handle_changepack,
+        handle_check, handle_config, handle_init, handle_publish, handle_update,
     },
     options::{CliLanguage, FilterOptions},
 };
@@ -25,7 +25,32 @@ mod finders;
 pub mod options;
 pub mod prompter;
 
-pub use prompter::UserCancelled;
+pub use prompter::{UserCancelled, is_user_cancelled};
+
+/// Collect process arguments and run the CLI.
+///
+/// `skip_binary` drops `argv[0]` before parsing, for the embedders whose
+/// process argv still carries the host launcher (the N-API bridge is invoked as
+/// `node <script> <args…>`); the standalone binary and the `PyO3` bridge pass
+/// their argv through untouched.
+///
+/// # Errors
+/// Returns error if command execution fails.
+pub async fn main_from_env(skip_binary: bool) -> Result<()> {
+    let args: Vec<String> = if skip_binary {
+        std::env::args().skip(1).collect()
+    } else {
+        std::env::args().collect()
+    };
+    main(&args).await
+}
+
+/// Exit successfully when `error` represents an intentional user cancellation.
+pub fn exit_if_user_cancelled(error: &anyhow::Error) {
+    if is_user_cancelled(error) {
+        std::process::exit(0);
+    }
+}
 
 #[derive(ValueEnum, Debug, Clone)]
 enum CliUpdateType {
@@ -59,10 +84,10 @@ struct Cli {
     #[arg(short, long)]
     filter: Option<FilterOptions>,
 
-    #[arg(short, long, default_value = "false")]
+    #[arg(short, long)]
     remote: bool,
 
-    #[arg(short, long, default_value = "false")]
+    #[arg(short, long)]
     yes: bool,
 
     #[arg(short, long)]
@@ -81,7 +106,8 @@ enum Commands {
     Init(InitArgs),
     Check(CheckArgs),
     Update(UpdateArgs),
-    Config(ConfigArgs),
+    #[command(about = "Change changepacks configuration")]
+    Config,
     Publish(PublishArgs),
 }
 
@@ -94,7 +120,7 @@ pub async fn main(args: &[String]) -> Result<()> {
             Commands::Init(args) => handle_init(&args).await?,
             Commands::Check(args) => handle_check(&args).await?,
             Commands::Update(args) => handle_update(&args).await?,
-            Commands::Config(args) => handle_config(&args).await?,
+            Commands::Config => handle_config().await?,
             Commands::Publish(args) => handle_publish(&args).await?,
         }
     } else {
@@ -128,40 +154,43 @@ mod tests {
         assert_eq!(result, expected);
     }
 
-    // Test that Cli struct parses correctly
-    #[test]
-    fn test_cli_parsing_init() {
-        use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "init"]);
-        assert!(matches!(cli.command, Some(Commands::Init(_))));
+    // Discriminant helper for the `Commands` enum. `matches!(cli.command,
+    // Some(Commands::X(_)))` cannot be case-parameterized directly because
+    // the variant token is not a value, so we bounce through this small
+    // Eq/Debug shadow enum instead.
+    #[derive(Debug, PartialEq, Eq)]
+    enum CmdKind {
+        Init,
+        Check,
+        Update,
+        Config,
+        Publish,
     }
 
-    #[test]
-    fn test_cli_parsing_check() {
-        use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "check"]);
-        assert!(matches!(cli.command, Some(Commands::Check(_))));
+    impl From<&Commands> for CmdKind {
+        fn from(c: &Commands) -> Self {
+            match c {
+                Commands::Init(_) => Self::Init,
+                Commands::Check(_) => Self::Check,
+                Commands::Update(_) => Self::Update,
+                Commands::Config => Self::Config,
+                Commands::Publish(_) => Self::Publish,
+            }
+        }
     }
 
-    #[test]
-    fn test_cli_parsing_update() {
+    // Verify each subcommand argv routes to the matching `Commands` variant.
+    #[rstest]
+    #[case(&["changepacks", "init"], CmdKind::Init)]
+    #[case(&["changepacks", "check"], CmdKind::Check)]
+    #[case(&["changepacks", "update", "--dry-run"], CmdKind::Update)]
+    #[case(&["changepacks", "config"], CmdKind::Config)]
+    #[case(&["changepacks", "publish", "--dry-run"], CmdKind::Publish)]
+    fn test_cli_parsing_command(#[case] args: &[&str], #[case] expected: CmdKind) {
         use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "update", "--dry-run"]);
-        assert!(matches!(cli.command, Some(Commands::Update(_))));
-    }
-
-    #[test]
-    fn test_cli_parsing_config() {
-        use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "config"]);
-        assert!(matches!(cli.command, Some(Commands::Config(_))));
-    }
-
-    #[test]
-    fn test_cli_parsing_publish() {
-        use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "publish", "--dry-run"]);
-        assert!(matches!(cli.command, Some(Commands::Publish(_))));
+        let cli = Cli::parse_from(args);
+        let cmd = cli.command.expect("expected a subcommand");
+        assert_eq!(CmdKind::from(&cmd), expected);
     }
 
     #[test]
@@ -196,17 +225,99 @@ mod tests {
         assert!(cli.remote);
     }
 
-    #[test]
-    fn test_cli_parsing_with_language() {
+    // Repeated `--language` occurrences accumulate into `Vec<CliLanguage>`;
+    // the parsed length must match the number of flags supplied.
+    #[rstest]
+    #[case(&["changepacks", "--language", "node"], 1)]
+    #[case(&["changepacks", "--language", "node", "--language", "rust"], 2)]
+    fn test_cli_parsing_language(#[case] args: &[&str], #[case] expected_len: usize) {
         use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "--language", "node"]);
-        assert_eq!(cli.language.len(), 1);
+        let cli = Cli::parse_from(args);
+        assert_eq!(cli.language.len(), expected_len);
     }
 
+    // A non-cancellation error must return normally so entry points can report
+    // it and choose their ordinary failure exit code.
     #[test]
-    fn test_cli_parsing_with_multiple_languages() {
-        use clap::Parser;
-        let cli = Cli::parse_from(["changepacks", "--language", "node", "--language", "rust"]);
-        assert_eq!(cli.language.len(), 2);
+    fn test_exit_if_user_cancelled_returns_for_unrelated_error() {
+        let error = anyhow::anyhow!("ordinary failure");
+
+        exit_if_user_cancelled(&error);
+
+        assert_eq!(error.to_string(), "ordinary failure");
+    }
+
+    /// `main_from_env` is the only path from the real process argv into the
+    /// parser, and `skip_binary` decides whether `argv[0]` is dropped first.
+    /// Both settings are driven in a child copy of this test binary, whose argv
+    /// is exactly `[<exe>, <filter>, "--nocapture"]`: clap consumes the leading
+    /// element as the program name and rejects the one after it, so the token
+    /// named in the child's diagnostics proves how many elements were skipped.
+    /// A child is required because `Cli::parse_from` exits the process on a
+    /// parse error, which would otherwise take the test harness down with it.
+    #[tokio::test]
+    async fn test_main_from_env_forwards_process_argv_to_the_parser() {
+        const CHILD_ENV: &str = "CHANGEPACKS_TEST_MAIN_FROM_ENV_SKIP_BINARY";
+        const FILTER: &str = "test_main_from_env_forwards_process_argv_to_the_parser";
+
+        if let Some(skip_binary) = std::env::var_os(CHILD_ENV) {
+            return main_from_env(skip_binary == *"1").await.expect("the harness argv is not a valid changepacks invocation, so clap exits before returning");
+        }
+
+        // Keeping `argv[0]` leaves the filter as the first parsed argument;
+        // dropping it promotes the filter to the program-name slot and pushes
+        // `--nocapture` into that position instead. clap names whichever one it
+        // rejected, so the two runs cannot report the same token unless
+        // `skip_binary` stopped mattering.
+        for (skip_binary, rejected, consumed) in
+            [("0", FILTER, "--nocapture"), ("1", "--nocapture", FILTER)]
+        {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("locate current unit-test executable"),
+            )
+            .arg(FILTER)
+            .arg("--nocapture")
+            .env(CHILD_ENV, skip_binary)
+            .output()
+            .expect("run main_from_env in a child test process");
+
+            assert!(
+                !output.status.success(),
+                "the harness argv is not a valid invocation, so the child must fail: {output:?}"
+            );
+            // clap quotes only the token it actually rejected, so the pair of
+            // assertions pins which argv element reached the parser first.
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains(&format!("'{rejected}'")),
+                "skip_binary={skip_binary} must leave `{rejected}` as the first parsed argument, got: {stderr}"
+            );
+            assert!(
+                !stderr.contains(&format!("'{consumed}'")),
+                "skip_binary={skip_binary} must not leave `{consumed}` in argument position, got: {stderr}"
+            );
+        }
+    }
+
+    // The cancellation branch exits the process, so execute it only in a child
+    // copy of this test binary and assert the observable success status.
+    #[test]
+    fn test_exit_if_user_cancelled_exits_successfully_for_user_cancellation() {
+        const CHILD_ENV: &str = "CHANGEPACKS_TEST_USER_CANCELLED_EXIT";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            exit_if_user_cancelled(&anyhow::Error::new(UserCancelled));
+            panic!("user cancellation must exit before returning");
+        }
+
+        let output = std::process::Command::new(
+            std::env::current_exe().expect("locate current unit-test executable"),
+        )
+        .arg("test_exit_if_user_cancelled_exits_successfully_for_user_cancellation")
+        .arg("--nocapture")
+        .env(CHILD_ENV, "1")
+        .output()
+        .expect("run cancellation branch in child test process");
+
+        assert_eq!(output.status.code(), Some(0), "child output: {output:?}");
     }
 }

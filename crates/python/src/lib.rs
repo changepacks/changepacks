@@ -3,11 +3,365 @@
 //! Python project support for changepacks.
 //!
 //! Implements project discovery and version management for pyproject.toml files. Parses
-//! TOML using the toml crate and preserves formatting when updating versions. Supports
-//! both single packages and workspace configurations.
+//! TOML using `toml_edit` for non-destructive formatting preservation when updating
+//! versions. Supports both single packages and workspace configurations.
 
 pub mod finder;
 pub mod package;
 pub mod workspace;
 
 pub use finder::PythonProjectFinder;
+
+/// Default publish command for Python projects. Shared by `PythonPackage`
+/// and `PythonWorkspace` so a single edit here updates both trait impls.
+pub(crate) const PUBLISH_COMMAND: &str = "uv publish";
+
+/// Default dry-run publish command for Python projects.
+/// `uv publish --dry-run` is `uv`'s built-in non-mutating verification;
+/// users can override via `publishDryRun` in `.changepacks/config.json`.
+pub(crate) const DRY_RUN_PUBLISH_COMMAND: &str = "uv publish --dry-run";
+
+use std::path::Path;
+
+use anyhow::Result;
+use changepacks_core::UpdateType;
+use changepacks_utils::{read_and_parse, write_toml_table_version};
+use toml_edit::DocumentMut;
+
+/// Compute the next version for `update_type`, write it into the
+/// `pyproject.toml` at `path`, and store it back into `version`.
+///
+/// `PythonPackage::update_version` and `PythonWorkspace::update_version` had
+/// byte-identical bodies; this holds that body once so the two trait impls
+/// cannot drift. Both `update_version` signatures stay hand-written rather
+/// than macro-generated: `async_trait` rewrites the `impl` block before a
+/// `macro_rules!` body expands, so a macro would emit a plain `async fn` that
+/// no longer matches the desugared trait signature (E0195) — the same reason
+/// documented at `crates/java/src/package.rs:65-74`.
+///
+/// # Errors
+/// Returns an error when semver calculation fails or the manifest write fails.
+pub(crate) async fn bump_pyproject_version(
+    version: &mut Option<String>,
+    path: &Path,
+    update_type: UpdateType,
+) -> Result<()> {
+    changepacks_utils::bump_version_with(version, path, update_type, async |new| {
+        crate::write_pyproject_version(path, new).await
+    })
+    .await
+}
+
+/// Read and parse a pyproject.toml file, returning both the raw content
+/// (for trailing-newline preservation) and the parsed TOML document.
+///
+/// The read-then-parse-with-context sequence lives in
+/// [`changepacks_utils::read_and_parse`] — the mirror of
+/// [`changepacks_utils::write_finalized`] — so only the `pyproject.toml` label
+/// and the `toml_edit` parser stay here.
+///
+/// # Errors
+/// Returns error if the file cannot be read or is not valid TOML.
+pub(crate) async fn read_and_parse_pyproject_toml(path: &Path) -> Result<(String, DocumentMut)> {
+    read_and_parse(path, "pyproject.toml", str::parse::<DocumentMut>).await
+}
+
+/// Update `pyproject.toml` at `path` to set `[project].version` to
+/// `new_version`, preserving the file's complete trailing-whitespace shape and
+/// its TOML formatting (via `toml_edit`).
+///
+/// Shared by `PythonPackage::update_version` and
+/// `PythonWorkspace::update_version` so both paths emit byte-identical output.
+///
+/// The whole read → table-like guard → validation → `[project]` creation →
+/// decor-preserving assign → trailing-whitespace-preserving write pipeline
+/// lives in [`changepacks_utils::write_toml_table_version`], because
+/// `changepacks-rust`'s `write_cargo_package_version` was the same skeleton
+/// modulo the manifest label, the table key, and the `project.dynamic` guard
+/// below, and `crates/AGENTS.md` forbids importing one language crate into
+/// another. This wrapper stays so the `pyproject.toml` key/label pair and the
+/// Python-only rule are bound in ONE place and every call site inside this
+/// crate is unchanged.
+///
+/// An empty `[project]` table is created if missing — needed for workspace
+/// roots that only declare `[tool.uv.workspace]` and for `[build-system]`-only
+/// package manifests (a valid PEP 517 shape). The explicit `Table::new()` in
+/// the shared helper matters: plain `doc["project"]["version"] = ...`
+/// auto-creates an INLINE table (`project = { version = ... }`) at the top of
+/// the document instead of a proper `[project]` header.
+///
+/// The `project.dynamic` validator runs AFTER the table-like guard and BEFORE
+/// any mutation, exactly as the previous inline body did, so a manifest whose
+/// version is owned by the build backend is rejected without ever being
+/// rewritten — and a scalar `project` key still reports the table-like error
+/// first.
+///
+/// The version assignment goes through
+/// [`changepacks_utils::assign_preserving_decor`], which carries the existing
+/// value's [`toml_edit::Decor`] across the write. Assigning a freshly built
+/// value replaces the whole `Item`, and a fresh value carries default (empty)
+/// decor, so without that the surrounding trivia — most visibly an
+/// end-of-line comment such as `version = "1.2.3" # pinned` — would be
+/// silently deleted from the user's manifest by a routine version bump.
+///
+/// # Errors
+/// Returns error if the file cannot be read, is not valid TOML, `project` is
+/// present but not table-like, the version is backend-managed via
+/// `project.dynamic`, or the write fails.
+pub(crate) async fn write_pyproject_version(path: &Path, new_version: &str) -> Result<()> {
+    write_toml_table_version(path, "pyproject.toml", "project", new_version, |doc| {
+        let has_dynamic_version = doc
+            .get("project")
+            .and_then(|project| project.get("dynamic"))
+            .and_then(toml_edit::Item::as_array)
+            .is_some_and(|dynamic| dynamic.iter().any(|item| item.as_str() == Some("version")));
+        if has_dynamic_version {
+            anyhow::bail!(
+                "pyproject.toml {} has backend-managed version in project.dynamic",
+                path.display()
+            );
+        }
+        Ok(())
+    })
+    .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use changepacks_utils::test_support;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_write_pyproject_version_preserves_complete_trailing_whitespace() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        let suffix = " \t\r\n \n";
+        fs::write(
+            &pyproject_toml,
+            format!("[project]\nversion = \"1.0.0\"{suffix}"),
+        )
+        .unwrap();
+
+        write_pyproject_version(&pyproject_toml, "2.0.0")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&pyproject_toml).unwrap(),
+            format!("[project]\nversion = \"2.0.0\"{suffix}")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_pyproject_version_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(&pyproject_toml, "[project]\nversion = \"1.0.0\"\n").unwrap();
+
+        // The read succeeds (readonly still permits reads); it is the
+        // write-back that must fail, so flip the readonly bit after seeding.
+        test_support::set_readonly(&pyproject_toml, true);
+
+        // A NEW version guarantees the write is actually attempted against the
+        // readonly file rather than being short-circuited as an unchanged no-op.
+        let result = write_pyproject_version(&pyproject_toml, "2.0.0").await;
+
+        // Restore write permission BEFORE asserting so `TempDir` cleanup
+        // succeeds even if an assertion panics.
+        test_support::set_readonly(&pyproject_toml, false);
+
+        let err = result.expect_err("write to a readonly pyproject.toml must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_pyproject_version_non_table_project_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(&pyproject_toml, "project = 3\n").unwrap();
+
+        let err = write_pyproject_version(&pyproject_toml, "2.0.0")
+            .await
+            .expect_err("non-table project item must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+        assert!(
+            chain.contains("non-table [project]"),
+            "error chain should mention the non-table project item, got: {chain}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_pyproject_version_non_table_project_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        // A scalar top-level `project` key. The sibling test above pins the
+        // ERROR TEXT; this one pins the guard's actual reason for existing —
+        // it must reject BEFORE the `pyproject_toml["project"]["version"] = ...`
+        // assignment ever runs, so the manifest on disk is never clobbered.
+        let original = "project = 1\n\n[build-system]\nrequires = [\"hatchling\"]\n";
+        fs::write(&pyproject_toml, original).unwrap();
+
+        let err = write_pyproject_version(&pyproject_toml, "1.0.1")
+            .await
+            .expect_err("non-table project item must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("has a non-table [project] item"),
+            "error chain should name the non-table project guard, got: {chain}"
+        );
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+
+        // Byte-for-byte, not line-for-line: a partial or reformatted write is
+        // exactly the manifest destruction the guard prevents.
+        assert_eq!(
+            fs::read(&pyproject_toml).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_pyproject_version_rejects_dynamic_version_multiline() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        let content = "[project]\ndynamic = [ \"version\" ]\n";
+        fs::write(&pyproject_toml, content).unwrap();
+
+        let err = write_pyproject_version(&pyproject_toml, "2.0.0")
+            .await
+            .expect_err("dynamic version must be rejected");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+        assert!(
+            chain.contains("has backend-managed version in project.dynamic"),
+            "error chain should mention project.dynamic, got: {chain}"
+        );
+
+        let after = fs::read(&pyproject_toml).unwrap();
+        assert_eq!(
+            after,
+            content.as_bytes(),
+            "file bytes must be unchanged after rejection"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_write_pyproject_version_rejects_dynamic_version_compact() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        let content = "[project]\ndynamic = [\"version\"]\n";
+        fs::write(&pyproject_toml, content).unwrap();
+
+        let err = write_pyproject_version(&pyproject_toml, "2.0.0")
+            .await
+            .expect_err("dynamic version must be rejected");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&pyproject_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+        assert!(
+            chain.contains("project.dynamic"),
+            "error chain should mention project.dynamic, got: {chain}"
+        );
+
+        let after = fs::read(&pyproject_toml).unwrap();
+        assert_eq!(
+            after,
+            content.as_bytes(),
+            "file bytes must be unchanged after rejection"
+        );
+    }
+
+    /// Pins the boundary of the `project.dynamic` guard: only the literal
+    /// `"version"` entry hands version ownership to the build backend, so a
+    /// `dynamic` array listing anything else must still be bumped normally.
+    #[tokio::test]
+    async fn test_write_pyproject_version_allows_dynamic_without_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(
+            &pyproject_toml,
+            "[project]\nname = \"demo\"\nversion = \"1.0.0\"\ndynamic = [\"readme\"]\n",
+        )
+        .unwrap();
+
+        write_pyproject_version(&pyproject_toml, "1.1.0")
+            .await
+            .expect("dynamic without a version entry must still be writable");
+
+        assert_eq!(
+            fs::read_to_string(&pyproject_toml).unwrap(),
+            "[project]\nname = \"demo\"\nversion = \"1.1.0\"\ndynamic = [\"readme\"]\n"
+        );
+    }
+
+    /// Renders a realistically formatted `pyproject.toml` at `version`.
+    ///
+    /// Every construct here is one a re-serializing TOML writer silently
+    /// normalizes away: a header comment, `[build-system]` declared BEFORE
+    /// `[project]` (non-alphabetical, non-canonical table order), an
+    /// end-of-line comment on the version line, a multi-line array with a
+    /// trailing comma and an inline table with custom spacing.
+    fn round_trip_manifest(version: &str) -> String {
+        format!(
+            concat!(
+                "# demo package manifest - this header comment must survive a bump\n",
+                "\n",
+                "[build-system]\n",
+                "requires = [\"hatchling>=1.18\"]\n",
+                "build-backend = \"hatchling.build\"\n",
+                "\n",
+                "[project]\n",
+                "name = \"demo\"\n",
+                "version = \"{version}\" # bumped by changepacks\n",
+                "dependencies = [\n",
+                "    \"httpx>=0.27\",\n",
+                "    \"rich>=13\",\n",
+                "]\n",
+                "\n",
+                "[tool.uv.sources]\n",
+                "demo-core = {{ path = \"../core\", editable = true }}\n",
+            ),
+            version = version
+        )
+    }
+
+    /// Format preservation is a hard project constraint, but until now only
+    /// trailing whitespace was pinned. This asserts COMPLETE-FILE equality
+    /// (not a `contains` check) so any reformatting `toml_edit` performs -
+    /// dropped comment, reordered table, collapsed array or inline table -
+    /// fails the test rather than silently rewriting a user's manifest.
+    #[tokio::test]
+    async fn test_write_pyproject_version_preserves_comments_and_table_order() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        fs::write(&pyproject_toml, round_trip_manifest("1.2.3")).unwrap();
+
+        write_pyproject_version(&pyproject_toml, "2.0.0")
+            .await
+            .expect("a well-formed manifest must be writable");
+
+        assert_eq!(
+            fs::read_to_string(&pyproject_toml).unwrap(),
+            round_trip_manifest("2.0.0"),
+            "only the version literal may change; everything else must be byte-identical"
+        );
+    }
+}

@@ -14,13 +14,12 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "3.8", features = ["tokio_rt"] }
-napi-derive = "3.5"
+napi = { version = "3.12", features = ["tokio_rt"] }
+napi-derive = "3.6"
 changepacks-cli.workspace = true
-tokio = { version = "1.50" }
 
 [build-dependencies]
 napi-build = "2"
 
- [lints.rust]
- unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin_include)'] }
+[lints]
+workspace = true

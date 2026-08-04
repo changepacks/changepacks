@@ -1,6 +1,6 @@
 mod filter_options;
 mod format_options;
 mod language_options;
-pub use filter_options::FilterOptions;
+pub use filter_options::{FilterOptions, retain_by_filters};
 pub use format_options::FormatOptions;
-pub use language_options::CliLanguage;
+pub use language_options::{CliLanguage, language_slice_contains, retain_by_language};

@@ -1,138 +1,50 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, UpdateType, Workspace};
-use changepacks_utils::next_version;
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use tokio::fs::{read_to_string, write};
-use toml_edit::DocumentMut;
 
-#[derive(Debug)]
-pub struct PythonWorkspace {
-    path: PathBuf,
-    relative_path: PathBuf,
-    version: Option<String>,
-    name: Option<String>,
-    is_changed: bool,
-    dependencies: HashSet<String>,
-}
-
-impl PythonWorkspace {
-    #[must_use]
-    pub fn new(
-        name: Option<String>,
-        version: Option<String>,
-        path: PathBuf,
-        relative_path: PathBuf,
-    ) -> Self {
-        Self {
-            path,
-            relative_path,
-            name,
-            version,
-            is_changed: false,
-            dependencies: HashSet::new(),
-        }
-    }
-}
+// Seven-field discovered-project declaration plus `new` / `new_discovered`,
+// shared verbatim with the other four identical language types.
+changepacks_core::declare_discovered_project!(pub struct PythonWorkspace);
 
 #[async_trait]
 impl Workspace for PythonWorkspace {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
+    // Standard package/workspace accessors.
+    changepacks_core::impl_basic_accessors!();
 
-    fn path(&self) -> &Path {
-        &self.path
-    }
+    // Publishability flag accessor.
+    changepacks_core::impl_publishable_by_default!();
 
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
-
+    // Body shared with `PythonPackage::update_version` via the crate-local
+    // helper; the signature stays hand-written because `async_trait` forbids
+    // generating it from a macro (see `bump_pyproject_version` in `lib.rs`).
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(
-            self.version.as_ref().unwrap_or(&String::from("0.0.0")),
-            update_type,
-        )?;
-
-        let pyproject_toml_raw = read_to_string(&self.path).await?;
-        let mut pyproject_toml: DocumentMut = pyproject_toml_raw.parse::<DocumentMut>()?;
-        if pyproject_toml.get("project").is_none() {
-            pyproject_toml["project"] = toml_edit::Item::Table(toml_edit::Table::new());
-        }
-        pyproject_toml["project"]["version"] = next_version.clone().into();
-        write(
-            &self.path,
-            format!(
-                "{}{}",
-                pyproject_toml.to_string().trim_end(),
-                if pyproject_toml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
-            ),
-        )
-        .await?;
-        self.version = Some(next_version);
-        Ok(())
+        crate::bump_pyproject_version(&mut self.version, &self.path, update_type).await
     }
 
-    fn language(&self) -> Language {
-        Language::Python
-    }
+    // Fixed language accessor.
+    changepacks_core::impl_language!(Language::Python);
 
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
+    // Const publish defaults.
+    changepacks_core::impl_const_publish_commands!(
+        crate::PUBLISH_COMMAND,
+        crate::DRY_RUN_PUBLISH_COMMAND
+    );
 
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
-
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn default_publish_command(&self) -> String {
-        "uv publish".to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        Some("uv publish --dry-run".to_string())
-    }
-
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
-    }
+    // Dependency set accessors.
+    changepacks_core::impl_dependencies_accessors!();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use changepacks_core::UpdateType;
+    use rstest::rstest;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 
-    #[tokio::test]
-    async fn test_python_workspace_new() {
-        let workspace = PythonWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/pyproject.toml"),
-            PathBuf::from("test/pyproject.toml"),
-        );
-
+    fn assert_python_workspace_defaults(workspace: &PythonWorkspace) {
         assert_eq!(workspace.name(), Some("test-workspace"));
         assert_eq!(workspace.version(), Some("1.0.0"));
         assert_eq!(workspace.path(), PathBuf::from("/test/pyproject.toml"));
@@ -142,6 +54,7 @@ mod tests {
         );
         assert_eq!(workspace.language(), Language::Python);
         assert!(!workspace.is_changed());
+        assert!(workspace.is_publishable_by_default());
         assert_eq!(workspace.default_publish_command(), "uv publish");
         assert_eq!(
             workspace.default_dry_run_publish_command().as_deref(),
@@ -149,8 +62,20 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_python_workspace_new_without_name_and_version() {
+    #[test]
+    fn test_python_workspace_new() {
+        let workspace = PythonWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("test/pyproject.toml"),
+        );
+
+        assert_python_workspace_defaults(&workspace);
+    }
+
+    #[test]
+    fn test_python_workspace_new_without_name_and_version() {
         let workspace = PythonWorkspace::new(
             None,
             None,
@@ -160,26 +85,48 @@ mod tests {
 
         assert_eq!(workspace.name(), None);
         assert_eq!(workspace.version(), None);
+        assert!(workspace.is_publishable_by_default());
     }
 
-    #[tokio::test]
-    async fn test_python_workspace_set_changed() {
-        let mut workspace = PythonWorkspace::new(
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn test_python_workspace_discovered_publishability_survives_fallback_name(
+        #[case] expected: bool,
+    ) {
+        let mut workspace = PythonWorkspace::new_discovered(
+            None,
+            None,
+            PathBuf::from("/test/pyproject.toml"),
+            PathBuf::from("pyproject.toml"),
+            expected,
+        );
+
+        assert_eq!(workspace.is_publishable_by_default(), expected);
+        workspace.set_name("repository-name".to_string());
+        assert_eq!(workspace.name(), Some("repository-name"));
+        assert_eq!(workspace.is_publishable_by_default(), expected);
+    }
+
+    #[test]
+    fn test_python_workspace_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(PythonWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pyproject.toml"),
             PathBuf::from("test/pyproject.toml"),
-        );
-
-        assert!(!workspace.is_changed());
-        workspace.set_changed(true);
-        assert!(workspace.is_changed());
-        workspace.set_changed(false);
-        assert!(!workspace.is_changed());
+        ));
     }
 
+    #[rstest]
+    #[case(UpdateType::Patch, "1.0.1")]
+    #[case(UpdateType::Minor, "1.1.0")]
+    #[case(UpdateType::Major, "2.0.0")]
     #[tokio::test]
-    async fn test_python_workspace_update_version_with_existing_project() {
+    async fn test_python_workspace_update_version_with_existing_project(
+        #[case] update_type: UpdateType,
+        #[case] expected: &str,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let pyproject_toml = temp_dir.path().join("pyproject.toml");
         fs::write(
@@ -201,10 +148,10 @@ version = "1.0.0"
             PathBuf::from("pyproject.toml"),
         );
 
-        workspace.update_version(UpdateType::Patch).await.unwrap();
+        workspace.update_version(update_type).await.unwrap();
 
         let content = read_to_string(&pyproject_toml).await.unwrap();
-        assert!(content.contains("version = \"1.0.1\""));
+        assert!(content.contains(&format!("version = \"{expected}\"")));
 
         temp_dir.close().unwrap();
     }
@@ -237,104 +184,55 @@ members = ["packages/*"]
         temp_dir.close().unwrap();
     }
 
-    #[tokio::test]
-    async fn test_python_workspace_update_version_minor() {
-        let temp_dir = TempDir::new().unwrap();
-        let pyproject_toml = temp_dir.path().join("pyproject.toml");
-        fs::write(
-            &pyproject_toml,
-            r#"[tool.uv.workspace]
-members = ["packages/*"]
-
-[project]
-name = "test-workspace"
-version = "1.0.0"
-"#,
-        )
-        .unwrap();
-
-        let mut workspace = PythonWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            pyproject_toml.clone(),
-            PathBuf::from("pyproject.toml"),
-        );
-
-        workspace.update_version(UpdateType::Minor).await.unwrap();
-
-        let content = read_to_string(&pyproject_toml).await.unwrap();
-        assert!(content.contains("version = \"1.1.0\""));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_python_workspace_update_version_major() {
-        let temp_dir = TempDir::new().unwrap();
-        let pyproject_toml = temp_dir.path().join("pyproject.toml");
-        fs::write(
-            &pyproject_toml,
-            r#"[tool.uv.workspace]
-members = ["packages/*"]
-
-[project]
-name = "test-workspace"
-version = "1.0.0"
-"#,
-        )
-        .unwrap();
-
-        let mut workspace = PythonWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            pyproject_toml.clone(),
-            PathBuf::from("pyproject.toml"),
-        );
-
-        workspace.update_version(UpdateType::Major).await.unwrap();
-
-        let content = read_to_string(&pyproject_toml).await.unwrap();
-        assert!(content.contains("version = \"2.0.0\""));
-
-        temp_dir.close().unwrap();
-    }
-
     #[test]
     fn test_python_workspace_dependencies() {
+        changepacks_core::assert_dependencies_roundtrip!(
+            PythonWorkspace::new(
+                Some("test-workspace".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/pyproject.toml"),
+                PathBuf::from("test/pyproject.toml"),
+            ),
+            "requests",
+            "core"
+        );
+    }
+
+    /// Workspace-side twin of the `PythonPackage` malformed-manifest test: the
+    /// two `update_version` bodies share `bump_pyproject_version`, so both trait
+    /// entry points must be pinned independently or a regression could be
+    /// hidden behind whichever one is still covered.
+    #[tokio::test]
+    async fn test_python_workspace_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let pyproject_toml = temp_dir.path().join("pyproject.toml");
+        let original = "invalid toml [[[";
+        fs::write(&pyproject_toml, original).unwrap();
+
         let mut workspace = PythonWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
-            PathBuf::from("/test/pyproject.toml"),
-            PathBuf::from("test/pyproject.toml"),
+            pyproject_toml.clone(),
+            PathBuf::from("pyproject.toml"),
         );
 
-        // Initially empty
-        assert!(workspace.dependencies().is_empty());
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            workspace.update_version(UpdateType::Patch).await,
+            &pyproject_toml,
+            "pyproject.toml",
+            original
+        );
 
-        // Add dependencies
-        workspace.add_dependency("requests");
-        workspace.add_dependency("core");
-
-        let deps = workspace.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("requests"));
-        assert!(deps.contains("core"));
-
-        // Adding duplicate should not increase count
-        workspace.add_dependency("requests");
-        assert_eq!(workspace.dependencies().len(), 2);
+        temp_dir.close().unwrap();
     }
 
     #[test]
     fn test_set_name() {
-        let mut workspace = PythonWorkspace::new(
+        changepacks_core::assert_set_name_roundtrip!(PythonWorkspace::new(
             None,
             Some("1.0.0".to_string()),
             PathBuf::from("/test/pyproject.toml"),
             PathBuf::from("pyproject.toml"),
-        );
-        assert_eq!(workspace.name(), None);
-        workspace.set_name("my-project".to_string());
-        assert_eq!(workspace.name(), Some("my-project"));
+        ));
     }
 }

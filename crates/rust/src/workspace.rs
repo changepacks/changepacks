@@ -1,11 +1,50 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
-use changepacks_utils::{next_version, split_version};
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use tokio::fs::{read_to_string, write};
-use toml_edit::DocumentMut;
+use changepacks_utils::{
+    assign_preserving_decor, next_version, replace_version_keep_prefix, split_version,
+    write_finalized,
+};
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct InheritedWorkspaceMemberIdentities {
+    package_names: HashSet<String>,
+    dependency_aliases: HashSet<String>,
+}
+
+impl InheritedWorkspaceMemberIdentities {
+    pub(crate) fn record(&mut self, package_name: &str, aliases: impl IntoIterator<Item = String>) {
+        self.package_names.insert(package_name.to_string());
+        self.dependency_aliases.extend(aliases);
+    }
+
+    fn contains_dependency(&self, dependency_key: &str, package_name: &str) -> bool {
+        self.package_names.contains(package_name)
+            && (dependency_key == package_name || self.dependency_aliases.contains(dependency_key))
+    }
+}
+
+pub(crate) type InheritedWorkspaceMembers = Arc<Mutex<InheritedWorkspaceMemberIdentities>>;
+
+/// Lock the shared inherited-member identities, recovering from poisoning.
+///
+/// The map only ever accumulates member names/aliases, so a panic while a
+/// writer held the guard cannot leave it logically inconsistent — taking the
+/// inner value keeps discovery working instead of cascading the panic. This is
+/// the single definition of that policy: every lock site in this crate goes
+/// through here, so the recovery strategy changes in exactly one place.
+///
+/// A free function rather than an inherent method because
+/// `InheritedWorkspaceMembers` is an alias for `Arc<Mutex<_>>`, and inherent
+/// impls are not allowed on types from another crate.
+pub(crate) fn lock_recovering(
+    members: &InheritedWorkspaceMembers,
+) -> MutexGuard<'_, InheritedWorkspaceMemberIdentities> {
+    members.lock().unwrap_or_else(PoisonError::into_inner)
+}
 
 #[derive(Debug)]
 pub struct RustWorkspace {
@@ -15,9 +54,17 @@ pub struct RustWorkspace {
     name: Option<String>,
     is_changed: bool,
     dependencies: HashSet<String>,
+    publishable_by_default: bool,
+    inherited_workspace_members: InheritedWorkspaceMembers,
 }
 
 impl RustWorkspace {
+    /// Construct a Rust workspace without discovered inherited-member metadata.
+    ///
+    /// Version updates still update the workspace/root package version, but do
+    /// not perform the special inherited-member fan-out in
+    /// `[workspace.dependencies]`. `RustProjectFinder` uses the internal
+    /// member-aware constructor after discovery.
     #[must_use]
     pub fn new(
         name: Option<String>,
@@ -25,195 +72,312 @@ impl RustWorkspace {
         path: PathBuf,
         relative_path: PathBuf,
     ) -> Self {
-        Self {
-            path,
-            relative_path,
+        Self::new_with_inherited_workspace_members(
             name,
             version,
+            path,
+            relative_path,
+            InheritedWorkspaceMembers::default(),
+            true,
+        )
+    }
+
+    #[must_use]
+    pub(crate) fn new_with_inherited_workspace_members(
+        name: Option<String>,
+        version: Option<String>,
+        path: PathBuf,
+        relative_path: PathBuf,
+        inherited_workspace_members: InheritedWorkspaceMembers,
+        package_publishable_by_default: bool,
+    ) -> Self {
+        let publishable_by_default = name.is_some() && package_publishable_by_default;
+        Self {
+            name,
+            version,
+            path,
+            relative_path,
             is_changed: false,
             dependencies: HashSet::new(),
+            publishable_by_default,
+            inherited_workspace_members,
+        }
+    }
+
+    /// The `[package].name` to write when this workspace manifest does not
+    /// already declare one.
+    ///
+    /// A virtual workspace root has no package name of its own, but a
+    /// `[package]` table written by `update_version` still needs the required
+    /// `name` key to keep the manifest parsable by Cargo. `_` is the sentinel
+    /// placeholder used for that case; it is user-visible in the written
+    /// Cargo.toml, so it is defined here ONCE and reused by every branch of
+    /// `update_version` that materializes a package name.
+    fn fallback_package_name(&self) -> &str {
+        self.name.as_deref().unwrap_or("_")
+    }
+
+    /// Sync `[workspace.dependencies]` entries for discovered members that
+    /// inherit the workspace package version and whose local dependency
+    /// version matched `old_version`.
+    ///
+    /// Split out of `update_version` — which otherwise mixes "compute and
+    /// write the workspace root's own version" with this separate
+    /// member-fan-out concern. Extracting it also makes the lock scope
+    /// structural rather than a hand-maintained inner block: the guard cannot
+    /// outlive this synchronous, non-`async` helper, so it is always dropped
+    /// before the caller reaches its `.await` and the caller's future stays
+    /// `Send` for the N-API and `PyO3` bridges.
+    ///
+    /// `old_version` is passed in rather than re-derived so the "reserve
+    /// 0.0.0 when unversioned" fallback stays expressed exactly ONCE, in
+    /// `update_version`.
+    fn sync_workspace_dependency_versions(
+        &self,
+        ws_deps: &mut toml_edit::Table,
+        old_version: &str,
+        new_version: &str,
+    ) {
+        // Hold the lock GUARD instead of deep-cloning the two
+        // `HashSet<String>` behind it: the clone used to run on every
+        // workspace bump even when the caller's `if let` did not fire.
+        // Auto-deref makes `contains_dependency` read unchanged through the
+        // guard.
+        let inherited_workspace_members = lock_recovering(&self.inherited_workspace_members);
+        for (dependency_key, value) in ws_deps.iter_mut() {
+            let dependency_key = dependency_key.get();
+            let package_name = crate::finder::effective_dependency_name(dependency_key, value);
+            if !inherited_workspace_members.contains_dependency(dependency_key, package_name) {
+                continue;
+            }
+            // The path-dep shape gates (`as_table_like_mut`, an existing
+            // `path`, an existing string `version`) and the decor-preserving
+            // in-place rewrite are shared with `update_workspace_dependencies`
+            // and live in `crate::sync_path_dependency_version`; only the
+            // in-scope decision differs and is passed in here. Only the numeric
+            // tail (`split_version`'s `.1`) gates this sync, so a member pinned
+            // at some other version is left alone.
+            crate::sync_path_dependency_version(value, new_version, |ver_str| {
+                split_version(ver_str).1 == old_version
+            });
         }
     }
 }
 
 #[async_trait]
 impl Workspace for RustWorkspace {
-    fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-
-    fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn version(&self) -> Option<&str> {
-        self.version.as_deref()
-    }
+    // Seven basic accessors (`name`, `version`, `path`, `relative_path`,
+    // `is_changed`, `set_changed`, `set_name`) share their byte-identical
+    // bodies with every other language crate's `Package` / `Workspace`
+    // impl. Consolidated via `impl_basic_accessors!()` in `changepacks-core`
+    // — expansion is byte-identical to the previous hand-rolled bodies.
+    changepacks_core::impl_basic_accessors!();
 
     async fn update_version(&mut self, update_type: UpdateType) -> Result<()> {
-        let next_version = next_version(
-            self.version.as_ref().unwrap_or(&String::from("0.0.0")),
-            update_type,
-        )?;
+        // Hoisted `unwrap_or("0.0.0")` so the "reserve 0.0.0 when
+        // unversioned" fallback is expressed ONCE, then reused BOTH for
+        // `next_version` here AND for the `[workspace.dependencies]` sync
+        // at the loop below. Since the fallback is already applied inline,
+        // `next_version` is byte-identical to (and simpler than) the
+        // previous `next_version_or_default(Some(old_version), ...)`
+        // indirection — `_or_default`'s whole purpose is to fold that
+        // fallback, pointless once the fallback has already fired.
+        let old_version = self.version.as_deref().unwrap_or("0.0.0");
+        let new_version = next_version(old_version, update_type)?;
 
-        let cargo_toml_raw = read_to_string(&self.path).await?;
-        let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
+        let (cargo_toml_raw, mut cargo_toml) = crate::read_and_parse_cargo_toml(&self.path).await?;
 
-        let has_package = cargo_toml.get("package").is_some();
-        let has_workspace_package_version = cargo_toml
-            .get("workspace")
-            .and_then(|w| w.get("package"))
-            .and_then(|p| p.get("version"))
-            .is_some();
+        // Shared guard: rejects a non-table `package` item before any mutation
+        // and reports whether the key exists. Same check (and same message) the
+        // package writer uses — see `crate::ensure_package_table_like`.
+        let has_package = crate::ensure_package_table_like(&cargo_toml, &self.path)?;
 
         if has_package {
-            cargo_toml["package"]["version"] = next_version.clone().into();
-            if cargo_toml["package"].get("name").is_none() {
-                cargo_toml["package"]["name"] = self.name.clone().unwrap_or("_".to_string()).into();
+            // A hybrid workspace root can inherit its OWN version via
+            // `[package] version.workspace = true` (which toml_edit parses as a
+            // `{ workspace = true }` table) alongside `[workspace.package].version`.
+            // Rewriting `[package].version` with a plain string here would clobber
+            // that inheritance marker — the same file-format break already guarded
+            // against for member crates in `RustPackage::update_version`. Detect the
+            // marker with the shared `crate::is_workspace_marker` decoder (the same
+            // one `finder.rs` uses for `[dependencies]`/`[package]` inheritance);
+            // when present, skip the `[package].version` write (the
+            // `[workspace.package].version` sync below drives the inherited bump).
+            let inherits_workspace_version = cargo_toml["package"]
+                .get("version")
+                .is_some_and(crate::is_workspace_marker);
+            if !inherits_workspace_version {
+                // `assign_preserving_decor` keeps the trivia around the value —
+                // notably an end-of-line comment on the version line — which a
+                // freshly built `Item` would otherwise drop.
+                assign_preserving_decor(
+                    &mut cargo_toml["package"]["version"],
+                    new_version.as_str(),
+                );
             }
-        } else if !has_workspace_package_version {
-            // No [package] and no [workspace.package].version — create [package]
+            if cargo_toml["package"].get("name").is_none() {
+                let fallback_name = self.fallback_package_name();
+                cargo_toml["package"]["name"] = fallback_name.into();
+            }
+        } else if cargo_toml.get("workspace").is_some() {
+            // A manifest with [workspace] but no [package] is virtual even when
+            // it has not opted into workspace package metadata yet.
+            assign_preserving_decor(
+                &mut cargo_toml["workspace"]["package"]["version"],
+                new_version.as_str(),
+            );
+        } else {
+            let fallback_name = self.fallback_package_name();
             cargo_toml["package"] = toml_edit::Item::Table(toml_edit::Table::new());
-            cargo_toml["package"]["version"] = next_version.clone().into();
-            cargo_toml["package"]["name"] = self.name.clone().unwrap_or("_".to_string()).into();
+            cargo_toml["package"]["version"] = new_version.as_str().into();
+            cargo_toml["package"]["name"] = fallback_name.into();
         }
-        // else: virtual workspace — only [workspace.package].version needs updating (below)
 
-        // Update [workspace.package].version if it exists
-        if let Some(ws_pkg) = cargo_toml
+        // Update [workspace.package].version if it exists.
+        //
+        // Single-lookup `get_mut` chain: mirrors the "single lookup + type
+        // check via `get_mut(..)`" idiom already used by
+        // `update_workspace_dependencies` below (see the comment near
+        // `dependencies.get_mut(package_name).and_then(as_inline_table_mut)`).
+        // The previous shape called `as_table_mut()` + `contains_key("version")`
+        // and then re-indexed `ws_pkg["version"] = ...`, doing the HashMap-style
+        // key walk twice and carrying a latent panic surface behind the
+        // `contains_key` gate. `get_mut("version")` returns `None` when the key
+        // is missing; virtual workspaces add it in the branch above before
+        // reaching this sync.
+        if let Some(ws_pkg_version) = cargo_toml
             .get_mut("workspace")
             .and_then(|w| w.get_mut("package"))
-            .and_then(|p| p.as_table_mut())
-            && ws_pkg.contains_key("version")
+            .and_then(|p| p.get_mut("version"))
         {
-            ws_pkg["version"] = toml_edit::value(next_version.clone());
+            assign_preserving_decor(ws_pkg_version, new_version.as_str());
         }
 
-        // Sync [workspace.dependencies] for local path deps whose version matched
-        // the old workspace version (these are workspace members bumped together)
-        let old_version = self.version.as_deref().unwrap_or("0.0.0");
-        if let Some(ws_deps) = cargo_toml
-            .get_mut("workspace")
-            .and_then(|w| w.get_mut("dependencies"))
-            .and_then(|d| d.as_table_mut())
-        {
-            for (_, value) in ws_deps.iter_mut() {
-                if let Some(dep) = value.as_inline_table_mut()
-                    && dep.get("path").is_some()
-                    && let Some(ver_str) = dep.get("version").and_then(|v| v.as_str())
-                    && let Ok((prefix, ver)) = split_version(ver_str)
-                    && ver == old_version
-                {
-                    dep["version"] = format!("{}{next_version}", prefix.unwrap_or_default()).into();
-                }
-            }
+        // Sync [workspace.dependencies] only for discovered members that inherit
+        // the workspace package version and whose local dependency version matched
+        // the old workspace version.
+        // The fan-out itself is a separate concern from computing and writing
+        // this manifest's own version, so it lives in the synchronous
+        // `Self::sync_workspace_dependency_versions` — see its doc comment for
+        // why that also makes the lock scoping structural. `old_version` is
+        // hoisted to the top of this function so both the `next_version`
+        // fallback and this sync share one "reserve 0.0.0 when unversioned"
+        // source.
+        if let Some(ws_deps) = crate::workspace_dependencies_table_mut(&mut cargo_toml) {
+            self.sync_workspace_dependency_versions(ws_deps, old_version, &new_version);
         }
 
-        write(
+        write_finalized(
             &self.path,
-            format!(
-                "{}{}",
-                cargo_toml.to_string().trim_end(),
-                if cargo_toml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
-            ),
+            cargo_toml.to_string(),
+            &cargo_toml_raw,
+            "Cargo.toml",
         )
         .await?;
-        self.version = Some(next_version);
+        self.version = Some(new_version);
         Ok(())
     }
 
-    fn language(&self) -> Language {
-        Language::Rust
-    }
+    // Byte-identical `fn language(&self) -> Language { Language::Rust }`
+    // one-liner shared with every other language crate's `Package` /
+    // `Workspace` impl. Consolidated via `impl_language!()` in
+    // `changepacks-core` alongside the other accessor macros.
+    changepacks_core::impl_language!(Language::Rust);
 
-    fn is_changed(&self) -> bool {
-        self.is_changed
-    }
+    // Publishability flag accessor.
+    changepacks_core::impl_publishable_by_default!();
 
-    fn set_changed(&mut self, changed: bool) {
-        self.is_changed = changed;
-    }
+    // `default_publish_command` / `default_dry_run_publish_command` share
+    // their const-based shape with every other const-driven language
+    // crate. Consolidated via `impl_const_publish_commands!()` in
+    // `changepacks-core` — expansion is byte-identical to the previous
+    // hand-rolled bodies. Hybrid roots publish only their own `[package]`;
+    // discovered member projects remain separate topologically sorted
+    // publish operations.
+    changepacks_core::impl_const_publish_commands!(
+        crate::PUBLISH_COMMAND,
+        crate::DRY_RUN_PUBLISH_COMMAND
+    );
 
-    fn set_name(&mut self, name: String) {
-        self.name = Some(name);
-    }
-
-    fn relative_path(&self) -> &Path {
-        &self.relative_path
-    }
-
-    fn default_publish_command(&self) -> String {
-        "cargo publish --workspace".to_string()
-    }
-
-    fn default_dry_run_publish_command(&self) -> Option<String> {
-        Some("cargo publish --workspace --dry-run".to_string())
-    }
-
-    fn dependencies(&self) -> &HashSet<String> {
-        &self.dependencies
-    }
-
-    fn add_dependency(&mut self, dependency: &str) {
-        self.dependencies.insert(dependency.to_string());
-    }
+    // `dependencies()` / `add_dependency()` share their byte-identical
+    // body with every other language crate's `Package` and `Workspace`
+    // impl (all use `dependencies: HashSet<String>` as their backing
+    // store). Consolidated via the `impl_dependencies_accessors!()`
+    // macro in `changepacks-core` so future accessor tweaks land in
+    // one place — expansion is byte-identical to the previous
+    // hand-rolled bodies.
+    changepacks_core::impl_dependencies_accessors!();
 
     async fn update_workspace_dependencies(&self, packages: &[&dyn Package]) -> Result<()> {
-        let cargo_toml_raw = read_to_string(&self.path).await?;
-        let mut cargo_toml: DocumentMut = cargo_toml_raw.parse::<DocumentMut>()?;
-
-        // check has workspace.dependencies section
-        if cargo_toml.get("workspace").is_none()
-            || cargo_toml["workspace"].get("dependencies").is_none()
+        // Fast-path: if the caller feeds a cross-language `packages` slice
+        // with zero eligible Rust entries (a common shape when the Node /
+        // Python / Dart workspaces of a polyglot monorepo are updated in the
+        // same `changepacks update` invocation), the per-package guard
+        // (`package.language() != Language::Rust { continue }`) below would
+        // drop every entry, `any_updated` would stay `false`, and the write
+        // branch would already never run — but the `read_to_string` + full
+        // `DocumentMut` parse would have already happened. Mirrors the
+        // "no scheduled work → skip" shape `apply_update_on_rules` and
+        // `apply_reverse_dependencies` already use in `changepacks-utils`.
+        if !packages
+            .iter()
+            .any(|package| package.language() == Language::Rust && package.name().is_some())
         {
             return Ok(());
         }
-        let dependencies = cargo_toml
-            .get_mut("workspace")
-            .and_then(|w| w.get_mut("dependencies"))
-            .and_then(|d| d.as_table_mut())
-            .context("Dependencies section not found")?;
+        let (cargo_toml_raw, mut cargo_toml) = crate::read_and_parse_cargo_toml(&self.path).await?;
 
-        for package in packages {
-            if package.language() != Language::Rust {
-                continue;
-            }
-            let Some(package_name) = package.name() else {
+        // check has workspace.dependencies section
+        //
+        // Single-lookup `let-else` over the shared
+        // `crate::workspace_dependencies_table_mut` chain (the same helper
+        // `update_version` above uses): previously we did TWO independent
+        // `get("workspace")` walks (one guard, one grab) plus a
+        // `.context("Dependencies section not found")?` that could never fire
+        // because the guard above already ensured the chain resolved. The
+        // refutable helper returns `None` on any missing hop (no workspace, no
+        // dependencies, non-table), so this returns `Ok(())` there —
+        // byte-identical semantics with one fewer HashMap-style lookup per
+        // invocation.
+        let Some(dependencies) = crate::workspace_dependencies_table_mut(&mut cargo_toml) else {
+            return Ok(());
+        };
+
+        let package_versions: HashMap<&str, &str> = packages
+            .iter()
+            .filter(|package| package.language() == Language::Rust)
+            .filter_map(|package| Some((package.name()?, package.version()?)))
+            .collect();
+        let mut any_updated = false;
+        for (dependency_key, dependency) in dependencies.iter_mut() {
+            let package_name =
+                crate::finder::effective_dependency_name(dependency_key.get(), dependency);
+            let Some(&next_version) = package_versions.get(package_name) else {
                 continue;
             };
-            if dependencies.get(package_name).is_none() {
-                continue;
-            }
-
-            let dep = dependencies[package_name].as_inline_table_mut();
-            if let Some(dep) = dep
-                && let Some(current_version) = dep.get("version").and_then(|v| v.as_str())
-                && let Some(next_version) = package.version()
-            {
-                let (prefix, _) = split_version(current_version)?;
-                dep["version"] = format!("{}{}", prefix.unwrap_or_default(), next_version).into();
-            }
+            // The path-dep shape gates and the decor-preserving in-place
+            // rewrite are shared with `update_version` above and live in
+            // `crate::sync_path_dependency_version`; only the in-scope decision
+            // differs and is passed in here. This sync rewrites any path dep
+            // whose specifier would actually change, so an entry already at
+            // `next_version` is skipped and cannot dirty the document.
+            any_updated |=
+                crate::sync_path_dependency_version(dependency, next_version, |current_version| {
+                    replace_version_keep_prefix(current_version, next_version) != current_version
+                });
         }
 
-        write(
-            &self.path,
-            format!(
-                "{}{}",
-                cargo_toml.to_string().trim_end(),
-                if cargo_toml_raw.ends_with('\n') {
-                    "\n"
-                } else {
-                    ""
-                }
-            ),
-        )
-        .await?;
+        if !any_updated {
+            return Ok(());
+        }
 
-        Ok(())
+        write_finalized(
+            &self.path,
+            cargo_toml.to_string(),
+            &cargo_toml_raw,
+            "Cargo.toml",
+        )
+        .await
     }
 }
 
@@ -221,12 +385,24 @@ impl Workspace for RustWorkspace {
 mod tests {
     use super::*;
     use changepacks_core::UpdateType;
+    use rstest::rstest;
     use std::fs;
     use tempfile::TempDir;
     use tokio::fs::read_to_string;
 
+    fn inherited_members(names: &[&str]) -> InheritedWorkspaceMembers {
+        let members = InheritedWorkspaceMembers::default();
+        {
+            let mut identities = lock_recovering(&members);
+            for name in names {
+                identities.record(name, std::iter::empty());
+            }
+        }
+        members
+    }
+
     #[tokio::test]
-    async fn test_rust_workspace_new() {
+    async fn test_rust_workspace_new_hybrid_root_uses_root_scoped_publish_commands() {
         let workspace = RustWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
@@ -240,19 +416,17 @@ mod tests {
         assert_eq!(workspace.relative_path(), PathBuf::from("test/Cargo.toml"));
         assert_eq!(workspace.language(), Language::Rust);
         assert!(!workspace.is_changed());
-        assert_eq!(
-            workspace.default_publish_command(),
-            "cargo publish --workspace"
-        );
+        assert!(workspace.is_publishable_by_default());
+        assert_eq!(workspace.default_publish_command(), "cargo publish");
         assert_eq!(
             workspace.default_dry_run_publish_command().as_deref(),
-            Some("cargo publish --workspace --dry-run")
+            Some("cargo publish --dry-run")
         );
     }
 
     #[tokio::test]
     async fn test_rust_workspace_new_without_name_and_version() {
-        let workspace = RustWorkspace::new(
+        let mut workspace = RustWorkspace::new(
             None,
             None,
             PathBuf::from("/test/Cargo.toml"),
@@ -261,26 +435,73 @@ mod tests {
 
         assert_eq!(workspace.name(), None);
         assert_eq!(workspace.version(), None);
+        assert!(!workspace.is_publishable_by_default());
+
+        // Project discovery assigns a repository-name fallback to unnamed
+        // projects after finder finalization. That display-name mutation must
+        // not turn a virtual Cargo workspace into a publishable hybrid root.
+        workspace.set_name("repository-name".to_string());
+        assert_eq!(workspace.name(), Some("repository-name"));
+        assert!(!workspace.is_publishable_by_default());
     }
 
     #[tokio::test]
-    async fn test_rust_workspace_set_changed() {
+    async fn test_rust_workspace_new_has_no_inherited_member_fanout_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0"
+
+[workspace.dependencies]
+same-version-local = { path = "crates/same-version-local", version = "1.0.0" }
+"#,
+        )
+        .unwrap();
+
         let mut workspace = RustWorkspace::new(
+            None,
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let document: toml_edit::DocumentMut = content.parse().unwrap();
+        assert_eq!(
+            document["workspace"]["package"]["version"].as_str(),
+            Some("1.0.1")
+        );
+        assert_eq!(
+            document["workspace"]["dependencies"]["same-version-local"]["version"].as_str(),
+            Some("1.0.0")
+        );
+    }
+
+    #[test]
+    fn test_rust_workspace_set_changed() {
+        changepacks_core::assert_set_changed_roundtrip!(RustWorkspace::new(
             Some("test-workspace".to_string()),
             Some("1.0.0".to_string()),
             PathBuf::from("/test/Cargo.toml"),
             PathBuf::from("test/Cargo.toml"),
-        );
-
-        assert!(!workspace.is_changed());
-        workspace.set_changed(true);
-        assert!(workspace.is_changed());
-        workspace.set_changed(false);
-        assert!(!workspace.is_changed());
+        ));
     }
 
+    #[rstest]
+    #[case(UpdateType::Patch, "1.0.1")]
+    #[case(UpdateType::Minor, "1.1.0")]
+    #[case(UpdateType::Major, "2.0.0")]
     #[tokio::test]
-    async fn test_rust_workspace_update_version_with_existing_package() {
+    async fn test_rust_workspace_update_version_with_existing_package(
+        #[case] update_type: UpdateType,
+        #[case] expected: &str,
+    ) {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");
         fs::write(
@@ -302,10 +523,123 @@ version = "1.0.0"
             PathBuf::from("Cargo.toml"),
         );
 
-        workspace.update_version(UpdateType::Patch).await.unwrap();
+        workspace.update_version(update_type).await.unwrap();
 
         let content = read_to_string(&cargo_toml).await.unwrap();
-        assert!(content.contains("version = \"1.0.1\""));
+        assert!(content.contains(&format!("version = \"{expected}\"")));
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_non_table_package_error_includes_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, "package = 3\n").unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let err = workspace
+            .update_version(UpdateType::Minor)
+            .await
+            .expect_err("non-table package item must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&cargo_toml.display().to_string()),
+            "error chain should name the manifest path, got: {chain}"
+        );
+        assert!(
+            chain.contains("non-table [package]"),
+            "error chain should mention the non-table package item, got: {chain}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_non_table_package_leaves_state_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        // A scalar top-level `package` key. The sibling test above pins the
+        // ERROR TEXT; this one pins the guard's actual reason for existing — it
+        // must reject BEFORE the `cargo_toml["package"]["version"] = ...`
+        // assignment reaches `write_finalized` AND before `self.version` is
+        // advanced, so neither the manifest on disk nor the in-memory version
+        // moves. Mirrors the package-side
+        // `test_write_cargo_package_version_non_table_package_leaves_file_untouched`
+        // in `lib.rs`.
+        let original = "package = \"not-a-table\"\n\n[workspace]\nmembers = [\"crates/*\"]\n";
+        fs::write(&cargo_toml, original).unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let err = workspace
+            .update_version(UpdateType::Patch)
+            .await
+            .expect_err("non-table package item must fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("has a non-table [package] item"),
+            "error chain should name the non-table package guard, got: {chain}"
+        );
+
+        // Byte-for-byte, not line-for-line: a partial or reformatted write is
+        // exactly the manifest destruction the guard prevents.
+        assert_eq!(
+            fs::read(&cargo_toml).unwrap(),
+            original.as_bytes(),
+            "a rejected bump must leave the manifest byte-identical"
+        );
+        assert_eq!(
+            workspace.version(),
+            Some("1.0.0"),
+            "a rejected bump must not advance the in-memory version"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    /// Workspace-side twin of the `RustPackage` malformed-manifest test: the
+    /// two `update_version` bodies reach `read_and_parse_cargo_toml` through
+    /// different paths (the workspace parses inline, the package parses inside
+    /// `write_cargo_package_version`), so both trait entry points must be
+    /// pinned independently or a regression could hide behind whichever one is
+    /// still covered.
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_malformed_manifest_leaves_file_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let original = "invalid toml [[[";
+        fs::write(&cargo_toml, original).unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        changepacks_utils::assert_malformed_manifest_rejected!(
+            workspace.update_version(UpdateType::Patch).await,
+            &cargo_toml,
+            "Cargo.toml",
+            original
+        );
+        assert_eq!(
+            workspace.version(),
+            Some("1.0.0"),
+            "a rejected bump must not advance the in-memory version"
+        );
 
         temp_dir.close().unwrap();
     }
@@ -314,13 +648,7 @@ version = "1.0.0"
     async fn test_rust_workspace_update_version_without_package_section() {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");
-        fs::write(
-            &cargo_toml,
-            r#"[workspace]
-members = ["crates/*"]
-"#,
-        )
-        .unwrap();
+        fs::write(&cargo_toml, "").unwrap();
 
         let mut workspace = RustWorkspace::new(
             Some("test-workspace".to_string()),
@@ -343,13 +671,7 @@ members = ["crates/*"]
     async fn test_rust_workspace_update_version_without_name() {
         let temp_dir = TempDir::new().unwrap();
         let cargo_toml = temp_dir.path().join("Cargo.toml");
-        fs::write(
-            &cargo_toml,
-            r#"[workspace]
-members = ["crates/*"]
-"#,
-        )
-        .unwrap();
+        fs::write(&cargo_toml, "").unwrap();
 
         let mut workspace =
             RustWorkspace::new(None, None, cargo_toml.clone(), PathBuf::from("Cargo.toml"));
@@ -360,68 +682,6 @@ members = ["crates/*"]
         assert!(content.contains("[package]"));
         assert!(content.contains("version = \"0.0.1\""));
         assert!(content.contains("name = \"_\""));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_rust_workspace_update_version_minor() {
-        let temp_dir = TempDir::new().unwrap();
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
-        fs::write(
-            &cargo_toml,
-            r#"[workspace]
-members = ["crates/*"]
-
-[package]
-name = "test-workspace"
-version = "1.0.0"
-"#,
-        )
-        .unwrap();
-
-        let mut workspace = RustWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            cargo_toml.clone(),
-            PathBuf::from("Cargo.toml"),
-        );
-
-        workspace.update_version(UpdateType::Minor).await.unwrap();
-
-        let content = read_to_string(&cargo_toml).await.unwrap();
-        assert!(content.contains("version = \"1.1.0\""));
-
-        temp_dir.close().unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_rust_workspace_update_version_major() {
-        let temp_dir = TempDir::new().unwrap();
-        let cargo_toml = temp_dir.path().join("Cargo.toml");
-        fs::write(
-            &cargo_toml,
-            r#"[workspace]
-members = ["crates/*"]
-
-[package]
-name = "test-workspace"
-version = "1.0.0"
-"#,
-        )
-        .unwrap();
-
-        let mut workspace = RustWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            cargo_toml.clone(),
-            PathBuf::from("Cargo.toml"),
-        );
-
-        workspace.update_version(UpdateType::Major).await.unwrap();
-
-        let content = read_to_string(&cargo_toml).await.unwrap();
-        assert!(content.contains("version = \"2.0.0\""));
 
         temp_dir.close().unwrap();
     }
@@ -460,28 +720,16 @@ version = "1.0.0"
 
     #[test]
     fn test_rust_workspace_dependencies() {
-        let mut workspace = RustWorkspace::new(
-            Some("test-workspace".to_string()),
-            Some("1.0.0".to_string()),
-            PathBuf::from("/test/Cargo.toml"),
-            PathBuf::from("test/Cargo.toml"),
+        changepacks_core::assert_dependencies_roundtrip!(
+            RustWorkspace::new(
+                Some("test-workspace".to_string()),
+                Some("1.0.0".to_string()),
+                PathBuf::from("/test/Cargo.toml"),
+                PathBuf::from("test/Cargo.toml"),
+            ),
+            "core",
+            "utils"
         );
-
-        // Initially empty
-        assert!(workspace.dependencies().is_empty());
-
-        // Add dependencies
-        workspace.add_dependency("core");
-        workspace.add_dependency("utils");
-
-        let deps = workspace.dependencies();
-        assert_eq!(deps.len(), 2);
-        assert!(deps.contains("core"));
-        assert!(deps.contains("utils"));
-
-        // Adding duplicate should not increase count
-        workspace.add_dependency("core");
-        assert_eq!(workspace.dependencies().len(), 2);
     }
 
     #[tokio::test]
@@ -498,6 +746,7 @@ members = ["crates/*"]
 [workspace.dependencies]
 core = { version = "1.0.0", path = "crates/core" }
 utils = { version = "2.0.0", path = "crates/utils" }
+serde = { version = "1.0.0" }
 "#,
         )
         .unwrap();
@@ -509,7 +758,6 @@ utils = { version = "2.0.0", path = "crates/utils" }
             PathBuf::from("Cargo.toml"),
         );
 
-        // Create mock packages with updated versions
         let mut core_pkg = RustPackage::new(
             Some("core".to_string()),
             Some("1.1.0".to_string()),
@@ -518,7 +766,15 @@ utils = { version = "2.0.0", path = "crates/utils" }
         );
         core_pkg.set_changed(true);
 
-        let packages: Vec<&dyn Package> = vec![&core_pkg];
+        let mut serde_pkg = RustPackage::new(
+            Some("serde".to_string()),
+            Some("1.1.0".to_string()),
+            PathBuf::from("/test/serde/Cargo.toml"),
+            PathBuf::from("serde/Cargo.toml"),
+        );
+        serde_pkg.set_changed(true);
+
+        let packages: Vec<&dyn Package> = vec![&core_pkg, &serde_pkg];
 
         workspace
             .update_workspace_dependencies(&packages)
@@ -526,10 +782,244 @@ utils = { version = "2.0.0", path = "crates/utils" }
             .unwrap();
 
         let content = read_to_string(&cargo_toml).await.unwrap();
-        assert!(content.contains("version = \"1.1.0\""));
-        // utils should remain unchanged
-        assert!(content.contains("version = \"2.0.0\""));
+        assert_eq!(
+            content,
+            r#"[workspace]
+members = ["crates/*"]
 
+[workspace.dependencies]
+core = { version = "1.1.0", path = "crates/core" }
+utils = { version = "2.0.0", path = "crates/utils" }
+serde = { version = "1.0.0" }
+"#
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    /// Fixture shared by the two fast-path guard tests below: writes a
+    /// `[workspace.dependencies]` manifest whose entries carry BOTH `path` and
+    /// `version` keys, i.e. exactly the shape the update loop would rewrite if
+    /// it ever ran, and returns it together with its raw bytes.
+    fn write_path_dep_workspace_manifest(dir: &TempDir) -> (PathBuf, Vec<u8>) {
+        let cargo_toml = dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+core = { version = "1.0.0", path = "crates/core" }
+utils = { version = "2.0.0", path = "crates/utils" }
+"#,
+        )
+        .unwrap();
+        let bytes = fs::read(&cargo_toml).unwrap();
+        (cargo_toml, bytes)
+    }
+
+    /// Asserts the two observable effects of the fast-path guard in
+    /// `update_workspace_dependencies` for a `packages` slice holding zero
+    /// eligible Rust entries: the manifest is left byte-identical (no write),
+    /// and a workspace whose manifest does not exist on disk still returns
+    /// `Ok(())` (no read/parse at all — removing the guard turns this second
+    /// case into the `read_and_parse_cargo_toml` error).
+    async fn assert_workspace_dependencies_fast_path(packages: &[&dyn Package]) {
+        let temp_dir = TempDir::new().unwrap();
+        let (cargo_toml, before) = write_path_dep_workspace_manifest(&temp_dir);
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+        workspace
+            .update_workspace_dependencies(packages)
+            .await
+            .expect("fast path must succeed");
+        assert_eq!(
+            fs::read(&cargo_toml).unwrap(),
+            before,
+            "fast path must leave the manifest byte-identical"
+        );
+
+        // No manifest on disk: only the guard's early return can keep this
+        // `Ok(())`, so this pins "the fast path never reads or parses".
+        let missing = temp_dir.path().join("missing").join("Cargo.toml");
+        let absent_workspace = RustWorkspace::new(
+            Some("absent-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            missing.clone(),
+            PathBuf::from("missing/Cargo.toml"),
+        );
+        absent_workspace
+            .update_workspace_dependencies(packages)
+            .await
+            .expect("fast path must not touch the filesystem");
+        assert!(
+            !missing.exists(),
+            "fast path must not create the missing manifest"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_workspace_dependencies_empty_packages() {
+        assert_workspace_dependencies_fast_path(&[]).await;
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_workspace_dependencies_no_rust_packages() {
+        let node_pkg = changepacks_core::test_support::MockPackage::with_all(
+            Some("core"),
+            Some("9.9.9"),
+            "/test/packages/core/package.json",
+            "packages/core/package.json",
+            Language::Node,
+        );
+        let packages: Vec<&dyn Package> = vec![&node_pkg];
+
+        assert_workspace_dependencies_fast_path(&packages).await;
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_updates_inline_and_table_form_dependency_aliases() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+renamed-core = { package = "core", version = "1.0.0", path = "crates/core" }
+
+[workspace.dependencies.renamed-utils]
+package = "utils"
+version = "2.0.0"
+path = "crates/utils"
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+        let core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            Some("1.1.0".to_string()),
+            temp_dir.path().join("crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+        let utils_pkg = RustPackage::new(
+            Some("utils".to_string()),
+            Some("2.1.0".to_string()),
+            temp_dir.path().join("crates/utils/Cargo.toml"),
+            PathBuf::from("crates/utils/Cargo.toml"),
+        );
+        let packages: Vec<&dyn Package> = vec![&core_pkg, &utils_pkg];
+
+        workspace
+            .update_workspace_dependencies(&packages)
+            .await
+            .unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert_eq!(
+            content,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+renamed-core = { package = "core", version = "1.1.0", path = "crates/core" }
+
+[workspace.dependencies.renamed-utils]
+package = "utils"
+version = "2.1.0"
+path = "crates/utils"
+"#
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_skips_current_inline_dependency_write() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let original = r#"[workspace]
+[workspace.dependencies]
+core = { version = "~1.2.3", path = "crates/core" }
+"#;
+        fs::write(&cargo_toml, original).unwrap();
+        changepacks_utils::test_support::set_readonly(&cargo_toml, true);
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+        let core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            Some("1.2.3".to_string()),
+            temp_dir.path().join("crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+
+        workspace
+            .update_workspace_dependencies(&[&core_pkg])
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(&cargo_toml).unwrap(), original.as_bytes());
+        changepacks_utils::test_support::set_readonly(&cargo_toml, false);
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_skips_current_subtable_dependency_write() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let original = r#"[workspace]
+[workspace.dependencies.core]
+version = "^2.0.0"
+path = "crates/core"
+"#;
+        fs::write(&cargo_toml, original).unwrap();
+        changepacks_utils::test_support::set_readonly(&cargo_toml, true);
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+        let core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            Some("2.0.0".to_string()),
+            temp_dir.path().join("crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+
+        workspace
+            .update_workspace_dependencies(&[&core_pkg])
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(&cargo_toml).unwrap(), original.as_bytes());
+        changepacks_utils::test_support::set_readonly(&cargo_toml, false);
         temp_dir.close().unwrap();
     }
 
@@ -706,6 +1196,73 @@ version = "1.0.0"
     }
 
     #[tokio::test]
+    async fn test_rust_workspace_update_version_preserves_hybrid_root_inheritance_marker() {
+        // Regression: a hybrid workspace root that is BOTH the workspace and a
+        // publishable crate inheriting its own version
+        // (`[package] version.workspace = true` alongside
+        // `[workspace.package].version`). `update_version` used to
+        // unconditionally rewrite `[package].version` with a plain string,
+        // clobbering the dotted-key inheritance marker and permanently
+        // detaching the root crate from the workspace-wide bump. The correct
+        // behavior leaves the marker intact and drives the bump through
+        // `[workspace.package].version` only — the same guarantee already held
+        // for member crates in `RustPackage::update_version`.
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2024"
+
+[package]
+name = "root"
+version.workspace = true
+"#,
+        )
+        .unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            Some("root".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Minor).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        // The dotted-key inheritance marker survives verbatim — not rewritten
+        // to a hardcoded `version = "..."`.
+        assert!(
+            content.contains("version.workspace = true"),
+            "inheritance marker was clobbered: {content}"
+        );
+
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        // [package].version is still the marker table, NOT a string literal.
+        assert!(
+            doc["package"]["version"].as_str().is_none(),
+            "[package].version was rewritten to a string literal: {content}"
+        );
+        assert_eq!(
+            doc["package"]["version"]["workspace"].as_bool(),
+            Some(true),
+            "[package].version should remain `workspace = true`"
+        );
+        // The inherited bump is driven through [workspace.package].version.
+        assert_eq!(
+            doc["workspace"]["package"]["version"].as_str(),
+            Some("1.1.0")
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
     async fn test_rust_workspace_update_version_virtual_workspace() {
         // Virtual workspace: has [workspace.package].version but NO [package] section
         let temp_dir = TempDir::new().unwrap();
@@ -747,6 +1304,42 @@ edition = "2024"
     }
 
     #[tokio::test]
+    async fn test_rust_workspace_update_version_virtual_workspace_without_version() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+resolver = "2"
+members = ["crates/*"]
+"#,
+        )
+        .unwrap();
+
+        let mut workspace =
+            RustWorkspace::new(None, None, cargo_toml.clone(), PathBuf::from("Cargo.toml"));
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        assert_eq!(
+            doc["workspace"]["package"]["version"].as_str(),
+            Some("0.0.1")
+        );
+        assert!(
+            doc.get("package").is_none(),
+            "virtual workspace should not get a [package] section: {content}"
+        );
+        assert!(
+            !content.contains('_'),
+            "virtual workspace should not get a placeholder name: {content}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
     async fn test_rust_workspace_update_version_syncs_workspace_dependencies() {
         // Virtual workspace with [workspace.dependencies] containing path deps
         // that share the workspace version — these should be synced on bump
@@ -772,11 +1365,13 @@ other_local = { path = "crates/other", version = "0.5.0" }
         )
         .unwrap();
 
-        let mut workspace = RustWorkspace::new(
+        let mut workspace = RustWorkspace::new_with_inherited_workspace_members(
             None,
             Some("0.1.33".to_string()),
             cargo_toml.clone(),
             PathBuf::from("Cargo.toml"),
+            inherited_members(&["vespera_core", "vespera_macro"]),
+            true,
         );
 
         workspace.update_version(UpdateType::Patch).await.unwrap();
@@ -826,16 +1421,508 @@ other_local = { path = "crates/other", version = "0.5.0" }
         assert!(doc.get("package").is_none());
     }
 
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_syncs_subtable_dependencies() {
+        // Same sync as above, but the [workspace.dependencies] entries use the
+        // sub-table shape (`[workspace.dependencies.foo]`) instead of inline
+        // tables. Path deps sharing the workspace version should be bumped,
+        // with sibling keys (`path`, `features`) and the sub-table formatting
+        // preserved.
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.33"
+edition = "2024"
+
+[workspace.dependencies.vespera_core]
+path = "crates/vespera_core"
+version = "0.1.33"
+
+[workspace.dependencies.vespera_macro]
+version = "0.1.33"
+path = "crates/vespera_macro"
+features = ["derive"]
+
+[workspace.dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[workspace.dependencies.other_local]
+path = "crates/other"
+version = "0.5.0"
+"#,
+        )
+        .unwrap();
+
+        let mut workspace = RustWorkspace::new_with_inherited_workspace_members(
+            None,
+            Some("0.1.33".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+            inherited_members(&["vespera_core", "vespera_macro"]),
+            true,
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+
+        // [workspace.package].version bumped
+        assert_eq!(
+            doc["workspace"]["package"]["version"].as_str(),
+            Some("0.1.34")
+        );
+
+        let ws_deps = doc["workspace"]["dependencies"].as_table().unwrap();
+
+        // Sub-table path deps matching the old version are bumped
+        assert_eq!(
+            ws_deps["vespera_core"]["version"].as_str(),
+            Some("0.1.34"),
+            "sub-table path dep with matching version should be bumped"
+        );
+        assert_eq!(
+            ws_deps["vespera_macro"]["version"].as_str(),
+            Some("0.1.34"),
+            "sub-table path dep with matching version should be bumped"
+        );
+
+        // Sibling keys preserved on the bumped sub-table deps
+        assert_eq!(
+            ws_deps["vespera_core"]["path"].as_str(),
+            Some("crates/vespera_core")
+        );
+        assert_eq!(
+            ws_deps["vespera_macro"]["path"].as_str(),
+            Some("crates/vespera_macro")
+        );
+        assert_eq!(
+            ws_deps["vespera_macro"]["features"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "sibling features array should be preserved"
+        );
+
+        // Non-path (registry) sub-table dep is untouched even though its
+        // version equals the old workspace version.
+        assert_eq!(
+            ws_deps["serde"]["version"].as_str(),
+            Some("1.0"),
+            "non-path sub-table dep should remain unchanged"
+        );
+
+        // Path dep with a different version is untouched
+        assert_eq!(
+            ws_deps["other_local"]["version"].as_str(),
+            Some("0.5.0"),
+            "sub-table path dep with different version should remain unchanged"
+        );
+
+        // Sub-table shape + formatting preserved (not rewritten to inline)
+        assert!(content.contains("[workspace.dependencies.vespera_core]"));
+        assert!(content.contains(r#"path = "crates/vespera_core""#));
+
+        // No [package] section created for a virtual workspace
+        assert!(doc.get("package").is_none());
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_subtable_non_matching_untouched() {
+        // Sub-table deps that update_version must NOT sync:
+        //  - a registry dep (version present but NO `path`)
+        //  - a path dep whose version does not match the workspace version
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.33"
+edition = "2024"
+
+[workspace.dependencies.registry_only]
+version = "0.1.33"
+features = ["derive"]
+
+[workspace.dependencies.mismatched_local]
+path = "crates/mismatched"
+version = "0.5.0"
+"#,
+        )
+        .unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            None,
+            Some("0.1.33".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+
+        assert_eq!(
+            doc["workspace"]["package"]["version"].as_str(),
+            Some("0.1.34")
+        );
+
+        let ws_deps = doc["workspace"]["dependencies"].as_table().unwrap();
+
+        // No `path` → not a workspace member → left at its old version even
+        // though it happens to equal the workspace version.
+        assert_eq!(
+            ws_deps["registry_only"]["version"].as_str(),
+            Some("0.1.33"),
+            "registry sub-table dep without path should remain unchanged"
+        );
+
+        // Has `path` but a different version → not synced.
+        assert_eq!(
+            ws_deps["mismatched_local"]["version"].as_str(),
+            Some("0.5.0"),
+            "sub-table path dep with different version should remain unchanged"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_workspace_dependencies_subtable() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies.core]
+version = "1.0.0"
+path = "crates/core"
+
+[workspace.dependencies.utils]
+version = "2.0.0"
+path = "crates/utils"
+
+[workspace.dependencies.serde]
+version = "1.0.0"
+features = ["derive"]
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let mut core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            Some("1.1.0".to_string()),
+            PathBuf::from("/test/crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+        core_pkg.set_changed(true);
+
+        let mut serde_pkg = RustPackage::new(
+            Some("serde".to_string()),
+            Some("1.1.0".to_string()),
+            PathBuf::from("/test/serde/Cargo.toml"),
+            PathBuf::from("serde/Cargo.toml"),
+        );
+        serde_pkg.set_changed(true);
+
+        let packages: Vec<&dyn Package> = vec![&core_pkg, &serde_pkg];
+
+        workspace
+            .update_workspace_dependencies(&packages)
+            .await
+            .unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        assert_eq!(
+            content,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies.core]
+version = "1.1.0"
+path = "crates/core"
+
+[workspace.dependencies.utils]
+version = "2.0.0"
+path = "crates/utils"
+
+[workspace.dependencies.serde]
+version = "1.0.0"
+features = ["derive"]
+"#
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_workspace_dependencies_subtable_without_version() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(
+            &cargo_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies.core]
+path = "crates/core"
+
+[workspace.dependencies.utils]
+version = "2.0.0"
+path = "crates/utils"
+"#,
+        )
+        .unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+
+        let core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            Some("1.1.0".to_string()),
+            PathBuf::from("/test/crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+
+        let packages: Vec<&dyn Package> = vec![&core_pkg];
+
+        workspace
+            .update_workspace_dependencies(&packages)
+            .await
+            .unwrap();
+
+        let content = read_to_string(&cargo_toml).await.unwrap();
+        let doc: toml_edit::DocumentMut = content.parse().unwrap();
+        let ws_deps = doc["workspace"]["dependencies"].as_table().unwrap();
+
+        // core has no version key: none should be inserted
+        assert!(
+            ws_deps["core"].get("version").is_none(),
+            "no version key should be inserted into a sub-table dep that lacks one"
+        );
+        assert_eq!(ws_deps["core"]["path"].as_str(), Some("crates/core"));
+        // utils untouched
+        assert_eq!(ws_deps["utils"]["version"].as_str(), Some("2.0.0"));
+
+        temp_dir.close().unwrap();
+    }
+
     #[test]
     fn test_set_name() {
-        let mut workspace = RustWorkspace::new(
+        changepacks_core::assert_set_name_roundtrip!(RustWorkspace::new(
             None,
             Some("1.0.0".to_string()),
             PathBuf::from("/test/Cargo.toml"),
             PathBuf::from("Cargo.toml"),
+        ));
+    }
+
+    // ---------------------------------------------------------------------
+    // Decor preservation.
+    //
+    // `toml_edit` attaches surrounding trivia (the spacing after `=` and any
+    // end-of-line comment) to the VALUE, so replacing an `Item` with a freshly
+    // built one drops it. Each test below is a WHOLE-FILE round trip through a
+    // distinct version-write site, asserting that only the version literal
+    // changed — the same hazard already guarded in `changepacks-python`'s
+    // `write_pyproject_version`.
+    // ---------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_preserves_hybrid_root_version_decor() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        // A hybrid root: both `[package].version` and `[workspace.package].version`
+        // are rewritten, each carrying an end-of-line comment.
+        let original = r#"# hybrid workspace root
+[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0" # inherited by every member
+edition = "2024"
+
+[package]
+name = "test-workspace"
+version = "1.0.0" # kept in lockstep with the workspace
+"#;
+        fs::write(&cargo_toml, original).unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
         );
-        assert_eq!(workspace.name(), None);
-        workspace.set_name("my-project".to_string());
-        assert_eq!(workspace.name(), Some("my-project"));
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        assert_eq!(
+            read_to_string(&cargo_toml).await.unwrap(),
+            original.replace("1.0.0", "1.0.1"),
+            "only the version literals may change"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_preserves_workspace_package_version_decor() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        // A virtual root with no `[package]`: the bump lands on
+        // `[workspace.package].version`, whose line carries a comment.
+        let original = r#"# virtual workspace root
+[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0" # single source of truth
+edition = "2024"
+"#;
+        fs::write(&cargo_toml, original).unwrap();
+
+        let mut workspace = RustWorkspace::new(
+            None,
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        assert_eq!(
+            read_to_string(&cargo_toml).await.unwrap(),
+            original.replace("1.0.0", "1.0.1"),
+            "only the version literal may change"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_version_preserves_workspace_dependency_version_decor() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        // The `update_version` fan-out into `[workspace.dependencies]` rewrites
+        // the `version` value of every inherited member path dep. The inline
+        // entry pins the intra-inline-table spacing; the sub-table entry pins
+        // an end-of-line comment (TOML forbids comments inside inline tables).
+        let original = r#"[workspace]
+members = ["crates/*"]
+
+[workspace.package]
+version = "1.0.0"
+
+[workspace.dependencies]
+vespera_core = { path = "crates/vespera_core", version = "1.0.0" }
+
+[workspace.dependencies.vespera_macro]
+path = "crates/vespera_macro"
+version = "1.0.0" # must track the workspace version
+"#;
+        fs::write(&cargo_toml, original).unwrap();
+
+        let mut workspace = RustWorkspace::new_with_inherited_workspace_members(
+            None,
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+            inherited_members(&["vespera_core", "vespera_macro"]),
+            true,
+        );
+        workspace.update_version(UpdateType::Patch).await.unwrap();
+
+        assert_eq!(
+            read_to_string(&cargo_toml).await.unwrap(),
+            original.replace("1.0.0", "1.0.1"),
+            "only the version literals may change"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_rust_workspace_update_workspace_dependencies_preserves_version_decor() {
+        use crate::package::RustPackage;
+
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        // The member-version sync path (`update_workspace_dependencies`) is a
+        // separate write site from the `update_version` fan-out above.
+        let original = r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+core = { path = "crates/core", version = "1.0.0" }
+
+[workspace.dependencies.utils]
+path = "crates/utils"
+version = "1.0.0" # bumped alongside the member crate
+"#;
+        fs::write(&cargo_toml, original).unwrap();
+
+        let workspace = RustWorkspace::new(
+            Some("test-workspace".to_string()),
+            Some("1.0.0".to_string()),
+            cargo_toml.clone(),
+            PathBuf::from("Cargo.toml"),
+        );
+        let core_pkg = RustPackage::new(
+            Some("core".to_string()),
+            Some("1.0.1".to_string()),
+            PathBuf::from("/test/crates/core/Cargo.toml"),
+            PathBuf::from("crates/core/Cargo.toml"),
+        );
+        let utils_pkg = RustPackage::new(
+            Some("utils".to_string()),
+            Some("1.0.1".to_string()),
+            PathBuf::from("/test/crates/utils/Cargo.toml"),
+            PathBuf::from("crates/utils/Cargo.toml"),
+        );
+        let packages: Vec<&dyn Package> = vec![&core_pkg, &utils_pkg];
+
+        workspace
+            .update_workspace_dependencies(&packages)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            read_to_string(&cargo_toml).await.unwrap(),
+            original.replace("1.0.0", "1.0.1"),
+            "only the version literals may change"
+        );
+
+        temp_dir.close().unwrap();
     }
 }

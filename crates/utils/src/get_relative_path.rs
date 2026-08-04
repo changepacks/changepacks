@@ -1,20 +1,37 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
-/// Get the relative path from a git root to an absolute path
+/// Get the relative path from a git root to an absolute path, returning a borrowed reference.
+///
+/// This is the zero-copy variant; use when the result is only needed for lookups
+/// (e.g., `HashMap<PathBuf, V>::get(&path)`). For owned ownership, use [`get_relative_path`].
+///
+/// # Errors
+/// Returns error if the absolute path is not within the git root directory.
+pub fn get_relative_path_ref<'a>(
+    git_root_path: &Path,
+    absolute_path: &'a Path,
+) -> Result<&'a Path> {
+    // The context message is a pinned contract: `test_get_relative_path_ref_error_context_names_both_paths`
+    // below asserts it byte-for-byte, so the wording must not drift.
+    absolute_path.strip_prefix(git_root_path).with_context(|| {
+        format!(
+            "Failed to get relative path: '{}' is not within '{}'",
+            absolute_path.display(),
+            git_root_path.display()
+        )
+    })
+}
+
+/// Get the relative path from a git root to an absolute path, returning an owned `PathBuf`.
+///
+/// For lookup-only use cases, prefer [`get_relative_path_ref`] to avoid allocation.
 ///
 /// # Errors
 /// Returns error if the absolute path is not within the git root directory.
 pub fn get_relative_path(git_root_path: &Path, absolute_path: &Path) -> Result<PathBuf> {
-    match absolute_path.strip_prefix(git_root_path) {
-        Ok(relative) => Ok(relative.to_path_buf()),
-        Err(_) => Err(anyhow::anyhow!(
-            "Failed to get relative path: '{}' is not within '{}'",
-            absolute_path.display(),
-            git_root_path.display()
-        )),
-    }
+    get_relative_path_ref(git_root_path, absolute_path).map(Path::to_path_buf)
 }
 
 #[cfg(test)]
@@ -29,10 +46,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        // Create a test file
+        // Create a test file path
         let outside_dir = TempDir::new().unwrap();
         let test_file = outside_dir.path().join("test_file.txt");
-        fs::write(&test_file, "test content").unwrap();
 
         // Test getting relative path (should fail)
         let result = get_relative_path(temp_path, &test_file);
@@ -42,20 +58,11 @@ mod tests {
 
     #[test]
     fn test_get_relative_path_absolute_path_outside_repo() {
-        // Create a temporary directory and initialize git
+        // Create a temporary directory.
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path();
 
-        // Initialize git repository
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(temp_path)
-            .output()
-            .unwrap();
-
         let inside_path = temp_path.join("inside_absolute_path.txt");
-        fs::write(&inside_path, "inside content").unwrap();
-
         let abs_path = inside_path;
         let result = get_relative_path(temp_path, &abs_path);
         assert!(result.is_ok());
@@ -127,5 +134,39 @@ mod tests {
         let absolute = root.join("src").join("lib.rs");
         let result = get_relative_path(root, &absolute).unwrap();
         assert_eq!(result, PathBuf::from("src").join("lib.rs"));
+    }
+
+    /// The zero-copy variant is what the CLI calls directly, so exercise it
+    /// without going through the owned wrapper.
+    #[test]
+    fn test_get_relative_path_ref_returns_borrowed_suffix() {
+        let root = PathBuf::from("repo");
+        let absolute = root.join("crates").join("utils").join("Cargo.toml");
+        let result = get_relative_path_ref(&root, &absolute).unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from("crates").join("utils").join("Cargo.toml")
+        );
+    }
+
+    /// The doc comment declares the failure text as a stability contract, so
+    /// pin the literal prefix together with both interpolated paths.
+    #[test]
+    fn test_get_relative_path_ref_error_context_names_both_paths() {
+        let git_root_path = PathBuf::from("repo");
+        let absolute_path = PathBuf::from("other").join("package.json");
+
+        let err = get_relative_path_ref(&git_root_path, &absolute_path)
+            .expect_err("a path outside the git root must fail");
+
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&format!(
+                "Failed to get relative path: '{}' is not within '{}'",
+                absolute_path.display(),
+                git_root_path.display()
+            )),
+            "error chain should carry the documented message and both paths, got: {chain}"
+        );
     }
 }
