@@ -299,8 +299,15 @@ jobs:
             os: macos
     steps:
       - uses: actions/checkout@v7
+      # Only the Linux legs build inside a maturin container that ships its own
+      # rustc; macOS and Windows compile with whatever rustup the runner image
+      # happens to carry. The macos-14 image trails stable by a release, so a
+      # dependency that raises its MSRV to the newest stable breaks this job -
+      # and only this job, because every other job installs stable explicitly.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
       - name: Build wheels
-        uses: PyO3/maturin-action@main
+        uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
           args: --release --out dist
@@ -353,8 +360,17 @@ jobs:
       # npm (not bun) performs the publish: bun cannot do the npm OIDC token
       # exchange. Trusted Publishing (OIDC) requires npm >= 11.5.1 and a
       # trusted publisher registered for every package napi prepublish pushes.
-      - name: Ensure npm >= 11.5.1 (OIDC Trusted Publishing)
-        run: npm install -g npm@latest
+      #
+      # Pinned to the 11.x line instead of `latest`, which now resolves to 12:
+      # `npm publish` runs prepublishOnly -> `napi prepublish`, which validates
+      # every platform package by parsing `npm pack --dry-run --json` as a
+      # top-level array. npm 12 changed that output to an object keyed by
+      # package name (npm/cli#9247), so @napi-rs/cli 3.8.x aborts on the first
+      # package with "Failed to validate the release package". 11.19.0 still
+      # clears the >= 11.5.1 OIDC floor; drop the upper bound once napi-rs
+      # accepts both shapes.
+      - name: Ensure 11.5.1 <= npm < 12 (OIDC + @napi-rs/cli compatibility)
+        run: npm install -g 'npm@^11'
       - name: Publish
         run: |
             bun install -g @napi-rs/cli
@@ -390,7 +406,7 @@ jobs:
         with:
           subject-path: 'wheels-*/*'
       - name: Publish to PyPI
-        uses: PyO3/maturin-action@main
+        uses: PyO3/maturin-action@v1
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
         with:

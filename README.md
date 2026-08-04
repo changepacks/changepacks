@@ -15,7 +15,7 @@
 [![GitHub issues](https://img.shields.io/github/issues/changepacks/changepacks)](https://github.com/changepacks/changepacks/issues)
 [![GitHub pull requests](https://img.shields.io/github/issues-pr/changepacks/changepacks)](https://github.com/changepacks/changepacks/pulls)
 [![GitHub last commit](https://img.shields.io/github/last-commit/changepacks/changepacks)](https://github.com/changepacks/changepacks/commits/main)
-[![Rust](https://img.shields.io/badge/Rust-1.91%2B-orange.svg)](https://rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.97%2B-orange.svg)](https://rust-lang.org/)
 [![Python](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-green.svg)](https://nodejs.org/)
 [![Bun](https://img.shields.io/badge/Bun-latest-000000.svg)](https://bun.sh)
@@ -117,7 +117,7 @@ bunx @changepacks/cli
 ### Requirements
 
 - Git repository (for project detection)
-- Rust 1.91+ (for building from source)
+- Rust 1.97+ (for building from source)
 
 ### Build from Source
 

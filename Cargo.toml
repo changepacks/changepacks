@@ -4,6 +4,13 @@ members = ["crates/*", "bridge/*"]
 
 [workspace.package]
 edition = "2024"
+# The highest MSRV among the locked dependencies (tree-sitter-iter, reached
+# through yamlpath/yamlpatch, requires 1.97.0). Declaring it makes the
+# requirement machine-checked in two places: `cargo build` reports it against
+# the active toolchain instead of failing deep inside a dependency, and the
+# resolver-3 MSRV-aware resolution keeps `cargo update` from silently locking a
+# dependency that needs a newer rustc than this workspace claims to support.
+rust-version = "1.97"
 license = "Apache-2.0"
 repository = "https://github.com/changepacks/changepacks"
 homepage = "https://github.com/changepacks/changepacks"
