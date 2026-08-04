@@ -19,7 +19,11 @@ toml = ["dep:toml_edit"]
 gix = { version = "0.86", default-features = false, features = ["index", "status", "parallel", "revision", "sha1"] }
 anyhow.workspace = true
 changepacks-core.workspace = true
-tokio = { workspace = true, features = ["fs"] }
+# `macros` is required by the `tokio::join!` in `clear_update_logs`. It must be
+# declared here rather than inherited: the dev-dependency below and the
+# workspace build both supply it, so a missing entry only surfaces when the
+# crate is built alone — which is what `cargo publish` does.
+tokio = { workspace = true, features = ["fs", "macros"] }
 futures.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 ignore = "0.4"

@@ -31,7 +31,11 @@ thiserror = "2"
 inquire = "0.9"
 colored.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util"] }
+# `macros` is required by the `tokio::join!` in `commands::update`. Today it
+# also arrives through `changepacks-node`, whose own dependency enables it, but
+# relying on that would make this crate stop compiling the moment that transitive
+# edge changes — so the requirement is declared where it is used.
+tokio = { workspace = true, features = ["fs", "io-util", "macros"] }
 futures.workspace = true
 
 [dev-dependencies]

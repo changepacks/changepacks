@@ -79,6 +79,22 @@ jobs:
           components: clippy, rustfmt
       - name: Build
         run: cargo check
+      # A workspace build unifies features across members, so a crate whose own
+      # manifest under-declares what its `src/` uses still compiles: some
+      # sibling turned the feature on for everyone. `cargo publish` builds each
+      # crate alone and is the only step that ever caught such a gap - after
+      # lint, from a full rebuild of the packaged tarballs. Re-checking every
+      # member against its own manifest reproduces the same failure in seconds,
+      # and the `--all-features` pass additionally compiles the optional paths
+      # (`test-support`, `toml`) that a default build never reaches.
+      - name: Check each crate in isolation
+        run: |
+          for manifest in crates/*/Cargo.toml bridge/*/Cargo.toml; do
+            echo "::group::$manifest"
+            cargo check --manifest-path "$manifest"
+            cargo check --all-features --manifest-path "$manifest"
+            echo "::endgroup::"
+          done
       - name: Lint
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Test Deploy
