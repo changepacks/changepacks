@@ -893,12 +893,23 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        let _ = std::fs::remove_dir_all(&base);
 
         assert!(output.success, "stderr: {}", output.stderr);
+        // The hook reports the directory the OS handed its process, while the
+        // test holds the path it created. Those differ whenever the temporary
+        // root is reached through a symlink, which is the default on macOS:
+        // `temp_dir()` hands out `/var/folders/…`, a link to
+        // `/private/var/folders/…`. Resolve both — before the cleanup below
+        // removes the tree — so the assertion compares directories, not spellings.
+        let reported = std::fs::canonicalize(output.stdout.trim())
+            .expect("the hook's reported working directory must exist");
+        let expected =
+            std::fs::canonicalize(&package_dir).expect("the package directory must exist");
+        let _ = std::fs::remove_dir_all(&base);
+
         assert_eq!(
-            normalize_path_separators(output.stdout.trim()),
-            normalize_path_separators(package_dir.to_string_lossy().as_ref())
+            normalize_path_separators(reported.to_string_lossy().as_ref()),
+            normalize_path_separators(expected.to_string_lossy().as_ref())
         );
     }
 

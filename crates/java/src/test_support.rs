@@ -42,6 +42,33 @@ pub(crate) fn create_publish_wrapper(root: &Path) {
     }
 }
 
+/// Assert the mock wrapper ran in `expected`.
+///
+/// Both sides are resolved through [`fs::canonicalize`] before comparing. The
+/// wrapper reports the directory the OS handed its process — on Unix a shell
+/// resets `$PWD` to `getcwd()` when the inherited value does not describe the
+/// current directory, and `%CD%` on Windows is already resolved — while the
+/// test holds the path it created. Those two differ whenever the temporary root
+/// is reached through a symlink, which is the default on macOS: `TempDir` hands
+/// out `/var/folders/…`, a link to `/private/var/folders/…`.
+///
+/// # Panics
+///
+/// Panics if the wrapper produced no `cwd=` line, if either directory no longer
+/// exists, or if the two resolve to different directories.
+pub(crate) fn assert_reported_cwd(stdout: &str, expected: &Path) {
+    let reported = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("cwd="))
+        .expect("wrapper stdout must carry a `cwd=` line");
+
+    assert_eq!(
+        fs::canonicalize(reported).expect("the wrapper's reported directory must exist"),
+        fs::canonicalize(expected).expect("the expected wrapper directory must exist"),
+        "wrapper ran in the wrong directory; stdout: {stdout}"
+    );
+}
+
 pub(crate) fn captured_argv(stdout: &str) -> Vec<String> {
     stdout
         .lines()

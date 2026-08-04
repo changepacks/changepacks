@@ -87,7 +87,7 @@ impl Package for GradlePackage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{captured_argv, create_publish_wrapper};
+    use crate::test_support::{assert_reported_cwd, captured_argv, create_publish_wrapper};
     use changepacks_core::{Config, UpdateType};
     use rstest::rstest;
     use std::collections::BTreeMap;
@@ -201,7 +201,7 @@ mod tests {
             .unwrap();
 
         assert!(output.success, "stderr: {}", output.stderr);
-        assert!(output.stdout.contains(&format!("cwd={}", root.display())));
+        assert_reported_cwd(&output.stdout, &root);
         assert_eq!(captured_argv(&output.stdout), [":libs:core:publish"]);
         assert!(dry_run.success, "stderr: {}", dry_run.stderr);
         let dry_run_argv = captured_argv(&dry_run.stdout);
