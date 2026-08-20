@@ -1,11 +1,8 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use changepacks_core::{Language, Package, UpdateType, Workspace};
-use changepacks_utils::{
-    assign_preserving_decor, next_version, replace_version_keep_prefix, split_version,
-    write_finalized,
-};
-use std::collections::{HashMap, HashSet};
+use changepacks_utils::{assign_preserving_decor, next_version, split_version, write_finalized};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
@@ -312,72 +309,23 @@ impl Workspace for RustWorkspace {
         // Fast-path: if the caller feeds a cross-language `packages` slice
         // with zero eligible Rust entries (a common shape when the Node /
         // Python / Dart workspaces of a polyglot monorepo are updated in the
-        // same `changepacks update` invocation), the per-package guard
-        // (`package.language() != Language::Rust { continue }`) below would
-        // drop every entry, `any_updated` would stay `false`, and the write
-        // branch would already never run — but the `read_to_string` + full
-        // `DocumentMut` parse would have already happened. Mirrors the
-        // "no scheduled work → skip" shape `apply_update_on_rules` and
-        // `apply_reverse_dependencies` already use in `changepacks-utils`.
-        if !packages
-            .iter()
-            .any(|package| package.language() == Language::Rust && package.name().is_some())
-        {
-            return Ok(());
-        }
-        let (cargo_toml_raw, mut cargo_toml) = crate::read_and_parse_cargo_toml(&self.path).await?;
-
-        // check has workspace.dependencies section
-        //
-        // Single-lookup `let-else` over the shared
-        // `crate::workspace_dependencies_table_mut` chain (the same helper
-        // `update_version` above uses): previously we did TWO independent
-        // `get("workspace")` walks (one guard, one grab) plus a
-        // `.context("Dependencies section not found")?` that could never fire
-        // because the guard above already ensured the chain resolved. The
-        // refutable helper returns `None` on any missing hop (no workspace, no
-        // dependencies, non-table), so this returns `Ok(())` there —
-        // byte-identical semantics with one fewer HashMap-style lookup per
-        // invocation.
-        let Some(dependencies) = crate::workspace_dependencies_table_mut(&mut cargo_toml) else {
-            return Ok(());
-        };
-
-        let package_versions: HashMap<&str, &str> = packages
-            .iter()
-            .filter(|package| package.language() == Language::Rust)
-            .filter_map(|package| Some((package.name()?, package.version()?)))
-            .collect();
-        let mut any_updated = false;
-        for (dependency_key, dependency) in dependencies.iter_mut() {
-            let package_name =
-                crate::finder::effective_dependency_name(dependency_key.get(), dependency);
-            let Some(&next_version) = package_versions.get(package_name) else {
-                continue;
-            };
-            // The path-dep shape gates and the decor-preserving in-place
-            // rewrite are shared with `update_version` above and live in
-            // `crate::sync_path_dependency_version`; only the in-scope decision
-            // differs and is passed in here. This sync rewrites any path dep
-            // whose specifier would actually change, so an entry already at
-            // `next_version` is skipped and cannot dirty the document.
-            any_updated |=
-                crate::sync_path_dependency_version(dependency, next_version, |current_version| {
-                    replace_version_keep_prefix(current_version, next_version) != current_version
-                });
-        }
-
-        if !any_updated {
+        // same `changepacks update` invocation), no dependency entry could
+        // match and the write branch would never run — but the
+        // `read_to_string` + full `DocumentMut` parse would have already
+        // happened. Mirrors the "no scheduled work → skip" shape
+        // `apply_update_on_rules` and `apply_reverse_dependencies` already use
+        // in `changepacks-utils`.
+        let package_versions = crate::bumped_rust_package_versions(packages);
+        if package_versions.is_empty() {
             return Ok(());
         }
 
-        write_finalized(
-            &self.path,
-            cargo_toml.to_string(),
-            &cargo_toml_raw,
-            "Cargo.toml",
-        )
-        .await
+        // The walk covers `[workspace.dependencies]` AND this manifest's own
+        // dependency tables: a hybrid root (`[workspace]` + `[package]`) can
+        // pin a sibling directly, and that pin breaks Cargo resolution exactly
+        // like a stale root pin does. See `crate::sync_dependency_pins`.
+        crate::sync_manifest_dependency_pins(&self.path, &package_versions).await?;
+        Ok(())
     }
 }
 

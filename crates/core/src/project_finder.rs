@@ -929,6 +929,58 @@ pub trait ProjectFinder: std::fmt::Debug + Send + Sync {
         }
         Ok(())
     }
+    /// Manifests this finder knows about that carry version references to
+    /// discovered packages, but are NOT themselves managed projects.
+    ///
+    /// The motivating case is a Cargo workspace root excluded by
+    /// `config.ignore`: it has no version of its own to bump — so it must not
+    /// become a `Project` and start showing up in `check` / `publish` — yet its
+    /// `[workspace.dependencies]` table pins the very members being bumped, and
+    /// Cargo refuses to resolve the workspace the moment those pins go stale.
+    /// A member manifest that pins a sibling directly, rather than through
+    /// `dep = { workspace = true }`, has the same problem.
+    ///
+    /// The update transaction snapshots these paths alongside the project
+    /// manifests, so a failure anywhere in the transaction still restores every
+    /// file [`ProjectFinder::sync_dependency_references`] could have written.
+    ///
+    /// The default is empty: only `changepacks-rust` has manifests of this kind.
+    fn dependency_reference_manifests(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+
+    /// Retarget the version references inside
+    /// [`ProjectFinder::dependency_reference_manifests`] at the bumped
+    /// `packages`.
+    ///
+    /// Runs after every project version write has completed, so each package's
+    /// `version()` already reports its post-bump value. Implementors MUST NOT
+    /// write any manifest owned by a discovered [`Project`] whose own
+    /// `Workspace::update_workspace_dependencies` already covers it — the two
+    /// steps run concurrently, and two writers on one path is a lost update.
+    ///
+    /// # Errors
+    /// Returns an error if a reference manifest cannot be read, parsed, or
+    /// written.
+    ///
+    /// Boxed-future shape rather than a defaulted `async fn`, for the reason
+    /// spelled out on [`ProjectFinder::should_visit_manifest`].
+    fn sync_dependency_references<'life0, 'life1, 'life2, 'async_trait>(
+        &'life0 self,
+        _packages: &'life1 [&'life2 dyn crate::Package],
+    ) -> ::core::pin::Pin<
+        ::std::boxed::Box<
+            dyn ::core::future::Future<Output = Result<()>> + ::core::marker::Send + 'async_trait,
+        >,
+    >
+    where
+        'life0: 'async_trait,
+        'life1: 'async_trait,
+        'life2: 'async_trait,
+        Self: ::core::marker::Sync + 'async_trait,
+    {
+        ::std::boxed::Box::pin(async move { Ok(()) })
+    }
     /// Post-visit processing hook for resolving deferred state (e.g., workspace-inherited versions).
     /// Called once after all `visit()` calls complete.
     /// # Errors

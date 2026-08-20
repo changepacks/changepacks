@@ -12,11 +12,14 @@ pub mod workspace;
 
 pub use finder::RustProjectFinder;
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
+use changepacks_core::{Language, Package};
 use changepacks_utils::{
-    assign_preserving_decor, read_and_parse, replace_version_keep_prefix, write_toml_table_version,
+    assign_preserving_decor, read_and_parse, replace_version_keep_prefix,
+    requirement_needs_rewrite, write_finalized, write_toml_table_version,
 };
 use toml_edit::DocumentMut;
 
@@ -182,6 +185,133 @@ pub(crate) fn sync_path_dependency_version(
     let bumped = replace_version_keep_prefix(current_version, next_version);
     assign_preserving_decor(slot, &bumped);
     true
+}
+
+/// Index the bumped Rust packages by name, so a manifest walk can answer
+/// "does this dependency entry name a package that just moved?" in O(1).
+///
+/// Packages of other languages, and Rust packages missing a name or a version,
+/// contribute nothing a Cargo requirement could be retargeted to, so they are
+/// dropped here rather than at each dependency entry. An empty map is
+/// therefore also the "nothing to do" signal every caller uses to skip its
+/// manifest read entirely.
+pub(crate) fn bumped_rust_package_versions<'a>(
+    packages: &[&'a dyn Package],
+) -> HashMap<&'a str, &'a str> {
+    packages
+        .iter()
+        .filter(|package| package.language() == Language::Rust)
+        .filter_map(|package| Some((package.name()?, package.version()?)))
+        .collect()
+}
+
+/// Rewrite every local path-dependency requirement in one dependency table
+/// that names a bumped package, reporting whether anything was written.
+///
+/// The per-entry shape gates (table-like, an existing `path`, an existing
+/// string `version`) and the decor-preserving in-place rewrite live in
+/// [`sync_path_dependency_version`]; the in-scope decision is
+/// [`changepacks_utils::requirement_needs_rewrite`]. Aliased entries
+/// (`alias = { package = "real" }`) resolve through
+/// [`crate::finder::effective_dependency_name`], so they bind to the package
+/// they actually name.
+fn sync_dependency_table_pins(
+    dependencies: &mut dyn toml_edit::TableLike,
+    package_versions: &HashMap<&str, &str>,
+) -> bool {
+    let mut any_updated = false;
+    for (dependency_key, dependency) in dependencies.iter_mut() {
+        let package_name =
+            crate::finder::effective_dependency_name(dependency_key.get(), dependency);
+        let Some(&next_version) = package_versions.get(package_name) else {
+            continue;
+        };
+        any_updated |= sync_path_dependency_version(dependency, next_version, |current_version| {
+            requirement_needs_rewrite(current_version, next_version)
+        });
+    }
+    any_updated
+}
+
+/// Rewrite every local path-dependency requirement in `doc` — the workspace
+/// root's `[workspace.dependencies]` table AND the ordinary
+/// `[dependencies]` / `[dev-dependencies]` / `[build-dependencies]` tables,
+/// including their `[target.'cfg(..)'.*]` forms — reporting whether anything
+/// was written.
+///
+/// Both halves matter, and for different manifests. A workspace root pins its
+/// members in `[workspace.dependencies]` while the members inherit with
+/// `dep = { workspace = true }`; a workspace that does NOT use inheritance has
+/// each member pin its siblings directly in its own `[dependencies]`. Cargo
+/// refuses to resolve the workspace when EITHER shape goes stale, so one walk
+/// covers both instead of a root-only rule that silently skips the second.
+///
+/// The table list is [`crate::finder::CARGO_DEPENDENCY_TABLES`], the same set
+/// the finder scans for release-graph edges, so "which tables can name a local
+/// package?" has one definition.
+pub(crate) fn sync_dependency_pins(
+    doc: &mut DocumentMut,
+    package_versions: &HashMap<&str, &str>,
+) -> bool {
+    let mut any_updated = false;
+
+    if let Some(workspace_dependencies) = workspace_dependencies_table_mut(doc) {
+        any_updated |= sync_dependency_table_pins(workspace_dependencies, package_versions);
+    }
+
+    for (table_name, _) in crate::finder::CARGO_DEPENDENCY_TABLES {
+        if let Some(dependencies) = doc
+            .get_mut(table_name)
+            .and_then(toml_edit::Item::as_table_like_mut)
+        {
+            any_updated |= sync_dependency_table_pins(dependencies, package_versions);
+        }
+    }
+
+    if let Some(targets) = doc
+        .get_mut("target")
+        .and_then(toml_edit::Item::as_table_like_mut)
+    {
+        for (_, target) in targets.iter_mut() {
+            let Some(target_table) = target.as_table_like_mut() else {
+                continue;
+            };
+            for (table_name, _) in crate::finder::CARGO_DEPENDENCY_TABLES {
+                if let Some(dependencies) = target_table
+                    .get_mut(table_name)
+                    .and_then(toml_edit::Item::as_table_like_mut)
+                {
+                    any_updated |= sync_dependency_table_pins(dependencies, package_versions);
+                }
+            }
+        }
+    }
+
+    any_updated
+}
+
+/// Read the `Cargo.toml` at `path`, retarget every local path-dependency
+/// requirement naming a bumped package, and write it back only when something
+/// actually changed.
+///
+/// The no-change early return is what keeps an untouched manifest
+/// byte-identical: `toml_edit` round-trips faithfully, but skipping the write
+/// entirely also skips the mtime churn that would make a release commit list
+/// manifests it did not modify.
+///
+/// # Errors
+/// Returns an error if the manifest cannot be read, cannot be parsed as TOML,
+/// or cannot be written back.
+pub(crate) async fn sync_manifest_dependency_pins(
+    path: &Path,
+    package_versions: &HashMap<&str, &str>,
+) -> Result<bool> {
+    let (cargo_toml_raw, mut cargo_toml) = read_and_parse_cargo_toml(path).await?;
+    if !sync_dependency_pins(&mut cargo_toml, package_versions) {
+        return Ok(false);
+    }
+    write_finalized(path, cargo_toml.to_string(), &cargo_toml_raw, "Cargo.toml").await?;
+    Ok(true)
 }
 
 /// Return `true` for a `toml_edit::Item` whose value is table-like with
@@ -504,6 +634,115 @@ mod tests {
         assert_eq!(
             doc.to_string(),
             "dep = { path = \"../dep\", version = \"^2.0.0\" } # pinned\n"
+        );
+    }
+
+    fn bumped(pairs: &[(&'static str, &'static str)]) -> HashMap<&'static str, &'static str> {
+        pairs.iter().copied().collect()
+    }
+
+    /// A hand-maintained manifest carrying every shape the pin walk must reach
+    /// AND every construct a re-serializing writer would normalize away:
+    /// a comment, an alias entry, aligned `=` columns, a sub-table entry, a
+    /// target-specific table, a registry dependency, a path-only dependency,
+    /// and a still-covering partial requirement.
+    fn pin_manifest(core: &str, tool: &str) -> String {
+        format!(
+            concat!(
+                "[workspace]\n",
+                "members = [\"crates/*\"]\n",
+                "\n",
+                "# hand-maintained pins\n",
+                "[workspace.dependencies]\n",
+                "rayon        = \"1.12\"\n",
+                "demo-core    = {{ path = \"crates/demo-core\", version = \"{core}\", default-features = false }}\n",
+                "aliased-core = {{ package = \"demo-core\", path = \"crates/demo-core\", version = \"{core}\" }}\n",
+                "demo-app     = {{ path = \"crates/demo-app\", version = \"0.2\" }}\n",
+                "\n",
+                "[dependencies]\n",
+                "demo-tool = {{ path = \"crates/demo-tool\", version = \"{tool}\" }} # direct sibling pin\n",
+                "path-only = {{ path = \"crates/path-only\" }}\n",
+                "\n",
+                "[dev-dependencies.demo-tool]\n",
+                "path = \"crates/demo-tool\"\n",
+                "version = \"{tool}\"\n",
+                "\n",
+                "[target.'cfg(unix)'.build-dependencies]\n",
+                "demo-tool = {{ path = \"crates/demo-tool\", version = \"{tool}\" }}\n",
+            ),
+            core = core,
+            tool = tool
+        )
+    }
+
+    /// The whole point of the walk: every table that can name a local package
+    /// is retargeted — `[workspace.dependencies]`, the ordinary tables, a
+    /// sub-table entry, and a `[target.'cfg(..)']` table — while a registry
+    /// entry, a path-only entry, and a still-covering `"0.2"` requirement are
+    /// left alone and the file is otherwise byte-identical.
+    #[test]
+    fn test_sync_dependency_pins_rewrites_every_local_table_and_preserves_format() {
+        let mut doc: DocumentMut = pin_manifest("=0.2.1", "^0.2.1").parse().unwrap();
+
+        let written = sync_dependency_pins(
+            &mut doc,
+            &bumped(&[("demo-core", "0.3.0"), ("demo-tool", "0.3.0")]),
+        );
+
+        assert!(written);
+        assert_eq!(doc.to_string(), pin_manifest("=0.3.0", "^0.3.0"));
+    }
+
+    /// `demo-app` moves 0.2.1 -> 0.2.2, which its `"0.2"` requirement still
+    /// admits, so nothing is written at all — not even a no-op rewrite that
+    /// would narrow the author's chosen range to an exact version.
+    #[test]
+    fn test_sync_dependency_pins_leaves_a_still_covering_requirement_untouched() {
+        let original = pin_manifest("=0.2.1", "^0.2.1");
+        let mut doc: DocumentMut = original.parse().unwrap();
+
+        let written = sync_dependency_pins(&mut doc, &bumped(&[("demo-app", "0.2.2")]));
+
+        assert!(
+            !written,
+            "a still-covering requirement must not be rewritten"
+        );
+        assert_eq!(doc.to_string(), original);
+    }
+
+    #[tokio::test]
+    async fn test_sync_manifest_dependency_pins_skips_the_write_when_nothing_matches() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        let original = pin_manifest("=0.2.1", "^0.2.1");
+        fs::write(&cargo_toml, &original).unwrap();
+
+        // A readonly manifest proves the no-match path never reaches the write:
+        // the guard is what keeps this `Ok(false)` instead of a write error.
+        test_support::set_readonly(&cargo_toml, true);
+        let result =
+            sync_manifest_dependency_pins(&cargo_toml, &bumped(&[("other", "9.9.9")])).await;
+        test_support::set_readonly(&cargo_toml, false);
+
+        assert!(!result.expect("a no-match manifest must not be written"));
+        assert_eq!(fs::read_to_string(&cargo_toml).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn test_sync_manifest_dependency_pins_writes_the_retargeted_manifest() {
+        let temp_dir = TempDir::new().unwrap();
+        let cargo_toml = temp_dir.path().join("Cargo.toml");
+        fs::write(&cargo_toml, pin_manifest("=0.2.1", "^0.2.1")).unwrap();
+
+        let written =
+            sync_manifest_dependency_pins(&cargo_toml, &bumped(&[("demo-core", "0.3.0")]))
+                .await
+                .unwrap();
+
+        assert!(written);
+        assert_eq!(
+            fs::read_to_string(&cargo_toml).unwrap(),
+            pin_manifest("=0.3.0", "^0.2.1")
         );
     }
 }

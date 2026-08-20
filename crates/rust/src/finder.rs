@@ -202,6 +202,49 @@ fn is_version_bearing_dep(value: &toml_edit::Item) -> bool {
         .is_some()
 }
 
+/// Whether `container` declares at least one local path dependency that also
+/// carries a version requirement, in any of its
+/// [`CARGO_DEPENDENCY_TABLES`].
+///
+/// That pair is exactly the shape a member bump can invalidate: the `path` key
+/// makes it an in-repo edge, and the `version` key makes it a requirement
+/// Cargo must satisfy. A path-only entry has nothing to retarget, and a
+/// registry entry names no local package.
+fn table_pins_local_path_dependency(container: &dyn toml_edit::TableLike) -> bool {
+    CARGO_DEPENDENCY_TABLES.iter().any(|(table_name, _)| {
+        container
+            .get(table_name)
+            .and_then(toml_edit::Item::as_table_like)
+            .is_some_and(|dependencies| {
+                dependencies
+                    .iter()
+                    .any(|(_, value)| is_local_path_dep(value) && is_version_bearing_dep(value))
+            })
+    })
+}
+
+/// [`table_pins_local_path_dependency`] over a whole manifest: its top-level
+/// dependency tables plus every `[target.'cfg(..)'.*]` form.
+///
+/// Recorded at visit time so
+/// [`ProjectFinder::dependency_reference_manifests`] can name only the member
+/// manifests a bump could actually invalidate, instead of making the update
+/// transaction snapshot and re-parse every Cargo manifest in the repository.
+fn pins_local_path_dependency(doc: &toml_edit::DocumentMut) -> bool {
+    if table_pins_local_path_dependency(doc.as_table()) {
+        return true;
+    }
+    doc.get("target")
+        .and_then(toml_edit::Item::as_table_like)
+        .is_some_and(|targets| {
+            targets.iter().any(|(_, target)| {
+                target
+                    .as_table_like()
+                    .is_some_and(table_pins_local_path_dependency)
+            })
+        })
+}
+
 /// Resolve the package name represented by a Cargo dependency entry.
 ///
 /// Cargo dependency keys may be aliases (`alias = { package = "real-name", ... }`).
@@ -221,7 +264,7 @@ pub(crate) fn effective_dependency_name<'a>(
 /// Whether a Cargo dependency table survives `cargo package` wholesale, or is
 /// filtered down to its version-bearing entries first.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum DependencyTableKind {
+pub(crate) enum DependencyTableKind {
     /// `[dependencies]` / `[build-dependencies]`: every entry reaches the
     /// published manifest, so a local edge always constrains publish order.
     /// (A path-only entry here makes the package unpublishable outright, which
@@ -234,7 +277,7 @@ enum DependencyTableKind {
 
 /// Dependency tables Cargo can use for local package edges, each paired with
 /// how packaging treats it.
-const CARGO_DEPENDENCY_TABLES: &[(&str, DependencyTableKind)] = &[
+pub(crate) const CARGO_DEPENDENCY_TABLES: &[(&str, DependencyTableKind)] = &[
     ("dependencies", DependencyTableKind::Published),
     ("dev-dependencies", DependencyTableKind::Dev),
     ("build-dependencies", DependencyTableKind::Published),
@@ -463,6 +506,11 @@ pub struct RustProjectFinder {
     /// `finalize`, which then hands the taken `Vec` to
     /// `resolve_pending_workspace_packages`.
     pending_workspace_paths: HashSet<PathBuf>,
+    /// Visited non-workspace manifests that pin a local path dependency with a
+    /// version requirement, i.e. the members whose OWN dependency tables a
+    /// sibling bump can invalidate. See
+    /// [`ProjectFinder::dependency_reference_manifests`].
+    local_pin_manifests: HashSet<PathBuf>,
 }
 
 impl RustProjectFinder {
@@ -825,6 +873,10 @@ impl ProjectFinder for RustProjectFinder {
             let path_key = path.to_path_buf();
             let relative_path_key = relative_path.to_path_buf();
 
+            if pins_local_path_dependency(&cargo_toml) {
+                self.local_pin_manifests.insert(path_key.clone());
+            }
+
             if inherits_workspace {
                 self.pending_workspace_paths.insert(path_key.clone());
                 self.pending_workspace_packages
@@ -846,6 +898,45 @@ impl ProjectFinder for RustProjectFinder {
                 }
                 self.projects.insert(path_key, project);
             }
+        }
+        Ok(())
+    }
+
+    fn dependency_reference_manifests(&self) -> Vec<PathBuf> {
+        // Workspace roots recorded by the ancestor walk but never discovered
+        // as projects — the `config.ignore`d root that started this. Roots
+        // that ARE projects are excluded: their own
+        // `RustWorkspace::update_workspace_dependencies` owns that write, and
+        // two concurrent writers on one manifest would lose one of them.
+        let mut manifests = self
+            .workspace_roots
+            .keys()
+            .filter(|root_path| !self.projects.contains_key(root_path.as_path()))
+            .cloned()
+            .collect::<Vec<_>>();
+        // Member manifests that pin a sibling directly instead of inheriting
+        // through `dep = { workspace = true }`. These ARE projects, but a
+        // `Project::Package` has no dependency-rewrite step of its own —
+        // `RustPackage::update_version` writes `[package].version` and nothing
+        // else — so they belong here rather than being excluded above.
+        manifests.extend(
+            self.local_pin_manifests
+                .iter()
+                .filter(|manifest_path| self.projects.contains_key(manifest_path.as_path()))
+                .cloned(),
+        );
+        manifests.sort_unstable();
+        manifests.dedup();
+        manifests
+    }
+
+    async fn sync_dependency_references(&self, packages: &[&dyn Package]) -> Result<()> {
+        let package_versions = crate::bumped_rust_package_versions(packages);
+        if package_versions.is_empty() {
+            return Ok(());
+        }
+        for manifest_path in self.dependency_reference_manifests() {
+            crate::sync_manifest_dependency_pins(&manifest_path, &package_versions).await?;
         }
         Ok(())
     }
@@ -3932,6 +4023,169 @@ publish.workspace = true
             member.is_publishable_by_default(),
             "the member declares no publish key, so it stays publishable"
         );
+
+        temp_dir.close().unwrap();
+    }
+
+    /// Build the shape that regressed: a virtual workspace root pinning its
+    /// members in `[workspace.dependencies]`, one member inheriting through
+    /// `{ workspace = true }` and one pinning the sibling directly. Only the
+    /// two MEMBERS are visited — the root is never handed to `visit`, exactly
+    /// as `config.ignore` leaves it out of the discovery walk.
+    async fn visit_ignored_root_workspace(temp_path: &Path) -> (RustProjectFinder, PathBuf) {
+        let root_toml = temp_path.join("Cargo.toml");
+        fs::write(
+            &root_toml,
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+demo-core = { path = "crates/demo-core", version = "=0.2.1", default-features = false }
+"#,
+        )
+        .unwrap();
+
+        for (name, body) in [
+            (
+                "demo-core",
+                "[package]\nname = \"demo-core\"\nversion = \"0.2.1\"\n",
+            ),
+            (
+                "demo-app",
+                "[package]\nname = \"demo-app\"\nversion = \"0.2.1\"\n\n[dependencies]\ndemo-core = { workspace = true }\n",
+            ),
+            (
+                "demo-tool",
+                "[package]\nname = \"demo-tool\"\nversion = \"0.2.1\"\n\n[dependencies]\ndemo-core = { path = \"../demo-core\", version = \"=0.2.1\" }\n",
+            ),
+        ] {
+            let dir = temp_path.join("crates").join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("Cargo.toml"), body).unwrap();
+        }
+
+        let mut finder = RustProjectFinder::new();
+        for name in ["demo-core", "demo-app", "demo-tool"] {
+            let manifest = temp_path.join("crates").join(name).join("Cargo.toml");
+            finder
+                .visit(&manifest, Path::new(&format!("crates/{name}/Cargo.toml")))
+                .await
+                .unwrap();
+        }
+        finder.finalize().await.unwrap();
+
+        (finder, root_toml)
+    }
+
+    /// The never-visited workspace root is reported as a reference manifest —
+    /// that is the only way the update transaction can reach it — alongside the
+    /// one member that pins a sibling directly. The member that inherits with
+    /// `{ workspace = true }` owns no requirement of its own, so listing it
+    /// would make the transaction snapshot and re-parse a file it can never
+    /// write.
+    #[tokio::test]
+    async fn test_dependency_reference_manifests_reports_the_ignored_root_and_direct_pins() {
+        let temp_dir = TempDir::new().unwrap();
+        let (finder, root_toml) = visit_ignored_root_workspace(temp_dir.path()).await;
+
+        let mut expected = vec![
+            root_toml,
+            temp_dir
+                .path()
+                .join("crates")
+                .join("demo-tool")
+                .join("Cargo.toml"),
+        ];
+        expected.sort_unstable();
+
+        assert_eq!(finder.dependency_reference_manifests(), expected);
+
+        temp_dir.close().unwrap();
+    }
+
+    /// End-to-end at the finder surface: syncing against the bumped members
+    /// retargets both the ignored root's `[workspace.dependencies]` pin and the
+    /// direct sibling pin, preserving the operator and every sibling key.
+    #[tokio::test]
+    async fn test_sync_dependency_references_retargets_the_ignored_root_pins() {
+        let temp_dir = TempDir::new().unwrap();
+        let (finder, root_toml) = visit_ignored_root_workspace(temp_dir.path()).await;
+
+        let core = RustPackage::new(
+            Some("demo-core".to_string()),
+            Some("0.3.0".to_string()),
+            temp_dir
+                .path()
+                .join("crates")
+                .join("demo-core")
+                .join("Cargo.toml"),
+            PathBuf::from("crates/demo-core/Cargo.toml"),
+        );
+        let packages: Vec<&dyn Package> = vec![&core];
+
+        finder.sync_dependency_references(&packages).await.unwrap();
+
+        assert_eq!(
+            fs::read_to_string(&root_toml).unwrap(),
+            r#"[workspace]
+members = ["crates/*"]
+
+[workspace.dependencies]
+demo-core = { path = "crates/demo-core", version = "=0.3.0", default-features = false }
+"#
+        );
+        assert_eq!(
+            fs::read_to_string(
+                temp_dir
+                    .path()
+                    .join("crates")
+                    .join("demo-tool")
+                    .join("Cargo.toml")
+            )
+            .unwrap(),
+            "[package]\nname = \"demo-tool\"\nversion = \"0.2.1\"\n\n[dependencies]\ndemo-core = { path = \"../demo-core\", version = \"=0.3.0\" }\n"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    /// A root that IS a discovered project must NOT be reported: its own
+    /// `RustWorkspace::update_workspace_dependencies` writes it, and the update
+    /// transaction runs the two passes against each other's path set assuming
+    /// they are disjoint.
+    #[tokio::test]
+    async fn test_dependency_reference_manifests_excludes_a_discovered_workspace_root() {
+        let temp_dir = TempDir::new().unwrap();
+        let (mut finder, root_toml) = visit_ignored_root_workspace(temp_dir.path()).await;
+
+        finder
+            .visit(&root_toml, Path::new("Cargo.toml"))
+            .await
+            .unwrap();
+
+        assert!(
+            !finder.dependency_reference_manifests().contains(&root_toml),
+            "a discovered workspace root must not be written by both passes"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    /// No eligible Rust package means no manifest can change, so the sync must
+    /// not even read the reference manifests. A readonly root is what proves
+    /// it: without the guard the write attempt would surface as an error.
+    #[tokio::test]
+    async fn test_sync_dependency_references_is_a_no_op_without_bumped_packages() {
+        let temp_dir = TempDir::new().unwrap();
+        let (finder, root_toml) = visit_ignored_root_workspace(temp_dir.path()).await;
+        let before = fs::read_to_string(&root_toml).unwrap();
+
+        changepacks_utils::test_support::set_readonly(&root_toml, true);
+        let result = finder.sync_dependency_references(&[]).await;
+        changepacks_utils::test_support::set_readonly(&root_toml, false);
+
+        result.expect("an empty package set must not touch the filesystem");
+        assert_eq!(fs::read_to_string(&root_toml).unwrap(), before);
 
         temp_dir.close().unwrap();
     }

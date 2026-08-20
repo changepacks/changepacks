@@ -335,6 +335,222 @@ async fn test_cli_update_with_changepack() {
     assert!(content.contains("1.0.1"));
 }
 
+/// Assert Cargo can actually resolve the produced tree.
+///
+/// A stale `[workspace.dependencies]` pin does not merely look wrong: Cargo
+/// aborts with `failed to select a version for the requirement ...` before it
+/// compiles anything, which takes down every downstream job (test, clippy,
+/// doc, coverage, semver-checks) at once. Only running the resolver catches
+/// that class of failure, so the pin assertions below are backed by this.
+fn assert_cargo_resolves(repo_root: &Path) {
+    let output = std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"))
+        .args(["metadata", "--format-version", "1", "--offline"])
+        .current_dir(repo_root)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("failed to run cargo metadata");
+    assert!(
+        output.status.success(),
+        "cargo could not resolve the produced tree:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// The root manifest of the ignored-workspace-root fixture, rendered at the
+/// given pins.
+///
+/// Everything except the two version literals must survive a bump
+/// byte-for-byte — the header comment, the aligned `=` columns, the sibling
+/// keys, the table order and the blank lines — because these manifests are
+/// hand-maintained.
+fn ignored_root_manifest(core_pin: &str, app_pin: &str) -> String {
+    format!(
+        concat!(
+            "[workspace]\n",
+            "members = [\"crates/*\"]\n",
+            "resolver = \"2\"\n",
+            "\n",
+            "[workspace.package]\n",
+            "edition = \"2021\"\n",
+            "\n",
+            "# hand-maintained pins - only the version literals may change\n",
+            "[workspace.dependencies]\n",
+            "demo-core = {{ path = \"crates/demo-core\", version = \"{core_pin}\", default-features = false }}\n",
+            "demo-app  = {{ path = \"crates/demo-app\", version = \"{app_pin}\" }}\n",
+        ),
+        core_pin = core_pin,
+        app_pin = app_pin,
+    )
+}
+
+fn member_manifest(name: &str, version: &str, extra: &str) -> String {
+    format!(
+        "[package]\nname = \"{name}\"\nversion = \"{version}\"\nedition.workspace = true\n{extra}"
+    )
+}
+
+/// The regression: a Cargo workspace root excluded by `config.ignore` — so it
+/// is never discovered as a project and never version-bumped — still has to
+/// have its `[workspace.dependencies]` pins retargeted when its members move,
+/// or the workspace stops resolving.
+#[tokio::test]
+#[serial]
+async fn test_cli_update_rewrites_pins_in_an_ignored_cargo_workspace_root() {
+    let root_before = ignored_root_manifest("=0.2.1", "=0.2.1");
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{ "ignore": ["**", "!crates/**"], "baseBranch": "main" }"#,
+        ),
+        (
+            ".changepacks/changepack_log_pins.json",
+            r#"{"changes": {"crates/demo-core/Cargo.toml": "Minor", "crates/demo-app/Cargo.toml": "Minor"}, "note": "pins", "date": "2026-08-20T00:00:00Z"}"#,
+        ),
+        ("Cargo.toml", &root_before),
+        (
+            "crates/demo-core/Cargo.toml",
+            &member_manifest("demo-core", "0.2.1", ""),
+        ),
+        ("crates/demo-core/src/lib.rs", "pub fn core() {}\n"),
+        (
+            "crates/demo-app/Cargo.toml",
+            &member_manifest(
+                "demo-app",
+                "0.2.1",
+                "\n[dependencies]\ndemo-core = { workspace = true }\n",
+            ),
+        ),
+        ("crates/demo-app/src/lib.rs", "pub fn app() {}\n"),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    let _dir_guard = DirGuard::change_to(&temp_path);
+    changepacks_cli::main(&[
+        "changepacks".to_string(),
+        "update".to_string(),
+        "--yes".to_string(),
+    ])
+    .await
+    .expect("update should succeed");
+
+    // Whole-file equality, not a `contains` check: a reformatted or
+    // partially-rewritten root manifest is exactly the damage to guard against.
+    assert_eq!(
+        tokio::fs::read_to_string(temp_path.join("Cargo.toml"))
+            .await
+            .unwrap(),
+        ignored_root_manifest("=0.3.0", "=0.3.0"),
+        "only the pinned version literals may change in the workspace root"
+    );
+    assert_eq!(
+        tokio::fs::read_to_string(temp_path.join("crates/demo-core/Cargo.toml"))
+            .await
+            .unwrap(),
+        member_manifest("demo-core", "0.3.0", "")
+    );
+
+    assert_cargo_resolves(&temp_path);
+}
+
+/// Divergent bump levels are where an incorrect pin rewrite shows up: each
+/// pin must follow ITS OWN package, a direct sibling pin in a member manifest
+/// must move too, and a requirement that still admits the new version
+/// (`"0.2"` over a patch bump) must be left alone rather than narrowed.
+#[tokio::test]
+#[serial]
+async fn test_cli_update_mixed_level_bumps_retarget_each_pin_independently() {
+    let root_before = concat!(
+        "[workspace]\n",
+        "members = [\"crates/*\"]\n",
+        "\n",
+        "[workspace.package]\n",
+        "edition = \"2021\"\n",
+        "\n",
+        "[workspace.dependencies]\n",
+        "demo-core = { path = \"crates/demo-core\", version = \"=0.2.1\" }\n",
+        "demo-app  = { path = \"crates/demo-app\", version = \"^0.2.1\" }\n",
+        "demo-tool = { path = \"crates/demo-tool\", version = \"0.2\" }\n",
+    );
+    let temp_dir = setup_repo_canonical(&[
+        (
+            ".changepacks/config.json",
+            r#"{ "ignore": ["**", "!crates/**"], "baseBranch": "main" }"#,
+        ),
+        (
+            ".changepacks/changepack_log_mixed.json",
+            r#"{"changes": {"crates/demo-core/Cargo.toml": "Minor", "crates/demo-app/Cargo.toml": "Patch", "crates/demo-tool/Cargo.toml": "Patch"}, "note": "mixed", "date": "2026-08-20T00:00:00Z"}"#,
+        ),
+        ("Cargo.toml", root_before),
+        (
+            "crates/demo-core/Cargo.toml",
+            &member_manifest("demo-core", "0.2.1", ""),
+        ),
+        ("crates/demo-core/src/lib.rs", "pub fn core() {}\n"),
+        (
+            "crates/demo-app/Cargo.toml",
+            &member_manifest(
+                "demo-app",
+                "0.2.1",
+                "\n[dependencies]\ndemo-core = { workspace = true }\n",
+            ),
+        ),
+        ("crates/demo-app/src/lib.rs", "pub fn app() {}\n"),
+        (
+            "crates/demo-tool/Cargo.toml",
+            &member_manifest(
+                "demo-tool",
+                "0.2.1",
+                "\n[dependencies]\ndemo-core = { path = \"../demo-core\", version = \"=0.2.1\" }\n",
+            ),
+        ),
+        ("crates/demo-tool/src/lib.rs", "pub fn tool() {}\n"),
+    ])
+    .await;
+    let temp_path = temp_dir.path().canonicalize().unwrap();
+
+    let _dir_guard = DirGuard::change_to(&temp_path);
+    changepacks_cli::main(&[
+        "changepacks".to_string(),
+        "update".to_string(),
+        "--yes".to_string(),
+    ])
+    .await
+    .expect("update should succeed");
+
+    assert_eq!(
+        tokio::fs::read_to_string(temp_path.join("Cargo.toml"))
+            .await
+            .unwrap(),
+        concat!(
+            "[workspace]\n",
+            "members = [\"crates/*\"]\n",
+            "\n",
+            "[workspace.package]\n",
+            "edition = \"2021\"\n",
+            "\n",
+            "[workspace.dependencies]\n",
+            "demo-core = { path = \"crates/demo-core\", version = \"=0.3.0\" }\n",
+            "demo-app  = { path = \"crates/demo-app\", version = \"^0.2.2\" }\n",
+            "demo-tool = { path = \"crates/demo-tool\", version = \"0.2\" }\n",
+        ),
+        "each pin follows its own package, and a still-covering one is untouched"
+    );
+    assert_eq!(
+        tokio::fs::read_to_string(temp_path.join("crates/demo-tool/Cargo.toml"))
+            .await
+            .unwrap(),
+        member_manifest(
+            "demo-tool",
+            "0.2.2",
+            "\n[dependencies]\ndemo-core = { path = \"../demo-core\", version = \"=0.3.0\" }\n",
+        ),
+        "a member pinning a sibling directly must be retargeted too"
+    );
+
+    assert_cargo_resolves(&temp_path);
+}
+
 #[tokio::test]
 #[serial]
 async fn test_cli_check_basic() {
