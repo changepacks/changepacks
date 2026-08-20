@@ -121,13 +121,19 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
     // `Workspace` arm. This is also the last use of `projects`, so its
     // immutable borrow of `project_finders` ends here, before the mutable
     // borrow taken below.
-    let workspace_manifest_paths = projects
+    let mut extra_manifest_paths = projects
         .iter()
         .filter_map(|project| match project {
             Project::Workspace(workspace) => Some(workspace.path().to_path_buf()),
             Project::Package(_) => None,
         })
         .collect::<Vec<_>>();
+
+    // Manifests that are not managed projects but carry version references the
+    // transaction may rewrite (an `ignore`d Cargo workspace root, a member
+    // pinning a sibling directly). Snapshotting them here — before the first
+    // write — is what keeps the rollback total.
+    extra_manifest_paths.extend(collect_dependency_reference_manifests(&project_finders));
 
     let mut update_projects =
         collect_update_project_muts(&mut project_finders, &update_map, &ctx.repo_root_path)?;
@@ -137,7 +143,7 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         return Ok(());
     }
 
-    let manifest_paths = collect_update_snapshot_paths(&update_projects, workspace_manifest_paths);
+    let manifest_paths = collect_update_snapshot_paths(&update_projects, extra_manifest_paths);
 
     let snapshots = snapshot_update_state(manifest_paths, &ctx.changepacks_dir).await?;
     let project_result = apply_project_version_updates(&mut update_projects).await;
@@ -164,12 +170,18 @@ pub async fn handle_update_with_prompter(args: &UpdateArgs, prompter: &dyn Promp
         // output in finder-then-`projects()` order and merely selected
         // different `Project` arms.
         let transaction_projects = collect_projects(&project_finders);
+        let packages =
+            collect_update_packages(&transaction_projects, &update_map, &ctx.repo_root_path)?;
         let workspace_projects = collect_workspace_projects(&transaction_projects);
         if !workspace_projects.is_empty() {
-            let packages =
-                collect_update_packages(&transaction_projects, &update_map, &ctx.repo_root_path)?;
             apply_workspace_dependency_updates(&workspace_projects, &packages).await?;
         }
+        // Second half of the dependency-reference rewrite: the manifests no
+        // discovered `Project` owns, chiefly an `ignore`d Cargo workspace root
+        // whose `[workspace.dependencies]` pins the members just bumped. The
+        // two passes write disjoint path sets by construction — see
+        // `ProjectFinder::dependency_reference_manifests`.
+        apply_dependency_reference_updates(&project_finders, &packages).await?;
 
         persist_carry_forward_logs(&ctx.changepacks_dir, &carry_forward_logs).await?;
 
@@ -823,6 +835,33 @@ async fn apply_workspace_dependency_updates(
         workspace_projects
             .iter()
             .map(|workspace| workspace.update_workspace_dependencies(projects)),
+    )
+    .await
+}
+
+/// Every manifest the finders know about that carries version references to
+/// discovered packages without being a managed project itself.
+///
+/// See [`ProjectFinder::dependency_reference_manifests`]; the CLI only merges
+/// the per-finder answers so both the transaction snapshot and the rewrite
+/// step read the same set.
+fn collect_dependency_reference_manifests(
+    project_finders: &[Box<dyn ProjectFinder>],
+) -> Vec<PathBuf> {
+    project_finders
+        .iter()
+        .flat_map(|finder| finder.dependency_reference_manifests())
+        .collect()
+}
+
+async fn apply_dependency_reference_updates(
+    project_finders: &[Box<dyn ProjectFinder>],
+    projects: &[&dyn Package],
+) -> Result<()> {
+    join_all_results(
+        project_finders
+            .iter()
+            .map(|finder| finder.sync_dependency_references(projects)),
     )
     .await
 }

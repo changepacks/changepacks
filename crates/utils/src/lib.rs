@@ -32,6 +32,10 @@
 //! - **Semver prefix split** — [`split_version`] cleaves a range specifier
 //!   (`^`, `~`, `>=`, `helloworld-`) from the numeric tail so callers can
 //!   rebuild `"<prefix><new_version>"` while preserving the prefix.
+//! - **Requirement scoping** — [`requirement_needs_rewrite`] decides whether a
+//!   dependency version requirement must follow a bumped package, so an exact
+//!   pin (`"=0.2.1"`) is retargeted while a still-covering range (`"0.2"`) and
+//!   an unpinned specifier (`"*"`) are left byte-identical.
 //! - **Dependency ordering** — [`sort_by_dependencies`] runs Kahn's
 //!   algorithm over the project graph so publish walks touch dependencies
 //!   before dependents.
@@ -133,6 +137,7 @@ pub mod test_support;
 #[cfg(feature = "toml")]
 mod toml_item_str;
 mod trailing_newline;
+mod version_requirement;
 mod write_separated;
 #[cfg(feature = "toml")]
 mod write_toml_table_version;
@@ -177,6 +182,7 @@ pub use split_version::{replace_version_keep_prefix, split_version};
 #[cfg(feature = "toml")]
 pub use toml_item_str::toml_item_str;
 pub use trailing_newline::write_finalized;
+pub use version_requirement::requirement_needs_rewrite;
 pub use write_separated::write_separated;
 #[cfg(feature = "toml")]
 pub use write_toml_table_version::write_toml_table_version;
