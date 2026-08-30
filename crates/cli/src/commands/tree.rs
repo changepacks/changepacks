@@ -49,8 +49,9 @@ fn resolved_monorepo_deps<'a>(
     // Counting the `Unique` resolutions up front to size it exactly would
     // double the `analysis.resolve` calls, which costs more than it saves.
     let mut resolved = Vec::new();
+    let language = project.language();
     for dep in deps {
-        match analysis.resolve(dep) {
+        match analysis.resolve(language, dep) {
             // `index != self_index` drops self-edges, matching
             // `sort_by_dependencies` and `apply_reverse_dependencies` so the
             // tree renders the same release graph publishing walks. Rendered,
@@ -64,7 +65,7 @@ fn resolved_monorepo_deps<'a>(
             ProjectNameResolution::Ambiguous => {
                 // `candidates_for` borrows the analysis' cached candidates when
                 // it can, so bind the `Cow` before iterating it.
-                let candidates = analysis.candidates_for(projects, dep);
+                let candidates = analysis.candidates_for(projects, language, dep);
                 let rendered_candidates = join_display(
                     candidates
                         .iter()
@@ -417,6 +418,23 @@ mod tests {
         Project::Package(Box::new(package))
     }
 
+    /// A Node package at a caller-chosen manifest path, so two projects can
+    /// share one name inside the SAME ecosystem — the only shape that is still
+    /// ambiguous now that names resolve per language.
+    fn node_package_at(name: &str, relative_path: &str, dependencies: &[&str]) -> Project {
+        let mut package = MockPackage::with_all(
+            Some(name),
+            Some("1.0.0"),
+            &format!("/repo/{relative_path}"),
+            relative_path,
+            Language::Node,
+        );
+        package
+            .dependencies
+            .extend(dependencies.iter().map(ToString::to_string));
+        Project::Package(Box::new(package))
+    }
+
     fn try_render_tree(projects: &[&Project]) -> Result<String> {
         let mut output = Vec::new();
         display_tree(projects, Path::new("/repo"), &HashMap::new(), &mut output)?;
@@ -596,7 +614,25 @@ mod tests {
     fn test_display_tree_rejects_referenced_duplicate_name_with_sorted_manifest_paths() {
         let app = package("app", &["shared"]);
         let shared_z = package("shared", &[]);
-        let shared_a = Project::Package(Box::new(MockPackage::with_all(
+        let shared_a = node_package_at("shared", "apps/shared/package.json", &[]);
+
+        let error = try_render_tree(&[&shared_z, &app, &shared_a]).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "dependency `shared` is ambiguous; candidate manifests: apps/shared/package.json, packages/shared/package.json"
+        );
+    }
+
+    /// A crate, an npm package and a wheel published under one product name is
+    /// the normal shape of a polyglot monorepo: each manifest's dependency edge
+    /// names its own ecosystem's package, so the tree renders instead of
+    /// rejecting the workspace.
+    #[test]
+    fn test_display_tree_resolves_same_name_projects_across_languages() {
+        let node_app = package("app", &["shared"]);
+        let node_shared = package("shared", &[]);
+        let rust_shared = Project::Package(Box::new(MockPackage::with_all(
             Some("shared"),
             Some("2.0.0"),
             "/repo/crates/shared/Cargo.toml",
@@ -604,41 +640,38 @@ mod tests {
             Language::Rust,
         )));
 
-        let error = try_render_tree(&[&shared_z, &app, &shared_a]).unwrap_err();
-
         assert_eq!(
-            error.to_string(),
-            "dependency `shared` is ambiguous; candidate manifests: crates/shared/Cargo.toml, packages/shared/package.json"
+            render_tree(&[&node_shared, &node_app, &rust_shared]),
+            concat!(
+                "├── [Node.js] app (v1.0.0) - packages/app/package.json [deps:\n",
+                "        shared]\n",
+                "│   └── [Node.js] shared (v1.0.0) - packages/shared/package.json\n",
+                "└── [Rust] shared (v2.0.0) - crates/shared/Cargo.toml\n",
+            )
         );
     }
 
     #[test]
     fn test_display_tree_selects_first_ambiguous_dependency_deterministically() {
-        let alpha_node = package("alpha", &[]);
-        let alpha_rust = Project::Package(Box::new(MockPackage::with_all(
-            Some("alpha"),
-            Some("2.0.0"),
-            "/repo/crates/alpha/Cargo.toml",
-            "crates/alpha/Cargo.toml",
-            Language::Rust,
-        )));
-        let zeta_node = package("zeta", &[]);
-        let zeta_rust = Project::Package(Box::new(MockPackage::with_all(
-            Some("zeta"),
-            Some("2.0.0"),
-            "/repo/crates/zeta/Cargo.toml",
-            "crates/zeta/Cargo.toml",
-            Language::Rust,
-        )));
+        let alpha_packages = package("alpha", &[]);
+        let alpha_apps = node_package_at("alpha", "apps/alpha/package.json", &[]);
+        let zeta_packages = package("zeta", &[]);
+        let zeta_apps = node_package_at("zeta", "apps/zeta/package.json", &[]);
 
         for _ in 0..64 {
             let app = package("app", &["zeta", "alpha"]);
-            let error = try_render_tree(&[&app, &zeta_node, &alpha_rust, &alpha_node, &zeta_rust])
-                .unwrap_err();
+            let error = try_render_tree(&[
+                &app,
+                &zeta_packages,
+                &alpha_apps,
+                &alpha_packages,
+                &zeta_apps,
+            ])
+            .unwrap_err();
 
             assert_eq!(
                 error.to_string(),
-                "dependency `alpha` is ambiguous; candidate manifests: crates/alpha/Cargo.toml, packages/alpha/package.json"
+                "dependency `alpha` is ambiguous; candidate manifests: apps/alpha/package.json, packages/alpha/package.json"
             );
         }
     }

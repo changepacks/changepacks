@@ -35,6 +35,7 @@ toml_edit = { workspace = true, optional = true }
 rstest.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util", "macros"] }
+changepacks-core = { workspace = true, features = ["test-support"] }
 changepacks-node = { path = "../node" }
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
