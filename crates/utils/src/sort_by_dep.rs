@@ -347,9 +347,10 @@ pub fn sort_by_dependencies(projects: Vec<&Project>) -> Result<Vec<&Project>, De
     let mut edges: Vec<(usize, usize)> = Vec::with_capacity(dependency_count);
 
     for (idx, project) in projects.iter().enumerate() {
+        let language = project.language();
         let deps = project.dependencies();
         for dep in deps {
-            match project_names.resolve(dep) {
+            match project_names.resolve(language, dep) {
                 // `dep_idx != idx` drops self-edges. A project can never be a
                 // publish-order constraint on itself, so a manifest that names
                 // itself — Cargo's `me = { path = "." }` dev-dependency, used to

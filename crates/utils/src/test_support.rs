@@ -16,7 +16,7 @@
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-use changepacks_core::{Package, Project};
+use changepacks_core::{Language, Package, Project, test_support::MockPackage};
 #[cfg(test)]
 use changepacks_node::package::NodePackage;
 
@@ -95,6 +95,33 @@ pub(crate) fn create_project_at(name: Option<&str>, relative_path: &str) -> Proj
         PathBuf::from("/test").join(relative_path),
         PathBuf::from(relative_path),
     )))
+}
+
+/// Create a test project in a caller-chosen `language` at a caller-chosen
+/// relative manifest path, with the given dependency names.
+///
+/// Complements [`create_project`], which is Node-only: dependency names resolve
+/// per ecosystem, so the polyglot cases — one product published as a crate, an
+/// npm package and a wheel under a single name — need projects that differ in
+/// [`Language`] while sharing a name.
+#[cfg(test)]
+pub(crate) fn create_project_in(
+    name: &str,
+    language: Language,
+    relative_path: &str,
+    dependencies: Vec<&str>,
+) -> Project {
+    let mut package = MockPackage::with_all(
+        Some(name),
+        Some("1.0.0"),
+        &format!("/test/{relative_path}"),
+        relative_path,
+        language,
+    );
+    for dep in dependencies {
+        package.add_dependency(dep);
+    }
+    Project::Package(Box::new(package))
 }
 
 /// Run `git <args>` in `path` under hermetic config, asserting the command

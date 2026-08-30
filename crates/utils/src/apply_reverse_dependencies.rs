@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use changepacks_core::{ChangePackResultLog, Project, UpdateType};
+use changepacks_core::{ChangePackResultLog, Language, Project, UpdateType};
 
 use crate::{
     DependencyAmbiguityError, get_relative_path_ref,
@@ -42,6 +42,14 @@ pub fn apply_reverse_dependencies<S: BuildHasher>(
     )
     .map(|_| ())
 }
+
+/// A project identified the way the reverse-dependency graph keys it: the
+/// ecosystem that publishes it plus its manifest name.
+///
+/// The language is part of the key because a polyglot product ships one name as
+/// a crate, an npm package and a wheel at once, and those siblings must not
+/// expand into each other's dependents.
+type ProjectRef<'a> = (Language, &'a str);
 
 pub(crate) struct ReverseDependencyContext<'a> {
     pub(crate) repo_root_path: &'a Path,
@@ -97,10 +105,12 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
     // one owned path per project plus one clone per dependency edge that the owned
     // shape needed before the worklist even started. Lookups are unaffected because
     // `&Path: Borrow<Path>` hashes and compares exactly like `PathBuf`.
-    let mut path_to_name: HashMap<&'projects Path, &'projects str> =
+    let mut path_to_name: HashMap<&'projects Path, ProjectRef<'projects>> =
         HashMap::with_capacity(projects.len());
-    let mut reverse_deps: HashMap<&'projects str, Vec<(&'projects Path, Option<&'projects str>)>> =
-        HashMap::with_capacity(projects.len());
+    let mut reverse_deps: HashMap<
+        ProjectRef<'projects>,
+        Vec<(&'projects Path, Option<ProjectRef<'projects>>)>,
+    > = HashMap::with_capacity(projects.len());
     for (idx, project) in projects.iter().enumerate() {
         let rel_path =
             get_relative_path_ref(context.repo_root_path, project.path()).with_context(|| {
@@ -115,14 +125,17 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
         // seeds. Nameless projects retain the historical "unknown" fallback
         // when reached directly, while duplicate names stop at that direct
         // PATCH and cannot propagate farther.
+        let language = project.language();
         let name_opt = project.name();
         let project_name = name_opt.unwrap_or("unknown");
         let worklist_name = match name_opt {
-            Some(name) if project_names.resolve(name) == ProjectNameResolution::Unique(idx) => {
-                Some(name)
+            Some(name)
+                if project_names.resolve(language, name) == ProjectNameResolution::Unique(idx) =>
+            {
+                Some((language, name))
             }
             Some(_) => None,
-            None => Some(project_name),
+            None => Some((language, project_name)),
         };
 
         let dependencies = project.dependencies();
@@ -133,12 +146,19 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
             // (the "already scheduled" gate below neutralizes it anyway) but it
             // keeps the graph itself free of an edge that can never mean
             // anything.
-            if !matches!(
-                project_names.resolve(dep_name),
-                ProjectNameResolution::Unique(dep_idx) if dep_idx != idx
-            ) {
+            let ProjectNameResolution::Unique(dep_idx) = project_names.resolve(language, dep_name)
+            else {
+                continue;
+            };
+            if dep_idx == idx {
                 continue;
             }
+            // Key the edge by the RESOLVED target, not by the manifest that
+            // declared it: a `package.json` may name a crate (the bridge
+            // shape), and the worklist below seeds each project under its own
+            // language, so an edge filed under the declaring language would
+            // never be found again.
+            let target = (projects[dep_idx].language(), dep_name.as_str());
 
             // Straight `entry` insert: the key is `&'projects str`, which is
             // `Copy`, so `entry` neither moves nor allocates anything a
@@ -149,7 +169,7 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
             // overhead proportional to the number of distinct dependency
             // names.
             reverse_deps
-                .entry(dep_name.as_str())
+                .entry(target)
                 .or_default()
                 .push((rel_path, worklist_name));
         }
@@ -207,7 +227,7 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
     // `compare_paths` (`Equal` only for byte-identical paths). Nothing compares
     // `Equal`, so stability is unobservable and no scratch buffer is allocated.
     initial_paths.sort_unstable_by(|left, right| {
-        compare_paths(left.0, right.0).then_with(|| left.1.cmp(right.1))
+        compare_paths(left.0, right.0).then_with(|| left.1.cmp(&right.1))
     });
     // `to_process` is a plain `Vec` used as a FIFO queue: `head` is the read
     // cursor and the tail is the vector's end, so the live queue is exactly the
@@ -222,7 +242,7 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
     // order, never revisited, a monotonically advancing head cursor yields
     // byte-identical FIFO order to popping a deque front, while dropping the
     // separate `VecDeque` allocation.
-    let mut to_process: Vec<&str> = Vec::with_capacity(projects.len());
+    let mut to_process: Vec<ProjectRef<'projects>> = Vec::with_capacity(projects.len());
     to_process.extend(initial_paths.into_iter().map(|(_, name)| name));
     // `None` seeds every already-scheduled path, so borrow the keys straight out of `update_map`
     // instead of walking a cloned copy of them.
@@ -237,9 +257,10 @@ pub(crate) fn apply_reverse_dependencies_with_provenance<'projects, S: BuildHash
     };
     let mut head = 0;
     while head < to_process.len() {
-        let trigger_name = to_process[head];
+        let trigger = to_process[head];
+        let (_, trigger_name) = trigger;
         head += 1;
-        if let Some(dependents) = reverse_deps.get(trigger_name) {
+        if let Some(dependents) = reverse_deps.get(&trigger) {
             for (dependent_path, dependent_name) in dependents {
                 let dependent_path = *dependent_path;
                 let newly_reached = reached_paths.insert(dependent_path);

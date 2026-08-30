@@ -15,7 +15,7 @@ use std::fmt::Display;
 /// "obvious" alphabetical spot: append it instead, or accept that the CLI output
 /// order changes. `test_language_declaration_order_is_the_sort_contract` pins
 /// this.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Language {
     /// Python projects using pyproject.toml (pip, uv)
     Python,
