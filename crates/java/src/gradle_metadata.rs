@@ -209,6 +209,24 @@ fn gradle_metadata_args(init_script_path: &Path) -> Vec<OsString> {
     ]
 }
 
+/// Write the generated init script to `path`.
+///
+/// Split out of [`get_gradle_metadata`] so the failure context stays
+/// reachable: inside that function `path` always names the temporary file
+/// `tempfile` has just created, so the write cannot be made to fail without
+/// racing the filesystem. Same split `finder.rs` applies to its own
+/// canonicalization step for the same reason.
+async fn write_metadata_init_script(path: &Path) -> Result<()> {
+    tokio::fs::write(path, GRADLE_METADATA_INIT_SCRIPT)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to write temporary Gradle metadata init script '{}'",
+                path.display()
+            )
+        })
+}
+
 pub(crate) async fn get_gradle_metadata(
     gradlew: &Path,
     gradlew_dir: &Path,
@@ -226,14 +244,7 @@ pub(crate) async fn get_gradle_metadata(
         .tempfile()
         .context("Failed to create temporary Gradle metadata init script")?;
     let init_script_path = init_script.path().to_path_buf();
-    tokio::fs::write(&init_script_path, GRADLE_METADATA_INIT_SCRIPT)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to write temporary Gradle metadata init script '{}'",
-                init_script_path.display()
-            )
-        })?;
+    write_metadata_init_script(&init_script_path).await?;
 
     let args = gradle_metadata_args(&init_script_path);
     let command_spec = GradleCommandSpec::new(gradlew, gradlew_dir, args);
@@ -685,6 +696,181 @@ mod tests {
             }
             gradlew
         }
+    }
+
+    /// A write that cannot land must name the file it targeted, since that
+    /// path is a temporary the caller never sees otherwise. Writing to a
+    /// directory is the portable way to fail the write itself rather than the
+    /// preceding temporary-file creation.
+    #[tokio::test]
+    async fn test_write_metadata_init_script_names_the_target_path_on_failure() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let directory = temp_dir.path().join("not-a-file");
+        tokio::fs::create_dir(&directory).await.unwrap();
+
+        let error = write_metadata_init_script(&directory).await.unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("Failed to write temporary Gradle metadata init script"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&directory.display().to_string()),
+            "{message}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    /// Write a wrapper that echoes `lines` on stdout and exits with `status`.
+    ///
+    /// Companion to [`create_init_script_deleting_gradlew`]: that one controls
+    /// what the wrapper DOES to the init script, this one controls what Gradle
+    /// SAID and how it exited, which is what the reporting paths below key on.
+    fn create_scripted_gradlew(dir: &Path, lines: &[String], status: u8) -> PathBuf {
+        let (name, mut script, echo_prefix, echo_suffix, line_end) = if cfg!(windows) {
+            (
+                "gradlew.bat",
+                String::from("@echo off\r\n"),
+                "echo ",
+                "",
+                "\r\n",
+            )
+        } else {
+            (
+                "gradlew",
+                String::from("#!/bin/sh\n"),
+                "printf '%s\\n' '",
+                "'",
+                "\n",
+            )
+        };
+        for line in lines {
+            script.push_str(echo_prefix);
+            script.push_str(line);
+            script.push_str(echo_suffix);
+            script.push_str(line_end);
+        }
+        let exit = if cfg!(windows) {
+            format!("exit /b {status}\r\n")
+        } else {
+            format!("exit {status}\n")
+        };
+        script.push_str(&exit);
+
+        let gradlew = dir.join(name);
+        std::fs::write(&gradlew, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            std::fs::set_permissions(&gradlew, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        gradlew
+    }
+
+    /// A wrapper that exits non-zero WITHOUT writing to stderr must still be
+    /// reported, and the report must not grow a dangling `; stderr:` section
+    /// for the empty output. Cleanup succeeds here, so no `additionally,`
+    /// suffix may appear either.
+    #[tokio::test]
+    async fn test_get_gradle_metadata_reports_failure_with_empty_stderr() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let gradlew = create_scripted_gradlew(temp_dir.path(), &[], 1);
+
+        let error = get_gradle_metadata(&gradlew, temp_dir.path(), true)
+            .await
+            .unwrap_err();
+        let message = error.to_string();
+
+        assert!(
+            message.contains("Gradle metadata discovery failed for wrapper root"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&temp_dir.path().display().to_string()),
+            "{message}"
+        );
+        assert!(!message.contains("; stderr:"), "{message}");
+        assert!(!message.contains("additionally,"), "{message}");
+
+        temp_dir.close().unwrap();
+    }
+
+    /// A successful wrapper run that emits an unparsable prefixed record is a
+    /// different failure from a failed run: the parse error is wrapped with
+    /// both the wrapper and its root so the offending build is identifiable.
+    #[tokio::test]
+    async fn test_get_gradle_metadata_wraps_record_parse_failures() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let gradlew = create_scripted_gradlew(
+            temp_dir.path(),
+            &[format!("{GRADLE_METADATA_PREFIX}[1,2]")],
+            0,
+        );
+
+        let error = get_gradle_metadata(&gradlew, temp_dir.path(), true)
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("Failed to parse Gradle metadata emitted by"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&gradlew.display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains(&temp_dir.path().display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains("invalid Gradle metadata JSON object"),
+            "{message}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
+    /// A project name is recovered from the record, or failing that from the
+    /// project directory's final component. A filesystem ROOT has no final
+    /// component, so a record that also reports Gradle's `unspecified` name
+    /// sentinel leaves nothing to fall back to and must be rejected by name
+    /// rather than silently stored under an empty one.
+    #[tokio::test]
+    async fn test_get_gradle_metadata_rejects_record_without_a_usable_name() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let filesystem_root = temp_dir.path().ancestors().last().unwrap();
+        let record = format!(
+            concat!(
+                r#"{prefix}{{"projectDir":{dir},"projectPath":":","name":"unspecified","#,
+                r#""version":null,"aggregate":false,"hasPublishTask":true,"#,
+                r#""hasPublishToMavenLocalTask":true}}"#
+            ),
+            prefix = GRADLE_METADATA_PREFIX,
+            dir = serde_json::Value::String(filesystem_root.to_string_lossy().into_owned()),
+        );
+        let gradlew = create_scripted_gradlew(temp_dir.path(), &[record], 0);
+
+        let error = get_gradle_metadata(&gradlew, temp_dir.path(), true)
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("has no usable evaluated project name"),
+            "{message}"
+        );
+        assert!(message.contains(':'), "{message}");
+        assert!(
+            message.contains(&gradlew.display().to_string()),
+            "{message}"
+        );
+
+        temp_dir.close().unwrap();
     }
 
     /// A wrapper root that does not exist makes the spawn itself fail, which is
