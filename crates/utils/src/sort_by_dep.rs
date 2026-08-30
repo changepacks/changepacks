@@ -1037,6 +1037,33 @@ mod tests {
     }
 
     #[test]
+    fn test_cycle_classification_skips_projects_kahn_already_ordered() {
+        // Every other cycle test leaves EVERY node residual: each project is
+        // either in the cycle or blocked behind it, so Kahn drains nothing and
+        // the classifier's "already ordered, not a cycle candidate" guard never
+        // fires. A workspace that also ships something independent of the cycle
+        // is the common real shape, and it is the only one that reaches that
+        // guard — `standalone` leaves Kahn with an in-degree of 0 while
+        // `cycle-a`/`cycle-b` stay stuck at 1.
+        let standalone = create_project("standalone", vec![]);
+        let cycle_a = create_project("cycle-a", vec!["cycle-b"]);
+        let cycle_b = create_project("cycle-b", vec!["cycle-a"]);
+
+        let error = sort_by_dependencies(vec![&cycle_b, &standalone, &cycle_a])
+            .expect_err("cycle must fail");
+
+        // The drained project is skipped, not reported as a cycle member.
+        assert_eq!(
+            cycle_of(&error)
+                .members()
+                .iter()
+                .map(|member| member.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cycle-a", "cycle-b"]
+        );
+    }
+
+    #[test]
     fn test_self_edge_does_not_strand_its_dependents() {
         // A self-edge used to give `self-ref` an in-degree Kahn's loop could
         // never drain, which stranded `blocked` — an innocent dependent — along
