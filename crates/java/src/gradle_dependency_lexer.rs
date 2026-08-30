@@ -352,6 +352,27 @@ impl GradleDependencyContext {
     }
 }
 
+/// The bare name that introduces a Gradle project dependency.
+const PROJECT_CALL: &[u8] = b"project";
+
+/// Whether [`PROJECT_CALL`] starts at `cursor` as a WHOLE token.
+///
+/// `project` only introduces the dependency helper when neither neighbour
+/// continues an identifier, so `projectDir` and the `project` inside a longer
+/// name are both rejected here rather than at the call site. The
+/// `while cursor < bytes.len()` invariant at the only call site makes the
+/// `bytes[cursor..]` slice infallible.
+fn is_standalone_project_token(bytes: &[u8], cursor: usize) -> bool {
+    bytes[cursor..].starts_with(PROJECT_CALL)
+        && cursor
+            .checked_sub(1)
+            .and_then(|previous| bytes.get(previous))
+            .is_none_or(|byte| !is_gradle_identifier_byte(*byte))
+        && bytes
+            .get(cursor + PROJECT_CALL.len())
+            .is_none_or(|byte| !is_gradle_identifier_byte(*byte))
+}
+
 fn gradle_identifier_end(bytes: &[u8], start: usize) -> usize {
     let mut end = start;
     while bytes
@@ -575,12 +596,22 @@ fn looks_like_statement_call(bytes: &[u8], start: usize, dialect: GradleDialect)
     bytes.get(cursor) == Some(&b'(')
 }
 
+/// Offset just past the line break at `cursor`, which the caller has ALREADY
+/// matched as `\r` or `\n`.
+///
+/// [`gradle_line_break_end`] answers the same question for an arbitrary offset
+/// and so must return `Option`. The two scanner loops below only reach it from
+/// a `b'\r' | b'\n'` match arm, where an `unwrap_or` fallback would be a branch
+/// no input can take; they use this total form instead and the CRLF rule stays
+/// defined in one place.
+fn gradle_line_break_end_after(bytes: &[u8], cursor: usize) -> usize {
+    let crlf = bytes.get(cursor) == Some(&b'\r') && bytes.get(cursor + 1) == Some(&b'\n');
+    cursor + 1 + usize::from(crlf)
+}
+
 fn gradle_line_break_end(bytes: &[u8], cursor: usize) -> Option<usize> {
-    match bytes.get(cursor) {
-        Some(b'\r') if bytes.get(cursor + 1) == Some(&b'\n') => Some(cursor + 2),
-        Some(b'\r' | b'\n') => Some(cursor + 1),
-        _ => None,
-    }
+    matches!(bytes.get(cursor), Some(b'\r' | b'\n'))
+        .then(|| gradle_line_break_end_after(bytes, cursor))
 }
 
 fn verified_blank_line_resume(
@@ -606,6 +637,31 @@ enum GradleCallScan {
     Malformed {
         resume: usize,
     },
+}
+
+/// Handle one line break inside a quarantined region.
+///
+/// Answers `Some(resume)` when the break opens a verified blank line with
+/// nothing left unclosed, which ends the quarantine. Otherwise it advances
+/// `cursor` past the break and ends the statement — a break is a continuation
+/// only while a `)` or `]` is still open, never inside a block.
+fn quarantine_line_break(
+    bytes: &[u8],
+    cursor: &mut usize,
+    dialect: GradleDialect,
+    expected_closers: &[u8],
+    lexical: &mut GradleLexState,
+) -> Option<usize> {
+    if expected_closers.is_empty()
+        && let Some(resume) = verified_blank_line_resume(bytes, *cursor, dialect)
+    {
+        return Some(resume);
+    }
+    *cursor = gradle_line_break_end_after(bytes, *cursor);
+    if !matches!(expected_closers.last(), Some(b')' | b']')) {
+        lexical.mark_statement_start();
+    }
+    None
 }
 
 fn gradle_quarantine_resume(
@@ -641,14 +697,14 @@ fn gradle_quarantine_resume(
 
         match bytes[cursor] {
             b'\r' | b'\n' => {
-                if expected_closers.is_empty()
-                    && let Some(resume) = verified_blank_line_resume(bytes, cursor, dialect)
-                {
+                if let Some(resume) = quarantine_line_break(
+                    bytes,
+                    &mut cursor,
+                    dialect,
+                    &expected_closers,
+                    &mut lexical,
+                ) {
                     return resume;
-                }
-                cursor = gradle_line_break_end(bytes, cursor).unwrap_or(cursor + 1);
-                if !matches!(expected_closers.last(), Some(b')' | b']')) {
-                    lexical.mark_statement_start();
                 }
             }
             byte @ (b'(' | b'[' | b'{') => {
@@ -672,6 +728,27 @@ fn gradle_quarantine_resume(
     }
 
     bytes.len()
+}
+
+/// Balance one closer that is NOT the one ending the `project(...)` call, so
+/// scanning continues inside the still-open argument list.
+fn close_nested_gradle_group(
+    expected_closers: &mut Vec<u8>,
+    lexical: &mut GradleLexState,
+    cursor: &mut usize,
+    byte: u8,
+) {
+    expected_closers.pop();
+    lexical.mark_byte(byte);
+    *cursor += 1;
+}
+
+/// A `project(...)` call that closed cleanly, ending just past `close`.
+fn complete_gradle_call(close: usize, arguments: Vec<(usize, usize)>) -> GradleCallScan {
+    GradleCallScan::Complete {
+        end: close + 1,
+        arguments,
+    }
 }
 
 fn malformed_gradle_call(
@@ -729,7 +806,7 @@ fn scan_gradle_call(bytes: &[u8], open: usize, dialect: GradleDialect) -> Gradle
                 {
                     recovery_candidate.get_or_insert(resume);
                 }
-                cursor = gradle_line_break_end(bytes, cursor).unwrap_or(cursor + 1);
+                cursor = gradle_line_break_end_after(bytes, cursor);
             }
             byte @ (b'(' | b'[' | b'{') => {
                 expected_closers.push(gradle_closer_for(byte));
@@ -745,14 +822,9 @@ fn scan_gradle_call(bytes: &[u8], open: usize, dialect: GradleDialect) -> Gradle
                 }
                 if expected_closers.len() == 1 {
                     arguments.push((argument_start, cursor));
-                    return GradleCallScan::Complete {
-                        end: cursor + 1,
-                        arguments,
-                    };
+                    return complete_gradle_call(cursor, arguments);
                 }
-                expected_closers.pop();
-                lexical.mark_byte(byte);
-                cursor += 1;
+                close_nested_gradle_group(&mut expected_closers, &mut lexical, &mut cursor, byte);
             }
             b',' if expected_closers.len() == 1 => {
                 arguments.push((argument_start, cursor));
@@ -843,14 +915,14 @@ fn gradle_dependency_from_arguments<'a>(
         }
 
         if let Some((name, value_start)) = gradle_assignment(content, start, end, dialect) {
-            if name != "path" {
-                continue;
+            if name == "path" {
+                let named = plain_gradle_project_path(content, value_start, end, dialect);
+                candidate_count += 1;
+                if candidate_count > 1 {
+                    return None;
+                }
+                project_path = named;
             }
-            candidate_count += 1;
-            if candidate_count > 1 {
-                return None;
-            }
-            project_path = plain_gradle_project_path(content, value_start, end, dialect);
             continue;
         }
 
@@ -865,15 +937,80 @@ fn gradle_dependency_from_arguments<'a>(
         }
     }
 
-    (candidate_count == 1).then_some(project_path).flatten()
+    if candidate_count == 1 {
+        project_path
+    } else {
+        None
+    }
+}
+
+/// Open a `(` group in both scanner states and count it as a continuation.
+fn open_gradle_parenthesis(
+    dependency_context: &mut GradleDependencyContext,
+    lexical: &mut GradleLexState,
+    continuation_group_depth: &mut usize,
+) {
+    *continuation_group_depth += 1;
+    dependency_context.open_parenthesis();
+    lexical.mark_byte(b'(');
+}
+
+/// Feed one byte that is neither a literal nor an identifier to both scanner
+/// states.
+///
+/// `continuation_group_depth` tracks unclosed `(`/`[` so a line break inside a
+/// grouped expression stays a continuation instead of ending the statement;
+/// `{`/`}` deliberately do not affect it, because a block break DOES end the
+/// statement.
+fn apply_gradle_structural_byte(
+    byte: u8,
+    dependency_context: &mut GradleDependencyContext,
+    lexical: &mut GradleLexState,
+    continuation_group_depth: &mut usize,
+) {
+    match byte {
+        b'(' => {
+            open_gradle_parenthesis(dependency_context, lexical, continuation_group_depth);
+        }
+        b'[' => {
+            *continuation_group_depth += 1;
+            dependency_context.open_bracket();
+            lexical.mark_byte(b'[');
+        }
+        b'{' => {
+            dependency_context.open_block();
+            lexical.mark_byte(b'{');
+        }
+        b')' => {
+            *continuation_group_depth = continuation_group_depth.saturating_sub(1);
+            dependency_context.close_parenthesis();
+            lexical.mark_byte(b')');
+        }
+        b']' => {
+            *continuation_group_depth = continuation_group_depth.saturating_sub(1);
+            dependency_context.close_bracket();
+            lexical.mark_byte(b']');
+        }
+        b'}' => {
+            dependency_context.close_block();
+            lexical.mark_byte(b'}');
+        }
+        b'\r' | b'\n' if *continuation_group_depth == 0 => {
+            dependency_context.mark_line_break();
+            lexical.mark_statement_start();
+        }
+        byte if byte.is_ascii_whitespace() => {}
+        byte => {
+            dependency_context.mark_byte(byte);
+            lexical.mark_byte(byte);
+        }
+    }
 }
 
 pub(crate) fn extract_gradle_project_dependencies(
     content: &str,
     dialect: GradleDialect,
 ) -> Vec<&str> {
-    const PROJECT_CALL: &[u8] = b"project";
-
     let bytes = content.as_bytes();
     let mut dependencies = Vec::new();
     let mut cursor = 0usize;
@@ -898,18 +1035,8 @@ pub(crate) fn extract_gradle_project_dependencies(
             GradleLiteralScan::NotLiteral => {}
         }
 
-        let token_end = cursor + PROJECT_CALL.len();
-        // The `while cursor < bytes.len()` loop invariant makes `bytes[cursor..]` infallible.
-        let is_project_call = bytes[cursor..].starts_with(PROJECT_CALL)
-            && cursor
-                .checked_sub(1)
-                .and_then(|previous| bytes.get(previous))
-                .is_none_or(|byte| !is_gradle_identifier_byte(*byte))
-            && bytes
-                .get(token_end)
-                .is_none_or(|byte| !is_gradle_identifier_byte(*byte));
-
-        if is_project_call {
+        if is_standalone_project_token(bytes, cursor) {
+            let token_end = cursor + PROJECT_CALL.len();
             let open = skip_gradle_trivia(bytes, token_end, bytes.len(), dialect);
             if bytes.get(open) == Some(&b'(') {
                 let qualified = lexical.is_member_access();
@@ -938,51 +1065,19 @@ pub(crate) fn extract_gradle_project_dependencies(
         }
 
         if let Some(end) = gradle_identifier_span(bytes, cursor) {
-            dependency_context.mark_identifier(&bytes[cursor..end], lexical.is_member_access());
-            lexical.mark_identifier(&bytes[cursor..end]);
+            let identifier = &bytes[cursor..end];
+            dependency_context.mark_identifier(identifier, lexical.is_member_access());
+            lexical.mark_identifier(identifier);
             cursor = end;
             continue;
         }
 
-        match bytes[cursor] {
-            b'(' => {
-                continuation_group_depth += 1;
-                dependency_context.open_parenthesis();
-                lexical.mark_byte(b'(');
-            }
-            b'[' => {
-                continuation_group_depth += 1;
-                dependency_context.open_bracket();
-                lexical.mark_byte(b'[');
-            }
-            b'{' => {
-                dependency_context.open_block();
-                lexical.mark_byte(b'{');
-            }
-            b')' => {
-                continuation_group_depth = continuation_group_depth.saturating_sub(1);
-                dependency_context.close_parenthesis();
-                lexical.mark_byte(b')');
-            }
-            b']' => {
-                continuation_group_depth = continuation_group_depth.saturating_sub(1);
-                dependency_context.close_bracket();
-                lexical.mark_byte(b']');
-            }
-            b'}' => {
-                dependency_context.close_block();
-                lexical.mark_byte(b'}');
-            }
-            b'\r' | b'\n' if continuation_group_depth == 0 => {
-                dependency_context.mark_line_break();
-                lexical.mark_statement_start();
-            }
-            byte if byte.is_ascii_whitespace() => {}
-            byte => {
-                dependency_context.mark_byte(byte);
-                lexical.mark_byte(byte);
-            }
-        }
+        apply_gradle_structural_byte(
+            bytes[cursor],
+            &mut dependency_context,
+            &mut lexical,
+            &mut continuation_group_depth,
+        );
         cursor += 1;
     }
 
@@ -992,6 +1087,7 @@ pub(crate) fn extract_gradle_project_dependencies(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rstest::rstest;
 
     fn extract_gradle_project_dependencies(content: &str) -> Vec<&str> {
         super::extract_gradle_project_dependencies(content, GradleDialect::Groovy)
@@ -1627,5 +1723,89 @@ dependencies { implementation(project(":after-decoy")) }
 "#;
 
         assert_eq!(extract_gradle_project_dependencies(content), vec![":real"]);
+    }
+
+    /// A closer with nothing open, or with a DIFFERENT delimiter innermost,
+    /// must leave the delimiter stack alone rather than popping a frame it
+    /// does not own. Popping here would unbalance every enclosing scope and
+    /// make the following `dependencies { }` block unrecognizable.
+    #[rstest]
+    #[case::stray_close_parenthesis(")")]
+    #[case::stray_close_block("}")]
+    #[case::stray_close_bracket("]")]
+    fn test_extract_gradle_project_dependencies_ignores_unmatched_closers(#[case] stray: &str) {
+        let content =
+            format!("{stray}\ndependencies {{\n    implementation(project(':after'))\n}}\n");
+
+        assert_eq!(
+            extract_gradle_project_dependencies(&content),
+            vec![":after"]
+        );
+    }
+
+    /// `project()` arguments that are not exactly one plain path literal are
+    /// not project dependencies. Each case keeps a real declaration alongside
+    /// so a regression that swallows the whole block stays visible.
+    #[rstest]
+    #[case::empty_literal("project('')")]
+    #[case::triple_quoted_literal("project(''':triple''')")]
+    #[case::named_argument_other_than_path("project(configuration: 'default')")]
+    #[case::identifier_argument("project(someVariable)")]
+    fn test_extract_gradle_project_dependencies_rejects_non_path_arguments(#[case] call: &str) {
+        let content = format!(
+            "dependencies {{\n    implementation({call})\n    implementation(project(':real'))\n}}\n"
+        );
+
+        assert_eq!(extract_gradle_project_dependencies(&content), vec![":real"]);
+    }
+
+    /// Groovy's `project(path: ':lib')` names the path argument instead of
+    /// passing it positionally, and `path` is the only named argument that
+    /// carries a project path.
+    #[test]
+    fn test_extract_gradle_project_dependencies_reads_named_path_argument() {
+        let content = "dependencies {\n    implementation(project(path: ':named'))\n}\n";
+
+        assert_eq!(extract_gradle_project_dependencies(content), vec![":named"]);
+    }
+
+    /// `project` is the dependency helper only when it is a standalone token
+    /// FOLLOWED by a call. An identifier that merely contains it, or the bare
+    /// `project` object used as a receiver, must fall through to ordinary
+    /// identifier handling instead.
+    #[rstest]
+    #[case::trailing_identifier_byte("files(projectDir)")]
+    #[case::leading_identifier_byte("files(42project)")]
+    #[case::not_a_call("files(project.name)")]
+    fn test_extract_gradle_project_dependencies_requires_a_standalone_project_call(
+        #[case] call: &str,
+    ) {
+        let content = format!(
+            "dependencies {{\n    implementation({call})\n    implementation(project(':real'))\n}}\n"
+        );
+
+        assert_eq!(extract_gradle_project_dependencies(&content), vec![":real"]);
+    }
+
+    /// Inside a quarantined region a line break ends the statement only while
+    /// the pending closer is a block; with a `)` or `]` still open the break
+    /// is a continuation. The difference is observable through Groovy's
+    /// context-sensitive `/`: at a statement start it opens a slashy string,
+    /// so the `}` inside `/}/` is text and the LATER `}` balances the block
+    /// and unlocks blank-line recovery. Mid-expression the same `/` stays
+    /// division, nothing balances, and the quarantine runs to end of buffer.
+    #[test]
+    fn test_gradle_quarantine_resume_ends_statements_only_under_a_pending_block() {
+        let content = "value\n/}/\n}\n\nimplementation()";
+        let bytes = content.as_bytes();
+
+        assert_eq!(
+            gradle_quarantine_resume(bytes, 0, GradleDialect::Groovy, vec![b'}']),
+            content.find("implementation()").unwrap()
+        );
+        assert_eq!(
+            gradle_quarantine_resume(bytes, 0, GradleDialect::Groovy, vec![b')']),
+            content.len()
+        );
     }
 }
