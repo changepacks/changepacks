@@ -710,6 +710,33 @@ mod tests {
         assert_eq!(doc.to_string(), original);
     }
 
+    /// `[target]` is a plain TOML table, so nothing stops a manifest from
+    /// putting a bare value next to the `[target.'cfg(..)'.*]` sub-tables the
+    /// walk is actually after. That entry has no dependency tables to visit and
+    /// must be stepped over rather than ending the walk: the `cfg(unix)`
+    /// sub-table declared after it is still retargeted.
+    #[test]
+    fn test_sync_dependency_pins_steps_over_a_non_table_target_entry() {
+        let manifest = |tool: &str| {
+            format!(
+                concat!(
+                    "[target]\n",
+                    "\"cfg(bogus)\" = \"not-a-table\"\n",
+                    "\n",
+                    "[target.'cfg(unix)'.build-dependencies]\n",
+                    "demo-tool = {{ path = \"crates/demo-tool\", version = \"{tool}\" }}\n",
+                ),
+                tool = tool
+            )
+        };
+        let mut doc: DocumentMut = manifest("=0.2.1").parse().unwrap();
+
+        let written = sync_dependency_pins(&mut doc, &bumped(&[("demo-tool", "0.3.0")]));
+
+        assert!(written);
+        assert_eq!(doc.to_string(), manifest("=0.3.0"));
+    }
+
     #[tokio::test]
     async fn test_sync_manifest_dependency_pins_skips_the_write_when_nothing_matches() {
         let temp_dir = TempDir::new().unwrap();
