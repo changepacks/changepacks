@@ -238,6 +238,20 @@ mod tests {
         assert_eq!(property_value_is_literal(value), expected);
     }
 
+    /// A properties file whose last line carries no trailing newline still
+    /// yields that line's assignment: `line_end` then equals `content.len()`,
+    /// so the scan has to finish on the buffer length instead of stepping over
+    /// a newline byte that is not there.
+    #[test]
+    fn final_line_without_trailing_newline_is_still_scanned() {
+        let content = b"other=true\nversion=1.2.3";
+
+        let assignments = property_assignments(content);
+
+        assert_eq!(assignments, [PropertyAssignment::Literal(19..24)]);
+        assert_eq!(&content[19..24], b"1.2.3");
+    }
+
     #[test]
     fn escaped_trailing_backslashes_stay_inside_the_literal_value_range() {
         let content = b"version=1.2.3\\\\\n";

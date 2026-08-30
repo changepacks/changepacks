@@ -79,24 +79,15 @@ impl GradleProjectFinder {
             .with_context(|| gradlew_not_found(manifest_path))?;
         // Sibling subprojects all report the same `gradlew_dir`, so canonicalize
         // it once per wrapper root instead of once per manifest.
-        let normalized_wrapper_dir = if let Some(cached) =
-            self.wrapper_dir_canonical.get(&gradlew_dir)
-        {
-            cached.clone()
-        } else {
-            let normalized = tokio::fs::canonicalize(&gradlew_dir)
-                .await
-                .with_context(|| {
-                    format!(
-                        "Failed to normalize Gradle wrapper root '{}' for '{}'",
-                        gradlew_dir.display(),
-                        manifest_path.display()
-                    )
-                })?;
-            self.wrapper_dir_canonical
-                .insert(gradlew_dir.clone(), normalized.clone());
-            normalized
-        };
+        let normalized_wrapper_dir =
+            if let Some(cached) = self.wrapper_dir_canonical.get(&gradlew_dir) {
+                cached.clone()
+            } else {
+                let normalized = canonicalize_wrapper_dir(&gradlew_dir, manifest_path).await?;
+                self.wrapper_dir_canonical
+                    .insert(gradlew_dir.clone(), normalized.clone());
+                normalized
+            };
 
         if !self
             .metadata_by_wrapper
@@ -130,23 +121,13 @@ impl GradleProjectFinder {
             .metadata_by_wrapper
             .get(normalized_wrapper_dir)
             .with_context(|| {
-                format!(
-                    "missing Gradle metadata batch for wrapper root '{}' (wrapper '{}') while resolving project directory '{}'",
-                    normalized_wrapper_dir.display(),
-                    gradlew.display(),
-                    project_dir.display()
-                )
+                missing_metadata_batch(normalized_wrapper_dir, gradlew, project_dir)
             })?;
         let metadata = wrapper_metadata
             .by_project_dir
             .get(normalized_project_dir)
             .with_context(|| {
-                format!(
-                    "missing Gradle metadata record for project directory '{}' (normalized: '{}') in the batch emitted by wrapper '{}'",
-                    project_dir.display(),
-                    normalized_project_dir.display(),
-                    gradlew.display()
-                )
+                missing_metadata_record(project_dir, normalized_project_dir, gradlew)
             })?;
         Ok((
             wrapper_metadata,
@@ -175,13 +156,12 @@ impl GradleProjectFinder {
                     .get(*dependency_path)
                     .map(String::as_str)
                     .with_context(|| {
-                        format!(
-                            "Gradle dependency project path '{}' declared by project '{}' (Gradle path '{}', manifest '{}') is missing from metadata emitted by wrapper '{}'",
+                        missing_dependency_project(
                             dependency_path,
-                            name.unwrap_or("<unnamed>"),
+                            name,
                             project_path,
-                            manifest_path.display(),
-                            gradlew.display()
+                            manifest_path,
+                            gradlew,
                         )
                     })
             })
@@ -265,12 +245,83 @@ fn gradle_wrapper_name(windows: bool) -> &'static str {
 /// `crates/java/src/package.rs` assert on
 /// `.contains("Gradle wrapper (gradlew) not found")`, so the prefix must stay
 /// byte-identical and the manifest path is appended after it.
+/// Single source of truth for the "this wrapper root produced no batch"
+/// message. Sibling of [`gradlew_not_found`]: the text lives beside the other
+/// message builders so the failing lookup at the call site stays one call.
+fn missing_metadata_batch(
+    normalized_wrapper_dir: &Path,
+    gradlew: &Path,
+    project_dir: &Path,
+) -> String {
+    format!(
+        "missing Gradle metadata batch for wrapper root '{}' (wrapper '{}') while resolving project directory '{}'",
+        normalized_wrapper_dir.display(),
+        gradlew.display(),
+        project_dir.display()
+    )
+}
+
+/// Single source of truth for the "the batch exists but never mentioned this
+/// project directory" message, the structurally different sibling of
+/// [`missing_metadata_batch`].
+fn missing_metadata_record(
+    project_dir: &Path,
+    normalized_project_dir: &Path,
+    gradlew: &Path,
+) -> String {
+    format!(
+        "missing Gradle metadata record for project directory '{}' (normalized: '{}') in the batch emitted by wrapper '{}'",
+        project_dir.display(),
+        normalized_project_dir.display(),
+        gradlew.display()
+    )
+}
+
+/// Single source of truth for the "build file names a project the wrapper
+/// never emitted" message, which names every field needed to locate the
+/// mismatch.
+fn missing_dependency_project(
+    dependency_path: &str,
+    name: Option<&str>,
+    project_path: &str,
+    manifest_path: &Path,
+    gradlew: &Path,
+) -> String {
+    format!(
+        "Gradle dependency project path '{}' declared by project '{}' (Gradle path '{}', manifest '{}') is missing from metadata emitted by wrapper '{}'",
+        dependency_path,
+        name.unwrap_or("<unnamed>"),
+        project_path,
+        manifest_path.display(),
+        gradlew.display()
+    )
+}
+
 fn gradlew_not_found(manifest: &Path) -> String {
     format!(
         "Gradle wrapper (gradlew) not found for '{}'. \
          Ensure the project root contains gradlew or gradlew.bat.",
         manifest.display()
     )
+}
+
+/// Canonicalize a discovered Gradle wrapper root, naming the manifest whose
+/// lookup produced it when the syscall fails.
+///
+/// Split out of [`GradleProjectFinder::resolve_wrapper_metadata`] for the same
+/// reason as [`java_is_available_in`] and [`find_gradlew_named`]: that caller
+/// only ever reaches this with a directory [`find_gradlew`] has just proved to
+/// hold a wrapper file, so the failing branch cannot be produced through it
+/// without racing the filesystem. Taking the directory as a parameter keeps
+/// the branch reachable from a single host.
+async fn canonicalize_wrapper_dir(gradlew_dir: &Path, manifest_path: &Path) -> Result<PathBuf> {
+    tokio::fs::canonicalize(gradlew_dir).await.with_context(|| {
+        format!(
+            "Failed to normalize Gradle wrapper root '{}' for '{}'",
+            gradlew_dir.display(),
+            manifest_path.display()
+        )
+    })
 }
 
 async fn find_gradlew(start_dir: &Path, max_depth: usize) -> Result<Option<(PathBuf, PathBuf)>> {
@@ -2210,6 +2261,36 @@ def second = 20 / 4
         temp_dir.close().unwrap();
     }
 
+    /// The wrapper root is canonicalized before it keys the metadata cache, so
+    /// a root that cannot be resolved has to name both the directory and the
+    /// manifest whose lookup produced it.
+    #[tokio::test]
+    async fn test_canonicalize_wrapper_dir_names_root_and_manifest_on_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let missing_root = temp_dir.path().join("never-created");
+        let manifest = missing_root.join("build.gradle.kts");
+
+        let error = canonicalize_wrapper_dir(&missing_root, &manifest)
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("Failed to normalize Gradle wrapper root"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&missing_root.display().to_string()),
+            "{message}"
+        );
+        assert!(
+            message.contains(&manifest.display().to_string()),
+            "{message}"
+        );
+
+        temp_dir.close().unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn test_gradle_subproject_path_rejects_non_unicode_component() {
@@ -2217,6 +2298,20 @@ def second = 20 / 4
         use std::os::unix::ffi::OsStringExt;
 
         let invalid = PathBuf::from(OsString::from_vec(vec![0x66, 0x80, 0x6f]));
+
+        assert!(gradle_subproject_path(&invalid).is_err());
+    }
+
+    /// Windows counterpart of the check above. Path components there are
+    /// UTF-16, and an unpaired surrogate is a well-formed code unit with no
+    /// UTF-8 encoding, so it survives `OsString` and fails `to_str` — the same
+    /// rejection the Unix case reaches through an invalid UTF-8 byte.
+    #[cfg(windows)]
+    #[test]
+    fn test_gradle_subproject_path_rejects_non_unicode_component() {
+        use std::os::windows::ffi::OsStringExt;
+
+        let invalid = PathBuf::from(OsString::from_wide(&[0xD800]));
 
         assert!(gradle_subproject_path(&invalid).is_err());
     }

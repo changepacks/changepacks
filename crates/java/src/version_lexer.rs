@@ -160,6 +160,55 @@ fn kts_value_range(line: &str) -> Option<Range<usize>> {
         })
 }
 
+/// Record the version value `line` assigns, or note that it declares a version
+/// this updater cannot rewrite.
+///
+/// A line that matches the declaration pattern but yields no value range is a
+/// computed assignment, which must be reported rather than silently skipped.
+/// Advance through one byte of a Groovy slashy string.
+///
+/// `${` opens a nested code context, `\/` is an escaped delimiter that stays
+/// inside the literal, and a bare `/` closes it; every other byte is content.
+fn scan_slashy_string_byte(
+    bytes: &[u8],
+    contexts: &mut Vec<LexContext>,
+    index: &mut usize,
+    at_line_start: &mut bool,
+) {
+    if bytes[*index] == b'$' && bytes.get(*index + 1) == Some(&b'{') {
+        contexts.push(LexContext::Code {
+            kind: CodeKind::Interpolation { brace_depth: 1 },
+            previous: PreviousToken::StatementStart,
+            grouping_depth: 0,
+        });
+        *index += 2;
+    } else if bytes[*index] == b'\\' && bytes.get(*index + 1) == Some(&b'/') {
+        *index += 2;
+    } else if bytes[*index] == b'/' {
+        contexts.pop();
+        *index += 1;
+    } else {
+        if bytes[*index] == b'\n' {
+            *at_line_start = true;
+        }
+        *index += 1;
+    }
+}
+
+fn record_script_version_line(
+    line: &str,
+    index: usize,
+    value_range: fn(&str) -> Option<Range<usize>>,
+    ranges: &mut Vec<Range<usize>>,
+    has_unsupported: &mut bool,
+) {
+    let Some(range) = value_range(line) else {
+        *has_unsupported |= SCRIPT_VERSION_DECLARATION_PATTERN.is_match(line);
+        return;
+    };
+    ranges.push(index + range.start..index + range.end);
+}
+
 fn groovy_value_range(line: &str) -> Option<Range<usize>> {
     [&*GROOVY_ASSIGN_PATTERN, &*GROOVY_SPACE_PATTERN]
         .into_iter()
@@ -283,11 +332,13 @@ pub(crate) fn candidate_ranges(
             if in_script_code(&contexts) && scope_is_supported(&scopes, policy) {
                 let line = &content[index..line_end];
                 if may_declare_version(line) {
-                    if let Some(range) = value_range(line) {
-                        ranges.push(index + range.start..index + range.end);
-                    } else if SCRIPT_VERSION_DECLARATION_PATTERN.is_match(line) {
-                        has_unsupported = true;
-                    }
+                    record_script_version_line(
+                        line,
+                        index,
+                        value_range,
+                        &mut ranges,
+                        &mut has_unsupported,
+                    );
                 }
             }
             at_line_start = false;
@@ -568,14 +619,16 @@ pub(crate) fn candidate_ranges(
                 }
             }
             LexContext::String(kind) => match kind {
+                StringKind::Slashy => {
+                    scan_slashy_string_byte(bytes, &mut contexts, &mut index, &mut at_line_start);
+                }
                 StringKind::Quoted {
                     quote,
                     triple,
                     interpolation_dollars,
                 } => {
-                    let interpolates = string_interpolates(dialect, kind);
                     let supports_escape = !triple || dialect == GradleDialect::Groovy;
-                    if interpolates && bytes[index] == b'$' {
+                    if string_interpolates(dialect, kind) && bytes[index] == b'$' {
                         let dollar_start = index;
                         index = scan_byte_run(bytes, index, b'$');
                         if index - dollar_start >= interpolation_dollars
@@ -600,26 +653,6 @@ pub(crate) fn candidate_ranges(
                             contexts.pop();
                         }
                     } else if !triple && bytes[index] == quote {
-                        contexts.pop();
-                        index += 1;
-                    } else {
-                        if bytes[index] == b'\n' {
-                            at_line_start = true;
-                        }
-                        index += 1;
-                    }
-                }
-                StringKind::Slashy => {
-                    if bytes[index] == b'$' && bytes.get(index + 1) == Some(&b'{') {
-                        contexts.push(LexContext::Code {
-                            kind: CodeKind::Interpolation { brace_depth: 1 },
-                            previous: PreviousToken::StatementStart,
-                            grouping_depth: 0,
-                        });
-                        index += 2;
-                    } else if bytes[index] == b'\\' && bytes.get(index + 1) == Some(&b'/') {
-                        index += 2;
-                    } else if bytes[index] == b'/' {
                         contexts.pop();
                         index += 1;
                     } else {
@@ -1275,6 +1308,27 @@ version = '1.0.0'
         for content in [
             "def quotient = value++ / 2\nversion = '1.0.0'\n",
             "def quotient = value-- / 2\nversion = '1.0.0'\n",
+        ] {
+            let updated =
+                update_version_in_groovy(content, "1.0.1", GradleVersionScope::ScriptOnly).unwrap();
+
+            assert_eq!(
+                updated,
+                content.replace("version = '1.0.0'", "version = '1.0.1'")
+            );
+        }
+    }
+
+    /// The postfix companion above pins `value++ / 2` as division. In prefix
+    /// position the same `++`/`--` token instead OPENS an expression, so the
+    /// previous-token category must become `ExpressionStart`; otherwise the
+    /// following `/` stops being division and swallows the rest of the script
+    /// as a phantom slashy string.
+    #[test]
+    fn test_remaining_lexer_groovy_prefix_increment_and_decrement_start_expressions() {
+        for content in [
+            "def next = ++counter / 2\nversion = '1.0.0'\n",
+            "def next = --counter / 2\nversion = '1.0.0'\n",
         ] {
             let updated =
                 update_version_in_groovy(content, "1.0.1", GradleVersionScope::ScriptOnly).unwrap();
